@@ -1,0 +1,5 @@
+# Preserve upstream license text verbatim, including its original whitespace.
+*LICENSE* -whitespace
+*NOTICE* -whitespace
+licenses/* -whitespace
+MacIMEI/Resources/Licenses/* -whitespace

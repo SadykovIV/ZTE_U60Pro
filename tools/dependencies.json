@@ -1,0 +1,13 @@
+{
+  "archive": "Build-dependencies-20260924.tar.gz",
+  "url": "https://github.com/SadykovIV/ZTE_U60Pro/releases/download/v1.9.1/Build-dependencies-20260924.tar.gz",
+  "sha256": "93d7df8ccfb061aa8ad849d0729d4d94a51528019b20bb1d3229e1f825c0a7a3",
+  "files": {
+    "MacIMEI/Resources/Onboarding/adb": "1811e253b21b12cbfda7201ebaf86c10e7ddcb5c606a7a81f7c82b4c429c2d3b",
+    "MacIMEI/Resources/Onboarding/dropbear": "e3833acdaa8b11e6150f82a35d3dc53d685561d5504ef337ad4af5e530345378",
+    "MacIMEI/Resources/SSHAccounts/dropbear": "e3833acdaa8b11e6150f82a35d3dc53d685561d5504ef337ad4af5e530345378",
+    "MacIMEI/Resources/SSHAccounts/doas": "f162f2d83476d22559fd844203b6af52c6a74250390cdf08c1d6b99e58c9ec97",
+    "MacIMEI/Resources/VPN/mihomo": "1b315bc038d05f84ee86d232f3c3d2b020b5044e9b971bb8fe215b6e6a2148f3",
+    "MacIMEI/Resources/VPN/dashboard-uhttpd": "76f021c43a02eab5bb634b01461370fcb8bfb270b1f14e348e5b57acb43b1d12"
+  }
+}

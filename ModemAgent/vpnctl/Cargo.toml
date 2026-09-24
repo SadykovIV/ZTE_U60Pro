@@ -1,0 +1,11 @@
+[package]
+name = "zte-vpnctl"
+version = "1.2.1"
+edition = "2021"
+license = "MIT"
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+libc = "0.2"
+process-runner = { path = "../process-runner" }

@@ -1,0 +1,94 @@
+{
+  "version": 1,
+  "inputSHA256": "e3914e78a8488cb736770f0ac9fb8ce10e0e5222fa50285f08e9e8be90d7f1e9",
+  "outputSHA256": "16eb92e27f54b5cf5c6b316a6e7a62b782053a2a609d0d4904a7f08a7bc0afa4",
+  "inputSize": 10946355,
+  "outputSize": 10946355,
+  "patches": [
+    {
+      "offset": 208,
+      "originalHex": "60b9",
+      "replacementHex": "50ba"
+    },
+    {
+      "offset": 216,
+      "originalHex": "60b9",
+      "replacementHex": "50ba"
+    },
+    {
+      "offset": 1428440,
+      "originalHex": "fd7bbca9",
+      "replacementHex": "8afb2314"
+    },
+    {
+      "offset": 10861056,
+      "originalHex": "00",
+      "replacementHex": "a2"
+    },
+    {
+      "offset": 10861059,
+      "originalHex": "000000",
+      "replacementHex": "345f08"
+    },
+    {
+      "offset": 10861063,
+      "originalHex": "0000",
+      "replacementHex": "7160"
+    },
+    {
+      "offset": 10861067,
+      "originalHex": "000000",
+      "replacementHex": "545f28"
+    },
+    {
+      "offset": 10861071,
+      "originalHex": "000000",
+      "replacementHex": "71c101"
+    },
+    {
+      "offset": 10861075,
+      "originalHex": "000000",
+      "replacementHex": "5470a1"
+    },
+    {
+      "offset": 10861079,
+      "originalHex": "00000000000000",
+      "replacementHex": "b0108a40b91f0a"
+    },
+    {
+      "offset": 10861087,
+      "originalHex": "000000",
+      "replacementHex": "714101"
+    },
+    {
+      "offset": 10861091,
+      "originalHex": "000000",
+      "replacementHex": "543f30"
+    },
+    {
+      "offset": 10861095,
+      "originalHex": "000000",
+      "replacementHex": "710b01"
+    },
+    {
+      "offset": 10861099,
+      "originalHex": "0000",
+      "replacementHex": "543f"
+    },
+    {
+      "offset": 10861102,
+      "originalHex": "000000",
+      "replacementHex": "0171cc"
+    },
+    {
+      "offset": 10861107,
+      "originalHex": "0000000000000000000000",
+      "replacementHex": "5430028052307c101b102a"
+    },
+    {
+      "offset": 10861119,
+      "originalHex": "0000000000000000000000000000000000",
+      "replacementHex": "1191028052010ad11afd7bbca96404dc17"
+    }
+  ]
+}

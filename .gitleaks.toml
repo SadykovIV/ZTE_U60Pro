@@ -1,0 +1,6 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Pinned file checksums, not credentials; all values are file SHA-256 digests"
+paths = ['''(^|/)SHA256\.json$''']

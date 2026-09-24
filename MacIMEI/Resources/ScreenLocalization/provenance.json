@@ -1,0 +1,21 @@
+{
+  "revision": "20260924",
+  "profile": "CN_ZTE_MU5250V1.0.0B31",
+  "input_sources": {
+    "dictionaries": "Device screen language resources, revised locally and accepted on the device",
+    "font_patch": "Locally generated AArch64 font-size hook; original executable read from the connected device"
+  },
+  "stock_ui_sha256": "e3914e78a8488cb736770f0ac9fb8ce10e0e5222fa50285f08e9e8be90d7f1e9",
+  "patched_ui_sha256": "16eb92e27f54b5cf5c6b316a6e7a62b782053a2a609d0d4904a7f08a7bc0afa4",
+  "full_modem_executable_bundled": false,
+  "font_file_bundled": false,
+  "russian_dictionary_keys": 729,
+  "original_keys_reviewed": 723,
+  "changed_original_values": 596,
+  "special_spaces_removed": 26,
+  "font_scale": 0.85,
+  "font_hook_execution_vectors": 44992,
+  "live_visual_confirmation": "accepted",
+  "vpn_menu_label": "WiFi с VPN / WiFi with VPN",
+  "previous_revision": "20260923"
+}

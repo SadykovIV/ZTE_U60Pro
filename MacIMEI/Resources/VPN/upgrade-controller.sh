@@ -1,0 +1,90 @@
+#!/bin/sh
+# Upgrade only recognized controllers; keep a complete rollback snapshot.
+set -eu
+umask 077
+ROOT=/data/zte-vpn
+stage=${1:-}
+case "$stage" in /tmp/zte-vpn-agent-????????-????-????-????-????????????) ;; *) exit 64;; esac
+helper_sha=28a7435f555cef46d31f5ea5a0efdc30898a293b8893cb98f7865a9044f66c9c
+configure_sha=c2356c8862ab3bef502a83249df5210bc6f4e8cd0b47ed73fef31e6e75bc4501
+manager_sha=f836b522c48a115c75233594207191214459f624180b7f98fabb754517d695b1
+hash() { sha256sum "$1" | awk '{print $1}'; }
+known() {
+    case "$1" in 8f9e82ca45177fc19ffd4d7663764fa44750e05eed86ef83567ed2dec5ce7827|96a4717fe085a80479675486d23b260c3254084638d195d933d4d9d944b98e88|48b9af93098b4b1b31754a48707ac066a39977bcc0db0cc438ead64c62322bd4|572e2e1133cebb690584bda8b5ac047336451bc26c6a5e37522a756b6254fac5|80f16fafe203d661d6a90686c90a25c61eea38cf9e83e002c1cdffea85d02f23|3c8a139d9ba6f3372b009e9e0fb5ed9ff27faf1675dcb654f09eedec851661f3|e2ffd02708220d332bf31f7f1f4c3abe369fbc2af1665af885c1f4375a884ff0|"$helper_sha") return 0;; *) return 1;; esac
+}
+[ -d "$ROOT" ] && [ ! -L "$ROOT" ] && [ "$(stat -c '%u:%a' "$ROOT")" = 0:700 ]
+[ ! -e "$ROOT/transaction" ] && [ ! -L "$ROOT/transaction" ]
+for file in vpnctl manager.sh configure.lua; do [ -f "$stage/$file" ] && [ ! -L "$stage/$file" ]; done
+[ "$(hash "$stage/vpnctl")" = "$helper_sha" ]
+[ "$(hash "$stage/manager.sh")" = "$manager_sha" ]
+[ "$(hash "$stage/configure.lua")" = "$configure_sha" ]
+[ ! -d /tmp/zte-vpn-screen ] || { echo VPN_SCREEN_BUSY >&2; exit 1; }
+backup="$ROOT/controller-upgrade"
+restore() {
+    [ -f "$backup/ready" ] && [ ! -L "$backup/ready" ] || return 0
+    known "$(hash "$backup/vpnctl")"
+    (cd "$backup" && sha256sum -c SHA256SUMS >/dev/null)
+    cp "$backup/manager.sh" "$ROOT/manager.sh.restore"; chmod 700 "$ROOT/manager.sh.restore"
+    cp "$backup/vpnctl" "$ROOT/vpnctl.restore"; chmod 700 "$ROOT/vpnctl.restore"
+    cp "$backup/network" /etc/init.d/network.vpn-restore; chmod 755 /etc/init.d/network.vpn-restore
+    if [ -f "$backup/configure.lua" ]; then
+        cp "$backup/configure.lua" "$ROOT/configure.lua.restore"; chmod 700 "$ROOT/configure.lua.restore"
+        mv "$ROOT/configure.lua.restore" "$ROOT/configure.lua"
+    fi
+    mv "$ROOT/manager.sh.restore" "$ROOT/manager.sh"
+    mv "$ROOT/vpnctl.restore" "$ROOT/vpnctl"
+    mv /etc/init.d/network.vpn-restore /etc/init.d/network
+    if [ -f "$backup/network-init.sha256" ]; then cp "$backup/network-init.sha256" "$ROOT/network-init.sha256"; fi
+    sync
+    "$ROOT/vpnctl" integrity >/dev/null
+    rm -rf "$backup"
+}
+if [ -e "$backup" ]; then
+    [ -d "$backup" ] && [ ! -L "$backup" ] && [ "$(stat -c '%u:%a' "$backup")" = 0:700 ]
+    restore
+    # Incomplete preparation did not modify the installed files.
+    [ ! -e "$backup" ] || rm -rf "$backup"
+fi
+known "$(hash "$ROOT/vpnctl")"
+"$ROOT/vpnctl" integrity >/dev/null
+if [ "$(hash "$ROOT/vpnctl")" = "$helper_sha" ]; then exit 0; fi
+[ -f /etc/init.d/network ] && [ ! -L /etc/init.d/network ]
+if [ -f "$ROOT/configured" ]; then
+    [ "$(hash /etc/init.d/network)" = "$(cat "$ROOT/network-init.sha256")" ]
+    grep -q 'BEGIN zte-vpn-v1:' /etc/init.d/network
+fi
+old_helper=$(hash "$ROOT/vpnctl"); old_manager=$(hash "$ROOT/manager.sh")
+mkdir "$backup"
+for file in vpnctl manager.sh configure.lua; do cp -p "$ROOT/$file" "$backup/$file"; done
+cp -p /etc/init.d/network "$backup/network"
+[ ! -f "$ROOT/network-init.sha256" ] || cp "$ROOT/network-init.sha256" "$backup/network-init.sha256"
+(cd "$backup" && sha256sum vpnctl manager.sh configure.lua network > SHA256SUMS)
+sync
+touch "$backup/ready"; sync
+committed=0
+finish() {
+    result=$?; trap - EXIT HUP INT TERM
+    if [ "$committed" = 0 ]; then restore || true; fi
+    exit "$result"
+}
+trap finish EXIT
+trap 'exit 1' HUP INT TERM
+cp "$stage/vpnctl" "$ROOT/vpnctl.new"; chmod 700 "$ROOT/vpnctl.new"
+cp "$stage/manager.sh" "$ROOT/manager.sh.new"; chmod 700 "$ROOT/manager.sh.new"
+sed -e "s/$old_helper/$helper_sha/g" -e "s/$old_manager/$manager_sha/g" "$backup/network" > /etc/init.d/network.vpn-new
+chmod 755 /etc/init.d/network.vpn-new
+sh -n /etc/init.d/network.vpn-new
+cp "$stage/configure.lua" "$ROOT/configure.lua.new"; chmod 700 "$ROOT/configure.lua.new"
+mv "$ROOT/configure.lua.new" "$ROOT/configure.lua"
+mv "$ROOT/manager.sh.new" "$ROOT/manager.sh"
+mv "$ROOT/vpnctl.new" "$ROOT/vpnctl"
+"$ROOT/vpnctl" integrity >/dev/null
+mv /etc/init.d/network.vpn-new /etc/init.d/network
+hash /etc/init.d/network > "$ROOT/network-init.sha256"
+sync
+# The atomic rename commits the update before optional cleanup.
+[ ! -e "$ROOT/controller-upgrade.done" ] || rm -rf "$ROOT/controller-upgrade.done"
+mv "$backup" "$ROOT/controller-upgrade.done"; sync
+committed=1
+rm -rf "$ROOT/controller-upgrade.done"
+echo VPN_CONTROLLER_UPDATED

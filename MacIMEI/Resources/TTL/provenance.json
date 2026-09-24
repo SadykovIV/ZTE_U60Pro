@@ -1,0 +1,12 @@
+{
+  "component": "ZTE IMEI Studio IPv4 TTL manager",
+  "version": "1.4.0",
+  "firmware": "CN_ZTE_MU5250V1.0.0B31",
+  "origin": "Project source; uses device-provided legacy iptables TTL target and ZTE IPACM controls",
+  "outbound": "POSTROUTING --ttl-set",
+  "inbound": "FORWARD --ttl-inc toward br-lan",
+  "reference_sources": [
+    "https://github.com/torvalds/linux/blob/v5.15/net/netfilter/xt_HL.c",
+    "https://github.com/torvalds/linux/blob/v5.15/net/ipv4/ip_forward.c"
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "source_release": "https://github.com/dklasens/MU5250-OpenUI/releases/tag/v2.4",
+  "source_tree": "fabaf8b53678dc50e3c3fa2fa3de8b51061967cc",
+  "agent_sha256": "542072a91b46c9b789c249d195a6dc2cf649416c6b96448855ff710f7b797fda",
+  "dropbear_package_url": "https://downloads.openwrt.org/releases/23.05.4/targets/armsr/armv8/packages/dropbear_2022.82-6_aarch64_generic.ipk",
+  "dropbear_package_sha256": "4fadd1b8529f22fb5d64ee27159d11f4feb68224657953d298a1acf85a83a5c0",
+  "files": {
+    "ADB-NOTICE.txt": "356cc66516060e4da6bdc53e6f0bbb8e8101673f326b73c68d535eddd04dd7b1",
+    "MU5250-OpenUI-LICENSE.txt": "db4bbb26836ac3df8760d74659fca92811bb7c6b1068cfd9827259505009d300",
+    "adb": "1811e253b21b12cbfda7201ebaf86c10e7ddcb5c606a7a81f7c82b4c429c2d3b",
+    "adb-source.properties": "2dccd788c0234d8cf7f7457377e57f57527a86a629c6ed54feb8af0f549dac38",
+    "dropbear": "e3833acdaa8b11e6150f82a35d3dc53d685561d5504ef337ad4af5e530345378",
+    "dropbear-LICENSE.txt": "a99ce657d790b761c132ee7e0de18edb437ae6361e536d991c6a12f36e770445",
+    "dropbear-libtomcrypt-LICENSE.txt": "8f196cb13afd271f5e267fd29543fc454596382ad580e7592709492843996ac8",
+    "dropbear-libtommath-LICENSE.txt": "2fa64b163659f41965c9815882a8296d3d03ff546b76153e11445f9bdecf955a",
+    "setup-agent.sh": "7172804a89bf6851433692bbb75330dd88db9dc37af3b00b6d0f49a6a4f13460",
+    "start_zte_imei_studio.sh": "ece54a83e192824b9651ee4a4749fc009ec735e72b7913ec173fe07a2f37816c",
+    "zte-agent": "542072a91b46c9b789c249d195a6dc2cf649416c6b96448855ff710f7b797fda"
+  },
+  "local_agent_version": "2.7.1",
+  "local_agent_release": "https://github.com/SadykovIV/ZTE_U60Pro/releases/tag/v1.9.1",
+  "local_changes": [
+    "Authenticated TTL schema 2 adapter for the shared pinned modem TTL manager",
+    "Legacy start_ttl.sh execution and conflicting TTL/HL handlers removed",
+    "Russian/English dashboard is separate static resources; not embedded in the agent",
+    "Authenticated shared VPN profile controller with VLESS imports and guarded Wi-Fi; Russian/English dashboard VPN settings"
+  ],
+  "agent_build": {
+    "rust": "1.98.1",
+    "target": "aarch64-unknown-linux-musl"
+  },
+  "license": "MIT; both upstream copyright notices retained",
+  "onboarding_existing_installations": "Existing credentials are preserved. VPN settings has an explicit component installer that upgrades recognized agent builds with a durable backup."
+}
