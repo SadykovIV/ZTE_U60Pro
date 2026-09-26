@@ -10,7 +10,7 @@ use std::{
     time::Duration,
 };
 const HELPER: &str = "/data/zte-vpn/vpnctl";
-const HELPER_SHA: &str = "28a7435f555cef46d31f5ea5a0efdc30898a293b8893cb98f7865a9044f66c9c";
+const HELPER_SHA: &str = "f620dab27f951c7de2de77a89376975b51c79f57f8a8a24cec95392c9c61eea4";
 
 fn error(status: u16, code: &str) -> (u16, Value) {
     (
@@ -115,6 +115,7 @@ pub fn request(bytes: &[u8]) -> (u16, Value) {
         "screen_open",
         "screen_close",
         "set_enabled",
+        "configure_wifi",
         "recover",
     ]
     .contains(&action)

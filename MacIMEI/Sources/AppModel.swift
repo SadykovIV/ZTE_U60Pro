@@ -4,7 +4,22 @@ import AppKit
 @MainActor final class AppModel: ObservableObject {
     @Published var host = "192.168.0.1"
     @Published var port = "2222"
-    @Published var webPassword = ""
+    @Published var webPassword = "" {
+        didSet { if oldValue != webPassword { connectionPasswordChanged(.web) } }
+    }
+    @Published var agentPassword = "" {
+        didSet { if oldValue != agentPassword { connectionPasswordChanged(.agent) } }
+    }
+    @Published var connectionMode: ConnectionMode = .automatic
+    @Published var channelStatuses: [ConnectionChannelStatus] = []
+    @Published var activeChannel: ConnectionMode?
+    @Published var channelSummary: ConnectionDeviceSummary?
+    @Published var connectionReason = ""
+    @Published var connectionsChecked = false
+    @Published var preparationError = ""
+    @Published var sectionRefreshErrors: [ConnectionOverviewSection: String] = [:]
+    @Published var sectionsUpdatedAt: Date?
+    var channelSession: ReadOnlyChannelSession?
     @Published var skipFirmwareCheck = false
     @Published var backupSuffix = ""
     @Published var setupPending = false
@@ -17,8 +32,15 @@ import AppKit
     @Published var firmware = ""
     @Published var status = "Подключите модем, чтобы управлять устройством"
     @Published var progress: Double = 0
-    @Published var busy = false
+    @Published var busy = false {
+        didSet { if busy != oldValue { connectionActivityGeneration &+= 1 } }
+    }
+    var connectionActivityGeneration: UInt64 = 0
     @Published var connected = false
+    @Published var accessReady = false
+    var connectedIdentity: Identity?
+    var connectedWebIdentity: WebIdentity?
+    var connectedIMEI: String?
     @Published var log = ""
     @Published var backups: [BackupItem] = []
     @Published var selectedBackupID: String?
@@ -33,6 +55,18 @@ import AppKit
     @Published var sshRecoveryKind: SSHAccountRecoveryKind = .none
     @Published var sshAccountsLoaded = false
     @Published var applicationInventory: ModemApplicationInventory?
+    @Published var applicationsError = ""
+    @Published var experimentalOpkgStatus: ExperimentalOpkgStatus?
+    @Published var experimentalOpkgError = ""
+    let terminalSession = ModemTerminalSession()
+    @Published var terminalActive = false
+    @Published var terminalError = ""
+    @Published var opkgFeeds: ExperimentalOpkgFeeds?
+    @Published var opkgFeedsDraft = ""
+    @Published var opkgFeedsMessage = ""
+    @Published var opkgCommand = ""
+    @Published var opkgTranscript = ""
+    @Published var opkgHistory: [String] = []
     @Published var modemInformation: ModemInformation?
     @Published var diagnosticExportURL: URL?
     @Published var diagnosticExportSummary = ""
@@ -46,9 +80,23 @@ import AppKit
     @Published var deviceBackups: [DeviceBackupItem] = []
     @Published var selectedDeviceBackupID: String?
     @Published var deviceBackupKind: DeviceBackupKind = .configuration
+    @Published var systemBackups: [SystemBackupItem] = []
+    @Published var selectedSystemBackupID: String?
+    @Published var systemRestorePlan: SystemRestorePlan?
+    @Published var systemRestoreConfirmation = ""
+    @Published var systemAllowLiveCapture = false
+    @Published var systemRestorePending = false
+    @Published var systemBackupCanCancel = false
+    var systemBackupCancellation: SystemBackupCancellation?
     @Published var screenLocalizationStatus: ScreenLocalizationStatus?
     @Published var customAgent: AgentCandidate?
     @Published var agentInstallationStatus: AgentInstallationStatus?
+    @Published var displayInspection: ModemDisplayInspection?
+    @Published var displayError = ""
+    @Published var displayLayout: ModemDisplayLayout = .defaultLayout
+    @Published var displaySavedLayout: ModemDisplayLayout?
+    @Published var displayLayoutMessage = ""
+    var displayDraftEdited = false
     @Published var vpnInspection: VPNInspection?
     @Published var vpnError = ""
     @Published var ttlStatus: TTLStatus?
@@ -57,6 +105,9 @@ import AppKit
     @Published var ttlInboundIncrementEnabled = false
     @Published var ttlInboundIncrementValue = "1"
     @Published var packageName = ""
+    @Published var diagnosticToolsStatus: DiagnosticToolsStatus?
+    @Published var diagnosticToolsPlan: DiagnosticToolsPlan?
+    @Published var diagnosticToolsError = ""
     @Published var packageSearch = ""
     @Published var packagePreview = ""
     @Published var packagePreviewName = ""
@@ -67,6 +118,7 @@ import AppKit
     let storage: URL
     let resources: URL
     var operationTask: Task<Void, Never>?
+    var connectionMonitorTask: Task<Void, Never>?
     var validationMessage: String {
         if imei1.isEmpty && imei2.isEmpty { return "Введите два IMEI или сгенерируйте второй на основе первого" }
         if !IMEI.valid(imei1) { return "IMEI 1: нужны 15 цифр и корректная контрольная сумма Luhn" }
@@ -75,8 +127,8 @@ import AppKit
         if imei1 == currentIMEI1 && imei2 == currentIMEI2 { return "Эта пара уже записана на модеме" }
         return "Оба IMEI корректны по формату и контрольной сумме"
     }
-    var canApply: Bool { (connected || !webPassword.isEmpty) && !busy && !pendingOperation && !setupPending && IMEI.valid(imei1) && IMEI.valid(imei2) && imei1 != imei2 && (imei1 != currentIMEI1 || imei2 != currentIMEI2) }
-    var canManage: Bool { connected && !busy && !pendingOperation && !setupPending }
+    var canApply: Bool { permitsSSHOperations && (connected || (!webPassword.isEmpty && !agentPassword.isEmpty)) && !busy && !terminalActive && !pendingOperation && !setupPending && !systemRestorePending && IMEI.valid(imei1) && IMEI.valid(imei2) && imei1 != imei2 && (imei1 != currentIMEI1 || imei2 != currentIMEI2) }
+    var canManage: Bool { connected && activeChannel == .ssh && accessReady && permitsSSHOperations && !busy && !terminalActive && !pendingOperation && !setupPending && !systemRestorePending }
     var ttlValidationMessage: String {
         do {
             _ = try TTLConfiguration(outboundEnabled: ttlOutboundEnabled, outboundText: ttlOutboundValue,
@@ -118,7 +170,9 @@ import AppKit
         keyPath = storage.appendingPathComponent("SSH/id_ed25519").path
         knownHostsPath = storage.appendingPathComponent("SSH/known_hosts").path
         if let c = try? readJSON(Connection.self, storage.appendingPathComponent("connection.json")) { host = c.host; port = c.port; keyPath = c.keyPath; knownHostsPath = c.knownHostsPath.hasSuffix("/Contents/Resources/trusted_known_hosts") ? storage.appendingPathComponent("SSH/known_hosts").path : c.knownHostsPath }
+        if let saved = try? readJSON(ConnectionMode.self, storage.appendingPathComponent("connection-mode.json")) { connectionMode = saved == .web || saved == .agent ? .automatic : saved }
         refreshBackups()
+        refreshSystemBackups()
         do {
             try ActivityJournal(root: storage).record(operationID: sessionID, category: "session", title: "Запуск приложения", result: "started", details: ["macOS": ProcessInfo.processInfo.operatingSystemVersionString, "architecture": "arm64", "endpoint": host + ":" + port])
         } catch { journalWarning = "Журнал недоступен: " + error.localizedDescription }
@@ -128,10 +182,12 @@ import AppKit
     var connection: Connection { Connection(host: host.trimmingCharacters(in: .whitespacesAndNewlines), port: port, keyPath: keyPath, knownHostsPath: knownHostsPath, skipFirmwareCheck: skipFirmwareCheck) }
     func setFirmwareCheckSkipped(_ enabled: Bool) {
         guard !busy, enabled != skipFirmwareCheck else { return }
+        let statuses = channelStatuses, checked = connectionsChecked
         skipFirmwareCheck = enabled
-        connected = false; agentInstallationStatus = nil; modemInformation = nil; applicationInventory = nil; accessState = nil
-        currentIMEI1 = ""; currentIMEI2 = ""; firmware = ""; screenLocalizationStatus = nil; ttlStatus = nil; vpnInspection = nil; vpnError = ""
-        sshAccountsLoaded = false; sshAccounts = []
+        // A policy change invalidates the session, not reachability or entered
+        // credentials. Retain discovery so the explicit override is immediate.
+        invalidateChannelConnection(clearIdentity: false)
+        channelStatuses = statuses; connectionsChecked = checked
         append(enabled ? FirmwareCheck.warning : "Проверка прошивки включена. Подключитесь заново.")
     }
     func append(_ message: String, progress value: Double? = nil) {
@@ -147,42 +203,75 @@ import AppKit
         if let value { progress = value }
     }
     func accept(_ state: DeviceState) {
+        connectionMonitorTask?.cancel(); connectionMonitorTask = nil
+        accessReady = true; connectedIdentity = state.identity; activeChannel = .ssh
+        channelSession = nil; channelSummary = nil; connectedWebIdentity = nil
+        mergeChannelStatuses([ConnectionChannelStatus(mode: .ssh, state: .available, message: "SSH и устройство проверены")])
+        connectedIMEI = state.imeis[0]
         currentIMEI1 = state.imeis[0]; currentIMEI2 = state.imeis[1]
         firmware = state.identity.firmwareHash == ModemEngine.firmwareHash ? "CN_ZTE_MU5250V1.0.0B31" : "Непроверенная прошивка"; connected = true
     }
-    func perform(_ work: @escaping @Sendable (ModemEngine) throws -> DeviceState?) {
-        guard !busy else { return }
+    func acceptIMEIRead(_ state: DeviceState) throws {
+        try require(state.imeis.count == 2, "Модем не вернул оба IMEI")
+        guard connected, let session = channelSession else { accept(state); return }
+        try require(activeChannel == .ssh && session.mode == .ssh && state.identity == connectedIdentity &&
+                    state.identity == session.diagnosticSession?.proof.identity && state.boot == session.diagnosticSession?.proof.bootID,
+                    "Устройство, прошивка или сеанс загрузки изменились во время чтения IMEI")
+        if let connectedIMEI {
+            try require(state.imeis[0] == connectedIMEI, "IMEI выбранного модема изменился. Проверьте подключение заново.")
+        }
+        // A read does not replace the verified session, its monitor, or any
+        // other section. Mutations use accept(_:) and rehydrate after reboot.
+        currentIMEI1 = state.imeis[0]; currentIMEI2 = state.imeis[1]
+    }
+    func perform(continuingIMEIOperation: Bool = false, _ work: @escaping @Sendable (ModemEngine) throws -> DeviceState?) {
+        guard !busy && !terminalActive && !systemRestorePending && permitsSSHOperations else { return }
         let config = connection
+        // A pending IMEI transaction may have changed IMEI and rebooted already.
+        // Its journal checks the intended device and the acknowledged progress.
+        let target = continuingIMEIOperation ? SSHSelectionContext(identity: connectedIdentity, imei: nil, session: nil) : sshSelectionContext
         do { try config.validate(); try secureDirectory(storage); try saveJSON(config, storage.appendingPathComponent("connection.json")) }
         catch { append(error.localizedDescription); return }
         busy = true; progress = 0; imeiCheckResult = ""
         let root = storage, assets = resources
         operationTask = Task { [weak self] in
             guard let self else { return }
+            var receivedState = false
             do {
                 let state = try await Task.detached(priority: .userInitiated) { [weak self] () throws -> DeviceState? in
                     let engine = try ModemEngine(root: root, resources: assets, connection: config) { [weak self] message, value in
                         Task { @MainActor [weak self] in self?.append(message, progress: value) }
                     }
-                    return try engine.locked { try work(engine) }
+                    return try engine.locked { try target.verify(engine); return try work(engine) }
                 }.value
-                if let state { accept(state) }
+                if let state { accept(state); receivedState = true }
             } catch {
                 append("Остановлено: " + error.localizedDescription)
-                connected = false
+                markConnectionUnavailable(error.localizedDescription)
             }
             busy = false; refreshBackups(); operationTask = nil
+            if receivedState { refreshConnectedSections() }
         }
     }
-    func connect() { connect(readIMEIOnly: false) }
+    func connect() {
+        guard !busy else { return }
+        // The connection button always negotiates SSH, then USB ADB. Switching
+        // a stored legacy preference must not discard a local launcher draft.
+        if connectionMode != .automatic {
+            connectionMode = .automatic
+            do { try secureDirectory(storage); try saveJSON(connectionMode, storage.appendingPathComponent("connection-mode.json")) }
+            catch { append("Не удалось сохранить способ подключения: " + error.localizedDescription); return }
+        }
+        connectPreferredChannel()
+    }
     func readIMEI() { connect(readIMEIOnly: true) }
     private func connect(readIMEIOnly: Bool) {
-        if !readIMEIOnly && !webPassword.isEmpty { setup(); return }
-        guard !busy else { return }
+        guard !busy && !terminalActive && permitsSSHOperations else { append("Для чтения NV/IMEI выберите SSH или подготовьте SSH-доступ."); return }
         let config = connection, root = storage, assets = resources
+        let target = sshSelectionContext
         do { try config.validate(); try secureDirectory(storage); try saveJSON(config, storage.appendingPathComponent("connection.json")) }
         catch { append(error.localizedDescription); return }
-        busy = true; progress = 0; modemInformation = nil
+        busy = true; progress = 0
         operationTask = Task { [weak self] in
             guard let self else { return }
             do {
@@ -190,46 +279,63 @@ import AppKit
                     let engine = try ModemEngine(root: root, resources: assets, connection: config) { [weak self] text, progress in
                         Task { @MainActor [weak self] in self?.append(text, progress: progress) }
                     }
-                    return try engine.locked { try engine.inspect() }
+                    return try engine.locked {
+                        try target.verify(engine)
+                        let state = try engine.inspect()
+                        try target.verify(engine)
+                        return state
+                    }
                 }.value
-                accept(state)
-            } catch { connected = false; append("Остановлено: " + error.localizedDescription) }
+                try acceptIMEIRead(state)
+            } catch { markConnectionUnavailable(error.localizedDescription); append("Остановлено: " + error.localizedDescription) }
             busy = false; refreshBackups(); operationTask = nil
-            if connected { refreshModemInformation() }
         }
     }
     func setup(targets: [String]? = nil) {
-        guard !busy else { return }
+        guard !busy && !terminalActive && !systemRestorePending && permitsSSHOperations else { return }
         guard !webPassword.isEmpty else { append("Введите пароль веб-интерфейса для первоначальной настройки"); return }
+        guard !agentPassword.isEmpty else { append("Введите отдельный пароль агента для подготовки SSH"); return }
         guard !backupSuffix.isEmpty else { append("Введите ключ расшифровки бэкапа (backup-key suffix)"); return }
-        let password = webPassword, suffix = backupSuffix; webPassword = ""; backupSuffix = ""
+        let password = webPassword, agentSecret = agentPassword, suffix = backupSuffix; webPassword = ""; agentPassword = ""; backupSuffix = ""
         let config = connection, root = storage, assets = resources
+        let expectedIdentity = connectedIdentity, expectedIMEI = connectedIMEI ?? channelSummary?.primaryIMEI
         busy = true; progress = 0
         operationTask = Task { [weak self] in
             guard let self else { return }
             do {
                 let result = try await Task.detached(priority: .userInitiated) { [weak self] in
-                    let installer = try OnboardingEngine(root: root, resources: assets, connection: config, update: { [weak self] message,value in
+                    let installer = try OnboardingEngine(root: root, resources: assets, connection: config, backupSuffix: suffix, update: { [weak self] message,value in
                         Task { @MainActor [weak self] in self?.append(message, progress: value) }
                     })
-                    return try installer.run(password: password, backupSuffix: suffix)
+                    return try installer.run(webPassword: password, agentPassword: agentSecret, expectedIdentity: expectedIdentity, expectedIMEI: expectedIMEI)
                 }.value
                 keyPath = result.connection.keyPath; knownHostsPath = result.connection.knownHostsPath; port = result.connection.port
                 try saveJSON(result.connection, root.appendingPathComponent("connection.json"))
-                accept(result.state)
-                if let targets, targets != result.state.imeis {
+                backupSuffix = result.suffix; accessReady = true; connectedIdentity = result.identity
+                if let state = result.state { accept(state) }
+                else {
+                    connected = false; currentIMEI1 = ""; currentIMEI2 = ""; firmware = result.firmware
+                    modemInformation = nil; applicationInventory = nil; accessState = nil
+                    agentInstallationStatus = nil; screenLocalizationStatus = nil; ttlStatus = nil
+                    vpnInspection = nil; vpnError = ""; sshAccountsLoaded = false; sshAccounts = []
+                    diagnosticReport = nil; diagnosticText = ""; selectedDiagnostic = "system.log"
+                    append("SSH и агент подготовлены. Совместимость изменения IMEI на этой прошивке не проверена; доступна диагностика.")
+                    if targets != nil { append("Автоматическая смена IMEI после подготовки этой прошивки не выполняется.") }
+                }
+                if let targets, let preparedState = result.state, targets != preparedState.imeis {
                     let connection = result.connection
+                    let target = SSHSelectionContext(identity: result.identity, imei: preparedState.imeis[0], session: nil)
                     let state = try await Task.detached(priority: .userInitiated) { [weak self] in
                         let engine = try ModemEngine(root: root, resources: assets, connection: connection) { [weak self] message,value in
                             Task { @MainActor [weak self] in self?.append(message, progress: value) }
                         }
-                        return try engine.locked { try engine.begin(targets: targets) }
+                        return try engine.locked { try target.verify(engine); return try engine.begin(targets: targets) }
                     }.value
                     accept(state)
                 }
-            } catch { connected = false; append("Остановлено: " + error.localizedDescription) }
+            } catch { markConnectionUnavailable(error.localizedDescription); append("Остановлено: " + error.localizedDescription) }
             busy = false; refreshBackups(); operationTask = nil
-            if connected { refreshModemInformation() }
+            if connected { refreshConnectedSections() }
         }
     }
     func backup() { perform { engine in let state = try engine.inspect(); _ = try engine.makeBackup(state); engine.update("Бэкап сохранён; контрольные суммы совпали.", 1); return state } }
@@ -243,7 +349,7 @@ import AppKit
         guard !pendingOperation && !setupPending, let item = backups.first(where: { $0.id == selectedBackupID }) else { return }
         perform { try $0.begin(targets: nil, restore: item.url) }
     }
-    func resume() { guard pendingOperation else { return }; perform { try $0.resume() } }
+    func resume() { guard pendingOperation else { return }; perform(continuingIMEIOperation: true) { try $0.resume() } }
     func refreshSSHAccounts() { manageSSH(username: nil, password: nil) }
     func createSSHAccount() {
         guard canManage && !sshRecoveryPending else { return }
@@ -255,11 +361,14 @@ import AppKit
     private func manageSSH(username: String?, password: String?) {
         guard canManage else { return }
         let config = connection, root = storage, assets = resources
+        let target = sshSelectionContext
         busy = true; progress = 0
         operationTask = Task { [weak self] in
             guard let self else { return }
             do {
                 let result = try await Task.detached(priority: .userInitiated) { [weak self] in
+                    let verifier = try ModemEngine(root: root, resources: assets, connection: config)
+                    try target.verify(verifier)
                     let manager = try SSHAccountManager(root: root, resources: assets, connection: config) { [weak self] message, value in
                         Task { @MainActor [weak self] in self?.append(message, progress: value) }
                     }
@@ -296,8 +405,10 @@ import AppKit
     private func manageApplications(action: String, package: String = "", password: String = "") {
         guard canManage else { return }
         let config = connection, root = storage, assets = resources
+        let target = sshSelectionContext
         busy = true; progress = 0
         if action == "preview" { packagePreview = ""; packagePreviewName = "" }
+        if action == "inventory" { applicationsError = "" }
         operationTask = Task { [weak self] in
             guard let self else { return }
             do {
@@ -306,6 +417,7 @@ import AppKit
                         Task { @MainActor [weak self] in self?.append(message, progress: value) }
                     }
                     return try engine.locked {
+                        try target.verify(engine)
                         for file in ["pending.json", "setup-pending.json"] {
                             try require(!FileManager.default.fileExists(atPath: root.appendingPathComponent(file).path), "Сначала завершите настройку или смену IMEI")
                         }
@@ -320,13 +432,19 @@ import AppKit
                         case "start-ssclash": message = try manager.startSSClash()
                         default: message = "Список приложений и место для установки обновлены"
                         }
-                        return (try manager.inventory(), message)
+                        return (try action == "inventory" ? manager.inventoryWithManagedApps() : manager.inventory(), message)
                     }
                 }.value
-                applicationInventory = result.0
+                acceptApplicationInventory(result.0)
                 if action == "preview" { packagePreview = result.1; packagePreviewName = package; append("Результат проверки пакета получен", progress: 1) }
                 else { append(result.1, progress: 1) }
-            } catch { append("Приложения: " + error.localizedDescription) }
+            } catch {
+                if action == "inventory" {
+                    applicationInventory = nil; diagnosticToolsStatus = nil; diagnosticToolsPlan = nil
+                    experimentalOpkgStatus = nil; applicationsError = ActivityJournal.redact(error.localizedDescription)
+                }
+                append("Приложения: " + error.localizedDescription)
+            }
             busy = false; refreshBackups(); operationTask = nil
         }
     }
@@ -336,6 +454,7 @@ import AppKit
     private func manageScreenLocalization(_ action: ScreenLocalizationAction) {
         guard canManage else { return }
         let config = connection, root = storage, assets = resources
+        let target = sshSelectionContext
         busy = true; progress = 0
         operationTask = Task { [weak self] in
             guard let self else { return }
@@ -344,7 +463,7 @@ import AppKit
                     let engine = try ModemEngine(root: root, resources: assets, connection: config) { [weak self] message, value in
                         Task { @MainActor [weak self] in self?.append(message, progress: value) }
                     }
-                    return try engine.locked { try ScreenLocalization(engine: engine).perform(action) }
+                    return try engine.locked { try target.verify(engine); return try ScreenLocalization(engine: engine).perform(action) }
                 }.value
                 screenLocalizationStatus = result
                 append(result.summary, progress: 1)
@@ -367,6 +486,7 @@ import AppKit
     private func manageTTLSettings(configuration: TTLConfiguration?) {
         guard canManage else { return }
         let config = connection, root = storage, assets = resources
+        let target = sshSelectionContext
         busy = true; progress = 0
         operationTask = Task { [weak self] in
             guard let self else { return }
@@ -375,7 +495,7 @@ import AppKit
                     let engine = try ModemEngine(root: root, resources: assets, connection: config) { [weak self] message, value in
                         Task { @MainActor [weak self] in self?.append(message, progress: value) }
                     }
-                    return try engine.locked { try TTLSettingsManager(engine: engine).perform(configuration: configuration) }
+                    return try engine.locked { try target.verify(engine); return try TTLSettingsManager(engine: engine).perform(configuration: configuration) }
                 }.value
                 ttlStatus = result
                 if result.state != .error && result.state != .unsupported {
@@ -420,8 +540,8 @@ import AppKit
         if selectedBackupID == nil || !backups.contains(where: { $0.id == selectedBackupID }) { selectedBackupID = backups.first?.id }
     }
     func revealBackups() { try? secureDirectory(storage.appendingPathComponent("Backups")); NSWorkspace.shared.open(storage.appendingPathComponent("Backups")) }
-    func chooseKey() { let p = NSOpenPanel(); p.title = "Закрытый SSH-ключ установленного агента"; p.canChooseDirectories = false; p.showsHiddenFiles = true; if p.runModal() == .OK, let url = p.url { keyPath = url.path } }
-    func chooseKnownHosts() { let p = NSOpenPanel(); p.title = "Файл с проверенным ключом SSH-сервера модема"; p.canChooseDirectories = false; p.showsHiddenFiles = true; if p.runModal() == .OK, let url = p.url { knownHostsPath = url.path } }
+    func chooseKey() { let p = NSOpenPanel(); p.title = "Закрытый SSH-ключ установленного агента"; p.canChooseDirectories = false; p.showsHiddenFiles = true; if p.runModal() == .OK, let url = p.url { keyPath = url.path; invalidateChannelConnection(clearIdentity: false) } }
+    func chooseKnownHosts() { let p = NSOpenPanel(); p.title = "Файл с проверенным ключом SSH-сервера модема"; p.canChooseDirectories = false; p.showsHiddenFiles = true; if p.runModal() == .OK, let url = p.url { knownHostsPath = url.path; invalidateChannelConnection(clearIdentity: false) } }
     func importBackup() {
         guard !busy && !pendingOperation else { return }
         let p = NSOpenPanel(); p.title = "Папка бэкапа приложения или исходного IMEI-бэкапа проекта"; p.canChooseDirectories = true; p.canChooseFiles = false

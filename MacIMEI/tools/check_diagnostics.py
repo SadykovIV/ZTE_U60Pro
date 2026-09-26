@@ -5,10 +5,10 @@ import concurrent.futures
 import subprocess
 import sys
 ROOT = Path(__file__).resolve().parents[1]
-NAMES = sys.argv[1:] or ['DiagnosticArchiveTests', 'AgentInstallationTests', 'ManagementInformationTests',
-                        'OnboardingTests', 'DeviceBackupsTests', 'AccessManagementTests', 'TTLSettingsManagerTests']
+NAMES = sys.argv[1:] or ['ModemTerminalTests', 'VPNSettingsTests', 'ModemHostToolsTests', 'OpkgConsoleTests', 'ExperimentalOpkgTests', 'DiagnosticToolsTests', 'ModemApplicationsTests', 'ModemDisplayTests', 'SSHSelectionContextTests', 'ConnectionRoutingTests', 'ConnectionOverviewTests', 'AgentAccessClientTests', 'ConnectionDiagnosticsTests', 'DiagnosticArchiveTests', 'ADBDiagnosticsTests', 'ADBTransportAuditTests', 'AgentInstallationTests', 'ManagementInformationTests',
+                        'OnboardingTests', 'DeviceBackupsTests', 'SystemBackupsTests', 'AccessManagementTests', 'TTLSettingsManagerTests']
 SOURCES = [str(p) for p in sorted((ROOT / 'Sources').glob('*.swift'))
-           if not p.name.startswith(('UI', 'AppModel')) and p.name != 'Main.swift']
+           if (not p.name.startswith(('UI', 'AppModel')) or p.name == 'AppModelSSHTarget.swift') and p.name != 'Main.swift']
 OUT = ROOT / '.build' / 'verification'
 OUT.mkdir(parents=True, exist_ok=True)
 def run(name):

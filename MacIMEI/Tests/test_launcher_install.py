@@ -17,7 +17,7 @@ class LauncherInstallTests(unittest.TestCase):
   self.root=self.data/'zte-launcher';self.transaction=self.data/'zte-launcher-update'
   self.bin=self.base/'bin';self.bin.mkdir()
   self.command('stat',f'''case "$2" in
- %u) echo {os.getuid()};; %a) /usr/bin/stat -f %Lp "$3";; %u:%a) printf '{os.getuid()}:';/usr/bin/stat -f %Lp "$3";; *) exit 1;; esac\n''')
+ %u) echo {os.getuid()};; %a) /usr/bin/stat -f %Lp "$3";; %u:%a) printf '{os.getuid()}:';/usr/bin/stat -f %Lp "$3";; %u:%a:%h) printf '{os.getuid()}:';/usr/bin/stat -f %Lp:%l "$3";; *) exit 1;; esac\n''')
   self.command('sha256sum','exec /usr/bin/shasum -a 256 "$@"\n')
   self.command('sync',':\n')
   self.command('sh','''case "$1" in */launcher-start.sh) [ "${FAIL_START:-0}" = 0 ];exit $?;; *) exec /bin/sh "$@";; esac\n''')
@@ -25,7 +25,7 @@ class LauncherInstallTests(unittest.TestCase):
    shutil.copyfile(SRC/name,self.stage/name)
   script=(SRC/'install-launcher.sh').read_text()
   for old,new in [('/data',str(self.data)),('/etc',str(self.etc)),('/sys/block/mmcblk0/device/cid',str(self.cid)),('/firmware/image/modem.b16',str(self.firmware)),('/tmp/zte-imei-app.lock',str(self.lock)),('/tmp/zte-launcher-trial/supervisor',str(self.base/'trial')),('/tmp/zte-vpn-screen',str(self.base/'screen'))]:script=script.replace(old,new)
-  script=script.replace('= 0:700',f'= {os.getuid()}:700').replace('stat -c %u \"$dir\")\" = 0',f'stat -c %u \"$dir\")\" = {os.getuid()}').replace('stat -c %u '+str(self.rc)+')\" = 0',f'stat -c %u {self.rc})\" = {os.getuid()}')
+  script=script.replace('= 0:700',f'= {os.getuid()}:700').replace('= 0:600',f'= {os.getuid()}:600').replace('stat -c %u \"$dir\")\" = 0',f'stat -c %u \"$dir\")\" = {os.getuid()}').replace('stat -c %u '+str(self.rc)+')\" = 0',f'stat -c %u {self.rc})\" = {os.getuid()}')
   script=script.replace('604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263',sha(self.firmware)).replace('a30da6481637f1fd94e037373d406e574be7e722937a4965325086740be67e35',sha(self.stock))
   # Service command execution is stubbed, its installed bytes still match the signed payload.
   script=script.replace(str(self.etc)+'/init.d/zte_launcher stop', 'true')
@@ -61,4 +61,32 @@ exec /bin/mv "$@"\n''')
   (self.stage/'launcher.so').write_bytes(b'bad')
   self.assertNotEqual(self.run_install().returncode,0)
   self.assertEqual(self.rc.read_bytes(),self.before);self.assertFalse(self.root.exists())
+ def test_layout_preserved_by_upgrade_and_rollback(self):
+  self.assert_success(self.run_install())
+  layout=self.root/'info-layout.conf';content=b'ZTE_INFO_LAYOUT_V1\nsignal=1\ncpu=0\nnetwork=1\ncarriers=1\ncpu_temp=0\nmodem_temp=1\nmemory=0\nstorage=0\nuptime=1\n'
+  layout.write_bytes(content);layout.chmod(0o600)
+  self.assert_success(self.run_install());self.assertEqual(layout.read_bytes(),content)
+  self.assertNotEqual(self.run_install(FAIL_START='1').returncode,0)
+  self.assertEqual(layout.read_bytes(),content);self.assertEqual(layout.stat().st_mode & 0o777,0o600)
+ def test_v2_tile_style_and_new_metrics_survive_upgrade_and_rollback(self):
+  self.assert_success(self.run_install())
+  layout=self.root/'info-layout.conf'
+  content=b'ZTE_INFO_LAYOUT_V2\nstyle=tiles\nbattery=1\nsinr=1\nrsrq=1\nsignal=1\ncpu=0\nnetwork=1\ncarriers=1\ncpu_temp=0\nmodem_temp=1\nmemory=0\nstorage=0\nuptime=1\n'
+  layout.write_bytes(content);layout.chmod(0o600)
+  self.assert_success(self.run_install());self.assertEqual(layout.read_bytes(),content)
+  self.assertNotEqual(self.run_install(FAIL_START='1').returncode,0)
+  self.assertEqual(layout.read_bytes(),content);self.assertEqual(layout.stat().st_mode & 0o777,0o600)
+ def test_unsafe_layout_rejected_before_swap(self):
+  self.assert_success(self.run_install());layout=self.root/'info-layout.conf'
+  outside=self.base/'outside';outside.write_text('outside');layout.symlink_to(outside)
+  self.assertNotEqual(self.run_install().returncode,0);self.assertTrue(layout.is_symlink())
+  self.assertEqual(outside.read_text(),'outside');self.assertFalse(self.transaction.exists())
+  layout.unlink();layout.write_bytes(b'x'*513);layout.chmod(0o600)
+  self.assertNotEqual(self.run_install().returncode,0);self.assertFalse(self.transaction.exists())
+  layout.write_text('invalid but private');layout.chmod(0o644)
+  self.assertNotEqual(self.run_install().returncode,0);self.assertFalse(self.transaction.exists())
+  layout.chmod(0o600);self.assert_success(self.run_install())
+  self.assertEqual(layout.read_text(),'invalid but private')
+  os.link(layout,self.base/'hardlink')
+  self.assertNotEqual(self.run_install().returncode,0);self.assertFalse(self.transaction.exists())
 if __name__=='__main__':unittest.main()

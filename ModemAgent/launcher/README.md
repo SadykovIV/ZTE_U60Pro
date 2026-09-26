@@ -57,3 +57,15 @@ Installer tests cover first install, repeat install, failure rollback, a killed
 process during directory replacement, and rejected corrupted payloads. Device
 checks must additionally cover gestures, sleep/wake, original settings, profile
 confirmation, network controls, and startup after reboot.
+
+## Information layout in 1.19.0
+
+The information page supports a vertically scrollable tile grid or list, ordered
+metric selection and persistent on-device configuration. Available metrics cover
+CPU load, signal and radio technology, active carriers, CPU/modem temperatures,
+memory, storage, uptime, battery, RSRQ and SINR. Unsupported or unavailable values
+are rendered as unavailable rather than guessed. The VPN page shows the actual
+Guest Wi-Fi SSID reported by the controller.
+
+Host-side parser, layout and renderer fixtures live in `tests/`; they use synthetic
+values and do not require stock firmware files or a modem.

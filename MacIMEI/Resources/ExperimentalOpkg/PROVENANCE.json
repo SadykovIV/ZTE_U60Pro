@@ -1,0 +1,69 @@
+{
+  "packages": [
+    {
+      "name": "opkg",
+      "version": "2022-02-24-d038e5b6-2",
+      "license": "GPL-2.0",
+      "sha256": "f836e2b78ccee4afcaf6dbfe3ddba18cd9242410c19db5c8f861ce7d7d067a02",
+      "url": "https://downloads.openwrt.org/releases/23.05.4/packages/aarch64_cortex-a53/base/opkg_2022-02-24-d038e5b6-2_aarch64_cortex-a53.ipk"
+    },
+    {
+      "name": "busybox",
+      "version": "1.36.1-1",
+      "license": "GPL-2.0",
+      "sha256": "c74d9617ef8e126c6b4440cfc2167bdb4ca5261b41fbd4558b498a74d43a4cfb",
+      "url": "https://downloads.openwrt.org/releases/23.05.4/packages/aarch64_cortex-a53/base/busybox_1.36.1-1_aarch64_cortex-a53.ipk"
+    },
+    {
+      "name": "libubox20230523",
+      "version": "2023-05-23-75a3b870-1",
+      "license": "ISC",
+      "sha256": "2b0a9ae137e87c169fdb78086dc37d27ff365800665ecc392fc2bbcf830e3146",
+      "url": "https://downloads.openwrt.org/releases/23.05.4/packages/aarch64_cortex-a53/base/libubox20230523_2023-05-23-75a3b870-1_aarch64_cortex-a53.ipk"
+    },
+    {
+      "name": "usign",
+      "version": "2020-05-23-f1f65026-1",
+      "license": "ISC",
+      "sha256": "a454ef18cc00039f63fe943088a7bcd18f9e630a35ff3b7683f1211ee4c609cb",
+      "url": "https://downloads.openwrt.org/releases/23.05.4/packages/aarch64_cortex-a53/base/usign_2020-05-23-f1f65026-1_aarch64_cortex-a53.ipk"
+    },
+    {
+      "name": "uclient-fetch",
+      "version": "2023-04-13-007d9454-1",
+      "license": "ISC",
+      "sha256": "454ef737018fd77b81b8c1dc186abeb0963b44a6cb9585023a082828afb67ac8",
+      "url": "https://downloads.openwrt.org/releases/23.05.4/packages/aarch64_cortex-a53/base/uclient-fetch_2023-04-13-007d9454-1_aarch64_cortex-a53.ipk"
+    },
+    {
+      "name": "libuclient20201210",
+      "version": "2023-04-13-007d9454-1",
+      "license": "ISC",
+      "sha256": "234a93d7785133b80bf089757c0790a7a19adf4f8829ce124b716d14a9897a05",
+      "url": "https://downloads.openwrt.org/releases/23.05.4/packages/aarch64_cortex-a53/base/libuclient20201210_2023-04-13-007d9454-1_aarch64_cortex-a53.ipk"
+    },
+    {
+      "name": "libustream-mbedtls20201210",
+      "version": "2023-02-25-498f6e26-1",
+      "license": "ISC",
+      "sha256": "3ab3288ab979918bd626223db745d64326afce7a2044df37e497a1de20539133",
+      "url": "https://downloads.openwrt.org/releases/23.05.4/packages/aarch64_cortex-a53/base/libustream-mbedtls20201210_2023-02-25-498f6e26-1_aarch64_cortex-a53.ipk"
+    },
+    {
+      "name": "libmbedtls12",
+      "version": "2.28.10-1",
+      "license": "GPL-2.0-or-later",
+      "sha256": "1f162e4f6303253f5e7423098e1111fe156a509438ad2d3e9dcf022037acfa6f",
+      "url": "https://downloads.openwrt.org/releases/23.05.4/packages/aarch64_cortex-a53/base/libmbedtls12_2.28.10-1_aarch64_cortex-a53.ipk"
+    },
+    {
+      "name": "ca-bundle",
+      "version": "20241223-1",
+      "license": "GPL-2.0-or-later MPL-2.0",
+      "sha256": "9cfd98caa9192855bae5ba271abd11b1e75f902d77ffc7c434d38a78d3a77beb",
+      "url": "https://downloads.openwrt.org/releases/23.05.4/packages/aarch64_cortex-a53/base/ca-bundle_20241223-1_all.ipk"
+    }
+  ],
+  "feedKeySHA256": "d7ac10f9ed1b38033855f3d27c9327d558444fca804c685b17d9dcfb0648228f",
+  "muslSHA256": "293be7050415dac10c0ac4595764e2d9d79f8c5e42f43095acbfbfef42f2f6a9"
+}

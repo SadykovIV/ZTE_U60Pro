@@ -24,6 +24,7 @@ run(['cargo','build','--release','--target','aarch64-unknown-linux-musl','-p','z
 if not (ROOT/'ModemAgent/web-app/node_modules').is_dir():run(['npm','ci'],ROOT/'ModemAgent/web-app')
 run(['npm','run','build'],ROOT/'ModemAgent/web-app')
 run([sys.executable,'MacIMEI/DeviceHelpers/build.py'])
+run([sys.executable,'MacIMEI/tools/build_host_tools.py'])
 run([sys.executable,'MacIMEI/tools/package_vpn.py'])
 # Refresh every resource manifest after all generated resources and notices settle.
 for folder in RES.iterdir():

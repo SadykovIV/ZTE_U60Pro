@@ -1,0 +1,16 @@
+{
+  "name": "ZTE U60 Pro Dashboard",
+  "short_name": "U60 Pro",
+  "start_url": "./",
+  "display": "standalone",
+  "theme_color": "#f9f9fa",
+  "background_color": "#f9f9fa",
+  "icons": [
+    {
+      "src": "favicon.svg?v=2",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

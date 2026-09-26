@@ -1,5 +1,25 @@
 import Foundation
 
+/// Only an explicit password rejection is an invalid password. Transport,
+/// protocol and session failures must not ask the user to change credentials.
+enum ModemWebError: Error, LocalizedError, Equatable {
+    case passwordRequired
+    case invalidPassword
+    case authenticationRejected(code: Int)
+    case malformedResponse(String)
+    case rpcRejected(method: String, code: Int)
+
+    var errorDescription: String? {
+        switch self {
+        case .passwordRequired: return "Введите пароль веб-интерфейса"
+        case .invalidPassword: return "Вход отклонён: неверный пароль веб-интерфейса."
+        case .authenticationRejected(let code): return "Веб-интерфейс отклонил вход (код \(code))."
+        case .malformedResponse(let detail): return "Некорректный ответ веб-интерфейса: " + detail
+        case .rpcRejected(let method, let code): return "Веб-интерфейс отклонил операцию \(method) (код \(code))."
+        }
+    }
+}
+
 struct WebIdentity: Codable, Equatable, Sendable {
     var imei: String
     var firmware: String
@@ -76,19 +96,30 @@ final class ModemWebClient {
     var session = String(repeating: "0", count: 32)
     var cookie: String?
     init(host: String, transport: WebTransport? = nil) throws { self.transport = try transport ?? HTTPWebTransport(host: host) }
+    private func statusCode(_ value: Any?) -> Int? {
+        if let text = value as? String { return Int(text) }
+        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+        return Int(number.stringValue)
+    }
     private func call(_ object: String, _ method: String, _ args: [String: Any] = [:]) throws -> [String: Any] {
         let payload: [[String: Any]] = [["jsonrpc": "2.0", "id": 1, "method": "call", "params": [session, object, method, args]]]
         let reply = try transport.request(path: "/ubus/", data: JSONSerialization.data(withJSONObject: payload), contentType: "application/json", cookie: cookie)
-        guard let array = try JSONSerialization.jsonObject(with: reply.data) as? [[String: Any]], array.count == 1,
-              let result = array[0]["result"] as? [Any], let code = result.first as? Int, code == 0 else {
-            throw IMEIError.message("Веб-интерфейс отклонил операцию \(method)")
+        guard let array = (try? JSONSerialization.jsonObject(with: reply.data)) as? [[String: Any]], array.count == 1,
+              let result = array[0]["result"] as? [Any], let code = statusCode(result.first) else {
+            throw ModemWebError.malformedResponse("не получен результат \(method)")
+        }
+        guard code == 0 else { throw ModemWebError.rpcRejected(method: method, code: code) }
+        guard result.count == 1 || (result.count == 2 && result[1] is [String: Any]) else {
+            throw ModemWebError.malformedResponse("неверные данные \(method)")
         }
         if let setCookie = reply.headers["set-cookie"] {
             for part in setCookie.components(separatedBy: ";") {
                 let value = part.trimmingCharacters(in: .whitespaces)
                 if value.hasPrefix("webtoken=") {
                     let token = value.dropFirst(9).trimmingCharacters(in: CharacterSet(charactersIn: "\""))
-                    try require(!token.isEmpty && token.utf8.allSatisfy { $0 >= 33 && $0 <= 126 && $0 != 34 && $0 != 59 }, "Неверный токен веб-сессии")
+                    guard !token.isEmpty && token.utf8.allSatisfy({ $0 >= 33 && $0 <= 126 && $0 != 34 && $0 != 59 }) else {
+                        throw ModemWebError.malformedResponse("неверный токен веб-сессии")
+                    }
                     cookie = token
                 }
             }
@@ -96,18 +127,23 @@ final class ModemWebClient {
         return result.count > 1 ? (result[1] as? [String: Any] ?? [:]) : [:]
     }
     func login(password: String) throws {
-        try require(!password.isEmpty && password.utf8.count <= 256 && !password.contains("\0"), "Введите пароль веб-интерфейса")
         session = String(repeating: "0", count: 32); cookie = nil
+        var authenticated = false
+        defer { if !authenticated { session = String(repeating: "0", count: 32); cookie = nil } }
+        guard !password.isEmpty else { throw ModemWebError.passwordRequired }
+        try require(password.utf8.count <= 256 && !password.contains("\0"), "Пароль веб-интерфейса имеет недопустимую длину или содержит нулевой символ")
         let info = try call("zwrt_web", "web_login_info")
-        guard let salt = info["zte_web_sault"] as? String, !salt.isEmpty, salt.utf8.count <= 1024 else { throw IMEIError.message("Не получен challenge веб-интерфейса") }
+        guard let salt = info["zte_web_sault"] as? String, !salt.isEmpty, salt.utf8.count <= 1024 else { throw ModemWebError.malformedResponse("не получен challenge веб-интерфейса") }
         let first = digest(Data(password.utf8)).uppercased()
         let hash = digest(Data((first + salt).utf8)).uppercased()
         let result = try call("zwrt_web", "web_login", ["password": hash])
-        let accepted = (result["result"] as? Int) == 0 || (result["result"] as? String) == "0"
-        guard accepted, let id = result["ubus_rpc_session"] as? String, id.count == 32, id.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) || (65...70).contains($0) }), id != String(repeating: "0", count: 32), cookie != nil else {
-            throw IMEIError.message("Вход отклонён. Проверьте пароль веб-интерфейса.")
+        guard let code = statusCode(result["result"]) else { throw ModemWebError.malformedResponse("не получен код входа") }
+        if code == 1 { throw ModemWebError.invalidPassword }
+        guard code == 0 else { throw ModemWebError.authenticationRejected(code: code) }
+        guard let id = result["ubus_rpc_session"] as? String, id.count == 32, id.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) || (65...70).contains($0) }), id != String(repeating: "0", count: 32), cookie != nil else {
+            throw ModemWebError.malformedResponse("вход подтверждён, но не получена действительная веб-сессия")
         }
-        session = id
+        session = id; authenticated = true
     }
     func identity(skipFirmwareCheck: Bool = false) throws -> WebIdentity { try WebIdentity(call("zwrt_web", "device_info"), skipFirmwareCheck: skipFirmwareCheck) }
     func freshBackup() throws -> Data {

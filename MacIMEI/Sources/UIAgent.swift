@@ -12,7 +12,7 @@ extension ContentView {
                 }
                 if let state = model.agentInstallationStatus {
                     informationRow("Процесс", state.running ? "Запущен" : "Не запущен")
-                    informationRow("Файл", state.hash == "absent" ? "Не установлен" : state.hash == VPNSettingsManager.agentHash ? "Из комплекта приложения · 2.7.0" : "Другая сборка / свой агент")
+                    informationRow("Файл", state.hash == "absent" ? "Не установлен" : state.hash == VPNSettingsManager.agentHash ? "Из комплекта приложения · 2.8.0" : "Другая сборка / свой агент")
                     informationRow("SHA256", state.hash)
                     informationRow("Сценарий запуска", state.startupReady ? "Сценарий запуска доступен" : "Требуется автоматическая подготовка")
                     if state.recoveryPending { StudioNote(symbol: "arrow.uturn.backward", text: "Есть незавершённая замена. Сначала восстановите предыдущий агент.") }

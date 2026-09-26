@@ -15,6 +15,12 @@
 | network.stock | [OpenWrt netifd init script](https://github.com/openwrt/openwrt/blob/v23.05.4/package/network/config/netifd/files/etc/init.d/network), вариант штатной B31 | GPL-2.0, текст в licenses/OpenWrt-GPL-2.0.txt. Это исходный скрипт службы, не конфигурация пользователя |
 | React, React DOM, scheduler | [React](https://github.com/facebook/react); точные версии package-lock.json | MIT; тексты в licenses/ |
 | Rust-библиотеки | Cargo.lock, ссылки и версии в licenses/Rust-dependencies.txt | MIT/Apache/BSD по компонентам; уведомления собраны в том же файле |
+| Диагностические утилиты | htop 3.3.0, mtr 0.95, iperf3 3.17.1, tcpdump 4.99.4; пакеты OpenWrt 23.05.4 | GPL-2.0+ для htop/mtr, BSD для iperf/tcpdump/libpcap; версии, URLs и SHA в Resources/DiagnosticTools/PROVENANCE.json, лицензии в LICENSES.txt |
+| Изолированный opkg | opkg d038e5b6, BusyBox 1.36.1, mbedTLS 2.28.10, ca-bundle 20241223, OpenWrt uclient/usign/libubox | GPL-2.0/GPL-2.0+/MPL/ISC по компонентам; Resources/ExperimentalOpkg/PROVENANCE.json и LICENSES.txt |
+| Библиотеки ARM64 | GCC runtime 12.3.0, musl, ncurses 6.4 | GCC GPL-3.0 + Runtime Library Exception; musl/ncurses MIT. Corresponding sources и точные рецепты в архиве исходников |
+| Windows ADB и OpenSSH | Android platform-tools 37.0.1, Win32-OpenSSH 10.0.0.0p2-Preview | Полные notices и provenance в Windows_x64/Resources/Tools |
+| .NET/Avalonia и C#-зависимости | .NET 10.0.7, Avalonia 11.3.12, SSH.NET 2025.0.0, Skia/HarfBuzz и зависимости | MIT/BSD/Apache и другие лицензии компонентов; Windows_x64/Resources/Licenses, packages.json и NuGet lock-файлы |
+| xterm.js и addon-fit | Точные версии в MacIMEI/Resources/Terminal/PROVENANCE.json | MIT; XTERM-LICENSE.txt и FIT-LICENSE.txt рядом с ресурсами |
 | SSClash-Go v6.4.1 | [Официальный релиз](https://github.com/zerolabnet/SSClash-Go/releases/tag/v6.4.1) | Проприетарное ПО. Бинарник не распространяется; загрузка самим владельцем по явной кнопке. Текст лицензии и third-party notices включены в Resources/Applications |
 
 ## Исходники распространяемых компонентов
@@ -22,17 +28,23 @@
 Mihomo поставляется без изменения официального ELF; его SHA-256:
 `1b315bc038d05f84ee86d232f3c3d2b020b5044e9b971bb8fe215b6e6a2148f3`.
 Соответствующий архив исходников указанного commit включён в
-**Build-dependencies-20260924.tar.gz → sources/mihomo-v1.19.31-source.tar.gz**,
-который доступен рядом с программой на [странице релиза](https://github.com/SadykovIV/ZTE_U60Pro/releases/tag/v1.9.1).
+**Third-party-sources-1.19.0.tar.gz → mihomo-v1.19.31-source.tar.gz**,
+который доступен рядом с программой на [странице релиза](https://github.com/SadykovIV/ZTE_U60Pro/releases/tag/v1.19.0).
 Он также доступен [на сервере upstream](https://codeload.github.com/MetaCubeX/mihomo/tar.gz/ab405bad5beeeac8b003bb01f60f134f6df54471).
 Архив содержит go.mod/go.sum, исходники и Makefile upstream; зависимости и
 инструменты их сборки определены этим проектом. Лицензия GPL относится к
 соответствующему компоненту, а не переименовывает исходники приложения в GPL.
 
-Архив исходников OpenDoas также включён в Build-dependencies. Остальные
-распространяемые бинарники сопровождаются лицензионными уведомлениями и ссылками
-на точные исходные проекты. Зависимости прошивки (libdiag, ubus, musl, UCI, LVGL
-и другие) используются на устройстве и не скопированы из прошивки в дистрибутив.
+В тот же архив включены OpenDoas, htop, mtr, opkg, BusyBox, mbedTLS,
+ca-certificates, GCC runtime, permissive-библиотеки и архивы OpenWrt/build recipes.
+Манифесты фиксируют URL, SHA-256, версии, commit рецептов и SourceDateEpoch
+распространяемых IPK. Feed 23.05 обновлялся после тега 23.05.4: точные версии
+определяются PROVENANCE.json и соответствующими рецептами, а не только тегом
+прошивки. Бит-в-бит воспроизводимость сторонних IPK не заявляется.
+
+Зависимости прошивки (libdiag, ubus, UCI, LVGL и другие) используются на
+устройстве и не скопированы из прошивки. Дополнительные musl/OpenWrt runtime
+получены из открытых исходников/официальных пакетов и размещаются отдельно в `/data`.
 Небольшой патч экранного UI применяется к файлу, считанному с устройства;
 полный файл и штатные шрифты не распространяются. Переводы сохраняют служебные
 идентификаторы и общие надписи штатного UI ZTE.

@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "id": "a05e9efb33b4bffdb6312042cedeaca4c6fae112352abf9743c4c36279148670",
+  "archiveSHA256": "2f4529305333523d916e3588223ed42ce1537562d4e659bd822888deef464577",
+  "archiveBytes": 2214517,
+  "unpackedBytes": 6149122,
+  "fileCount": 52,
+  "versions": {
+    "htop": "3.3.0-1",
+    "iperf3": "3.17.1-4",
+    "libiperf3": "3.17.1-4",
+    "mtr-nojson": "0.95-3",
+    "tcpdump": "4.99.4-1",
+    "libpcap1": "1.10.4-1",
+    "libncurses6": "6.4-2",
+    "terminfo": "6.4-2",
+    "libatomic1": "12.3.0-4",
+    "libgcc1": "12.3.0-4"
+  },
+  "programs": {
+    "htop": "usr/bin/htop",
+    "iperf3": "usr/bin/iperf3",
+    "mtr": "usr/sbin/mtr",
+    "tcpdump": "usr/bin/tcpdump",
+    "mtr-packet": "usr/sbin/mtr-packet"
+  }
+}

@@ -17,7 +17,7 @@ if not archive.exists() or sha(archive)!=meta['sha256']:
   count=0
   while block:=response.read(1024*1024):
    count+=len(block)
-   if count>128*1024*1024:raise SystemExit('Dependency archive exceeds limit')
+   if count>512*1024*1024:raise SystemExit('Dependency archive exceeds limit')
    out.write(block)
  if sha(tmp)!=meta['sha256']:
   tmp.unlink();raise SystemExit('Dependency archive checksum mismatch')
@@ -32,5 +32,5 @@ with tarfile.open(archive,'r:gz') as tar:
   data=tar.extractfile(member).read()
   if hashlib.sha256(data).hexdigest()!=expected:raise SystemExit('Dependency hash mismatch: '+name)
   target=ROOT/name;target.parent.mkdir(parents=True,exist_ok=True)
-  target.write_bytes(data);target.chmod(0o755)
+  target.write_bytes(data);target.chmod(0o755 if member.mode&0o111 else 0o644)
 print('Pinned build dependencies installed')

@@ -1,0 +1,22 @@
+{
+  "OpenDoas": {
+    "version": "6.8.2",
+    "source": "https://github.com/Duncaen/OpenDoas/releases/download/v6.8.2/opendoas-6.8.2.tar.xz",
+    "sourceSHA256": "4e98828056d6266bd8f2c93e6ecf12a63a71dbfd70a5ea99ccd4ab6d0745adf0",
+    "compiler": "aarch64-linux-musl-gcc",
+    "configure": "--host=aarch64-unknown-linux --target=aarch64-unknown-linux --without-pam --with-shadow --without-timestamp --enable-static --prefix=/data/zte-imei-admin --sysconfdir=/etc/zte-imei-admin",
+    "auth": "shadow; password required; no persist; no nopass"
+  },
+  "Dropbear": "Same pinned binary as Onboarding/dropbear; see Onboarding/provenance.json",
+  "Access management": {
+    "revision": "20260923",
+    "newScripts": [
+      "access-services.sh",
+      "delete-ssh-user.sh"
+    ],
+    "profile": "MU5250 B31, CID rechecked",
+    "accountRemoval": "Only app-created UID 50000..59999 with completed creation journal; root-private retained home archive",
+    "serviceControls": "This boot only; verified agent/dashboard/user SSH, protected management SSH, stock WEB and ADB read-only",
+    "tests": "Tests/test_access_management.py and Tests/AccessManagementTests.swift"
+  }
+}

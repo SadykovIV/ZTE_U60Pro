@@ -1,0 +1,1434 @@
+{
+  "schema": 1,
+  "scope": "Only exact members of the verified upstream corresponding-source archives; require member path and file SHA256. Never ignore entire source archives.",
+  "fixtures": [
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/library/certs.c",
+      "sha256": "a11c0dc43dea7addc8efa255bcfebedd2d5f33a78c83342a182598ab8b14f291",
+      "reason": "Upstream Mbed TLS X.509 test certificate/key constants generated from tests/data_files",
+      "evidence": [
+        "mbedtls-2.28.10/library/certs.c",
+        "mbedtls-2.28.10/include/mbedtls/certs.h"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/cli-rsa.key",
+      "sha256": "660d13287799f69599adf0aff1db46ee42b4c492b0f153f620f89a639dcb8f7d",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/cli2.key",
+      "sha256": "f3c47ba835345e9072b0f79628f2d1f539f79749b85afb92bfade5761fbd6757",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/dir-maxpath/00.key",
+      "sha256": "cd88d1232e351058359b9aafa390509951c1a0c6b00b7da285009d910e83ce1d",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/dir-maxpath/01.key",
+      "sha256": "c20a5c6eb77c8cf63543107c06dcdae2b49f01622e2d10ce6dc09e59397dcbeb",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/dir-maxpath/02.key",
+      "sha256": "14e626f8c189a5ff349d8efe35d7c357b75c59c1c267526fcac878743aa53d78",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/dir-maxpath/03.key",
+      "sha256": "a04dcc41508c378372d26098665de22c83a63a76ccd1c2533eebe1bf1b9555a1",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/dir-maxpath/04.key",
+      "sha256": "28befb1d41f11edfff3c447914acf25d2f620009c184ecd75c6a1a120b24f76a",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/dir-maxpath/05.key",
+      "sha256": "39e58ffd6ccad062dcbd4b4e3cb1ac31aa27eb378fea6e302de2785c0becd276",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/dir-maxpath/06.key",
+      "sha256": "4c48922433ed3ecd9df09a530a094eefcf61aed3a979c50c138a260a9fcba808",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/dir-maxpath/07.key",
+      "sha256": "54e16d5b34cef77bbc747ea32cdea3a512ddfd0c97e0a2856f2e9fbb8224d3b2",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/dir-maxpath/08.key",
+      "sha256": "eb9dc2fb50847a846ad4f36e87c8aab98964e3c4cd3cb5a270158a2352022ee8",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/dir-maxpath/09.key",
+      "sha256": "ea99373ba8ef0158a51790aeac4a17fc02929be89a2a41b509c1be7fd6cc7310",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/dir-maxpath/10.key",
+      "sha256": "74414a3cebefd13ab9d5d6a3b0c2895c39f04deedece9e9b564041d448b49a71",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/dir-maxpath/11.key",
+      "sha256": "a969b40ed5608775d422fd77636b57c8ae7f7445aeaee4bc36171d37287d6232",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/dir-maxpath/12.key",
+      "sha256": "86213c8881730842dd39b5beb18eed0bc359576faebfd9a3284e82c9b917985b",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/dir-maxpath/13.key",
+      "sha256": "3adcac5db34bac9243e241cd3d411c408c40c072a0640736e641b2f5770fa22b",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/dir-maxpath/14.key",
+      "sha256": "e2be9d236ea1d90882d8bbb1863544a3e765ac0916870ded784d89a660d35f42",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/dir-maxpath/15.key",
+      "sha256": "25f574ba3a37d6edb1b05352976cea0f8e5d42dd222fe86d30fc640daed78c86",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/dir-maxpath/16.key",
+      "sha256": "f78786f4534f25e2effd19746c481f8c795347eb700bf0584a046354054430e8",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/dir-maxpath/17.key",
+      "sha256": "cc1e209a9cda5fdff62cf61628cdfff437a7301e483ff0bb339c544d6a420b26",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/dir-maxpath/18.key",
+      "sha256": "fc91156511ae0f490825d3c170a2a708f2b0c8107124bc0fa703dd19c12695a6",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/dir-maxpath/19.key",
+      "sha256": "5ceabbe6c1af30a28ec8d0d58a4911ab557304e5fb84a90e7a1cc48a33f576f3",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/dir-maxpath/20.key",
+      "sha256": "a7fc55a3a918fd5b46d9ec2c166a226c361e1e6bc5ac39a33e97c1d664a17715",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/ec_224_prv.pem",
+      "sha256": "2c5f6e9a1466fd74a1ee2eb5f185abe903bbd67633a3bb3425ff951a5a17e181",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/ec_256_long_prv.pem",
+      "sha256": "edbb78411c53e20a480854bd1c55e26668310d1729a0d7ce448138abe51dd763",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/ec_256_prv.pem",
+      "sha256": "0405a70b26333c2555e31ae665c0a5f37c6cd0e38edf5695afe3638743bdd903",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/ec_384_prv.pem",
+      "sha256": "ed3a69ca0c5f4c62fa2c7b64951a11d1378abb72c3a3e439d7e06a9ec82c2075",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/ec_521_prv.pem",
+      "sha256": "ecb4bed1990396b35f4cc0d3e2fa99b4e3876c89bdd05b691e0c02ad4b43b73d",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/ec_521_short_prv.pem",
+      "sha256": "f82aecefacddd06e07012fca5751cdca618487c0b97ade4354e082900cc061c2",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/ec_bp256_prv.pem",
+      "sha256": "0777db4161e8fd9cfcb0833486ea2992f1e173c22b53520e60799a905b05121d",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/ec_bp384_prv.pem",
+      "sha256": "a72bd58d95029d0d6ab68219a29a25f107e235feb0543df7867e28e2a94f881f",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/ec_bp512_prv.pem",
+      "sha256": "9873530d30669de09947d05a9a111a38cd81376e2f97726c42250b958c6a1a0f",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/ec_prv.pk8.pem",
+      "sha256": "c6bbe5affbf9a953c8d2124cb80fb48c2e9344b796d328e8c385a1aea5edde64",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/ec_prv.pk8.pw.pem",
+      "sha256": "d58913cbb587fca417bcbd8c2ec09c858206cee88de3a1351aa8601791066c82",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/ec_prv.pk8nopub.pem",
+      "sha256": "9587d1d0e4c45c1601faa4384e1bd5634a37f4a86ba4fd85fbd7fc85ad110d20",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/ec_prv.pk8nopubparam.pem",
+      "sha256": "729ada4d58b82f741acfe7af2649b456c6b2c9f7297d202b83a0680ba4004685",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/ec_prv.pk8param.pem",
+      "sha256": "609315a12cb3e58ab934a59c30bef3c835e835bc44244fb640d659f66b82dd8f",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/ec_prv.sec1.pem",
+      "sha256": "e4717c4b0e7e29eda161a63f5d778ce42e87e99e2ce8c440d209949f8fa49647",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/ec_prv.sec1.pw.pem",
+      "sha256": "23052547d6b30dfdd3831b5b38c5b11be5bfc90afabe5638b7799a1fc6c67d01",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/format_gen.key",
+      "sha256": "dca1b0916b165817b00f17cca5baabb6cec36da42915d10dc1cfef66e8956c36",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/format_rsa.key",
+      "sha256": "4be0c523a0e7e848d00bfd0f14df939cad57cd23fddbc88f637b8dcef84844d9",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/parse_input/bitstring-in-dn.pem",
+      "sha256": "a56cb4555c1b735454efe2ad7fe080ba9df5df0119aa6b3ba385ff6148ba895e",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa4096_prv.pem",
+      "sha256": "fe1368dfb5816c1697ff7842aa4da44fa0961aac16dea803f7b0b1af922f692f",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa512.key",
+      "sha256": "799d813958afdbab03c10fb91df109f7d7ee0d9affd2282cf050600d50b97d44",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa521.key",
+      "sha256": "4bc698df7312e5ea0a9bda75bc876d16a25a30dbd6d34483b3252ce8224ddf2d",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa522.key",
+      "sha256": "aa458ff31c66c8f7af7c6f07418ac9479bc9aad4d8d1e5128f2d7455ca52eeed",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa528.key",
+      "sha256": "614f9aec7348a481cb5477c47c3bf76d6af8f4a5f21cc875a8efd026c3bdb085",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs1_1024_3des.pem",
+      "sha256": "2c387321062ad20d5eff5ec30ba57cde1b1788253e315cf3fef64d896dc6141b",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs1_1024_aes128.pem",
+      "sha256": "5032455d9ae5bd96fec4a14b409d122101ad3f074a29b6af28f67c7081a82366",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs1_1024_aes192.pem",
+      "sha256": "2628892185635e4f459444f7f5d17dc9f3b0009095d12a11c634bd3a333e4aed",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs1_1024_aes256.pem",
+      "sha256": "5dae5ea1714082b515a073ec930d9ffb3294ca2a12a66d131cfb5b35489aca78",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs1_1024_clear.pem",
+      "sha256": "0112d73365e459106014ed440d6ca6d45f234370939790e21e9267bfb073bdb4",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs1_1024_des.pem",
+      "sha256": "08e9aa7dbf581581131532213ede5f76222efb3c5df3e1d8e9d21f77ffe97be4",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs1_2048_3des.pem",
+      "sha256": "7576eec37b28007c0fecc1023ffc0cdd51c5b0964f9d02aa1955774ba9f06fcb",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs1_2048_aes128.pem",
+      "sha256": "ee8bcbff13d7f58c5bab527d72b793fbf2085a568ea25af446017f214531dd17",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs1_2048_aes192.pem",
+      "sha256": "d24c88836bc1c4cd35734e9fc252ce95f07cf4ef3eb45726ada77b82e3177bc0",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs1_2048_aes256.pem",
+      "sha256": "182681da70e9eeb1d1508ef4746763fcf14da6eebd414bea090717c0f830e52d",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs1_2048_clear.pem",
+      "sha256": "3e79c3cb57eb569c4271f69b90b3f9475b02d32b835c91f29786a02d5c04a510",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs1_2048_des.pem",
+      "sha256": "42183ce524fc60c316f9eac695c30e758d295a0c8013788053c6c43a6ac7fd36",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs1_4096_3des.pem",
+      "sha256": "a5314e0d8e9ae1e34afe514d9219d507c1f018156bbbcd9ec36a5a935f8186bb",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs1_4096_aes128.pem",
+      "sha256": "7d544b8d1a6f552c90e4db19d84744b316469d8d6a4eb31e6ce9c6abd8e87e57",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs1_4096_aes192.pem",
+      "sha256": "1a05e9f1f7152126eb08dffba59841ee525319b46861ee3ed526c687195bc95c",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs1_4096_aes256.pem",
+      "sha256": "cc66bcd61806a601f33ad93a47a53f4785470e2fcb3ded30a77611b1876cd05f",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs1_4096_clear.pem",
+      "sha256": "c6ecb3e03f0920f35453d72490e1139f11ecc38a19bd6a1cd89e9004779a372d",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs1_4096_des.pem",
+      "sha256": "cf6d0a97cd7750310bedd61e505ca57cbe585c33f6f649426e661551a37ea44b",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs8_pbe_sha1_1024_2des.pem",
+      "sha256": "7af1096ceca43dae032b481d883e553fba9f222fea125144add0be3b990ee190",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs8_pbe_sha1_1024_3des.pem",
+      "sha256": "1971878eef033bd7848c08b815398671a58e8daad5ed01c4afb13205199126d9",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs8_pbe_sha1_1024_rc4_128.pem",
+      "sha256": "80171741dd3fabb400c2b3e913c1ef2ad24e542f40ee8cc789c41a82958ba969",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs8_pbe_sha1_2048_2des.pem",
+      "sha256": "50c2f177ca4d72d06bef23514df39c1d59ac317b7905eff5d73452f22b5fcde2",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs8_pbe_sha1_2048_3des.pem",
+      "sha256": "cde352fa9773ed8fd8888f9bb69d33a1b9dd13dab18f58620f9106b27d603c7a",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs8_pbe_sha1_2048_rc4_128.pem",
+      "sha256": "9fd1378fff6967d5fb74c26cfe5e311e9f1ecd3d8041bc195b1f94caa8ea003d",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs8_pbe_sha1_4096_2des.pem",
+      "sha256": "7577944396863a97be6fae436361303947778616d165b687b319f9353e80d4dd",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs8_pbe_sha1_4096_3des.pem",
+      "sha256": "9a37049edb24ddbdaa1a65cd374068bca32d0049048e88c8c6e38094924213d6",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs8_pbe_sha1_4096_rc4_128.pem",
+      "sha256": "83e49de7ad3ae1b312f3473a435e14448b5627c5bd0e029ce8917693d878acff",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs8_pbes2_pbkdf2_1024_3des.pem",
+      "sha256": "4a89853da284ffc3faa351fd7590af5cf161818c1751140317c63dcd66e759d3",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs8_pbes2_pbkdf2_1024_3des_sha224.pem",
+      "sha256": "085440d612122680999baf05e4efe8a196f5c39422a2a6c97093e49ddd93f911",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs8_pbes2_pbkdf2_1024_3des_sha256.pem",
+      "sha256": "0c9768289c6b43939c29b864bb984b42c9011c88fa8494f3856ad284fa5edf88",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs8_pbes2_pbkdf2_1024_3des_sha384.pem",
+      "sha256": "740a53af16f5499b17a9b2e59e839f2b95b3669238d631ef06aed63cf8135725",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs8_pbes2_pbkdf2_1024_3des_sha512.pem",
+      "sha256": "7533d5a146e37001dc57d1f53e8a38182e3925747bf02a1667331332f584709a",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs8_pbes2_pbkdf2_1024_des.pem",
+      "sha256": "708e7466c2c45ba4681528d62b598a708480eb8fe8b28025e53cf340bd12c55a",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs8_pbes2_pbkdf2_1024_des_sha224.pem",
+      "sha256": "7c80e405d73324a7145ce944f1101275ccdaa2d33dc67d5a5c8e0ad53299709a",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs8_pbes2_pbkdf2_1024_des_sha256.pem",
+      "sha256": "98162c6a985e733250cdb9a717c57560ea48ae804800020b997bb9cc633f81fa",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs8_pbes2_pbkdf2_1024_des_sha384.pem",
+      "sha256": "8653bc8407ef8d9f96b46b1ee6342210234eaf4b5a947acb7807d9f79853a3f5",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs8_pbes2_pbkdf2_1024_des_sha512.pem",
+      "sha256": "2d7a6c0e119bce4a94717956ea740989866046bf318454c5ea501975e2c16094",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs8_pbes2_pbkdf2_2048_3des.pem",
+      "sha256": "d15cba2d636473deca31d86aeecb0197c966f179910b3b86e92736227146752c",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs8_pbes2_pbkdf2_2048_3des_sha224.pem",
+      "sha256": "a14337e04dc979d9a3bf67a7c14376568b158249cfd904b91f863f821d811415",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs8_pbes2_pbkdf2_2048_3des_sha256.pem",
+      "sha256": "f2c46ab52e1f0d2eea7b99dcce07fef029472bd43444dec83a24da7517616fcb",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs8_pbes2_pbkdf2_2048_3des_sha384.pem",
+      "sha256": "df6de7e2ed97fd20b4476d15e849ba8a03449b2baf8984c4660fbc45e2fc3154",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs8_pbes2_pbkdf2_2048_3des_sha512.pem",
+      "sha256": "948f06fc1775e2ef3ffa518bef5b047801cd0c6ad5515285451704ecd873280b",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs8_pbes2_pbkdf2_2048_des.pem",
+      "sha256": "8d94de2021aea75f8c2be923b10dc2dde5ae20611ac59d11e1a33d020c656ef5",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs8_pbes2_pbkdf2_2048_des_sha224.pem",
+      "sha256": "65cfceefaf228bcdcd2c4132b27bf14f59bc006dbb00e6cc315340b971f03a10",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs8_pbes2_pbkdf2_2048_des_sha256.pem",
+      "sha256": "87a64aef803b3f878b21441d4363bd92d339f67c3cb0018dafd3a1d2d01935b1",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs8_pbes2_pbkdf2_2048_des_sha384.pem",
+      "sha256": "68955f866f9fd9b804d128d862a5180e64903bba63b36184ebcd61215078bee1",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs8_pbes2_pbkdf2_2048_des_sha512.pem",
+      "sha256": "f6bc393737cd3757742966fb7db6912f1e817c2fabdef1f812828c2d5f374387",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs8_pbes2_pbkdf2_4096_3des.pem",
+      "sha256": "9736c1fd60bdcb63665cb2903a6eec86df2f72c59c82d54eddcc7bb58f4b6e5a",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs8_pbes2_pbkdf2_4096_3des_sha224.pem",
+      "sha256": "d905f3b6b08e38c7d303c90648917da59e0bb03ed7fcbb25b9093f8b2cb1ae41",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs8_pbes2_pbkdf2_4096_3des_sha256.pem",
+      "sha256": "f1523efc7496c198189d9f37298dda2e410ce28af16281e851d4c39a9ba49668",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs8_pbes2_pbkdf2_4096_3des_sha384.pem",
+      "sha256": "c899858881141168e0daf871d54e201ce659548fe76efda6cbf8be8c43a75dc5",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs8_pbes2_pbkdf2_4096_3des_sha512.pem",
+      "sha256": "7380b0697efe46ee612f70660d9465831e38aef10d1264d55b9b615373b1e282",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs8_pbes2_pbkdf2_4096_des.pem",
+      "sha256": "0d6a32350b7caf5e179cc7acfa18a1918897494cd617f1de067bc0d250a00f38",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs8_pbes2_pbkdf2_4096_des_sha224.pem",
+      "sha256": "94fed3e23676ac1d14652e6c9c9238fecade01cc1838fc8f2abffe15e53ef160",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs8_pbes2_pbkdf2_4096_des_sha256.pem",
+      "sha256": "b583d5be7de2d3a854527436ac421da0f10ce1307be213e5eb0c24fcf814a826",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs8_pbes2_pbkdf2_4096_des_sha384.pem",
+      "sha256": "ef178d8836c7f8b6d5e24b495d1b2ee842b22eed17f55a51b8186ccd8eab7ef0",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/rsa_pkcs8_pbes2_pbkdf2_4096_des_sha512.pem",
+      "sha256": "8778569cfdb0b38397064f2f01a64e0e3168a70f28dacf7a0e43b39714545e58",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/server1.key",
+      "sha256": "469e1de4e72db7ddea4f5f56db4974a612da0f403a8a35464e52d53c60fd61bf",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/server10.key",
+      "sha256": "603c53edfff74463bfa4f9e195377224f6980aef4f86c4428a4b119bb440277f",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/server2.key",
+      "sha256": "5d061d8e92c246e465654ea6eef75b0667cc49cfb8f76d3b4c2f2517861f8b1e",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/server2.key.enc",
+      "sha256": "43d0c8403c6a9ca27cb50ac139650290acdba91ddcd3149d2daf3665898134ff",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/server3.key",
+      "sha256": "2a67c4daedc10b0f4bad16f06a30ab5b9f401a541fb61aa4451e23479bb75d7c",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/server4.key",
+      "sha256": "ed155b755deaee3b5b8dcf271b4c82368f6b143ede5a0699d4442214c0be7361",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/server5.key",
+      "sha256": "dc05ad588945ee5771ea24f4970b79e020acfb9c45c6de9d7975b440394f4938",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/server5.key.enc",
+      "sha256": "f15fa2c2053c1e7976dc21c21c0f3f7199f24379310bc5fb9de2edfe5d43ae2f",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/server6.key",
+      "sha256": "2c6ba41ff6fa21bd12f3905eae7e39a7c45f26dc35b14e7761342dc50589ea6e",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/server7.key",
+      "sha256": "603c53edfff74463bfa4f9e195377224f6980aef4f86c4428a4b119bb440277f",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/server8.key",
+      "sha256": "e8dfd0a91df11fc13499c9a63ab457861283667c44682c2ed10329b0e406c460",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/server9.key",
+      "sha256": "41227afd38ca676c904ae59589943b5f57576e72b72c98d8f503f57c8ce70552",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/test-ca-alt.key",
+      "sha256": "f3a266be97499730ffc421332f58ccd4819993a882a30e55519927cb25c4488c",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/test-ca.key",
+      "sha256": "a61c8417f8192f59066a7e38cc1dd40df595cba76ddc513c22a5fe3f2af4d404",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/test-ca2.key",
+      "sha256": "72769bdc9f54e0f2c4a8856bcc4545fcc769ccd77d26f7e35fb3f64419a7df35",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/test-ca2.key.enc",
+      "sha256": "18b93a1c675861bef54a47c044d4431133b5e92c54e433e1d114fbc43871ef08",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/test-int-ca.key",
+      "sha256": "c9ce39dd7a23fbf4f10368519fa23bd4a34f32d6015dde5c4042ba477410133a",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/test-int-ca2.key",
+      "sha256": "97ae364e686400105ed7ce07168ba7d64b7797e27b577ce6e1952e01f3ebcb0d",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/data_files/test-int-ca3.key",
+      "sha256": "8f54c3d71e1669ec7f3f2a1fa835a96b215ff69fae9a7e7081780569ba8e10a9",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/mbedtls-2.28.10.tar.gz",
+      "archive_sha256": "0f2e0525903a89ae1d39ce439d858be66933bda54c5b6102b72a29ed8fe7c088",
+      "member": "mbedtls-2.28.10/tests/suites/test_suite_pem.data",
+      "sha256": "b2b1f2a4e4c5fdc811bba29beaab0a3aae98fa2fe907df8082c1af52b3b5d990",
+      "reason": "Upstream Mbed TLS cryptographic parser/certificate test fixture",
+      "evidence": [
+        "mbedtls-2.28.10/tests/data_files/Makefile",
+        "mbedtls-2.28.10/tests/suites/test_suite_pem.data"
+      ]
+    },
+    {
+      "archive": "archives/gcc-12.3.0.tar.xz",
+      "archive_sha256": "949a5d4f99e786421a93b532b22ffab5578de7321369975b91aec97adfda8c3b",
+      "member": "gcc-12.3.0/libgo/go/crypto/tls/example_test.go",
+      "sha256": "5c76081732bd28fcbd939291113719827f49ef0f64ac2250a28948314dab8a5e",
+      "reason": "Upstream libgo TLS example test and referenced testdata example key",
+      "evidence": [
+        "gcc-12.3.0/libgo/go/crypto/tls/example_test.go"
+      ]
+    },
+    {
+      "archive": "archives/gcc-12.3.0.tar.xz",
+      "archive_sha256": "949a5d4f99e786421a93b532b22ffab5578de7321369975b91aec97adfda8c3b",
+      "member": "gcc-12.3.0/libgo/go/crypto/tls/testdata/example-key.pem",
+      "sha256": "4280dcaf02ddf203cc1e3179b872f2e2f130662437b2f525bb24dfab4e7fade3",
+      "reason": "Upstream libgo TLS example test and referenced testdata example key",
+      "evidence": [
+        "gcc-12.3.0/libgo/go/crypto/tls/example_test.go"
+      ]
+    },
+    {
+      "archive": "archives/ustream-ssl-2023-02-25-498f6e26.tar.xz",
+      "archive_sha256": "a201d065dd613e30886c9f13a0851cec79538192cfe591b6f8ecd88724d55fb1",
+      "member": "ustream-ssl-2023-02-25-498f6e26/example.key",
+      "sha256": "3f30c4d87d9e9f99bc6312811e93a485c414b6c1d364a4ba0d2ac97e37fae26d",
+      "reason": "Upstream ustream example server key explicitly loaded by ustream-example-server.c",
+      "evidence": [
+        "ustream-ssl-2023-02-25-498f6e26/ustream-example-server.c"
+      ]
+    },
+    {
+      "archive": "archives/iperf-3.17.1.tar.gz",
+      "archive_sha256": "84404ca8431b595e86c473d8f23d8bb102810001f15feaf610effd3b318788aa",
+      "member": "iperf-3.17.1/src/private.pem",
+      "sha256": "1a13f2cc5ada901728b54108467c4f55c8d1df34357b9490302347e7a79f302f",
+      "reason": "Upstream iperf3 authentication unit-test key loaded by t_auth.c",
+      "evidence": [
+        "iperf-3.17.1/src/t_auth.c"
+      ]
+    },
+    {
+      "archive": "mihomo-v1.19.31-source.tar.gz",
+      "archive_sha256": "adb7a6e4207e8ca44567330e1d563163112787d3044d848305b2bfeff0282590",
+      "member": "mihomo-ab405bad5beeeac8b003bb01f60f134f6df54471/test/config/example.org-key.pem",
+      "sha256": "524bfed27a2212c0574e6a22edb7fcbebcb16d2d125a2c6eb602cc2ed2e4a3c3",
+      "reason": "Unmodified public Mihomo TLS test key for example.org; referenced only by upstream tests",
+      "evidence": [
+        "mihomo-ab405bad5beeeac8b003bb01f60f134f6df54471/test/hysteria_test.go",
+        "mihomo-ab405bad5beeeac8b003bb01f60f134f6df54471/test/trojan_test.go",
+        "mihomo-ab405bad5beeeac8b003bb01f60f134f6df54471/test/vless_test.go",
+        "mihomo-ab405bad5beeeac8b003bb01f60f134f6df54471/test/vmess_test.go"
+      ]
+    }
+  ]
+}

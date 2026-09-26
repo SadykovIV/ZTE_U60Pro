@@ -19,18 +19,21 @@ import unittest
 
 REPO = Path(__file__).resolve().parents[2]
 RES = REPO / "MacIMEI/Resources/ScreenLocalization"
+if not os.environ.get("ZTE_SCREEN_TEST_FIXTURES"):
+    raise SystemExit("Set ZTE_SCREEN_TEST_FIXTURES to your screen test fixtures directory; see Tests/README.md")
+FIXTURES = Path(os.environ["ZTE_SCREEN_TEST_FIXTURES"]).resolve()
 CID = "0123456789abcdef0123456789abcdef"
 TOKEN = "11111111-2222-3333-4444-555555555555"
 FIRMWARE = "604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263"
 STOCK = {
-    "English.ini": REPO / "evidence/russian-ui-20260922/usr/ui/language/English.ini",
-    "Chinese.ini": REPO / "evidence/russian-ui-chinese-slot-20260922/Chinese.original.ini",
-    "zte_topsw_devui": REPO / "evidence/russian-ui-trial-20260922/zte_topsw_devui",
+    "English.ini": FIXTURES / "stock/English.ini",
+    "Chinese.ini": FIXTURES / "stock/Chinese.ini",
+    "zte_topsw_devui": FIXTURES / "stock/zte_topsw_devui",
 }
 PAYLOAD = {
     "English.ini": RES / "English.ini",
     "Chinese.ini": RES / "Chinese.ini",
-    "zte_topsw_devui": REPO / "evidence/russian-ui-font-trial-20260922/zte_topsw_devui",
+    "zte_topsw_devui": FIXTURES / "patched/zte_topsw_devui",
 }
 TARGETS = {
     "English.ini": "/usr/ui/language/English.ini",
@@ -201,7 +204,7 @@ class ScreenLocalizationTests(unittest.TestCase):
         dispatcher.write_text(MOCK_COMMANDS)
         for name in ["id","uname","sleep","sync","df","logger","pidof","readlink","stat","sha256sum","uci","mount","umount"]:
             self.command(name, "#!/bin/sh\nexec "+shlex.quote(sys.executable)+" "+shlex.quote(str(dispatcher))+" "+name+' "$@"\n')
-        stock_init=(REPO/"evidence/russian-ui-persistent-20260922/stock-ui-init.sh").read_text()
+        stock_init=(FIXTURES/"stock/ui-init.sh").read_text()
         self.write("/etc/init.d/zte_topsw_devui",self.redirect(stock_init),0o755)
         fixture_service=shlex.quote(sys.executable)+" "+shlex.quote(str(dispatcher))+" service-fixture"
         rc_common='\n'.join([
@@ -319,10 +322,10 @@ class ScreenLocalizationTests(unittest.TestCase):
 
     def test_upgrade_pinned_legacy_keeps_original_backups(self):
         self.prepare_scripts()
-        old = (REPO / "evidence/vpn-wifi-20260923/screen-install-before-vpn.sh").read_text()
+        old = (FIXTURES / "legacy/pre-vpn-install.sh").read_text()
         (self.stage / "install.sh").write_text(self.redirect(old))
         for name in ("English.ini", "Chinese.ini"):
-            (self.stage / name).write_bytes((REPO / "evidence/russian-ui-compact-copy-20260922" / name).read_bytes())
+            (self.stage / name).write_bytes((FIXTURES / "legacy/compact" / name).read_bytes())
         self.assert_success(self.run_script(self.stage / "install.sh", "install", self.stage, CID))
         before = {p.name:p.read_bytes() for p in (self.installed / "backup").iterdir()}
         for name in ("English.ini", "Chinese.ini"):
@@ -339,7 +342,7 @@ class ScreenLocalizationTests(unittest.TestCase):
 
     def test_upgrade_vpn_caption_keeps_original_backups(self):
         self.prepare_scripts()
-        previous = REPO / "evidence/vpn-profiles-screen-20260924"
+        previous = FIXTURES / "legacy/vpn-profiles"
         old = (previous / "screen-install-20260923.sh").read_text()
         (self.stage / "install.sh").write_text(self.redirect(old))
         for name in ("English.ini", "Chinese.ini"):
@@ -370,7 +373,7 @@ class ScreenLocalizationTests(unittest.TestCase):
         self.assertEqual(self.language(),"en")
         self.assertEqual((self.root/"cache/language.txt").read_text().strip(),"english")
         self.assertEqual((self.root/"cache/language.txt").stat().st_mode&0o777,0o640)
-        original_init=(REPO/"evidence/russian-ui-persistent-20260922/stock-ui-init.sh").read_text()
+        original_init=(FIXTURES/"stock/ui-init.sh").read_text()
         self.assertEqual((self.root/"etc/init.d/zte_topsw_devui").read_text(),self.redirect(original_init))
         self.assertEqual((self.root/"etc/init.d/zte_topsw_devui").stat().st_mode&0o777,0o755)
         self.assert_originals()

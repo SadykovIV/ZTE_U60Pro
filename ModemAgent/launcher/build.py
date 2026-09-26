@@ -1,6 +1,6 @@
 """Build the exact-B31 stock launcher extension and its pinned native installer."""
 from pathlib import Path
-import hashlib, subprocess, struct, os, shutil, argparse
+import hashlib, subprocess, struct, os, shutil
 ROOT = Path(__file__).resolve().parents[2]
 SRC = Path(__file__).resolve().parent
 OUT = ROOT / 'MacIMEI/Resources/VPN'
@@ -14,9 +14,18 @@ def verify_abi():
         assert struct.unpack_from('<Q', b, 24)[0] == 0x421dc4
         for va, target in [(0xe72aa0,0x4bd900),(0xe7d968,0x4bd9ec),(0xe7b448,0x4bc1d0),(0xe72a08,0x4b7ffc),(0xe79c30,0x4b7ffc)]:
             assert struct.unpack_from('<Q',b,va-0x410000)[0] == target, hex(va)
+        # LVGL scroll mode/direction, stock scrollToY wrapper, input scroll
+        # direction/owner getters: disassembled against LVGL8 semantics.
+        for va, length, digest in [
+            (0x433134,100,'c4b28b2b70255a358975a716fe9410b4d45ef7442d5a1773329a08444f98fc10'),
+            (0x433198,76,'aeb88b752af0882a0482e3a1edcb450a56dd4752ea4d679d529a8fbf3438f836'),
+            (0x5380bc,60,'e00d47c8293ae93e97b68a62d4f0d77e44982cdb930ac857675643282dee9c27'),
+            (0x42ace8,84,'76b41cab9c361faa615e3c0ed213701019ffdf507df1f046e6222c1e6d4ed3b4'),
+        ]:
+            assert hashlib.sha256(b[va-0x400000:va-0x400000+length]).hexdigest()==digest, f'Unknown scrolling ABI {va:x}'
 if os.environ.get('ZTE_STOCK_UI') and os.environ.get('ZTE_RUSSIAN_UI'): verify_abi()
 else: print('Building pinned B31 ABI; reference ELF audit skipped (runtime SHA guards remain mandatory)')
-subprocess.run([os.environ.get('ZTE_CROSS_CC') or shutil.which('aarch64-linux-musl-gcc'),'-shared','-fPIC','-s',f'-ffile-prefix-map={ROOT}=.','-O2','-Wall','-Wextra','-Werror','-Wno-misleading-indentation','-fvisibility=hidden','-pthread','-Wl,-z,relro,-z,now','-o',str(OUT/'launcher.so'),str(SRC/'launcher.c'),str(SRC/'backend.c')],check=True)
+subprocess.run([os.environ.get('ZTE_CROSS_CC') or shutil.which('aarch64-linux-musl-gcc'),'-shared','-fPIC','-s',f'-ffile-prefix-map={ROOT}=.','-O2','-Wall','-Wextra','-Werror','-Wno-misleading-indentation','-fvisibility=hidden','-pthread','-Wl,-z,relro,-z,now','-o',str(OUT/'launcher.so'),str(SRC/'launcher.c'),str(SRC/'backend.c'),str(SRC/'telemetry.c'),str(SRC/'info-layout.c')],check=True)
 names = ['launcher.so','launcher-run.sh','launcher-watch.sh','launcher-service.sh','launcher-start.sh']
 for name in names[1:]:
     source=SRC/'scripts'/name

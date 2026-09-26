@@ -1,0 +1,17 @@
+table inet zte_vpn_guard {
+ chain forward {
+  type filter hook forward priority -10; policy accept;
+  iifname "br-vpn" oifname "zvpn-tun" meta nfproto ipv4 meta l4proto udp accept
+  iifname "zvpn-tun" oifname "br-vpn" meta nfproto ipv4 meta l4proto udp ct state established,related accept
+  iifname "br-vpn" counter drop
+  oifname "br-vpn" counter drop
+ }
+ chain input {
+  type filter hook input priority -10; policy accept;
+  iifname "br-vpn" meta nfproto ipv4 udp dport { 67, 17874 } accept
+  iifname "br-vpn" meta nfproto ipv4 tcp dport { 17874, 17893 } accept
+  iifname "br-vpn" counter drop
+  iifname != "lo" tcp dport { 17874, 17890, 17893, 17894 } counter drop
+  iifname != "lo" udp dport { 17874, 17890, 17894 } counter drop
+ }
+}

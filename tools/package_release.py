@@ -1,42 +1,130 @@
 #!/usr/bin/env python3
-"""Package built public artifacts; does not publish or connect to a device."""
+"""Package verified public builds. Does not publish or connect to a device."""
 from pathlib import Path
-import hashlib,json,tarfile,gzip,io,shutil
-ROOT=Path(__file__).resolve().parents[1];OUT=ROOT/'release';OUT.mkdir(exist_ok=True)
-RES=ROOT/'MacIMEI/Resources';sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
-def tar_gz(path,entries):
- with path.open('wb') as dest,gzip.GzipFile(filename='',fileobj=dest,mode='wb',mtime=0) as gz,tarfile.open(fileobj=gz,mode='w') as tar:
-  for name,source in sorted(entries.items()):
-   p=Path(source);data=p.read_bytes();info=tarfile.TarInfo(name);info.size=len(data);info.mode=0o755 if p.stat().st_mode&0o111 else 0o644;info.mtime=0
-   tar.addfile(info,io.BytesIO(data))
-app=ROOT/'MacIMEI/dist/ZTE-IMEI-Studio-1.9.1-arm64.zip'
-shutil.copyfile(app,OUT/app.name)
-agent=OUT/'zte-agent-2.7.1-aarch64-linux-musl';shutil.copyfile(RES/'Onboarding/zte-agent',agent);agent.chmod(0o755)
-entries={'zte-agent':agent,'README.md':ROOT/'docs/AGENT.md','LICENSE':ROOT/'ModemAgent/LICENSE','THIRD_PARTY_NOTICES.md':ROOT/'THIRD_PARTY_NOTICES.md'}
-for p in (RES/'AgentDashboard').rglob('*'):
- if p.is_file():entries['dashboard/'+str(p.relative_to(RES/'AgentDashboard'))]=p
-for p in (ROOT/'licenses').iterdir():
- if p.is_file():entries['licenses/'+p.name]=p
-manifest=OUT/'agent-SHA256SUMS';manifest.write_text(''.join(f'{sha(p)}  {name}\n' for name,p in sorted(entries.items())))
-entries['SHA256SUMS']=manifest
-tar_gz(OUT/'ZTE-Agent-2.7.1-aarch64-linux-musl.tar.gz',entries)
+import gzip
+import hashlib
+import json
+import shutil
+import tarfile
+
+ROOT = Path(__file__).resolve().parents[1]
+OUT = ROOT / 'release'
+RES = ROOT / 'MacIMEI/Resources'
+VERSION = '1.19.0'
+AGENT_VERSION = '2.8.0'
+RELEASE_URL = f'https://github.com/SadykovIV/ZTE_U60Pro/releases/download/v{VERSION}/'
+OUT.mkdir(exist_ok=True)
+
+
+def sha(path):
+    digest = hashlib.sha256()
+    with Path(path).open('rb') as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def tar_gz(path, entries):
+    with path.open('wb') as dest, gzip.GzipFile(filename='', fileobj=dest, mode='wb', mtime=0) as gz:
+        with tarfile.open(fileobj=gz, mode='w') as tar:
+            for name, source in sorted(entries.items()):
+                source = Path(source)
+                if not source.is_file() or source.is_symlink():
+                    raise SystemExit('Expected regular release input: ' + name)
+                info = tarfile.TarInfo(name)
+                info.size = source.stat().st_size
+                info.mode = 0o755 if source.stat().st_mode & 0o111 else 0o644
+                info.mtime = 0
+                with source.open('rb') as stream:
+                    tar.addfile(info, stream)
+
+
+def copy_artifact(source, name):
+    target = OUT / name
+    shutil.copyfile(source, target)
+    return target
+
+
+artifacts = []
+artifacts.append(copy_artifact(ROOT / f'MacIMEI/dist/ZTE-IMEI-Studio-{VERSION}-arm64.zip',
+                               f'ZTE-IMEI-Studio-{VERSION}-macOS-arm64.zip'))
+artifacts.append(copy_artifact(ROOT / f'Windows_x64/dist/ZTE-IMEI-Studio-{VERSION}-Windows-x64-portable.zip',
+                               f'ZTE-IMEI-Studio-{VERSION}-Windows-x64-portable.zip'))
+agent = copy_artifact(RES / 'Onboarding/zte-agent', f'zte-agent-{AGENT_VERSION}-aarch64-linux-musl')
+agent.chmod(0o755)
+artifacts.append(agent)
+entries = {'zte-agent': agent, 'README.md': ROOT / 'docs/AGENT.md',
+           'LICENSE': ROOT / 'ModemAgent/LICENSE', 'THIRD_PARTY_NOTICES.md': ROOT / 'THIRD_PARTY_NOTICES.md'}
+for folder, prefix in [(RES / 'AgentDashboard', 'dashboard'), (ROOT / 'licenses', 'licenses')]:
+    for path in folder.rglob('*'):
+        if path.is_file():
+            entries[f'{prefix}/{path.relative_to(folder).as_posix()}'] = path
+manifest = OUT / 'agent-SHA256SUMS'
+manifest.write_text(''.join(f'{sha(path)}  {name}\n' for name, path in sorted(entries.items())))
+entries['SHA256SUMS'] = manifest
+agent_archive = OUT / f'ZTE-Agent-{AGENT_VERSION}-aarch64-linux-musl.tar.gz'
+tar_gz(agent_archive, entries)
 manifest.unlink()
-# Runtime dependency bundle is generated once from verified files. No proprietary SSClash.
-paths=['MacIMEI/Resources/'+p for p in ['Onboarding/adb','Onboarding/dropbear','SSHAccounts/dropbear','SSHAccounts/doas','VPN/mihomo','VPN/dashboard-uhttpd']]
-deps={p:ROOT/p for p in paths}
-for folder in ['Onboarding','SSHAccounts','VPN']:
- for p in (RES/folder).iterdir():
-  if p.is_file() and ('LICENSE' in p.name or 'NOTICE' in p.name):deps['licenses/'+folder+'/'+p.name]=p
-for p in (ROOT/'licenses').iterdir():
- if p.is_file():deps['licenses/'+p.name]=p
-deps['THIRD_PARTY_NOTICES.md']=ROOT/'THIRD_PARTY_NOTICES.md'
-for name in ['mihomo-v1.19.31-source.tar.gz','opendoas-6.8.2.tar.xz']:
- p=ROOT/'.cache'/name
- if not p.exists():raise SystemExit('Missing corresponding source archive: '+name)
- deps['sources/'+name]=p
-archive=OUT/'Build-dependencies-20260924.tar.gz';tar_gz(archive,deps)
-meta={'archive':archive.name,'url':'https://github.com/SadykovIV/ZTE_U60Pro/releases/download/v1.9.1/'+archive.name,'sha256':sha(archive),'files':{p:sha(ROOT/p) for p in paths}}
-(ROOT/'tools/dependencies.json').write_text(json.dumps(meta,indent=2)+'\n')
-shutil.copyfile(ROOT/'MacIMEI/dist/build-manifest.json',OUT/'build-manifest.json')
-(OUT/'SHA256SUMS').write_text(''.join(f'{sha(p)}  {p.name}\n' for p in sorted(OUT.iterdir()) if p.is_file() and p.name!='SHA256SUMS'))
-print('Public release artifacts:',', '.join(p.name for p in sorted(OUT.iterdir())))
+artifacts.append(agent_archive)
+
+# Explicit allowlist: runtime dependencies and generated modem payloads allow a
+# Windows-only checkout to build without macOS or an ARM64 cross compiler.
+common = ['Onboarding/dropbear', 'Onboarding/zte-agent', 'SSHAccounts/dropbear', 'SSHAccounts/doas',
+          'VPN/mihomo', 'VPN/dashboard-uhttpd', 'VPN/vpnctl', 'VPN/launcher.so', 'VPN/dashboard.tar.gz',
+          'HostTools/zte-timeout', 'DiagnosticTools/bundle.tar.gz', 'ExperimentalOpkg/runtime.tar.gz']
+paths = ['MacIMEI/Resources/Onboarding/adb']
+for base in ['MacIMEI/Resources', 'Windows_x64/Resources']:
+    paths.extend(f'{base}/{relative}' for relative in common)
+    paths.extend(path.relative_to(ROOT).as_posix() for path in sorted((ROOT / base / 'AgentDashboard/assets').glob('*')) if path.is_file())
+for name in ['zte_nv', 'zte_config', 'zte_config_read']:
+    paths.extend([f'MacIMEI/DeviceHelpers/bin/{name}', f'Windows_x64/Resources/Helpers/{name}'])
+paths.append('MacIMEI/DeviceHelpers/bin/manifest.json')
+paths.extend(path.relative_to(ROOT).as_posix() for path in sorted((ROOT / 'Windows_x64/Resources/Tools').rglob('*'))
+             if path.is_file() and path.suffix.lower() in ('.exe', '.dll'))
+deps = {name: ROOT / name for name in sorted(set(paths))}
+deps['THIRD_PARTY_NOTICES.md'] = ROOT / 'THIRD_PARTY_NOTICES.md'
+for base in [RES, ROOT / 'Windows_x64/Resources', ROOT / 'licenses']:
+    for path in base.rglob('*'):
+        if path.is_file() and (base.name == 'licenses' or 'LICENSE' in path.name.upper() or 'NOTICE' in path.name.upper()):
+            deps['notices/' + path.relative_to(ROOT).as_posix()] = path
+dependency_archive = OUT / f'Build-dependencies-{VERSION}.tar.gz'
+tar_gz(dependency_archive, deps)
+meta = {'archive': dependency_archive.name, 'url': RELEASE_URL + dependency_archive.name,
+        'sha256': sha(dependency_archive), 'files': {name: sha(ROOT / name) for name in sorted(set(paths))}}
+(ROOT / 'tools/dependencies.json').write_text(json.dumps(meta, indent=2) + '\n')
+artifacts.append(dependency_archive)
+
+# Sources are separate so a normal build need not download the GCC source tree.
+source_root = ROOT / '.cache/public-sources'
+if not (source_root / 'SOURCES.json').is_file():
+    raise SystemExit('Missing .cache/public-sources/SOURCES.json and corresponding sources')
+sources = {}
+for line in (source_root / 'SHA256SUMS').read_text().splitlines():
+    expected, name = line.split('  ', 1)
+    relative = Path(name)
+    if relative.is_absolute() or '..' in relative.parts:
+        raise SystemExit('Unsafe corresponding-source path')
+    path = source_root / relative
+    if sha(path) != expected:
+        raise SystemExit('Corresponding-source hash mismatch: ' + name)
+    sources[name] = path
+for name in ['mihomo-v1.19.31-source.tar.gz', 'opendoas-6.8.2.tar.xz']:
+    sources[name] = ROOT / '.cache' / name
+sources['THIRD_PARTY_NOTICES.md'] = ROOT / 'THIRD_PARTY_NOTICES.md'
+source_sums = OUT / 'sources-SHA256SUMS'
+source_sums.write_text(''.join(f'{sha(path)}  {name}\n' for name, path in sorted(sources.items())))
+sources['SHA256SUMS'] = source_sums
+source_archive = OUT / f'Third-party-sources-{VERSION}.tar.gz'
+tar_gz(source_archive, sources)
+source_sums.unlink()
+artifacts.append(source_archive)
+artifacts.append(copy_artifact(ROOT / 'MacIMEI/dist/build-manifest.json', 'macOS-build-manifest.json'))
+artifacts.append(copy_artifact(ROOT / 'Windows_x64/dist/windows-build-manifest.json', 'Windows-build-manifest.json'))
+release_manifest = OUT / 'release-manifest.json'
+release_manifest.write_text(json.dumps({'version': VERSION, 'previousRelease': 'v1.9.1', 'agentVersion': AGENT_VERSION,
+                                      'vpnctlVersion': '1.3.0',
+                                      'artifacts': {path.name: {'bytes': path.stat().st_size, 'sha256': sha(path)}
+                                                    for path in sorted(artifacts)}}, indent=2) + '\n')
+artifacts.append(release_manifest)
+(OUT / 'SHA256SUMS').write_text(''.join(f'{sha(path)}  {path.name}\n' for path in sorted(artifacts)))
+print('Public release artifacts:', ', '.join(path.name for path in artifacts))

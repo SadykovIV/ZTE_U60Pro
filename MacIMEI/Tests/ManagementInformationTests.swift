@@ -50,7 +50,7 @@ private final class Stub: RemoteTransport {
     var calls=0, identities=0, reboot=false, transportFailure=false, finish: (() throws -> Void)?
     func run(_ command: String,input:Data?,timeout:TimeInterval) throws -> CommandResult {
         calls += 1
-        if command.hasPrefix("sha256sum /firmware") {
+        if command.hasPrefix("sha256sum /firmware") || command == DiagnosticTransportSelector.identityCommand {
             identities += 1
             return CommandResult(status:0,stdout:Data((ModemEngine.firmwareHash+" /firmware/image/modem.b16\n"+ModemEngine.routerHash+" /usr/bin/diag-router\n"+identity.cid+"\n"+(reboot && identities>1 ? "3a2fb1c5-1bbf-4d3b-92a8-3daaf5510601" : boot)+"\n").utf8),stderr:Data())
         }
@@ -196,7 +196,7 @@ private final class Stub: RemoteTransport {
             try check(process.terminationStatus==0 && output.contains("keeper") && output.contains("200"),"A vanished PID aborted the process list")
         }
         try test("Full diagnostics records each bounded result and a manifest"){
-            let stub=Stub(),engine=try newEngine(stub),report=try ModemInformationManager(engine:engine).collectDiagnostics()
+            let stub=Stub(),engine=try newEngine(stub),report=try engine.locked { try ModemInformationManager(engine:engine).collectDiagnostics() }
             try check(report.files.count==ModemInformationManager.diagnosticCommands.count,"Missing diagnostics")
             for item in report.files {let data=try Data(contentsOf:report.url.appendingPathComponent(item.name));try check(!String(decoding:data,as:UTF8.self).contains("do-not-export") && item.sha256==digest(data) && item.status==0,"Unsafe or inconsistent export")}
             try check(FileManager.default.fileExists(atPath:report.url.appendingPathComponent("manifest.json").path),"No manifest")

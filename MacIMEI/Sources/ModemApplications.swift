@@ -33,6 +33,10 @@ struct ModemApplicationInventory: Sendable {
     var applicationStorage: ModemApplicationStorage? = nil
     var ssclashProxyRunning: Bool = false
     var ssclashUnmanaged: Bool = false
+    var managedAppsChecked = false
+    var diagnosticTools: DiagnosticToolsStatus? = nil
+    var experimentalOpkg: ExperimentalOpkgStatus? = nil
+    var managedAppErrors: [String: String] = [:]
     var opkgInstallationSupported: Bool { false }
     var installedApplications: [ModemManagedApplication] {
         guard ssclashInstalled || ssclashUnmanaged else { return [] }

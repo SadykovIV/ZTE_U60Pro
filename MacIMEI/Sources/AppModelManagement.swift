@@ -2,11 +2,18 @@ import Foundation
 import AppKit
 
 @MainActor extension AppModel {
-    func runManaged<T: Sendable>(_ title: String, readOnly: Bool = false, work: @escaping @Sendable (ModemEngine) throws -> T,
+    func runManaged<T: Sendable>(_ title: String, readOnly: Bool = false, usesSelectedChannel: Bool = false, work: @escaping @Sendable (ModemEngine) throws -> T,
                                  finish: @escaping @MainActor (T) -> Void) {
-        guard readOnly ? canReadModem : canManage else { return }
+        let diagnosticTransport = readOnly && usesSelectedChannel
+        guard diagnosticTransport ? canCollectDiagnostics : (readOnly ? canReadModem : canManage) else { return }
+        if !readOnly && SystemBackups.hasPendingRestore(root: storage) {
+            systemRestorePending = true
+            append("Сначала завершите восстановление полного образа модема")
+            return
+        }
         let config = connection, root = storage, assets = resources
-        do { try config.validate() } catch { append("Остановлено: " + error.localizedDescription); return }
+        let target = sshSelectionContext
+        do { if !diagnosticTransport { try config.validate() } } catch { append("Остановлено: " + error.localizedDescription); return }
         busy = true; progress = 0
         append(title)
         operationTask = Task { [weak self] in
@@ -19,6 +26,7 @@ import AppKit
                     let journal = try ActivityJournal(root: root)
                     try journal.record(operationID: engine.logDirectory.lastPathComponent, category: "operation", title: title, result: "started")
                     do {
+                        if !diagnosticTransport { try target.verify(engine) }
                         let result = try work(engine)
                         try? journal.record(operationID: engine.logDirectory.lastPathComponent, category: "operation", title: title, result: "completed")
                         return result
@@ -34,16 +42,19 @@ import AppKit
         }
     }
     func refreshModemInformation() {
-        runManaged("Читаю сведения об устройстве и памяти…", readOnly: true, work: { engine in
-            try engine.locked { try ModemInformationManager(engine: engine).inspect(readOnly: true) }
-        }, finish: { [weak self] value in self?.modemInformation = value; self?.append("Сведения об устройстве и памяти обновлены") })
+        refreshChannelInformation()
     }
     func collectDiagnostics() {
-        runManaged("Собираю диагностическую информацию…", readOnly: true, work: { engine in
-            try engine.locked { try ModemInformationManager(engine: engine).collectDiagnostics() }
+        let expected = modemInformation?.identity ?? connectedIdentity
+        let mode = activeChannel ?? connectionMode, session = channelSession, expectedWeb = connectedWebIdentity ?? channelSummary?.webIdentity
+        let expectedIMEI = connectedIMEI ?? channelSummary?.primaryIMEI
+        let webSecret = webPassword, agentSecret = agentPassword
+        runManaged("Собираю диагностическую информацию…", readOnly: true, usesSelectedChannel: true, work: { engine in
+            try engine.locked { try ConnectionDiagnostics.collect(engine: engine, mode: mode, session: session,
+                expectedIdentity: expected, expectedWebIdentity: expectedWeb, expectedIMEI: expectedIMEI, webPassword: webSecret, agentPassword: agentSecret) }
         }, finish: { [weak self] report in
             self?.diagnosticReport = report; self?.selectedDiagnostic = report.files.first?.name ?? ""
-            self?.loadDiagnosticText(); self?.append("Диагностика сохранена: \(report.files.count) разделов")
+            self?.loadDiagnosticText(); self?.append("Диагностика сохранена. " + report.outcomeSummary)
         })
     }
     func loadDiagnosticText() {

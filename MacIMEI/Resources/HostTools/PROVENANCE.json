@@ -1,0 +1,22 @@
+{
+  "version": "1.0.0",
+  "source": "Native/zte_timeout.c",
+  "sourceSHA256": "1b4c7ffe18d5676ea2f3fde15f862b0ab14c9d9d8dfaab3bfb09a94e4e988718",
+  "compiler": "aarch64-linux-musl-gcc (GCC) 14.2.0",
+  "flags": [
+    "-std=c11",
+    "-Os",
+    "-static",
+    "-s",
+    "-Wall",
+    "-Wextra",
+    "-Werror",
+    "-fno-ident",
+    "-fstack-protector-strong",
+    "-Wl,--build-id=none"
+  ],
+  "architecture": "aarch64",
+  "linkage": "static musl",
+  "bytes": 67064,
+  "sha256": "6e81024c273080294a251ae38572f1ef0cb496fbd16c7009c6a4ae1c07fb55ff"
+}

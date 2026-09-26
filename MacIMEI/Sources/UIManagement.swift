@@ -8,7 +8,7 @@ extension ContentView {
                 Text("Система и устройство").font(.system(size: 18, weight: .semibold))
                 Spacer()
                 Button(action: model.refreshModemInformation) { Label("Обновить сведения", systemImage: "arrow.clockwise") }
-                    .buttonStyle(StudioButtonStyle()).disabled(!model.canReadModem)
+                    .buttonStyle(StudioButtonStyle()).disabled(!model.canCollectDiagnostics)
             }
             if let info = model.modemInformation {
                 informationRow("Модель", info.model)
@@ -30,11 +30,27 @@ extension ContentView {
                         informationRow("Обновлено", info.collectedAt.formatted(date: .numeric, time: .standard))
                     }.padding(.top, 10)
                 }.font(.system(size: 12))
+            } else if let summary = model.channelSummary {
+                informationRow("Подключение", model.activeChannel?.title ?? "—")
+                if let firmware = summary.firmware { informationRow("Прошивка", firmware) }
+                if let imei = summary.primaryIMEI { informationRow("IMEI устройства", imei) }
+                if let version = summary.agentVersion { informationRow("Версия агента", version) }
+                if let identity = summary.identity { informationRow("CID накопителя", identity.cid) }
+                ForEach(summary.fields.keys.filter { $0 != "firmware" && $0 != "routerSHA256" }.sorted(), id: \.self) { key in
+                    informationRow(channelFieldTitle(key), summary.fields[key] ?? "—")
+                }
+                Text(model.connectionCapabilityText).font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
             } else {
                 Text("Сведения считываются непосредственно с модема. Подключитесь и нажмите «Обновить сведения».")
                     .font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
             }
         }
+    }
+    func channelFieldTitle(_ key: String) -> String {
+        ["firmware": "Прошивка", "innerVersion": "Внутренняя версия", "hostname": "Имя устройства",
+         "kernel": "Ядро Linux", "uptimeSeconds": "Время работы, секунд", "loadAverage": "Нагрузка",
+         "memoryTotalKiB": "RAM всего, КиБ", "memoryAvailableKiB": "RAM доступно, КиБ",
+         "batteryPercent": "Аккумулятор, %", "detailsUnavailable": "Дополнительные сведения", "batteryState": "Состояние аккумулятора", "architecture": "Архитектура", "model": "Модель"][key] ?? key
     }
     func informationRow(_ title: String, _ value: String) -> some View {
         HStack(alignment: .top, spacing: 20) {
@@ -55,7 +71,7 @@ extension ContentView {
                 Text("Память и накопители").font(.system(size: 18, weight: .semibold))
                 Spacer()
                 Button(action: model.refreshModemInformation) { Label("Обновить", systemImage: "arrow.clockwise") }
-                    .buttonStyle(StudioButtonStyle()).disabled(!model.canReadModem)
+                    .buttonStyle(StudioButtonStyle()).disabled(!model.canCollectDiagnostics)
             }
             if let info = model.modemInformation {
                 StudioCard {
@@ -83,7 +99,13 @@ extension ContentView {
                         }.padding(.vertical, 5)
                     }
                 }
-            } else { StudioNote(symbol: "memorychip", text: "Подключите модем и обновите сведения о памяти.") }
+            } else if let summary = model.channelSummary, let total = summary.fields["memoryTotalKiB"] {
+                StudioCard {
+                    informationRow("RAM всего, КиБ", total)
+                    informationRow("RAM доступно, КиБ", summary.fields["memoryAvailableKiB"] ?? "Нет данных")
+                    Text("Сведения API агента. Для списка разделов и файловых систем выберите SSH или ADB.").font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
+                }
+            } else { StudioNote(symbol: "memorychip", text: "Выберите SSH, ADB или агент и обновите сведения. Web не предоставляет данные о памяти.") }
         }
     }
     var diagnosticsPage: some View {
@@ -94,14 +116,18 @@ extension ContentView {
                     Text("Диагностика модема").font(.system(size: 18, weight: .semibold))
                     Spacer()
                     Button(action: model.collectDiagnostics) { Label("Собрать диагностику", systemImage: "doc.text.magnifyingglass") }
-                        .buttonStyle(StudioButtonStyle(prominent: true)).disabled(!model.canReadModem)
+                        .buttonStyle(StudioButtonStyle(prominent: true)).disabled(!model.canCollectDiagnostics)
                 }
-                Text("Системный журнал, ядро, сеть, маршруты, firewall, процессы, USB, питание и температуры. Сбор работает через настроенный SSH и не требует соответствия B31. Для каждого раздела сохраняются результат чтения и контрольная сумма; известные поля с паролями и токенами скрываются.")
+                Text("Системный журнал, ядро, сеть, маршруты, firewall, процессы, USB, питание, температуры и структура каталогов. Системные разделы читаются через SSH или работающий ADB по USB. Через агент и Web сохраняются доступные сведения API; остальные разделы отмечаются как пропущенные. Сбор соблюдает выбранный способ подключения и не требует соответствия B31. Для каждого раздела сохраняются результат чтения и контрольная сумма; известные поля с паролями и токенами скрываются.")
                     .font(.system(size: 12)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
                 if let report = model.diagnosticReport {
                     ForEach(report.warnings ?? [], id: \.self) { Text($0).font(.system(size: 11)).foregroundStyle(StudioStyle.warning) }
                     informationRow("Собрано", report.created)
-                    informationRow("Разделы", "\(report.files.count), с ошибкой чтения: \(report.files.filter { $0.status != 0 }.count)")
+                    informationRow("Подключение", report.transport.flatMap(ConnectionMode.init(rawValue:))?.title ?? (report.transport == nil ? "Не указано в старом отчёте" : "Не установлено"))
+                    if let reason = report.selectionReason {
+                        Text(reason).font(.system(size: 11)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                    informationRow("Результаты сбора", report.outcomeSummary)
                     Button(action: model.revealDiagnostics) { Label("Открыть папку отчёта", systemImage: "folder") }.buttonStyle(StudioButtonStyle())
                     Text("Отчёт может содержать адреса сети и идентификаторы устройства. Просмотрите его перед отправкой.")
                         .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary)
@@ -109,7 +135,7 @@ extension ContentView {
             }
             if let report = model.diagnosticReport {
                 Picker("Раздел отчёта", selection: $model.selectedDiagnostic) {
-                    ForEach(report.files) { file in Text(file.title + (file.status == 0 ? "" : " · ошибка чтения")).tag(file.name) }
+                    ForEach(report.files) { file in Text(file.title + (file.effectiveOutcome == .succeeded ? "" : " · " + file.statusLabel)).tag(file.name) }
                 }.onChange(of: model.selectedDiagnostic) { _ in model.loadDiagnosticText() }
                 ScrollView([.horizontal, .vertical]) {
                     Text(model.diagnosticText).font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
@@ -180,8 +206,9 @@ extension ContentView {
     }
     var allBackupsPage: some View {
         VStack(alignment: .leading, spacing: 22) {
+            systemBackupsCard
             StudioCard {
-                Text("Бэкапы модема").font(.system(size: 18, weight: .semibold))
+                Text("Отдельные данные и настройки").font(.system(size: 18, weight: .semibold))
                 Text("Выберите состав копии. Каждый архив сохраняется на Mac с проверкой устройства, размера и SHA256.")
                     .font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
                 Picker("Состав резервной копии", selection: $model.deviceBackupKind) {
@@ -222,7 +249,7 @@ extension ContentView {
             }
             StudioNote(symbol: "simcard", text: "Резервные копии NV550 и EFS для смены IMEI находятся в разделе «IMEI» → «Бэкапы IMEI».")
             Button("Открыть бэкапы IMEI") { page = .imei; imeiSection = .backups }.buttonStyle(StudioButtonStyle())
-        }.onAppear { model.refreshDeviceBackups(); model.refreshBackups() }
+        }.onAppear { model.refreshDeviceBackups(); model.refreshBackups(); model.refreshSystemBackups() }
     }
     var activityPage: some View {
         VStack(alignment: .leading, spacing: 18) {

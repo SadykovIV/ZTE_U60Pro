@@ -86,7 +86,8 @@ final class ModemEngine: @unchecked Sendable {
     }
     func text(_ command: String) throws -> String { String(decoding: try remote(command), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) }
     var tokenURL: URL { root.appendingPathComponent("device-lock.json") }
-    func acquireRemoteLock() throws {
+    func acquireRemoteLock(allowSystemRestore: Bool = false) throws {
+        try require(allowSystemRestore || !SystemBackups.hasPendingRestore(root: root), "Сначала завершите восстановление полного образа модема")
         guard remoteLockToken == nil else { return }
         let endpoint = connection.host + ":" + connection.port
         let saved = try? readJSON([String:String].self, tokenURL)
@@ -100,6 +101,12 @@ final class ModemEngine: @unchecked Sendable {
         remoteLockToken = token
     }
     func releaseRemoteLock() {
+        // A timed-out SSH command can still be finishing a raw write. Keep its
+        // ownership token until the restore journal is reconciled and completed.
+        if SystemBackups.hasPendingRestore(root: root) {
+            remoteLockToken = nil
+            return
+        }
         if let token = remoteLockToken {
             if (try? remote("test \"$(cat /tmp/zte-imei-app.lock/owner 2>/dev/null)\" = " + shellQuote(token) + " && rm /tmp/zte-imei-app.lock/owner && rmdir /tmp/zte-imei-app.lock", timeout: 10)) != nil {
                 try? fm.removeItem(at: tokenURL)

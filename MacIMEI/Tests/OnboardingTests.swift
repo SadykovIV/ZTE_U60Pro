@@ -14,13 +14,16 @@ private func rejects(_ contains: String? = nil, _ body: () throws -> Void) throw
     }
     throw TestFailure.check("Operation unexpectedly succeeded")
 }
+private func rejectsWeb(_ expected: ModemWebError, _ body: () throws -> Void) throws {
+    do { try body() }
+    catch let error as ModemWebError { try check(error == expected, "Unexpected Web error: \(error)"); return }
+    throw TestFailure.check("Expected typed Web error: \(expected)")
+}
 
-private let testIMEI = "490154203237518"
+private let testIMEI = "353490068701222"
 private let testCID = "0123456789abcdef0123456789abcdef"
-private let testSuffix = "synthetic-backup-suffix"
 private let testPassword = "test-password"
-// SHA-256 of the synthetic test password/challenge, never a device credential.
-private let expectedPasswordHash = "C2682E16F0B2C76CE55C4998EA7914050AF4CFAF82510D405CEB2AF9B74B4FB5" // gitleaks:allow
+private let expectedPasswordHash = "C2682E16F0B2C76CE55C4998EA7914050AF4CFAF82510D405CEB2AF9B74B4FB5"
 private let sessionID = "1234567890abcdef1234567890abcdef"
 
 private func deviceObject(_ imei: String = testIMEI) -> [String:Any] {
@@ -39,7 +42,8 @@ private func tar(_ files: [(String, Data)]) -> Data {
     }
     return output + Data(repeating:0,count:1024)
 }
-private func backup(suffix: String = testSuffix) throws -> Data {
+private let testBackupSuffix = "synthetic-public-fixture-key"
+private func backup(suffix: String = testBackupSuffix) throws -> Data {
     let inner = try BackupGzip.compress(tar([("etc/rc.local",Data("#!/bin/sh\ncat /sys/class/android_usb/android0/usb_op\nexit 0\n".utf8))]))
     let outer = try BackupGzip.compress(tar([(BackupPatch.innerPath,inner),(BackupPatch.md5Path,Data((BackupCipher.md5(inner)+"\n").utf8))]))
     return try BackupCipher.encrypt(outer,password:testIMEI+suffix)
@@ -54,9 +58,12 @@ private final class MockWeb: WebTransport {
     var backupData: Data
     var uploadedData: Data?, badUploadHash = false
     var restoreCount = 0, backupCount = 0, outerError: Int?, challenge = "salt-0123"
+    var loginResult: Any?, rawReply: Data?, transportFailure: Error?
     init(_ data: Data) { backupData = data }
     func request(path: String, data: Data?, contentType: String?, cookie: String?) throws -> WebReply {
         requests.append(Request(path:path,data:data,cookie:cookie))
+        if let transportFailure { throw transportFailure }
+        if let rawReply { return WebReply(data: rawReply, headers: [:]) }
         if path == "/backup/back_parameter" { return WebReply(data:backupData,headers:[:]) }
         if path == "/cgi-bin/cgi-upload" {
             guard let data, let type = contentType, let boundary = type.components(separatedBy:"boundary=").last,
@@ -79,12 +86,12 @@ private final class MockWeb: WebTransport {
             result = ["zte_web_sault":challenge]
         case "web_login":
             loginArguments = params[3] as! [String:Any]
-            result = ["result":accepted ? 0 : 1,"ubus_rpc_session":session]
+            result = ["result":loginResult ?? (accepted ? 0 : 1),"ubus_rpc_session":session]
             headers["set-cookie"] = cookieHeader
         case "device_info":
             try check(params[0] as? String == sessionID && cookie == "test-cookie", "Authenticated identity")
             identityCalls += 1; result = info
-            if let n = identityChangeAfter, identityCalls >= n { result["imei"] = "490154203237526" }
+            if let n = identityChangeAfter, identityCalls >= n { result["imei"] = "353490068701230" }
         case "device_backup_proc": backupCount += 1
         case "device_restore_proc": restoreCount += 1
         default: throw TestFailure.check("Unexpected RPC: \(method)")
@@ -100,10 +107,13 @@ private final class MockHost: HostCommandRunner {
     var deviceList = "List of devices attached\n", identityCID = testCID, identityIMEI = testIMEI
     var deviceListSequence = [String](), identityCIDSequence = [String]()
     var identityHashesValid = true, identityMode = false
+    var identityFirmware = ModemEngine.firmwareHash, identityInfo = deviceObject()
     var fullInstaller = false, installed = false, loseInstallAcknowledgement = false
+    var failPushAt: Int?, pushCount = 0, preflightError = false
     var installerCalls = 0, stage = "", remoteJournal = "", uploads = [String:Data]()
     var onInstall: (() -> Void)?
     private func quoted(_ text: String) throws -> [String] {
+        let text = text.components(separatedBy: "); zte_code=").first ?? text
         let expression=try NSRegularExpression(pattern:"'([^']*)'")
         return expression.matches(in:text,range:NSRange(text.startIndex...,in:text)).map {String(text[Range($0.range(at:1),in:text)!])}
     }
@@ -121,6 +131,8 @@ private final class MockHost: HostCommandRunner {
         var value: String
         if arguments == ["devices","-l"] { value = deviceListSequence.isEmpty ? deviceList : deviceListSequence.removeFirst() }
         else if fullInstaller && arguments.count == 5 && arguments[2] == "push" {
+            pushCount += 1
+            if pushCount == failPushAt { throw IMEIError.message("synthetic interrupted upload") }
             let path=arguments[4];try check(path.hasPrefix(stage+"/"),"Upload only owned stage")
             uploads[path]=try Data(contentsOf:URL(fileURLWithPath:arguments[3]));value="1 file pushed"
         }
@@ -130,12 +142,22 @@ private final class MockHost: HostCommandRunner {
             guard let match = regex.firstMatch(in:command,range:NSRange(command.startIndex...,in:command)), let range = Range(match.range,in:command) else { throw TestFailure.check("Missing shell exit wrapper") }
             value = shellText
             if identityMode && command.contains("sha256sum /firmware/image/modem.b16") {
-                let info = String(data:try JSONSerialization.data(withJSONObject:deviceObject(identityIMEI),options:.sortedKeys),encoding:.utf8)!
+                var object = identityInfo; object["imei"] = identityIMEI
+                let info = String(data:try JSONSerialization.data(withJSONObject:object,options:.sortedKeys),encoding:.utf8)!
                 let cid = identityCIDSequence.isEmpty ? identityCID : identityCIDSequence.removeFirst()
-                value = (identityHashesValid ? ModemEngine.firmwareHash : String(repeating:"0",count:64)) + "  /firmware/image/modem.b16\n" + ModemEngine.routerHash + "  /usr/bin/diag-router\n" + cid + "\n" + info
+                value = (identityHashesValid ? identityFirmware : String(repeating:"0",count:64)) + "  /firmware/image/modem.b16\n" + ModemEngine.routerHash + "  /usr/bin/diag-router\n" + cid + "\n" + info
+            } else if command.hasPrefix("(sh -c ") && command.contains("'--preflight'") {
+                value = preflightError ? "INSTALL_ERROR PREFLIGHT_TOOL" : "INSTALL_PREFLIGHT " + (command.contains("'b02-experimental'") ? "b02-experimental" : "b31") + " imei_config=unknown"
+                if preflightError { shellCode = "1" }
             } else if fullInstaller {
-                if command.hasPrefix("(umask 077; mkdir ") {
-                    stage=try quoted(command)[0];try check(stage.hasPrefix("/data/local/tmp/zte-imei-setup-"),"Owned staging path");value=""
+                if command.contains("printf 'INSTALL_STAGE_READY") {
+                    stage=try quoted(command)[0];try check(stage.hasPrefix("/data/local/tmp/zte-imei-setup-"),"Owned staging path");value="INSTALL_STAGE_READY"
+                } else if command.hasPrefix("(set -eu; test -d ") {
+                    let paths = try quoted(command), source = paths[paths.count - 2], destination = paths.last!
+                    try check(source.hasPrefix(stage + "/incoming-") && destination.hasPrefix(stage + "/"), "Atomic stage promotion")
+                    guard let data = uploads.removeValue(forKey: source) else { throw TestFailure.check("Promotion without staged incoming file") }
+                    uploads[destination] = data; value = ""
+                } else if command.hasPrefix("(set -eu; umask 077; set -C; printf ") { value = ""
                 } else if command.hasPrefix("(set -e; chmod 600 ") {
                     let path=try quoted(command)[0];guard let data=uploads[path] else {throw TestFailure.check("Hash check without upload")}
                     value=digest(data)+"  "+path
@@ -144,6 +166,7 @@ private final class MockHost: HostCommandRunner {
                     try check(args.count >= 6 && args[0] == stage+"/setup-agent.sh" && args[1] == stage && args[2] == testCID,"Exact installer invocation and CID")
                     for name in ["zte-agent","dropbear","setup-agent.sh","start_zte_imei_studio.sh","id_ed25519.pub","start-agent.sh"] {try check(uploads[stage+"/"+name] != nil,"Missing staged asset")}
                     try check(args[3] == digest(uploads[stage+"/zte-agent"]!) && args[4] == digest(uploads[stage+"/dropbear"]!) && args[5] == digest(uploads[stage+"/id_ed25519.pub"]!),"Installer hashes")
+                    try check(args.count == 9 && args[7] == identityFirmware && args[8] == ModemEngine.routerHash, "Bound installer policy hashes")
                     try check(!command.contains(testPassword),"Password absent from installer argv")
                     installerCalls += 1;installed=true;remoteJournal="/data/local/tmp/zte-imei-installations/"+String(stage.split(separator:"/").last!.dropFirst("zte-imei-setup-".count));onInstall?()
                     value="INSTALL_AGENT new\nINSTALL_READY "+remoteJournal
@@ -165,12 +188,29 @@ private final class UnavailableSSH: RemoteTransport {
     var calls = [String]()
     var ready=false, probesAvailable=true, authenticationAccepted=true, authenticationCalls=0, commitCalls=0
     var installedJournal="",uploads=[String:Data](),malformedSnapshot=false
+    var firmware = ModemEngine.firmwareHash, info = deviceObject()
+    var identityReads = 0, changeBootAfterAuthentication = false
+    var accessProofReads = 0, changeAccessBoot = false, accessCID = testCID, accessRouter = ModemEngine.routerHash
+    var accessFailure: CommandResult?
+    var expectedAgentPassword = testPassword
     private func output(_ value: String, status: Int32 = 0) -> CommandResult {CommandResult(status:status,stdout:Data(value.utf8),stderr:Data())}
     func run(_ command: String, input: Data?, timeout: TimeInterval) throws -> CommandResult {
         calls.append(command)
+        if let accessFailure, command == DiagnosticTransportSelector.identityCommand(requireWeb: true) { return accessFailure }
         if !ready {throw IMEIError.message("Synthetic SSH unavailable")}
+        if command == DiagnosticTransportSelector.identityCommand(requireWeb: true) {
+            accessProofReads += 1
+            let boot = changeAccessBoot && accessProofReads > 1 ? "11234567-89ab-4cde-8f01-23456789abcd" : "01234567-89ab-4cde-8f01-23456789abcd"
+            let web = String(decoding: try JSONSerialization.data(withJSONObject: info), as: UTF8.self)
+            return output(firmware + "  /firmware/image/modem.b16\n" + accessRouter + "  /usr/bin/diag-router\n" + accessCID + "\n" + boot + "\n" + web + "\n")
+        }
         if command.contains("printf ZTE_AGENT_PRESENT") {return probesAvailable ? output("ZTE_AGENT_PRESENT") : output("",status:1)}
-        if command.hasPrefix("sha256sum /firmware/image/modem.b16 ") {return output(ModemEngine.firmwareHash+"  /firmware/image/modem.b16\n"+ModemEngine.routerHash+"  /usr/bin/diag-router\n"+testCID+"\n01234567-89ab-4cde-8f01-23456789abcd\n")}
+        if command.hasPrefix("sha256sum /firmware/image/modem.b16 ") {
+            identityReads += 1
+            let boot = changeBootAfterAuthentication && authenticationCalls > 0 ? "11234567-89ab-4cde-8f01-23456789abcd" : "01234567-89ab-4cde-8f01-23456789abcd"
+            return output(firmware+"  /firmware/image/modem.b16\n"+ModemEngine.routerHash+"  /usr/bin/diag-router\n"+testCID+"\n"+boot+"\n")
+        }
+        if command.contains("ubus call zwrt_web device_info") { return CommandResult(status: 0, stdout: try JSONSerialization.data(withJSONObject: info), stderr: Data()) }
         if command.contains("/tmp/zte-imei-app.lock") || command.hasPrefix("umask 077; mkdir '/tmp/zte-imei-") || command.hasPrefix("rm -f '/tmp/zte-imei-") {return output("")}
         if command.hasPrefix("umask 077; cat > '") {
             let path=String(command.dropFirst("umask 077; cat > '".count).prefix {$0 != "'"})
@@ -181,16 +221,16 @@ private final class UnavailableSSH: RemoteTransport {
             try check(uploads[path] == Data("SYNTHETIC-zte_nv".utf8),"Snapshot helper matches fixture")
             if malformedSnapshot {return output("APP_NV broken")}
             var first=Data(repeating:0xa5,count:128),second=Data(repeating:0x5a,count:128)
-            first.replaceSubrange(0..<9,with:[0x08, 0x4a, 0x09, 0x51, 0x24, 0x30, 0x32, 0x57, 0x81])
-            second.replaceSubrange(0..<9,with:[0x08, 0x4a, 0x09, 0x51, 0x24, 0x30, 0x32, 0x57, 0x62])
+            first.replaceSubrange(0..<9,with:[0x08,0x3a,0x35,0x94,0x00,0x86,0x07,0x21,0x22])
+            second.replaceSubrange(0..<9,with:[0x08,0x3a,0x35,0x94,0x00,0x86,0x07,0x21,0x03])
             return output("APP_NV index=0 data="+first.hex+"\nAPP_NV index=1 data="+second.hex+"\n")
         }
-        if command.hasPrefix("ubus call zwrt_zte_mdm.api get_imei") {return output("{\"imei\":\""+(command.hasSuffix("get_imei2") ? "490154203237526" : testIMEI)+"\"}")}
+        if command.hasPrefix("ubus call zwrt_zte_mdm.api get_imei") {return output("{\"imei\":\""+(command.hasSuffix("get_imei2") ? "353490068701230" : testIMEI)+"\"}")}
         if command.contains("printf AGENT_READY") {return output("AGENT_READY")}
         if command.contains("/present/data_zte-agent") {return output("NEW")}
         if command.hasPrefix("/usr/bin/curl ") {
             let body=try JSONSerialization.jsonObject(with:input!) as! [String:Any]
-            try check(body["password"] as? String == testPassword && !command.contains(testPassword),"Agent credentials passed only through stdin")
+            try check(body["password"] as? String == expectedAgentPassword && !command.contains(expectedAgentPassword),"Agent credentials passed only through stdin")
             authenticationCalls += 1
             return output(authenticationAccepted ? "{\"ok\":true,\"data\":{\"token\":\"synthetic-token\"}}" : "{\"ok\":false}")
         }
@@ -218,7 +258,7 @@ private struct Fixture {
         let connection = Connection(host:"192.0.2.1",port:"2222",keyPath:root.appendingPathComponent("absent-key").path,knownHostsPath:root.appendingPathComponent("absent-hosts").path)
         let client = try ModemWebClient(host:connection.host,transport:web)
         let injectedSSH = ssh
-        engine = try OnboardingEngine(root:root,resources:resources,connection:connection,web:client,runner:host,sshFactory:{_ in injectedSSH})
+        engine = try OnboardingEngine(root:root,resources:resources,connection:connection,backupSuffix:testBackupSuffix,web:client,runner:host,sshFactory:{_ in injectedSSH})
     }
     func remove() { try? FileManager.default.removeItem(at:base) }
 }
@@ -231,10 +271,97 @@ private struct Fixture {
             do { try body(); passed += 1; print("PASS \(name)");results.append(["name":name,"result":"PASS"]) }
             catch { failed += 1; print("FAIL \(name): \(error)");results.append(["name":name,"result":"FAIL","error":String(describing:error)]) }
         }
-        run("Public build requires a supplied backup suffix before any web request") {
+        run("Existing SSH preparation needs no HTTP credentials backup agent or NV mutation") {
+            let f = try Fixture(data: Data("invalid archive must not be read".utf8)); defer { f.remove() }
+            f.web.accepted = false; f.ssh.ready = true; f.ssh.malformedSnapshot = true; f.ssh.authenticationAccepted = false
+            let result = try f.engine.prepareSSH(expectedIdentity: Identity(cid: testCID, firmwareHash: ModemEngine.firmwareHash))
+            try check(result?.identity.cid == testCID && result?.state == nil && result?.suffix == "", "Access-only proof overstated NV or backup readiness")
+            try check(f.web.requests.isEmpty && f.host.calls.isEmpty && f.ssh.accessProofReads == 2, "SSH preparation touched HTTP or host installer")
+            try check(f.ssh.calls.allSatisfy { $0 == DiagnosticTransportSelector.identityCommand(requireWeb: true) }, "SSH probe performed an extra operation")
+            try check(!FileManager.default.fileExists(atPath: f.engine.pending.path), "Read-only preparation created installation intent")
+        }
+        run("Unavailable SSH preparation returns nil without web login or ADB activation") {
             let f = try Fixture(); defer { f.remove() }
-            try rejects("Введите ключ") { _ = try f.engine.prepare(password:testPassword, backupSuffix:"") }
-            try check(f.web.requests.isEmpty, "Blank suffix caused network activity")
+            try check(try f.engine.prepareSSH() == nil, "Unavailable SSH accepted")
+            try check(f.web.requests.isEmpty && f.host.calls.isEmpty && f.ssh.calls.count == 2, "Probe bypassed SSH boundary")
+        }
+        run("SSH preparation host trust failures cannot fall through to another key or transport") {
+            let f = try Fixture(); defer { f.remove() }
+            f.ssh.accessFailure = CommandResult(status: 255, stdout: Data(), stderr: Data("WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!".utf8))
+            try rejects("Проверка ключа SSH") { _ = try f.engine.prepareSSH() }
+            try check(f.ssh.calls.count == 1 && f.host.calls.isEmpty && f.web.requests.isEmpty, "Trust failure fell back")
+        }
+        run("SSH preparation refuses wrong CID changed boot and unknown router before writes") {
+            for failure in 0..<3 {
+                let f = try Fixture(); defer { f.remove() }; f.ssh.ready = true
+                if failure == 0 { f.ssh.accessCID = String(repeating: "b", count: 32) }
+                if failure == 1 { f.ssh.changeAccessBoot = true }
+                if failure == 2 { f.ssh.accessRouter = String(repeating: "0", count: 64) }
+                try rejects { _ = try f.engine.prepareSSH(expectedIdentity: Identity(cid: testCID, firmwareHash: ModemEngine.firmwareHash)) }
+                try check(f.web.requests.isEmpty && f.host.calls.isEmpty && f.ssh.uploads.isEmpty && f.ssh.authenticationCalls == 0, "Invalid identity reached mutation/authentication")
+            }
+        }
+        run("SSH preparation recognizes opted-in B02 without NV and refuses unknown firmware") {
+            let f = try Fixture(); defer { f.remove() }; f.ssh.ready = true
+            f.ssh.info["integrate_version"] = "STD_PL_MU5250V1.0.0B02"; f.ssh.info["wa_inner_version"] = "BD_STDPLMU5250V1.0.0B02"
+            f.ssh.firmware = OnboardingEngine.b02FirmwareHash
+            try rejects { _ = try f.engine.prepareSSH() }
+            var connection = f.engine.currentConnection; connection.skipFirmwareCheck = true
+            let manager = try OnboardingEngine(root: f.root, resources: f.resources, connection: connection, backupSuffix: testBackupSuffix, web: f.engine.web, runner: f.host, sshFactory: { _ in f.ssh })
+            try check(try manager.prepareSSH()?.firmware.hasSuffix("B02") == true, "Known B02 SSH not recognized")
+            f.ssh.firmware = String(repeating: "0", count: 64)
+            try rejects { _ = try manager.prepareSSH() }
+            try check(f.web.requests.isEmpty && f.host.calls.isEmpty && f.ssh.authenticationCalls == 0 && f.ssh.uploads.isEmpty, "B02 access probe inferred agent/NV readiness")
+        }
+        run("SSH preparation preserves pending setup and requires explicit continuation") {
+            let f = try Fixture(); defer { f.remove() }; f.ssh.ready = true
+            let saved = Data("saved installation intent".utf8); try savePrivate(saved, f.engine.pending)
+            try rejects("незавершённую настройку") { _ = try f.engine.prepareSSH() }
+            try check(try Data(contentsOf: f.engine.pending) == saved, "Pending install was changed by access probe")
+            try check(f.ssh.calls.isEmpty && f.web.requests.isEmpty && f.host.calls.isEmpty, "Pending guard did not stop early")
+        }
+        run("Explicit installation keeps web and agent passwords separate") {
+            let f = try Fixture(); defer { f.remove() }
+            let agentPassword = "separate-agent-password'123"
+            f.host.fullInstaller = true; f.host.identityMode = true; f.host.deviceList = "List of devices attached\nABC device\n"
+            f.ssh.expectedAgentPassword = agentPassword
+            f.host.onInstall = { [weak host = f.host, weak ssh = f.ssh] in ssh?.ready = true; ssh?.installedJournal = host?.remoteJournal ?? "" }
+            _ = try f.engine.run(webPassword: testPassword, agentPassword: agentPassword)
+            try check(f.web.loginArguments["password"] as? String == expectedPasswordHash && f.ssh.authenticationCalls == 1, "Credentials were mixed between services")
+            let startup = String(decoding: f.host.uploads[f.host.stage + "/start-agent.sh"]!, as: UTF8.self)
+            try check(startup.contains(shellQuote(agentPassword)) && !startup.contains(testPassword), "Startup contains web credentials")
+            try check(!f.host.calls.flatMap { $0 }.contains { $0.contains(agentPassword) } && !f.ssh.calls.contains { $0.contains(agentPassword) }, "Agent password leaked into command arguments")
+            try check(f.web.backupCount == 1 && f.host.installerCalls == 1 && f.ssh.commitCalls == 1, "Separate credentials skipped installation safeguards")
+        }
+        run("Missing separate agent password stops before web login or installation") {
+            let f = try Fixture(); defer { f.remove() }
+            try rejects("пароль агента") { _ = try f.engine.run(webPassword: testPassword, agentPassword: "") }
+            try check(f.web.requests.isEmpty && f.ssh.calls.isEmpty && f.host.calls.isEmpty, "Empty agent credential triggered setup")
+        }
+        run("SSH preparation preserves a known API IMEI without requiring a CID") {
+            let f = try Fixture(); defer { f.remove() }; f.ssh.ready = true
+            try check(try f.engine.prepareSSH(expectedIMEI: testIMEI)?.identity.cid == testCID, "Matching API IMEI rejected")
+            try rejects("другому модему") { _ = try f.engine.prepareSSH(expectedIMEI: "353490068701230") }
+            try check(f.web.requests.isEmpty && f.host.calls.isEmpty && f.ssh.uploads.isEmpty, "IMEI continuity probe mutated device")
+        }
+        run("Preparation refuses another web IMEI before fresh backup or device writes") {
+            let f = try Fixture(); defer { f.remove() }
+            try rejects("другому модему") { _ = try f.engine.run(webPassword: testPassword, agentPassword: testPassword, expectedIMEI: "353490068701230") }
+            try check(f.web.backupCount == 0 && f.web.uploadedData == nil && f.web.restoreCount == 0 && f.host.calls.isEmpty && f.ssh.calls.isEmpty, "Different web target reached preparation")
+        }
+        run("Known CID mismatch blocks existing ADB and SSH before helper or stage writes") {
+            for viaSSH in [false, true] {
+                let f = try Fixture(); defer { f.remove() }
+                if viaSSH { f.ssh.ready = true; f.ssh.accessCID = String(repeating: "b", count: 32) }
+                else { f.host.identityMode = true; f.host.identityCID = String(repeating: "b", count: 32); f.host.deviceList = "List of devices attached\nABC device\n" }
+                try rejects("CID отличается") { _ = try f.engine.run(webPassword: testPassword, agentPassword: testPassword, expectedIdentity: Identity(cid: testCID, firmwareHash: ModemEngine.firmwareHash), expectedIMEI: testIMEI) }
+                try check(f.web.uploadedData == nil && f.web.restoreCount == 0 && f.ssh.uploads.isEmpty && !f.host.calls.contains { $0.contains("push") || $0.joined().contains("mkdir") }, "CID mismatch reached mutation")
+            }
+        }
+        run("Known CID without an IMEI mapping cannot enable ADB through another web endpoint") {
+            let f = try Fixture(); defer { f.remove() }
+            try rejects("не сообщает CID") { _ = try f.engine.run(webPassword: testPassword, agentPassword: testPassword, expectedIdentity: Identity(cid: testCID, firmwareHash: ModemEngine.firmwareHash)) }
+            try check(f.web.uploadedData == nil && f.web.restoreCount == 0 && f.host.installerCalls == 0, "CID-only expectation permitted web restore")
         }
         run("Web challenge matches independent SHA256 vector without plaintext password") {
             let mock = MockWeb(Data()), client = try ModemWebClient(host:"192.0.2.1",transport:mock)
@@ -245,7 +372,7 @@ private struct Fixture {
         }
         run("Rejected password stops before identity backup or host commands") {
             let f = try Fixture(); defer { f.remove() }; f.web.accepted=false
-            try rejects("Вход отклонён") { _ = try f.engine.run(password:testPassword, backupSuffix:testSuffix) }
+            try rejects("Вход отклонён") { _ = try f.engine.run(password:testPassword) }
             try check(f.web.methods == ["web_login_info","web_login"] && f.host.calls.isEmpty && f.ssh.calls.isEmpty, "No further action")
             try check(!FileManager.default.fileExists(atPath:f.engine.pending.path), "No write journal")
         }
@@ -258,18 +385,83 @@ private struct Fixture {
                 try rejects { try client.login(password:testPassword) }
             }
         }
+        run("Empty Web password is distinct and clears a previously authenticated session") {
+            let mock = MockWeb(Data()), client = try ModemWebClient(host: "192.0.2.1", transport: mock)
+            try client.login(password: testPassword)
+            let previousRequests = mock.requests.count
+            try rejectsWeb(.passwordRequired) { try client.login(password: "") }
+            try check(mock.requests.count == previousRequests, "Empty password sent an authentication attempt")
+            try check(client.cookie == nil && client.session == String(repeating: "0", count: 32), "Old credentials survived failed login")
+        }
+        run("Only explicit Web password rejection has invalidPassword type") {
+            for result: Any in [1, "1"] {
+                let mock = MockWeb(Data()), client = try ModemWebClient(host: "192.0.2.1", transport: mock)
+                mock.loginResult = result
+                try rejectsWeb(.invalidPassword) { try client.login(password: testPassword) }
+                try check(mock.methods == ["web_login_info", "web_login"], "Password rejection retried or continued")
+                try check(client.cookie == nil && client.session == String(repeating: "0", count: 32), "Rejected login retained credentials")
+            }
+        }
+        run("Unknown Web login codes remain explicit rejection without claiming a wrong password") {
+            for result: Any in [2, "9", -1] {
+                let mock = MockWeb(Data()), client = try ModemWebClient(host: "192.0.2.1", transport: mock)
+                mock.loginResult = result
+                let expected = Int(String(describing: result))!
+                try rejectsWeb(.authenticationRejected(code: expected)) { try client.login(password: testPassword) }
+            }
+        }
+        run("Successful numeric and string Web login status require real session credentials") {
+            for result: Any in [0, "0"] {
+                let mock = MockWeb(Data()), client = try ModemWebClient(host: "192.0.2.1", transport: mock)
+                mock.loginResult = result
+                try client.login(password: testPassword)
+                try check(try client.identity().imei == testIMEI, "Successful authentication did not permit identity")
+            }
+        }
+        run("Malformed Web login results and sessions are protocol errors instead of password errors") {
+            for choice in 0..<7 {
+                let mock = MockWeb(Data()), client = try ModemWebClient(host: "192.0.2.1", transport: mock)
+                switch choice {
+                case 0: mock.cookieHeader = "unrelated=x"
+                case 1: mock.session = String(repeating: "0", count: 32)
+                case 2: mock.challenge = ""
+                case 3: mock.loginResult = NSNull()
+                case 4: mock.loginResult = false
+                case 5: mock.loginResult = "unexpected"
+                default: mock.rawReply = Data("not JSON".utf8)
+                }
+                do { try client.login(password: testPassword); throw TestFailure.check("Malformed login succeeded") }
+                catch let error as ModemWebError {
+                    guard case .malformedResponse = error else { throw TestFailure.check("Malformed response mislabeled: \(error)") }
+                }
+                try check(client.cookie == nil && client.session == String(repeating: "0", count: 32), "Malformed login retained credentials")
+            }
+        }
+        run("Web RPC refusal does not falsely identify the password as invalid") {
+            let mock = MockWeb(Data()), client = try ModemWebClient(host: "192.0.2.1", transport: mock)
+            mock.outerError = 6
+            try rejectsWeb(.rpcRejected(method: "web_login_info", code: 6)) { try client.login(password: testPassword) }
+            try check(mock.methods == ["web_login_info"], "RPC refusal still sent a password")
+        }
+        run("Web connection failure remains a transport error and is never retried") {
+            let mock = MockWeb(Data()), client = try ModemWebClient(host: "192.0.2.1", transport: mock)
+            mock.transportFailure = URLError(.cannotConnectToHost)
+            do { try client.login(password: testPassword); throw TestFailure.check("Connection unexpectedly succeeded") }
+            catch let error as URLError { try check(error.code == .cannotConnectToHost, "Transport error changed") }
+            try check(mock.requests.count == 1 && mock.methods.isEmpty, "Transport failure retried or sent password")
+        }
         run("Wrong firmware and invalid web IMEI stop before fresh backup") {
             for choice in 0..<2 {
                 let f=try Fixture(); defer {f.remove()}
                 if choice == 0 {f.web.info["integrate_version"]="CN_ZTE_MU5250V1.0.0B32"}
-                else {f.web.info["imei"]="490154203237519"}
-                try rejects {_ = try f.engine.run(password:testPassword, backupSuffix:testSuffix)}
+                else {f.web.info["imei"]="353490068701223"}
+                try rejects {_ = try f.engine.run(password:testPassword)}
                 try check(f.web.backupCount == 0 && f.web.uploadedData == nil && f.web.restoreCount == 0 && f.host.calls.isEmpty, "Unknown identity cannot progress")
             }
         }
         run("Fresh backup preparation verifies suffix and saves originals privately") {
             let f=try Fixture(); defer {f.remove()}
-            let (identity,result,directory)=try f.engine.prepare(password:testPassword, backupSuffix:testSuffix)
+            let (identity,result,directory)=try f.engine.prepare(password:testPassword)
             try check(identity.imei == testIMEI && !result.alreadyEnabled && f.web.backupCount == 1, "Prepared fresh backup")
             try check(try Data(contentsOf:directory.appendingPathComponent("back_parameter.original")) == f.web.backupData, "Exact encrypted original")
             let permissions = try FileManager.default.attributesOfItem(atPath:directory.appendingPathComponent("back_parameter.original").path)[.posixPermissions] as? NSNumber
@@ -277,40 +469,40 @@ private struct Fixture {
         }
         run("Malformed encrypted backup never uploads or restores") {
             let f=try Fixture(data:Data("not an encrypted backup".utf8)); defer {f.remove()}
-            try rejects {_ = try f.engine.run(password:testPassword, backupSuffix:testSuffix)}
+            try rejects {_ = try f.engine.run(password:testPassword)}
             try check(f.web.backupCount == 1 && f.web.uploadedData == nil && f.web.restoreCount == 0 && f.host.calls.isEmpty, "Malformed archive blocks mutation")
         }
         run("Incorrect suffix cannot pass archive verification or upload") {
             let f=try Fixture(data:backup(suffix:"synthetic-wrong-suffix")); defer {f.remove()}
-            try rejects {_ = try f.engine.run(password:testPassword, backupSuffix:testSuffix)}
+            try rejects {_ = try f.engine.run(password:testPassword)}
             try check(f.web.uploadedData == nil && f.web.restoreCount == 0 && f.host.calls.isEmpty, "Unverified suffix blocks mutation")
         }
         run("Identity change while obtaining backup blocks patch upload") {
             let f=try Fixture(); defer {f.remove()}; f.web.identityChangeAfter=2
-            try rejects("Устройство изменилось") {_ = try f.engine.run(password:testPassword, backupSuffix:testSuffix)}
+            try rejects("Устройство изменилось") {_ = try f.engine.run(password:testPassword)}
             try check(f.web.uploadedData == nil && f.web.restoreCount == 0, "Identity rechecked after backup")
         }
         run("Upload SHA mismatch blocks restore and preserves pending intent") {
             let f=try Fixture(); defer {f.remove()}; f.web.badUploadHash=true
-            try rejects("SHA256") {_ = try f.engine.run(password:testPassword, backupSuffix:testSuffix)}
+            try rejects("SHA256") {_ = try f.engine.run(password:testPassword)}
             try check(f.web.uploadedData != nil && f.web.restoreCount == 0, "No restore after bad upload digest")
             let journal = try readJSON(SetupJournal.self,f.engine.pending)
             try check(!journal.restoreRequested && !journal.installRequested, "No false restore/install claim")
-            _ = try BackupPatch.inspect(BackupCipher.decrypt(f.web.uploadedData!,password:testIMEI+testSuffix))
+            _ = try BackupPatch.inspect(BackupCipher.decrypt(f.web.uploadedData!,password:testIMEI+testBackupSuffix))
             try check(f.host.calls == [["devices","-l"]], "No installation commands")
         }
         run("Identity change after upload blocks restore") {
             let f=try Fixture(); defer {f.remove()}; f.web.identityChangeAfter=4
-            try rejects("Устройство изменилось") {_ = try f.engine.run(password:testPassword, backupSuffix:testSuffix)}
+            try rejects("Устройство изменилось") {_ = try f.engine.run(password:testPassword)}
             try check(f.web.uploadedData != nil && f.web.restoreCount == 0, "Restore requires final identity check")
         }
         run("Retry before restore pairs new candidate with its own fresh original") {
             let f=try Fixture(); defer {f.remove()}; f.web.badUploadHash=true
             let oldOriginal=f.web.backupData
-            try rejects("SHA256") {_ = try f.engine.run(password:testPassword, backupSuffix:testSuffix)}
+            try rejects("SHA256") {_ = try f.engine.run(password:testPassword)}
             let first=try readJSON(SetupJournal.self,f.engine.pending)
             f.web.backupData=try backup()
-            try rejects("SHA256") {_ = try f.engine.run(password:testPassword, backupSuffix:testSuffix)}
+            try rejects("SHA256") {_ = try f.engine.run(password:testPassword)}
             let second=try readJSON(SetupJournal.self,f.engine.pending)
             try check(second.directory != first.directory && second.id == first.id,"Fresh backup gets its own directory on pre-restore retry")
             try check(try Data(contentsOf:URL(fileURLWithPath:second.directory).appendingPathComponent("back_parameter.original")) == f.web.backupData,"New candidate has matching original")
@@ -324,7 +516,7 @@ private struct Fixture {
             try saveJSON(pending,f.engine.pending)
             f.host.deviceListSequence=["List of devices attached\n","List of devices attached\nABC device\n"]
             f.host.identityMode=true;f.host.shellText="pending"
-            try rejects("прервалась до готовности") {_ = try f.engine.run(password:testPassword, backupSuffix:testSuffix)}
+            try rejects("прервалась до готовности") {_ = try f.engine.run(password:testPassword)}
             try check(f.web.uploadedData == nil && f.web.restoreCount == 0,"No web restore after install intent")
             let saved=try readJSON(SetupJournal.self,f.engine.pending)
             try check(saved.directory == directory.path,"Recovery keeps original journal directory")
@@ -335,14 +527,14 @@ private struct Fixture {
             var pending=SetupJournal(id:UUID().uuidString.lowercased(),identity:try WebIdentity(deviceObject()),phase:"prepared",directory:directory.path)
             pending.cid=String(repeating:"a",count:32);try saveJSON(pending,f.engine.pending)
             f.host.deviceList="List of devices attached\nABC device\n";f.host.identityMode=true
-            try rejects("CID отличается") {_ = try f.engine.run(password:testPassword, backupSuffix:testSuffix)}
+            try rejects("CID отличается") {_ = try f.engine.run(password:testPassword)}
             try check(!f.host.calls.contains {$0.contains("push") || $0.contains("-q") || $0.joined().contains("mkdir")},"No writes to mismatched CID")
         }
         run("CID change immediately before staging blocks every device write") {
             let f=try Fixture();defer {f.remove()}
             f.host.deviceList="List of devices attached\nABC device\n";f.host.identityMode=true
             f.host.identityCIDSequence=[testCID,String(repeating:"a",count:32)]
-            try rejects("CID изменился перед передачей") {_ = try f.engine.run(password:testPassword, backupSuffix:testSuffix)}
+            try rejects("CID изменился перед передачей") {_ = try f.engine.run(password:testPassword)}
             try check(!f.host.calls.contains {$0.contains("push") || $0.joined().contains("mkdir")},"No stage creation/push after identity changed")
             try check(f.web.uploadedData == nil && f.web.restoreCount == 0,"Existing ADB skips web restore")
         }
@@ -351,8 +543,8 @@ private struct Fixture {
             f.host.fullInstaller=true;f.host.identityMode=true;f.host.deviceList="List of devices attached\nABC device\n"
             f.host.deviceListSequence=["List of devices attached\n",f.host.deviceList]
             f.host.onInstall={ [weak host=f.host,weak ssh=f.ssh] in ssh?.ready=true;ssh?.installedJournal=host?.remoteJournal ?? "" }
-            let result=try f.engine.run(password:testPassword, backupSuffix:testSuffix)
-            try check(result.state.imeis == [testIMEI,"490154203237526"] && result.state.identity.cid == testCID,"Final verified modem state")
+            let result=try f.engine.run(password:testPassword)
+            try check(result.state?.imeis == [testIMEI,"353490068701230"] && result.state?.identity.cid == testCID,"Final verified modem state")
             try check(f.web.backupCount == 1 && f.web.restoreCount == 1 && f.host.installerCalls == 1,"Backup and restore/install exactly once")
             try check(f.ssh.authenticationCalls == 1 && f.ssh.commitCalls == 1,"New agent authenticated before commit")
             try check(!FileManager.default.fileExists(atPath:f.engine.pending.path),"Completed setup clears pending journal")
@@ -364,14 +556,32 @@ private struct Fixture {
         }
         run("Existing SSH agent fast path does not upload restore or install") {
             let f=try Fixture();defer {f.remove()};f.ssh.ready=true
-            let result=try f.engine.run(password:testPassword, backupSuffix:testSuffix)
-            try check(result.state.identity.cid == testCID && result.state.imeis == [testIMEI,"490154203237526"],"Existing pair verified via NV and API")
+            let result=try f.engine.run(password:testPassword)
+            try check(result.state?.identity.cid == testCID && result.state?.imeis == [testIMEI,"353490068701230"],"Existing pair verified via NV and API")
             try check(f.web.uploadedData == nil && f.web.restoreCount == 0 && f.host.calls.isEmpty,"No ADB/bootstrap mutations on existing access")
             try check(f.ssh.authenticationCalls == 0 && f.ssh.commitCalls == 0,"Existing credentials are preserved")
         }
+        run("Successful initial preparation installs SSH and agent without VPN or launcher components") {
+            let f = try Fixture(); defer { f.remove() }
+            f.host.fullInstaller = true; f.host.identityMode = true
+            f.host.deviceList = "List of devices attached\nABC device\n"
+            f.host.onInstall = { [weak host = f.host, weak ssh = f.ssh] in
+                ssh?.ready = true; ssh?.installedJournal = host?.remoteJournal ?? ""
+            }
+            try check(!FileManager.default.fileExists(atPath: f.resources.appendingPathComponent("VPN").path), "Fixture unexpectedly provides optional VPN resources")
+            let result = try f.engine.run(password: testPassword)
+            try check(result.identity.cid == testCID && f.host.installerCalls == 1 && f.ssh.authenticationCalls == 1 && f.ssh.commitCalls == 1, "Preparation did not complete verified SSH and agent installation")
+            let staged = Set(f.host.uploads.keys.map { URL(fileURLWithPath: $0).lastPathComponent })
+            try check(staged == Set(["zte-agent", "dropbear", "setup-agent.sh", "start_zte_imei_studio.sh", "id_ed25519.pub", "start-agent.sh"]), "Preparation staged optional application components")
+            let commands = f.host.calls.map { $0.joined(separator: " ") } + f.ssh.calls
+            let optionalComponents = ["vpnctl", "/data/zte-vpn", "/data/zte-launcher", "install-launcher", "launcher.so", "mihomo"]
+            try check(commands.allSatisfy { command in optionalComponents.allSatisfy { !command.contains($0) } }, "Preparation invoked VPN or launcher setup")
+            let productionInstaller = try String(contentsOfFile: "Resources/Onboarding/setup-agent.sh", encoding: .utf8)
+            try check(optionalComponents.allSatisfy { !productionInstaller.contains($0) }, "Bundled SSH installer also configures optional VPN or launcher components")
+        }
         run("Existing SSH NV verification error cannot fall through to reinstall") {
             let f=try Fixture();defer {f.remove()};f.ssh.ready=true;f.ssh.malformedSnapshot=true
-            try rejects {_ = try f.engine.run(password:testPassword, backupSuffix:testSuffix)}
+            try rejects {_ = try f.engine.run(password:testPassword)}
             try check(f.web.uploadedData == nil && f.web.restoreCount == 0 && f.host.calls.isEmpty,"Read validation error stays an error")
         }
         run("Lost installer acknowledgement resumes ready journal without restore or installer replay") {
@@ -380,12 +590,12 @@ private struct Fixture {
             f.host.deviceListSequence=["List of devices attached\n",f.host.deviceList]
             f.host.loseInstallAcknowledgement=true
             f.host.onInstall={ [weak host=f.host,weak ssh=f.ssh] in ssh?.ready=true;ssh?.installedJournal=host?.remoteJournal ?? "" }
-            try rejects("Модем отклонил") {_ = try f.engine.run(password:testPassword, backupSuffix:testSuffix)}
+            try rejects("Модем отклонил") {_ = try f.engine.run(password:testPassword)}
             let pending=try readJSON(SetupJournal.self,f.engine.pending)
             try check(pending.installRequested && pending.restoreRequested && pending.phase == "install-requested","Intent persisted before lost ack")
             f.host.shellCode="0";f.ssh.probesAvailable=false
-            let result=try f.engine.run(password:testPassword, backupSuffix:testSuffix)
-            try check(result.state.identity.cid == testCID && f.web.restoreCount == 1 && f.host.installerCalls == 1,"Resume does not replay writes")
+            let result=try f.engine.run(password:testPassword)
+            try check(result.state?.identity.cid == testCID && f.web.restoreCount == 1 && f.host.installerCalls == 1,"Resume does not replay writes")
             try check(f.ssh.authenticationCalls == 1 && f.ssh.commitCalls == 1 && !FileManager.default.fileExists(atPath:f.engine.pending.path),"Resumed install checked and committed")
         }
         run("Agent authentication failure leaves installation pending and uncommitted") {
@@ -393,24 +603,24 @@ private struct Fixture {
             f.host.fullInstaller=true;f.host.identityMode=true;f.host.deviceList="List of devices attached\nABC device\n"
             f.host.onInstall={ [weak host=f.host,weak ssh=f.ssh] in ssh?.ready=true;ssh?.installedJournal=host?.remoteJournal ?? "" }
             f.ssh.authenticationAccepted=false
-            try rejects("не подтвердил вход") {_ = try f.engine.run(password:testPassword, backupSuffix:testSuffix)}
+            try rejects("не подтвердил вход") {_ = try f.engine.run(password:testPassword)}
             try check(f.ssh.authenticationCalls == 1 && f.ssh.commitCalls == 0 && FileManager.default.fileExists(atPath:f.engine.pending.path),"Failed auth does not commit installation")
         }
         run("Assets hash mismatch stops before web login") {
             let f=try Fixture(); defer {f.remove()}
             try savePrivate(Data("corrupt".utf8),f.resources.appendingPathComponent("Onboarding/zte-agent"))
-            try rejects("Повреждён") {_ = try f.engine.run(password:testPassword, backupSuffix:testSuffix)}
+            try rejects("Повреждён") {_ = try f.engine.run(password:testPassword)}
             try check(f.web.requests.isEmpty && f.host.calls.isEmpty, "No actions with corrupt resources")
         }
         run("Existing IMEI transaction and operation lock block onboarding") {
             let f=try Fixture(); defer {f.remove()}
             try savePrivate(Data("pending".utf8),f.root.appendingPathComponent("pending.json"))
-            try rejects("незавершённую смену") {_ = try f.engine.run(password:testPassword, backupSuffix:testSuffix)}
+            try rejects("незавершённую смену") {_ = try f.engine.run(password:testPassword)}
             try check(f.web.requests.isEmpty, "Pending IMEI guard")
             try FileManager.default.removeItem(at:f.root.appendingPathComponent("pending.json"))
             let fd=open(f.root.appendingPathComponent("operation.lock").path,O_RDWR|O_CREAT,0o600); defer {flock(fd,LOCK_UN);close(fd)}
             try check(fd >= 0 && flock(fd,LOCK_EX|LOCK_NB)==0,"Test lock held")
-            try rejects("Другая операция") {_ = try f.engine.run(password:testPassword, backupSuffix:testSuffix)}
+            try rejects("Другая операция") {_ = try f.engine.run(password:testPassword)}
             try check(f.web.requests.isEmpty,"Concurrent onboarding guard")
         }
         run("Pending onboarding blocks IMEI change and recovery before remote access") {
@@ -418,7 +628,7 @@ private struct Fixture {
             try savePrivate(Data("pending setup".utf8),f.engine.pending)
             let connection=Connection(host:"192.0.2.1",port:"2222",keyPath:"/synthetic/key",knownHostsPath:"/synthetic/hosts")
             let engine=try ModemEngine(root:f.root,resources:f.resources,connection:connection,transport:f.ssh)
-            try rejects("первоначальную настройку") {_ = try engine.begin(targets:[testIMEI,"490154203237526"])}
+            try rejects("первоначальную настройку") {_ = try engine.begin(targets:[testIMEI,"353490068701230"])}
             try rejects("первоначальную настройку") {_ = try engine.begin(targets:nil,restore:f.root.appendingPathComponent("synthetic-backup"))}
             try check(f.ssh.calls.isEmpty,"No SSH before setup pending guard")
         }
@@ -426,10 +636,14 @@ private struct Fixture {
             let host=MockHost(); host.deviceList="List of devices attached\nABC device product:x\nDEF unauthorized\nGHI offline\n\n"
             let adb=ADBClient(binary:URL(fileURLWithPath:"/synthetic/adb"),runner:host)
             try check(try adb.devices()==["ABC"],"ADB device selection")
+            host.deviceList = "List of devices attached\nUSB device usb:336592896X\nTCP device transport_id:1\nEMPTY device usb:\nDUP device usb:1 usb:2\n"
+            try check(try adb.devices(usbOnly: true) == ["USB"], "Unconfirmed physical USB descriptor accepted")
         }
         run("Legacy ADB zero process exit cannot hide failed remote command") {
             let host=MockHost(),adb=ADBClient(binary:URL(fileURLWithPath:"/synthetic/adb"),runner:host)
             try check(try adb.shell("ABC","printf synthetic") == "synthetic output","Wrapped success")
+            host.shellText = "first\r\nsecond\r\n"
+            try check(try adb.shell("ABC", "printf lines") == "first\nsecond", "Legacy CRLF normalization")
             host.shellCode="1"
             try rejects("Модем отклонил") {_ = try adb.shell("ABC","false")}
             host.shellCode="0";host.includeMarker=false
@@ -437,12 +651,99 @@ private struct Fixture {
             host.includeMarker=true;host.status=1
             try rejects("ADB не выполнил") {_ = try adb.shell("ABC","true")}
         }
+        run("ADB result preserves remote exit and payload and rejects ambiguous footer") {
+            let marker = "__ZTE_RESULT_00112233445566778899AABBCCDDEEFF__"
+            let raw = Data(("  payload\n\n" + marker + "7\n").utf8)
+            let result = try ADBClient.decodeShellResult(CommandResult(status: 0, stdout: raw, stderr: Data("warning".utf8)), marker: marker)
+            try check(result.status == 7 && result.stdout == Data("  payload\n".utf8) && result.stderr == Data("warning".utf8), "Remote result was lost or trimmed")
+            for bad in ["payload", "\n" + marker + "0\n" + marker + "0\n", "\n" + marker + "999\n", "\n" + marker + "0\ntrailing", "\n" + marker + "0"] {
+                try rejects { _ = try ADBClient.decodeShellResult(CommandResult(status: 0, stdout: Data(bad.utf8), stderr: Data()), marker: marker) }
+            }
+        }
+        run("ADB ordinary shell errors expose bounded sanitized cause and distinguish local status") {
+            let host = MockHost(), adb = ADBClient(binary: URL(fileURLWithPath: "/synthetic/adb"), runner: host)
+            host.shellCode = "1"; host.shellText = "mkdir: No such file or directory\npassword=private-value\n" + String(repeating: "x", count: 4000)
+            do { _ = try adb.shell("ABC", "mkdir /data/local/tmp/test"); throw TestFailure.check("Unexpected success") }
+            catch let failure as TestFailure { throw failure }
+            catch { let text = error.localizedDescription; try check(text.contains("удалённый код 1") && text.contains("No such file") && !text.contains("private-value") && text.count < 750, "Error omitted or leaked detail") }
+            host.status = 3; host.shellText = "unlabelled-sensitive-value"
+            do { _ = try adb.shellResult("ABC", "cat /etc/shadow"); throw TestFailure.check("Unexpected success") }
+            catch let failure as TestFailure { throw failure }
+            catch { try check(error.localizedDescription.contains("локальный код 3") && !error.localizedDescription.contains("unlabelled-sensitive-value"), "Local result leaked sensitive output") }
+        }
+        run("Installer profile allows exact B02 only with explicit experimental flag") {
+            var object = deviceObject(); object["integrate_version"] = "STD_PL_MU5250V1.0.0B02"; object["wa_inner_version"] = "BD_STDPLMU5250V1.0.0B02"
+            let web = try WebIdentity(object, skipFirmwareCheck: true), device = Identity(cid: testCID, firmwareHash: OnboardingEngine.b02FirmwareHash)
+            try check(try OnboardingEngine.installerProfile(web: web, device: device, experimental: true) == "b02-experimental", "B02 tuple not recognized")
+            try rejects { _ = try OnboardingEngine.installerProfile(web: web, device: device, experimental: false) }
+            try rejects { _ = try OnboardingEngine.installerProfile(web: web, device: Identity(cid: testCID, firmwareHash: String(repeating: "0", count: 64)), experimental: true) }
+        }
+        run("B02 without existing ADB cannot upload or restore a bootstrap backup") {
+            let f = try Fixture(); defer { f.remove() }
+            f.web.info["integrate_version"] = "STD_PL_MU5250V1.0.0B02"; f.web.info["wa_inner_version"] = "BD_STDPLMU5250V1.0.0B02"
+            var connection = f.engine.currentConnection; connection.skipFirmwareCheck = true
+            let manager = try OnboardingEngine(root: f.root, resources: f.resources, connection: connection, backupSuffix: testBackupSuffix, web: f.engine.web, runner: f.host, sshFactory: { _ in f.ssh })
+            try rejects("уже работающий root ADB") { _ = try manager.run(password: testPassword) }
+            try check(f.web.uploadedData == nil && f.web.restoreCount == 0 && f.host.installerCalls == 0, "B02 bootstrap mutated device")
+        }
+        run("TCP-only B02 ADB cannot substitute for required physical USB") {
+            let f = try Fixture(); defer { f.remove() }
+            f.web.info["integrate_version"] = "STD_PL_MU5250V1.0.0B02"; f.web.info["wa_inner_version"] = "BD_STDPLMU5250V1.0.0B02"
+            f.host.identityMode = true; f.host.fullInstaller = true; f.host.deviceList = "List of devices attached\n192.0.2.10:5555 device product:MU5250 transport_id:1\n"
+            f.host.identityInfo = f.web.info; f.host.identityFirmware = OnboardingEngine.b02FirmwareHash
+            var connection = f.engine.currentConnection; connection.skipFirmwareCheck = true
+            let manager = try OnboardingEngine(root: f.root, resources: f.resources, connection: connection, backupSuffix: testBackupSuffix, web: f.engine.web, runner: f.host, sshFactory: { _ in f.ssh })
+            try rejects("ADB по USB") { _ = try manager.run(password: testPassword) }
+            try check(f.host.calls == [["devices", "-l"]] && f.host.pushCount == 0 && f.host.installerCalls == 0 && f.web.restoreCount == 0 && f.web.uploadedData == nil, "TCP-only B02 triggered setup actions")
+        }
+        run("B02 access setup binds exact hashes and never invokes NV helpers") {
+            let f = try Fixture(); defer { f.remove() }
+            f.web.info["integrate_version"] = "STD_PL_MU5250V1.0.0B02"; f.web.info["wa_inner_version"] = "BD_STDPLMU5250V1.0.0B02"
+            f.host.identityMode = true; f.host.fullInstaller = true; f.host.deviceList = "List of devices attached\nABC device usb:1-2 transport_id:1\n"
+            f.host.identityInfo = f.web.info; f.host.identityFirmware = OnboardingEngine.b02FirmwareHash
+            f.ssh.info = f.web.info; f.ssh.firmware = OnboardingEngine.b02FirmwareHash
+            f.host.onInstall = { [weak host = f.host, weak ssh = f.ssh] in ssh?.ready = true; ssh?.installedJournal = host?.remoteJournal ?? "" }
+            var connection = f.engine.currentConnection; connection.skipFirmwareCheck = true
+            let manager = try OnboardingEngine(root: f.root, resources: f.resources, connection: connection, backupSuffix: testBackupSuffix, web: f.engine.web, runner: f.host, sshFactory: { _ in f.ssh })
+            let result = try manager.run(password: testPassword)
+            try check(result.state == nil && result.identity.firmwareHash == OnboardingEngine.b02FirmwareHash && result.firmware.hasSuffix("B02"), "B02 falsely reported NV readiness")
+            try check(f.web.restoreCount == 0 && f.web.uploadedData == nil && f.host.installerCalls == 1 && f.ssh.authenticationCalls >= 1 && f.ssh.commitCalls == 1, "Unverified bootstrap or missing access checks")
+            try check(!f.ssh.calls.contains { $0.contains("--snapshot") || $0.contains("zte_nv") || $0.contains("zte_config") }, "B02 used NV/EFS helper")
+            let repeated = try manager.run(password: testPassword)
+            try check(repeated.state == nil && f.host.installerCalls == 1, "Existing B02 access reinstalled or implied NV compatibility")
+        }
+        run("B02 access rejects a reboot during authentication before accepting readiness") {
+            let f = try Fixture(); defer { f.remove() }
+            f.web.info["integrate_version"] = "STD_PL_MU5250V1.0.0B02"; f.web.info["wa_inner_version"] = "BD_STDPLMU5250V1.0.0B02"
+            f.ssh.info = f.web.info; f.ssh.firmware = OnboardingEngine.b02FirmwareHash; f.ssh.ready = true; f.ssh.changeBootAfterAuthentication = true
+            var connection = f.engine.currentConnection; connection.skipFirmwareCheck = true
+            let manager = try OnboardingEngine(root: f.root, resources: f.resources, connection: connection, backupSuffix: testBackupSuffix, web: f.engine.web, runner: f.host, sshFactory: { _ in f.ssh })
+            try rejects("изменился модем") { _ = try manager.run(password: testPassword) }
+            try check(f.ssh.identityReads == 2 && f.ssh.commitCalls == 0 && f.host.installerCalls == 0, "Changed boot accepted or mutated")
+        }
+        run("Read-only installer preflight failure precedes stage and uploads") {
+            let f = try Fixture(); defer { f.remove() }
+            f.host.identityMode = true; f.host.fullInstaller = true; f.host.deviceList = "List of devices attached\nABC device\n"; f.host.preflightError = true
+            try rejects("PREFLIGHT_TOOL") { _ = try f.engine.run(password: testPassword) }
+            try check(f.host.stage.isEmpty && f.host.pushCount == 0 && f.host.installerCalls == 0 && f.web.restoreCount == 0, "Mutation before installer preflight")
+        }
+        run("Interrupted upload repeats owned preparation and installs once") {
+            let f = try Fixture(); defer { f.remove() }
+            f.host.identityMode = true; f.host.fullInstaller = true; f.host.deviceList = "List of devices attached\nABC device\n"; f.host.failPushAt = 2
+            f.host.onInstall = { [weak host = f.host, weak ssh = f.ssh] in ssh?.ready = true; ssh?.installedJournal = host?.remoteJournal ?? "" }
+            try rejects("interrupted upload") { _ = try f.engine.run(password: testPassword) }
+            let priorStage = f.host.stage
+            try check(!(try readJSON(SetupJournal.self, f.engine.pending)).installRequested, "Upload interruption falsely marked installer launched")
+            f.host.failPushAt = nil
+            _ = try f.engine.run(password: testPassword)
+            try check(f.host.stage == priorStage && f.host.installerCalls == 1 && f.web.restoreCount == 0, "Retry replayed deployment or chose foreign stage")
+        }
         run("ADB identity requires exact firmware web IMEI and valid CID") {
             let host=MockHost(),adb=ADBClient(binary:URL(fileURLWithPath:"/synthetic/adb"),runner:host)
             host.identityMode=true;let expected=try WebIdentity(deviceObject())
             try check(try adb.identity("ABC",expected:expected).cid==testCID,"Verified ADB identity")
             host.identityHashesValid=false;try rejects {_ = try adb.identity("ABC",expected:expected)}
-            host.identityHashesValid=true;host.identityIMEI="490154203237526";try rejects {_ = try adb.identity("ABC",expected:expected)}
+            host.identityHashesValid=true;host.identityIMEI="353490068701230";try rejects {_ = try adb.identity("ABC",expected:expected)}
             host.identityIMEI=testIMEI;host.identityCID="../../other";try rejects {_ = try adb.identity("ABC",expected:expected)}
         }
         run("Firmware override web identity still validates IMEI and preserves version") {
@@ -451,15 +752,15 @@ private struct Fixture {
             try rejects { _ = try WebIdentity(object) }
             let value = try WebIdentity(object, skipFirmwareCheck: true)
             try check(value.firmware.hasSuffix("B32") && value.inner.hasSuffix("B32"), "Version replaced with B31")
-            object["imei"] = "490154203237519"
+            object["imei"] = "353490068701223"
             try rejects { _ = try WebIdentity(object, skipFirmwareCheck: true) }
         }
         run("Firmware override reaches authenticated onboarding preparation") {
             let f = try Fixture(); defer { f.remove() }
             f.web.info["integrate_version"] = "CN_ZTE_MU5250V1.0.0B32"
             var connection = f.engine.currentConnection; connection.skipFirmwareCheck = true
-            let manager = try OnboardingEngine(root:f.root, resources:f.resources, connection:connection, web:f.engine.web, runner:f.host)
-            let (identity, _, _) = try manager.prepare(password:testPassword, backupSuffix:testSuffix)
+            let manager = try OnboardingEngine(root:f.root, resources:f.resources, connection:connection, backupSuffix:testBackupSuffix, web:f.engine.web, runner:f.host)
+            let (identity, _, _) = try manager.prepare(password:testPassword)
             try check(identity.firmware.hasSuffix("B32") && f.web.backupCount == 1 && f.web.restoreCount == 0, "Policy missing from onboarding")
         }
         run("Firmware override ADB permits unknown hash but still matches web device") {
@@ -468,7 +769,7 @@ private struct Fixture {
             let expected = try WebIdentity(deviceObject())
             let result = try adb.identity("ABC", expected: expected, skipFirmwareCheck: true)
             try check(result.firmwareHash == String(repeating:"0",count:64), "Actual ADB hash lost")
-            host.identityIMEI = "490154203237526"
+            host.identityIMEI = "353490068701230"
             try rejects { _ = try adb.identity("ABC", expected: expected, skipFirmwareCheck: true) }
             host.identityIMEI = testIMEI; host.identityCID = "invalid"
             try rejects { _ = try adb.identity("ABC", expected: expected, skipFirmwareCheck: true) }

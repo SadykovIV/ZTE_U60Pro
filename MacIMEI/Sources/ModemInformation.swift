@@ -31,6 +31,17 @@ struct ModemInformation: Sendable {
     var bootID: String
 }
 
+enum DiagnosticOutcome: String, Codable, Sendable {
+    case succeeded, commandFailed, connectionError, skipped
+    var title: String {
+        switch self {
+        case .succeeded: return "Собрано"
+        case .commandFailed: return "Команда недоступна или завершилась ошибкой"
+        case .connectionError: return "Ошибка подключения"
+        case .skipped: return "Пропущено"
+        }
+    }
+}
 struct DiagnosticFile: Codable, Identifiable, Sendable {
     var name: String
     var title: String
@@ -38,6 +49,9 @@ struct DiagnosticFile: Codable, Identifiable, Sendable {
     var bytes: Int
     var sha256: String
     var truncated: Bool
+    var outcome: DiagnosticOutcome? = nil
+    var effectiveOutcome: DiagnosticOutcome { outcome ?? (status == 0 ? .succeeded : status == 255 ? .connectionError : status == -1 ? .skipped : .commandFailed) }
+    var statusLabel: String { outcome == nil && status == -1 ? "Нет данных (старый отчёт)" : effectiveOutcome.title }
     var id: String { name }
 }
 struct DiagnosticReport: Codable, Identifiable, Sendable {
@@ -48,6 +62,17 @@ struct DiagnosticReport: Codable, Identifiable, Sendable {
     var warnings: [String]? = nil
     var files: [DiagnosticFile]
     var url: URL
+    var transport: String? = nil
+    var selectionReason: String? = nil
+    var identityVerified: Bool? = nil
+    var connectionError: String? = nil
+    var outcomeSummary: String {
+        let succeeded = files.filter { $0.effectiveOutcome == .succeeded }.count
+        let failed = files.filter { $0.effectiveOutcome == .commandFailed }.count
+        let connection = files.filter { $0.effectiveOutcome == .connectionError }.count + (connectionError == nil ? 0 : 1)
+        let skipped = files.filter { $0.effectiveOutcome == .skipped }.count
+        return "Собрано: \(succeeded); ошибки команд: \(failed); ошибки подключения: \(connection); пропущено: \(skipped). Это статусы сбора, а не число неисправностей модема."
+    }
 }
 
 final class ModemInformationManager {
@@ -135,7 +160,7 @@ final class ModemInformationManager {
         let battery = value("BATTERY").split(separator: "\n").map(String.init)
         let capacity = battery.first.flatMap(Int.init).flatMap { (0...100).contains($0) ? $0 : nil }
         let agentSHA = value("AGENT").split(separator: " ").first.map(String.init) ?? ""
-        let agentVersion = agentSHA == "542072a91b46c9b789c249d195a6dc2cf649416c6b96448855ff710f7b797fda" ? "2.7.0 · VPN, дисплей, RU/EN и TTL" : agentSHA == "b5c27d398e85db8a87d454d729cb36f22e54a2d832fb1117b27aa055e5032537" ? "2.4.1 · RU/EN и TTL" : agentSHA == "5deb5e93ee7d37403b0a931f0e127c64e4d9b4825855653e5b890572b02848aa" ? "2.4.0" : agentSHA.isEmpty ? "Не установлен" : "Другая сборка"
+        let agentVersion = agentSHA == "c50ba6b7ac6f77c581c2b657ba769f976d8d20aca0c6b7d08c9254ef2de9d346" ? "2.8.0 · VPN, дисплей, RU/EN и TTL" : agentSHA == "b5c27d398e85db8a87d454d729cb36f22e54a2d832fb1117b27aa055e5032537" ? "2.4.1 · RU/EN и TTL" : agentSHA == "5deb5e93ee7d37403b0a931f0e127c64e4d9b4825855653e5b890572b02848aa" ? "2.4.0" : agentSHA.isEmpty ? "Не установлен" : "Другая сборка"
         guard let uptimeField = value("UPTIME").split(whereSeparator: \.isWhitespace).first,
               let uptime = Double(uptimeField), uptime.isFinite && uptime >= 0 && uptime <= 100 * 366 * 24 * 3600,
               let cpuCount = Int(value("CPU")), (1...4096).contains(cpuCount) else { throw IMEIError.message("Некорректные сведения о времени работы или процессоре") }
@@ -152,18 +177,19 @@ final class ModemInformationManager {
 
     static let diagnosticCommands: [(String, String, String)] = [
         ("firmware.txt", "Версии и хэши прошивки", "uname -a; cat /etc/openwrt_release /etc/os-release; sha256sum /firmware/image/modem.b16 /usr/bin/diag-router /usr/bin/zte_topsw_devui"),
-        ("capabilities.txt", "Доступные инструменты", "for tool in ubus ip iptables ip6tables nft bridge opkg curl tar sha256sum awk sed logread dmesg dropbear; do printf '%s: ' \"$tool\"; command -v \"$tool\" || true; done; printf 'Versions:\\n'; busybox | head -n 1; iptables --version; :"),
+        ("capabilities.txt", "Доступные инструменты", "for tool in ubus ip iptables ip6tables nft bridge opkg curl tar sha256sum awk sed logread dmesg dropbear doas mount umount df stat readlink mkdir mktemp chown chmod flock timeout base64 openssl unzip; do printf '%s: ' \"$tool\"; command -v \"$tool\" || true; done; printf 'Versions:\\n'; busybox | head -n 1; iptables --version; :"),
         ("rpc-methods.txt", "Методы служб прошивки", "ubus -v list"),
         ("packages.txt", "Установленные пакеты", "opkg list-installed"),
         ("modules.txt", "Модули ядра", "cat /proc/modules /proc/filesystems"),
         ("routing-policy.txt", "Правила маршрутизации", "ip -4 rule; ip -4 route show table all; ip -6 rule; ip -6 route show table all"),
-        ("components.txt", "Хэши компонентов приложения", "for p in /data/zte-agent /data/zte-vpn/vpnctl /data/zte-vpn/mihomo /data/zte-imei-ttl/manager.sh /data/zte-launcher/launcher-start.sh; do if test -f \"$p\"; then sha256sum \"$p\"; else printf '%s: absent\\n' \"$p\"; fi; done"),
+        ("components.txt", "Хэши компонентов приложения", "for p in /data/zte-agent /data/bin/dropbear /data/local/tmp/start_zte_imei_studio.sh /data/zte-vpn/vpnctl /data/zte-vpn/mihomo /data/zte-imei-ttl/manager.sh /data/zte-launcher/launcher-start.sh; do if test -f \"$p\"; then sha256sum \"$p\"; else printf '%s: absent\\n' \"$p\"; fi; done"),
         ("system.log", "Системный журнал", "if ubus list log 2>/dev/null | grep -qFx log; then logread; else printf 'Служба системного журнала недоступна\\n'; exit 3; fi"),
         ("kernel.log", "Журнал ядра", "dmesg"),
         ("board.json", "Система и плата", "ubus call system board"),
         ("device.json", "Сведения ZTE", "ubus call zwrt_web device_info '{}'"),
         ("memory.txt", "Память и загрузка", "cat /proc/meminfo /proc/loadavg /proc/uptime"),
         ("storage.txt", "Диски и подключения", "df -Pk; cat /proc/mounts /proc/partitions"),
+        ("filesystem-layout.txt", "Каталоги и права Linux", #"printf 'Linux filesystem metadata only. Linux /config is NOT modem EFS /config accessed through DIAG; this does not establish IMEI/NV compatibility.\n'; for p in /data /data/local /data/local/tmp /config /tmp /data/bin /etc/dropbear /usr/bin/diag-router /firmware/image/modem.b16; do printf '\nPATH %s\n' "$p"; if test -e "$p" || test -L "$p"; then ls -ld "$p"; stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' "$p" || true; if test -L "$p"; then printf 'link='; readlink "$p" || true; fi; if test -d "$p"; then if test -w "$p"; then printf 'access_writable=yes\n'; else printf 'access_writable=no\n'; fi; fi; else printf 'absent\n'; fi; done; printf '\nMounts and free space:\n'; cat /proc/self/mountinfo; df -Pk"#),
         ("network.json", "Сетевые интерфейсы", "ubus call network.interface dump"),
         ("routes.txt", "Адреса и маршруты", "ip -s address; ip -4 route; ip -6 route"),
         ("firewall4.txt", "Правила IPv4", "iptables-save"),
@@ -198,52 +224,65 @@ final class ModemInformationManager {
         if truncated { bytes.append(Data("\n[Вывод ограничен 512 КиБ]\n".utf8)) }
         return (bytes, status, truncated)
     }
-    func collectDiagnostics() throws -> DiagnosticReport {
-        var warnings = [String]()
-        let identityBefore: (Identity, String)?
-        do { identityBefore = try engine.diagnosticIdentity() }
-        catch { identityBefore = nil; warnings.append("Не удалось определить устройство в начале: " + ActivityJournal.redact(error.localizedDescription)) }
-        if let identityBefore, identityBefore.0.firmwareHash != ModemEngine.firmwareHash {
+    func collectDiagnostics(expectedIdentity: Identity? = nil, expectedWebIdentity: WebIdentity? = nil, expectedIMEI: String? = nil, adb: ADBClient? = nil, preferredSession: DiagnosticSession? = nil) throws -> DiagnosticReport {
+        try require(engine.lockFD >= 0, "Диагностика требует блокировки операции")
+        var warnings = [String](), selectionError: String?
+        let session: DiagnosticSession?
+        do {
+            let expected = try DiagnosticDeviceExpectation.load(root: engine.root, identity: expectedIdentity, web: expectedWebIdentity, imei: expectedIMEI)
+            if let preferredSession {
+                try require(expected.matches(preferredSession.proof), "Выбранный канал относится к другому модему; переключение транспорта запрещено")
+                try preferredSession.verify()
+                session = preferredSession
+            } else {
+                session = try DiagnosticTransportSelector.select(engine: engine, expected: expected, adb: adb)
+            }
+        } catch {
+            session = nil
+            selectionError = ActivityJournal.sanitize(error.localizedDescription)
+            warnings.append("Сбор не начат: " + selectionError!)
+        }
+        if let session, session.proof.identity.firmwareHash != ModemEngine.firmwareHash {
             warnings.append("Прошивка отличается от B31. Выполнено только чтение диагностики; разрешение на запись не изменено.")
         }
         let id = UUID().uuidString.lowercased(), directory = engine.root.appendingPathComponent("Diagnostics/" + id)
         try secureDirectory(directory)
-        var files: [DiagnosticFile] = []
-        var connectionFailures = 0
+        var files: [DiagnosticFile] = [], connectionFailures = 0
         for (index, item) in Self.diagnosticCommands.enumerated() {
             engine.update("Диагностика: " + item.1, Double(index) / Double(Self.diagnosticCommands.count + 1))
-            let cap = Self.diagnosticByteLimit
-            // Limit the remote output and record the actual producer exit code.
-            // Diagnostic commands are fixed; no user text is interpolated.
-            let command = "umask 077; d=$(mktemp -d /tmp/zte-diagnostic.XXXXXX) || exit 1; trap 'rm -f \"$d/out\"; rmdir \"$d\"' EXIT HUP INT TERM; ( set -e; ulimit -f 1025; " + item.2 + " ) > \"$d/out\" 2>&1; code=$?; head -c \(cap + 1) \"$d/out\"; printf '\\n__DIAGNOSTIC_RESULT__%s\\n' \"$code\""
-            let response: CommandResult
-            do {
-                try require(connectionFailures < 3, "Раздел пропущен после трёх ошибок соединения")
-                response = try engine.transport.run(command, input: nil, timeout: 20)
-                if response.status == 255 { connectionFailures += 1 } else { connectionFailures = 0 }
-            }
-            catch {
-                connectionFailures += 1
-                let body = Data(ActivityJournal.redact(error.localizedDescription).utf8)
-                try savePrivate(body, directory.appendingPathComponent(item.0))
-                files.append(DiagnosticFile(name: item.0, title: item.1, status: -1, bytes: body.count, sha256: digest(body), truncated: false))
-                continue
-            }
-            let decoded = Self.decodeDiagnostic(response)
-            try savePrivate(decoded.body, directory.appendingPathComponent(item.0))
-            files.append(DiagnosticFile(name: item.0, title: item.1, status: decoded.status, bytes: decoded.body.count, sha256: digest(decoded.body), truncated: decoded.truncated))
-        }
-        if connectionFailures < 3 {
-            do {
-                let after = try engine.diagnosticIdentity()
-                if let before = identityBefore, after.0 != before.0 || after.1 != before.1 {
-                    warnings.append("Устройство или сеанс загрузки изменились во время сбора. Набор содержит данные разных состояний.")
+            let body: Data, status: Int32, truncated: Bool, outcome: DiagnosticOutcome
+            if session == nil || connectionFailures >= 3 {
+                body = Data((session == nil ? "Раздел не запрашивался: " + (selectionError ?? "транспорт недоступен") : "Раздел не запрашивался после трёх ошибок подключения").utf8)
+                status = -3; truncated = false; outcome = .skipped
+            } else {
+                let cap = Self.diagnosticByteLimit
+                // Only a private temporary output buffer is written on the modem;
+                // no service, permissions, firmware or ADB settings are changed.
+                let command = "umask 077; d=$(mktemp -d /tmp/zte-diagnostic.XXXXXX) || exit 1; trap 'rm -f \"$d/out\"; rmdir \"$d\"' EXIT HUP INT TERM; ( set -e; ulimit -f 1025; " + item.2 + " ) > \"$d/out\" 2>&1; code=$?; head -c \(cap + 1) \"$d/out\"; printf '\\n__DIAGNOSTIC_RESULT__%s\\n' \"$code\""
+                do {
+                    let response = try session!.run(command, timeout: 20)
+                    let decoded = Self.decodeDiagnostic(response)
+                    body = decoded.body; status = decoded.status; truncated = decoded.truncated
+                    outcome = status == 0 ? .succeeded : .commandFailed
+                    connectionFailures = 0
+                } catch {
+                    connectionFailures += 1
+                    body = Data(ActivityJournal.sanitize(error.localizedDescription).utf8)
+                    status = -1; truncated = false; outcome = .connectionError
                 }
-            } catch { warnings.append("Итоговая проверка устройства недоступна: " + ActivityJournal.redact(error.localizedDescription)) }
-        } else { warnings.append("Соединение недоступно. Сохранён частичный набор; пропущенные разделы отмечены ошибкой.") }
-        let report = DiagnosticReport(id: id, created: ISO8601DateFormatter().string(from: Date()), identity: identityBefore?.0, bootID: identityBefore?.1 ?? "не определён", warnings: warnings, files: files, url: directory)
+            }
+            try savePrivate(body, directory.appendingPathComponent(item.0))
+            files.append(DiagnosticFile(name: item.0, title: item.1, status: status, bytes: body.count, sha256: digest(body), truncated: truncated, outcome: outcome))
+        }
+        var verified = false
+        if let session {
+            do { try session.verify(); verified = true }
+            catch { warnings.append("Итоговая проверка устройства недоступна: " + ActivityJournal.sanitize(error.localizedDescription)) }
+        }
+        if connectionFailures >= 3 { warnings.append("Соединение недоступно. Сохранён частичный набор; остальные разделы помечены как пропущенные.") }
+        let report = DiagnosticReport(id: id, created: ISO8601DateFormatter().string(from: Date()), identity: session?.proof.identity, bootID: session?.proof.bootID ?? "не определён", warnings: warnings, files: files, url: directory, transport: session?.transport ?? preferredSession?.transport ?? "none", selectionReason: session?.selectionReason ?? selectionError, identityVerified: verified, connectionError: selectionError)
         try saveJSON(report, directory.appendingPathComponent("manifest.json"))
-        try? ActivityJournal(root: engine.root).record(operationID: engine.logDirectory.lastPathComponent, category: "diagnostics", title: "Диагностический набор сохранён", result: warnings.isEmpty && files.allSatisfy { $0.status == 0 } ? "completed" : "warning", details: ["reportID":id,"files":String(files.count), "failures":String(files.filter { $0.status != 0 }.count), "warnings":warnings.joined(separator: "\n")])
+        try? ActivityJournal(root: engine.root).record(operationID: engine.logDirectory.lastPathComponent, category: "diagnostics", title: "Диагностический набор сохранён", result: warnings.isEmpty && files.allSatisfy { $0.effectiveOutcome == .succeeded } ? "completed" : "warning", details: ["reportID":id,"transport":report.transport ?? "none", "selectionReason": report.selectionReason ?? "", "summary":report.outcomeSummary, "warnings":warnings.joined(separator: "\n")])
         return report
     }
 }

@@ -80,7 +80,10 @@ private final class MockScreen: RemoteTransport {
     static func main() throws {
         let project = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         let resources = project.appendingPathComponent("Resources")
-        let original = try Data(contentsOf: project.deletingLastPathComponent().appendingPathComponent("evidence/russian-ui-trial-20260922/zte_topsw_devui"))
+        guard let originalPath = ProcessInfo.processInfo.environment["ZTE_STOCK_UI"], !originalPath.isEmpty else {
+            throw Failure.check("Set ZTE_STOCK_UI to your original B31 zte_topsw_devui fixture; firmware files are not included")
+        }
+        let original = try Data(contentsOf: URL(fileURLWithPath: originalPath))
         let testRoot = FileManager.default.temporaryDirectory.appendingPathComponent("zte-screen-tests-" + UUID().uuidString)
         try secureDirectory(testRoot); defer { try? FileManager.default.removeItem(at: testRoot) }
         let key = testRoot.appendingPathComponent("key"), hosts = testRoot.appendingPathComponent("hosts")

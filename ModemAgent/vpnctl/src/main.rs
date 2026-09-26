@@ -1,5 +1,6 @@
 mod profile;
 mod screen;
+mod wifi;
 use profile::Result;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -166,15 +167,23 @@ const ERRORS: &[&str] = &[
     "VPN_WIFI_NOT_READY",
     "VPN_CONFIGURATION_PENDING",
     "VPN_NO_ACTIVE_PROFILE",
+    "VPN_WIFI_SETTINGS_ENABLED",
+    "VPN_WIFI_NOT_CONFIGURED",
+    "VPN_WIFI_CONFIGURATION_CHANGED",
+    "VPN_INVALID_WIFI_SSID",
+    "VPN_INVALID_WIFI_PASSWORD",
+    "VPN_INVALID_WIFI_SETTINGS",
+    "VPN_WIFI_SETTINGS_PENDING",
 ];
 fn manager(action: &str) -> Result<()> {
     run("/bin/sh", &["/data/zte-vpn/manager.sh", action], 170).map(|_| ())
 }
 struct Lock {
     token: Vec<u8>,
+    owned: bool,
 }
 impl Lock {
-    fn new() -> Result<Self> {
+    fn check_transactions() -> Result<()> {
         for p in [
             "/data/local/tmp/zte-imei-installations/active",
             "/data/local/tmp/open-u60-transactions/active",
@@ -184,6 +193,37 @@ impl Lock {
                 return Err("VPN_OTHER_TRANSACTION");
             }
         }
+        Ok(())
+    }
+    fn borrowed(token: &str) -> Result<Self> {
+        Self::check_transactions()?;
+        Self::borrowed_at(Path::new("/tmp/zte-imei-app.lock"), token, 0)
+    }
+    fn borrowed_at(directory: &Path, token: &str, uid: u32) -> Result<Self> {
+        if !profile::valid_id(token) {
+            return Err("VPN_BUSY");
+        }
+        let owner_path = directory.join("owner");
+        let root = fs::symlink_metadata(directory).map_err(|_| "VPN_BUSY")?;
+        let owner = fs::symlink_metadata(&owner_path).map_err(|_| "VPN_BUSY")?;
+        if !root.is_dir()
+            || root.uid() != uid
+            || root.mode() & 0o777 != 0o700
+            || !owner.is_file()
+            || owner.uid() != uid
+            || owner.mode() & 0o777 != 0o600
+            || owner.nlink() != 1
+            || read(&owner_path, 64)? != token.as_bytes()
+        {
+            return Err("VPN_BUSY");
+        }
+        Ok(Self {
+            token: token.as_bytes().to_vec(),
+            owned: false,
+        })
+    }
+    fn new() -> Result<Self> {
+        Self::check_transactions()?;
         let token = fs::read("/proc/sys/kernel/random/uuid").map_err(|_| "VPN_BUSY")?;
         DirBuilder::new()
             .mode(0o700)
@@ -193,11 +233,14 @@ impl Lock {
             let _ = fs::remove_dir("/tmp/zte-imei-app.lock");
             return Err("VPN_BUSY");
         }
-        Ok(Self { token })
+        Ok(Self { token, owned: true })
     }
 }
 impl Drop for Lock {
     fn drop(&mut self) {
+        if !self.owned {
+            return;
+        }
         let p = Path::new("/tmp/zte-imei-app.lock/owner");
         if fs::read(p).ok().as_deref() == Some(&self.token) {
             let _ = fs::remove_file(p);
@@ -241,19 +284,120 @@ fn core_running() -> bool {
                 .any(|arg| arg == b"/data/zte-vpn/mihomo")
         })
 }
+fn network_status() -> Result<Value> {
+    serde_json::from_slice(&run("lua", &["/data/zte-vpn/configure.lua", "status"], 10)?)
+        .map_err(|_| "VPN_INVALID_STATE")
+}
+fn wifi_settings() -> Result<Option<wifi::Settings>> {
+    let file = path("wifi-settings.json");
+    let metadata = match fs::symlink_metadata(&file) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err("VPN_INVALID_WIFI_SETTINGS"),
+    };
+    if !metadata.is_file()
+        || metadata.uid() != 0
+        || metadata.nlink() != 1
+        || metadata.mode() & 0o777 != 0o600
+    {
+        return Err("VPN_UNSAFE_FILE");
+    }
+    let settings: wifi::Settings =
+        serde_json::from_slice(&read(&file, 4096)?).map_err(|_| "VPN_INVALID_WIFI_SETTINGS")?;
+    settings.validate(path("configured").is_file())?;
+    Ok(Some(settings))
+}
+fn configure_wifi(settings: wifi::Settings) -> Result<()> {
+    let configured = path("configured").is_file();
+    settings.validate(configured)?;
+    let network = network_status()?;
+    if configured {
+        if network["any_enabled"] == true {
+            return Err("VPN_WIFI_SETTINGS_ENABLED");
+        }
+        if network["network_ok"] != true {
+            return Err("VPN_WIFI_CONFIGURATION_CHANGED");
+        }
+    }
+    let previous = wifi_settings()?;
+    persist_wifi_settings(
+        Path::new(ROOT),
+        &settings,
+        previous.as_ref(),
+        configured,
+        || run("lua", &["/data/zte-vpn/configure.lua", "wifi-settings"], 10).map(|_| ()),
+    )?;
+    audit("wifi_settings_saved", "")
+}
+// The file transaction is separate from UCI so failures can be injected without
+// accessing a modem or invoking network commands.
+fn persist_wifi_settings(
+    directory: &Path,
+    settings: &wifi::Settings,
+    previous: Option<&wifi::Settings>,
+    configured: bool,
+    apply: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    let preferences = directory.join("wifi-settings.json");
+    let pending = directory.join("wifi-settings.pending");
+    if configured {
+        atomic(&pending, b"1")?;
+    }
+    write_json(
+        &preferences,
+        &serde_json::to_value(settings).map_err(|_| "VPN_INVALID_WIFI_SETTINGS")?,
+    )?;
+    if configured {
+        if let Err(error) = apply() {
+            if let Some(previous) = previous {
+                write_json(
+                    &preferences,
+                    &serde_json::to_value(previous).map_err(|_| "VPN_INVALID_WIFI_SETTINGS")?,
+                )?;
+            } else {
+                fs::remove_file(&preferences).map_err(|_| "VPN_WRITE_FAILED")?;
+            }
+            // UCI may have left partial saved deltas before reporting an error.
+            // Keep activation blocked until an explicit settings save succeeds.
+            return Err(error);
+        }
+        fs::remove_file(pending).map_err(|_| "VPN_WRITE_FAILED")?;
+        File::open(directory)
+            .and_then(|f| f.sync_all())
+            .map_err(|_| "VPN_WRITE_FAILED")?;
+    }
+    Ok(())
+}
 fn status() -> Result<Value> {
     base()?;
-    let network: Value =
-        serde_json::from_slice(&run("lua", &["/data/zte-vpn/configure.lua", "status"], 10)?)
-            .map_err(|_| "VPN_INVALID_STATE")?;
+    let network = network_status()?;
     let configured = path("configured").is_file();
+    let settings = wifi_settings()?;
+    let desired_ssid = settings
+        .as_ref()
+        .map(|s| s.ssid.as_str())
+        .unwrap_or_else(|| {
+            if configured {
+                network["ssid"].as_str().unwrap_or("")
+            } else {
+                "ZTE-VPN"
+            }
+        });
+    let password_mode = settings
+        .as_ref()
+        .map(|s| s.password_mode)
+        .unwrap_or(if configured {
+            wifi::PasswordMode::Preserve
+        } else {
+            wifi::PasswordMode::Main
+        });
     let active = active();
     let mut list = Vec::new();
     for p in profiles()? {
         list.push(json!({"id":p["id"],"name":p["name"],"transport":p["proxy"]["network"],"warnings":p["warnings"],"active":p["id"].as_str()==Some(&active)}));
     }
     Ok(
-        json!({"schema_version":1,"installed":true,"version":env!("CARGO_PKG_VERSION"),"core_version":"1.19.31","core_available":path("mihomo").is_file(),"configured":configured,"enabled":configured&&network["enabled"]==true,"core_running":core_running(),"network_ok":configured&&network["network_ok"]==true,"mesh_conflict":network["mesh"],"ssid":network["ssid"].as_str().filter(|s| !s.is_empty()).unwrap_or("ZTE-VPN"),"profiles":list,"active_profile":active,"screen":screen::status(),"recovery_pending":path("transaction").exists()}),
+        json!({"schema_version":1,"installed":true,"version":env!("CARGO_PKG_VERSION"),"core_version":"1.19.31","core_available":path("mihomo").is_file(),"configured":configured,"enabled":configured&&network["enabled"]==true,"core_running":core_running(),"network_ok":configured&&network["network_ok"]==true,"mesh_conflict":network["mesh"],"ssid":network["ssid"],"ssid_2g":network["ssid_2g"],"ssid_5g":network["ssid_5g"],"main_ssid":network["main_ssid"],"desired_ssid":desired_ssid,"password_mode":password_mode,"wifi_settings_pending":!configured||path("wifi-settings.pending").exists(),"settings_supported":true,"profiles":list,"active_profile":active,"screen":screen::status(),"recovery_pending":path("transaction").exists()}),
     )
 }
 fn profile_path(id: &str) -> Result<PathBuf> {
@@ -302,14 +446,36 @@ fn audit(action: &str, id: &str) -> Result<()> {
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 enum Request {
     Status,
-    Import { uri: String, name: Option<String> },
-    Activate { id: String },
-    Delete { id: String },
-    Rename { id: String, name: String },
-    Details { id: String },
-    SetEnabled { enabled: bool },
+    Import {
+        uri: String,
+        name: Option<String>,
+    },
+    Activate {
+        id: String,
+    },
+    Delete {
+        id: String,
+    },
+    Rename {
+        id: String,
+        name: String,
+    },
+    Details {
+        id: String,
+    },
+    SetEnabled {
+        enabled: bool,
+    },
+    ConfigureWifi {
+        ssid: String,
+        password_mode: wifi::PasswordMode,
+        password: Option<String>,
+        lock_token: Option<String>,
+    },
     Recover,
-    ScreenOpen { page: String },
+    ScreenOpen {
+        page: String,
+    },
     ScreenClose,
 }
 fn dispatch(req: Request) -> Result<Value> {
@@ -328,7 +494,14 @@ fn dispatch(req: Request) -> Result<Value> {
         return screen::close();
     }
     integrity()?;
-    let _lock = Lock::new()?;
+    let _ = wifi_settings()?;
+    let _lock = match &req {
+        Request::ConfigureWifi {
+            lock_token: Some(token),
+            ..
+        } => Lock::borrowed(token)?,
+        _ => Lock::new()?,
+    };
     if path("transaction").exists()
         || path("transaction.preparing").exists()
         || path("transaction.done").exists()
@@ -336,6 +509,18 @@ fn dispatch(req: Request) -> Result<Value> {
         manager("recover")?;
     }
     match req {
+        Request::ConfigureWifi {
+            ssid,
+            password_mode,
+            password,
+            ..
+        } => {
+            configure_wifi(wifi::Settings {
+                ssid,
+                password_mode,
+                password,
+            })?;
+        }
         Request::Import { uri, name } => {
             let (name, proxy, warnings) = profile::parse(&uri, name.as_deref())?;
             let existing = profiles()?;
@@ -418,6 +603,9 @@ fn dispatch(req: Request) -> Result<Value> {
             audit("activated", &id)?;
         }
         Request::SetEnabled { enabled } => {
+            if enabled && path("wifi-settings.pending").exists() {
+                return Err("VPN_WIFI_SETTINGS_PENDING");
+            }
             audit(if enabled { "enable" } else { "disable" }, &active())?;
             manager(if enabled { "enable" } else { "disable" })?;
         }
@@ -512,5 +700,125 @@ fn main() {
             println!("{}", json!({"ok":false,"code":code}));
             std::process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod wifi_request_tests {
+    use super::*;
+    #[test]
+    fn strict_wifi_request_accepts_explicit_modes_without_revealing_password() {
+        let req: Request = serde_json::from_str(
+            r#"{"action":"configure_wifi","ssid":"ZTE-VPN","password_mode":"main"}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            req,
+            Request::ConfigureWifi {
+                password_mode: wifi::PasswordMode::Main,
+                password: None,
+                lock_token: None,
+                ..
+            }
+        ));
+        for bad in [
+            r#"{"action":"configure_wifi","ssid":"ZTE-VPN","password_mode":"unknown"}"#,
+            r#"{"action":"configure_wifi","ssid":"ZTE-VPN","password_mode":"main","shell":"run"}"#,
+            r#"{"action":"configure_wifi","ssid":"ZTE-VPN","use_main_password":true}"#,
+        ] {
+            assert!(serde_json::from_str::<Request>(bad).is_err());
+        }
+    }
+    #[test]
+    fn borrowed_lock_requires_exact_private_metadata_and_never_removes_owner() {
+        let base = std::env::temp_dir().join(format!("zte-vpn-borrow-lock-{}", std::process::id()));
+        DirBuilder::new().mode(0o700).create(&base).unwrap();
+        let token = "01234567-89ab-cdef-0123-456789abcdef";
+        let owner = base.join("owner");
+        atomic(&owner, token.as_bytes()).unwrap();
+        let uid = unsafe { libc::geteuid() };
+        let borrowed = Lock::borrowed_at(&base, token, uid).unwrap();
+        drop(borrowed);
+        assert!(owner.exists());
+        assert!(Lock::borrowed_at(&base, "11234567-89ab-cdef-0123-456789abcdef", uid).is_err());
+        assert!(Lock::borrowed_at(&base, "invalid", uid).is_err());
+        fs::set_permissions(&owner, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(Lock::borrowed_at(&base, token, uid).is_err());
+        fs::set_permissions(&owner, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::hard_link(&owner, base.join("extra")).unwrap();
+        assert!(Lock::borrowed_at(&base, token, uid).is_err());
+        fs::remove_file(base.join("extra")).unwrap();
+        fs::rename(&owner, base.join("real-owner")).unwrap();
+        std::os::unix::fs::symlink("real-owner", &owner).unwrap();
+        assert!(Lock::borrowed_at(&base, token, uid).is_err());
+        fs::remove_file(&owner).unwrap();
+        fs::rename(base.join("real-owner"), &owner).unwrap();
+        fs::set_permissions(&base, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(Lock::borrowed_at(&base, token, uid).is_err());
+        fs::set_permissions(&base, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::remove_dir_all(base).unwrap();
+    }
+    #[test]
+    fn wifi_file_transaction_retains_failure_guard_until_explicit_success() {
+        let directory =
+            std::env::temp_dir().join(format!("zte-wifi-transaction-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        DirBuilder::new().mode(0o700).create(&directory).unwrap();
+        let old = wifi::Settings {
+            ssid: "Existing".into(),
+            password_mode: wifi::PasswordMode::Preserve,
+            password: None,
+        };
+        let desired = wifi::Settings::default();
+        let preferences = directory.join("wifi-settings.json");
+        let pending = directory.join("wifi-settings.pending");
+        assert_eq!(
+            persist_wifi_settings(&directory, &desired, Some(&old), true, || {
+                assert!(pending.exists());
+                assert_eq!(
+                    serde_json::from_slice::<Value>(&fs::read(&preferences).unwrap()).unwrap()
+                        ["ssid"],
+                    "ZTE-VPN"
+                );
+                Err("VPN_OPERATION_FAILED")
+            }),
+            Err("VPN_OPERATION_FAILED")
+        );
+        assert!(pending.exists());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&fs::read(&preferences).unwrap()).unwrap()["ssid"],
+            "Existing"
+        );
+        assert!(persist_wifi_settings(&directory, &desired, Some(&old), true, || Ok(())).is_ok());
+        assert!(!pending.exists());
+        assert_eq!(fs::metadata(&preferences).unwrap().mode() & 0o777, 0o600);
+        assert_eq!(
+            persist_wifi_settings(&directory, &desired, None, true, || Err(
+                "VPN_INVALID_WIFI_PASSWORD"
+            )),
+            Err("VPN_INVALID_WIFI_PASSWORD")
+        );
+        assert!(pending.exists());
+        assert!(!preferences.exists());
+        assert!(persist_wifi_settings(&directory, &desired, None, true, || Ok(())).is_ok());
+        assert!(!pending.exists());
+        fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
+    fn new_wifi_preferences_do_not_apply_network_settings() {
+        let directory = std::env::temp_dir().join(format!("zte-wifi-new-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        DirBuilder::new().mode(0o700).create(&directory).unwrap();
+        assert!(persist_wifi_settings(
+            &directory,
+            &wifi::Settings::default(),
+            None,
+            false,
+            || panic!("must not configure network")
+        )
+        .is_ok());
+        assert!(!directory.join("wifi-settings.pending").exists());
+        assert!(directory.join("wifi-settings.json").exists());
+        fs::remove_dir_all(directory).unwrap();
     }
 }

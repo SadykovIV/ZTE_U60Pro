@@ -1,0 +1,102 @@
+{
+  "packages": [
+    {
+      "Package": "htop",
+      "Version": "3.3.0-1",
+      "License": "GPL-2.0-or-later",
+      "Depends": "libc, libncurses6",
+      "SHA256sum": "782d24fa8b3e57317d9af0007afea9da0f0cd17ff38906f37440e78aae101517",
+      "url": "https://downloads.openwrt.org/releases/23.05.4/packages/aarch64_cortex-a53/packages/htop_3.3.0-1_aarch64_cortex-a53.ipk"
+    },
+    {
+      "Package": "iperf3",
+      "Version": "3.17.1-4",
+      "License": "BSD-3-Clause",
+      "Depends": "libc, libiperf3",
+      "SHA256sum": "42fcf5c02278a61d053fdc8021cc9bc16f13ecd6d54f2b9eed976ac5eaa24f43",
+      "url": "https://downloads.openwrt.org/releases/23.05.4/packages/aarch64_cortex-a53/packages/iperf3_3.17.1-4_aarch64_cortex-a53.ipk"
+    },
+    {
+      "Package": "libiperf3",
+      "Version": "3.17.1-4",
+      "License": "BSD-3-Clause",
+      "Depends": "libc, libatomic1",
+      "SHA256sum": "cd5032811c6aea39f916c8be6360389a1509f12413040e198e79d63c46e054a5",
+      "url": "https://downloads.openwrt.org/releases/23.05.4/packages/aarch64_cortex-a53/packages/libiperf3_3.17.1-4_aarch64_cortex-a53.ipk"
+    },
+    {
+      "Package": "mtr-nojson",
+      "Version": "0.95-3",
+      "License": "GPL-2.0-or-later",
+      "Depends": "libc, libncurses6",
+      "SHA256sum": "2274acbbb224b62934c2a8c3c9fc104d3fc4266be95ae7b6c8fcb67d680d830e",
+      "url": "https://downloads.openwrt.org/releases/23.05.4/packages/aarch64_cortex-a53/packages/mtr-nojson_0.95-3_aarch64_cortex-a53.ipk"
+    },
+    {
+      "Package": "tcpdump",
+      "Version": "4.99.4-1",
+      "License": "BSD-3-Clause",
+      "Depends": "libc, libpcap1",
+      "SHA256sum": "ef68c068111417a6f081191fafff4581e82d7af1febe753e484abb424c323a67",
+      "url": "https://downloads.openwrt.org/releases/23.05.4/packages/aarch64_cortex-a53/base/tcpdump_4.99.4-1_aarch64_cortex-a53.ipk"
+    },
+    {
+      "Package": "libpcap1",
+      "Version": "1.10.4-1",
+      "License": "BSD-3-Clause",
+      "Depends": "libc",
+      "SHA256sum": "2f1e320edc70fda6be8bb42ddff21b59a6baaea95c9dfe2b5fceb689106c608e",
+      "url": "https://downloads.openwrt.org/releases/23.05.4/packages/aarch64_cortex-a53/base/libpcap1_1.10.4-1_aarch64_cortex-a53.ipk"
+    },
+    {
+      "Package": "libncurses6",
+      "Version": "6.4-2",
+      "License": "MIT",
+      "Depends": "libc, terminfo",
+      "SHA256sum": "5ae9ab87ab0f68fb6968fa911400535bd683de108a5bed51433d1bb16b8f70cd",
+      "url": "https://downloads.openwrt.org/releases/23.05.4/packages/aarch64_cortex-a53/base/libncurses6_6.4-2_aarch64_cortex-a53.ipk"
+    },
+    {
+      "Package": "terminfo",
+      "Version": "6.4-2",
+      "License": "MIT",
+      "Depends": "libc",
+      "SHA256sum": "e562cfa64106705fb6c12c1c1583b6cfb0c6c952184707ad15b935e8dcfc76bb",
+      "url": "https://downloads.openwrt.org/releases/23.05.4/packages/aarch64_cortex-a53/base/terminfo_6.4-2_aarch64_cortex-a53.ipk"
+    },
+    {
+      "Package": "libatomic1",
+      "Version": "12.3.0-4",
+      "License": "GPL-3.0-with-GCC-exception",
+      "Depends": "libgcc1",
+      "SHA256sum": "6570f0ca1d0a476500c718d1f77af190e9cf17062335aaed3809fb33399c757a",
+      "url": "https://downloads.openwrt.org/releases/23.05.4/targets/ipq807x/generic/packages/libatomic1_12.3.0-4_aarch64_cortex-a53.ipk"
+    },
+    {
+      "Package": "libgcc1",
+      "Version": "12.3.0-4",
+      "License": "GPL-3.0-with-GCC-exception",
+      "Depends": "",
+      "SHA256sum": "11672879fafcc45f77d456338d88eccf13531011748b8a5c55ada9557c3427c2",
+      "url": "https://downloads.openwrt.org/releases/23.05.4/targets/ipq807x/generic/packages/libgcc1_12.3.0-4_aarch64_cortex-a53.ipk"
+    }
+  ],
+  "signatures": {
+    "packages": {
+      "key": "b5043e70f9a75cde",
+      "index_sha256": "33a4c4c2e7db9d2efb63c5f8c775e345b7208823cd11bc5c4ef3837ee4e0fea3"
+    },
+    "base": {
+      "key": "b5043e70f9a75cde",
+      "index_sha256": "9c9d7a71e36cea283a332a9bdce79a6f7aea499022c0283b6f534f2738e92f70"
+    },
+    "core": {
+      "key": "b5043e70f9a75cde",
+      "index_sha256": "e6fc07f5ce65372e0f2f68001d086a3e6e357f3b57e945532076b0fb58dac3eb"
+    }
+  },
+  "runtime": {
+    "source": "Homebrew musl-cross 0.9.11 / aarch64-linux-musl, GCC 14.2.0",
+    "sha256": "293be7050415dac10c0ac4595764e2d9d79f8c5e42f43095acbfbfef42f2f6a9"
+  }
+}

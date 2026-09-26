@@ -11,9 +11,9 @@ extension ContentView {
                 Button("Экспортировать журналы в ZIP") { model.exportDiagnostics(collectFresh: false) }
                     .buttonStyle(StudioButtonStyle()).disabled(model.busy)
                 Button("Собрать с модема и сохранить ZIP") { model.exportDiagnostics(collectFresh: true) }
-                    .buttonStyle(StudioButtonStyle(prominent: true)).disabled(!model.canReadModem)
+                    .buttonStyle(StudioButtonStyle(prominent: true)).disabled(!model.canCollectDiagnostics)
             }
-            Text("Ключи, резервные копии и файлы VPN-профилей не включаются. Известные секреты скрываются; адреса сети и идентификаторы устройства остаются. Предел — 64 МиБ, все пропуски отмечаются в архиве.")
+            Text("Свежий сбор использует выбранное подключение SSH или USB ADB без переключения на другой канал. Ключи, резервные копии и файлы VPN-профилей не включаются. Известные секреты скрываются; адреса сети и идентификаторы устройства остаются. Предел — 64 МиБ, все пропуски отмечаются в архиве.")
                 .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
             if !model.diagnosticExportSummary.isEmpty {
                 Text(model.diagnosticExportSummary).font(.system(size: 12)).textSelection(.enabled)

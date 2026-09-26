@@ -3,7 +3,7 @@ import Foundation
 /// One ID for all engine, onboarding and UI events in this application process.
 enum DiagnosticsContext {
     static let sessionID = UUID().uuidString.lowercased()
-    static let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.9.1"
+    static let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.19.0"
 }
 
 extension ActivityJournal {
@@ -30,7 +30,19 @@ extension ActivityJournal {
     static func diagnosticOutput(_ data: Data, command: String) -> String {
         // Auth replies and raw credential stores can have unlabelled secrets.
         let sensitiveSources = ["profiles.json", "config.yaml", "config.json", "uci export", "/api/auth/", "/etc/shadow", "start_zte_agent.sh", "back_parameter", "cat /etc/config/wireless", "uci show wireless", "/profiles/", "export-profile", "ssh-keygen"]
-        if sensitiveSources.contains(where: { command.contains($0) }) { return "[Вывод операции с учётными данными исключён]" }
+        if sensitiveSources.contains(where: { command.contains($0) }) {
+            // The pinned inline preflight contains startup-file names even
+            // though it never reads their contents. Keep only its fixed error
+            // protocol; arbitrary output from credential commands stays hidden.
+            var markers: [String] = []
+            if command.contains("--preflight") || command.contains("setup-agent.sh") {
+                markers = String(decoding: data.prefix(64 * 1024), as: UTF8.self).split(whereSeparator: \.isNewline).map(String.init).filter {
+                    $0.range(of: #"^INSTALL_ERROR [A-Z][A-Z0-9_]{0,95}$"#, options: .regularExpression) != nil ||
+                    $0.range(of: #"^INSTALL_INCOMPLETE /data/local/tmp/zte-imei-installations/[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}$"#, options: .regularExpression) != nil
+                }
+            }
+            return Array(markers.prefix(4)).joined(separator: "\n") + (markers.isEmpty ? "" : "\n") + "[Вывод операции с учётными данными исключён]"
+        }
         var sample = Data(data.prefix(64 * 1024))
         if data.count > sample.count { for _ in 0..<3 { if String(data: sample, encoding: .utf8) != nil { break }; sample.removeLast() } }
         guard !sample.contains(0), let text = String(data: sample, encoding: .utf8) else { return "[Бинарный или нетекстовый вывод исключён]" }
@@ -73,15 +85,59 @@ struct CommandFailure: LocalizedError {
 final class AuditedHostRunner: HostCommandRunner {
     let base: HostCommandRunner, journal: ActivityJournal, operationID: String
     init(base: HostCommandRunner, journal: ActivityJournal, operationID: String) { self.base = base; self.journal = journal; self.operationID = operationID }
-    private final class Adapter: RemoteTransport {
-        let execute: () throws -> CommandResult
-        init(_ execute: @escaping () throws -> CommandResult) { self.execute = execute }
-        func run(_ command: String, input: Data?, timeout: TimeInterval) throws -> CommandResult { try execute() }
-    }
     func run(_ executable: URL, _ arguments: [String], timeout: TimeInterval) throws -> CommandResult {
-        let adapter = Adapter { try self.base.run(executable, arguments, timeout: timeout) }
-        return try AuditedRemoteTransport(base: adapter, journal: journal, operationID: operationID, endpoint: "Mac / USB / " + executable.lastPathComponent)
-            .run(([executable.path] + arguments).map(shellQuote).joined(separator: " "), input: nil, timeout: timeout)
+        let id = UUID().uuidString.lowercased(), started = ProcessInfo.processInfo.systemUptime
+        let command = ([executable.path] + arguments).map(shellQuote).joined(separator: " ")
+        let adbShell = executable.lastPathComponent == "adb" && arguments.count == 4 && arguments[0] == "-s" && arguments[2] == "shell"
+        let title = adbShell ? "ADB: удалённая команда" : "Локальный инструмент: " + executable.lastPathComponent
+        var details = ["requestID": id, "endpoint": "Mac / USB / " + executable.lastPathComponent,
+                       "commandSHA256": digest(Data(command.utf8)), "timeoutSeconds": String(timeout),
+                       "command": ActivityJournal.boundedText(command, limit: 16384),
+                       "statusScope": adbShell ? "local-process-and-remote-command" : "local-process"]
+        try journal.record(operationID: operationID, category: "transport", title: title, result: "started", details: details)
+        do {
+            let response = try base.run(executable, arguments, timeout: timeout)
+            details["durationMilliseconds"] = String(Int(max(0, ProcessInfo.processInfo.systemUptime - started) * 1000))
+            details["exitCode"] = String(response.status) // Legacy field is the local process status.
+            details["localExitCode"] = String(response.status)
+            details["stdoutBytes"] = String(response.stdout.count); details["stderrBytes"] = String(response.stderr.count)
+            details["stdoutSHA256"] = digest(response.stdout); details["stderrSHA256"] = digest(response.stderr)
+            var completed = response.status == 0
+            if adbShell {
+                if response.status == 0, let marker = ADBClient.shellMarker(in: arguments[3]) {
+                    do {
+                        let remote = try ADBClient.decodeShellResult(response, marker: marker, command: arguments[3])
+                        details["remoteExitCode"] = String(remote.status)
+                        completed = remote.status == 0
+                        if !completed {
+                            details["remoteError"] = ADBClient.errorExcerpt(remote.stdout + remote.stderr, command: arguments[3])
+                        }
+                    } catch {
+                        completed = false; details["remoteStatus"] = "unconfirmed"
+                        details["error"] = ActivityJournal.redact(error.localizedDescription)
+                    }
+                } else {
+                    completed = false; details["remoteStatus"] = "unconfirmed"
+                }
+            }
+            journal.trace(requestID: id, operationID: operationID, details: details, response: response, command: command)
+            do { try journal.record(operationID: operationID, category: "transport", title: title, result: completed ? "completed" : "failed", details: details) }
+            catch { journal.markIncomplete(operationID) }
+            // Return the actual local result. ADBClient separately interprets the
+            // remote footer; an audit failure never replays or changes an action.
+            return response
+        } catch {
+            details["durationMilliseconds"] = String(Int(max(0, ProcessInfo.processInfo.systemUptime - started) * 1000))
+            details["error"] = ActivityJournal.redact(error.localizedDescription)
+            if let failure = error as? CommandFailure {
+                details["localExitCode"] = String(failure.partial.status)
+                details["remoteStatus"] = "unconfirmed"
+                details["timedOut"] = "true"
+                journal.trace(requestID: id, operationID: operationID, details: details, response: failure.partial, command: command)
+            } else { journal.trace(requestID: id, operationID: operationID, details: details, response: nil, command: command) }
+            try? journal.record(operationID: operationID, category: "transport", title: title, result: "failed", details: details)
+            throw error
+        }
     }
 }
 

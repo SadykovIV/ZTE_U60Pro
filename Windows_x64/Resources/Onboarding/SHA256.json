@@ -1,0 +1,13 @@
+{
+  "ADB-NOTICE.txt": "356cc66516060e4da6bdc53e6f0bbb8e8101673f326b73c68d535eddd04dd7b1",
+  "MU5250-OpenUI-LICENSE.txt": "db4bbb26836ac3df8760d74659fca92811bb7c6b1068cfd9827259505009d300",
+  "adb-source.properties": "2dccd788c0234d8cf7f7457377e57f57527a86a629c6ed54feb8af0f549dac38",
+  "dropbear": "e3833acdaa8b11e6150f82a35d3dc53d685561d5504ef337ad4af5e530345378",
+  "dropbear-LICENSE.txt": "a99ce657d790b761c132ee7e0de18edb437ae6361e536d991c6a12f36e770445",
+  "dropbear-libtomcrypt-LICENSE.txt": "8f196cb13afd271f5e267fd29543fc454596382ad580e7592709492843996ac8",
+  "dropbear-libtommath-LICENSE.txt": "2fa64b163659f41965c9815882a8296d3d03ff546b76153e11445f9bdecf955a",
+  "provenance.json": "ed975e367dfdbcb30e168ed8da5165c87f799adf46af427a43141bb5392e64df",
+  "setup-agent.sh": "4321b331dbe99069be37116dd16b4bad568aaff88398af2f7b9f1c73997782e8",
+  "start_zte_imei_studio.sh": "ece54a83e192824b9651ee4a4749fc009ec735e72b7913ec173fe07a2f37816c",
+  "zte-agent": "c50ba6b7ac6f77c581c2b657ba769f976d8d20aca0c6b7d08c9254ef2de9d346"
+}

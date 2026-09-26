@@ -4,21 +4,30 @@ from pathlib import Path,PurePosixPath
 import argparse,io,re,subprocess,tarfile,zipfile,sys,json,hashlib
 ROOT=Path(__file__).resolve().parents[1]
 p=argparse.ArgumentParser();p.add_argument('--artifacts',action='store_true');p.add_argument('--forbidden-file',type=Path,help='Private JSON array of extra strings; never add it to Git');a=p.parse_args()
-forbidden=[s.encode() for s in json.loads(a.forbidden_file.read_text())] if a.forbidden_file else []
+forbidden=[s.encode(encoding) for s in json.loads(a.forbidden_file.read_text()) for encoding in ('utf-8','utf-16le')] if a.forbidden_file else []
 problems=[];count=0;total=0;public_test_fixtures=0
+source_fixtures={(f['archive'],f['member']):f for f in json.loads((ROOT/'tools/public-source-test-fixtures.json').read_text())['fixtures']}
+archive_hashes={}
+def known_source_fixture(name,data):
+ parts=name.split('!')
+ if len(parts)!=3 or not parts[0].startswith('release/Third-party-sources-'):return False
+ fixture=source_fixtures.get((parts[1],parts[2]))
+ return bool(fixture and archive_hashes.get('!'.join(parts[:2]))==fixture['archive_sha256'] and hashlib.sha256(data).hexdigest()==fixture['sha256'])
 DENIED={'id_ed25519','id_rsa','authorized_keys','known_hosts','trusted_known_hosts','connection.json','nv0.bin','nv1.bin','config.original.bin','back_parameter','ssclash-linux-arm64'}
 def inspect(name,data,depth=0):
  global count,total,public_test_fixtures
  count+=1;total+=len(data)
- if count>20000 or total>2*1024**3:raise RuntimeError('Archive audit limit exceeded')
+ # Corresponding sources include the GCC toolchain and OpenWrt recipes.
+ if count>250000 or total>12*1024**3:raise RuntimeError('Archive audit limit exceeded')
  leaf=PurePosixPath(name).name
  if leaf in DENIED:problems.append((name,'private/prohibited filename'))
  if any(s and s in data for s in forbidden):problems.append((name,'private value'))
  # A complete PEM key requires both delimiters, so redaction test strings are allowed.
- if re.search(rb'-----BEGIN (?:OPENSSH|RSA|EC) PRIVATE KEY-----\s+[A-Za-z0-9+/=\r\n]{80,}-----END',data):
+ if re.search(rb'-----BEGIN (?:(?:OPENSSH|RSA|EC|DSA|ENCRYPTED) )?PRIVATE KEY-----\s+[A-Za-z0-9+/=\r\n]{80,}-----END',data):
   # Verbatim public upstream test fixture in the GPL corresponding-source archive.
   # This exact content is not installed and is not an owner's credential.
   if name.endswith('/transport/openvpn/config_test.go') and hashlib.sha256(data).hexdigest()=='0c652ff75e9644ef94822227966079f036bf0cc55d12ecf673801b4435e3bdf5':public_test_fixtures+=1
+  elif known_source_fixture(name,data):public_test_fixtures+=1
   else:problems.append((name,'private key'))
  for match in re.finditer(rb'vless://[0-9a-fA-F-]{36}@([^:?/#\s"\\]+)',data):
   host=match[1].decode(errors='ignore')
@@ -32,7 +41,8 @@ def inspect(name,data,depth=0):
     if m.is_dir():continue
     if m.file_size>100*1024**2:raise RuntimeError('Oversized ZIP member: '+name)
     inspect(name+'!'+m.filename,z.read(m),depth+1)
- elif name.endswith(('.tar.gz','.tgz','.tar.xz')):
+ elif name.endswith(('.tar.gz','.tgz','.tar.xz','.tar.bz2')):
+  archive_hashes[name]=hashlib.sha256(data).hexdigest()
   with tarfile.open(fileobj=io.BytesIO(data),mode='r:*') as tar:
    for m in tar:
     if not m.isfile():continue

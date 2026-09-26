@@ -16,18 +16,20 @@ enum StudioStyle {
 }
 
 enum StudioPage: String, CaseIterable, Identifiable {
-    case modem = "О модеме"
     case preparation = "Подготовка модема"
+    case display = "Launcher"
     case imei = "IMEI"
     case ttl = "TTL"
     case vpn = "VPN"
     case applications = "Приложения (beta)"
     case administration = "Администрирование"
+    case modem = "О модеме"
     var id: String { rawValue }
     var symbol: String {
         switch self {
         case .modem: return "wifi.router"
         case .preparation: return "wrench.and.screwdriver"
+        case .display: return "display"
         case .imei: return "simcard"
         case .ttl: return "slider.horizontal.3"
         case .applications: return "square.grid.2x2"
@@ -39,6 +41,7 @@ enum StudioPage: String, CaseIterable, Identifiable {
         switch self {
         case .modem: return "Устройство, система, память и диагностика"
         case .preparation: return "Подключение, ADB, агент и русский интерфейс"
+        case .display: return "Плитки, показатели модема и управление VPN на экране"
         case .imei: return "Чтение, смена и резервные копии IMEI"
         case .ttl: return "Фиксация исходящего TTL и прибавка к входящему"
         case .applications: return "Установленные приложения и каталог"
@@ -71,20 +74,23 @@ enum AdministrationSection: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 enum ApplicationSection: String, CaseIterable, Identifiable {
-    case installed = "Установленные"
+    case installed = "Установлено"
     case available = "Каталог"
+    case opkg = "Terminal"
     var id: String { rawValue }
 }
 
 @MainActor
 struct ContentView: View {
     @ObservedObject var model: AppModel
-    @StudioState var page: StudioPage = .modem
+    @StudioState var page: StudioPage = .preparation
     @StudioState var modemSection: ModemSection = .overview
     @StudioState var preparationSection: PreparationSection = .connection
+    @StudioState var launcherSection: LauncherSection = .information
     @StudioState var imeiSection: IMEISection = .imei
     @StudioState var administrationSection: AdministrationSection = .access
     @StudioState var applicationSection: ApplicationSection = .installed
+    @StudioState var expandedApplication: String?
     @StudioState var settingsExpanded = false
     @StudioState var copiedLog = false
 
@@ -112,9 +118,11 @@ struct ContentView: View {
                         if model.pendingOperation {
                             recoveryBanner
                         }
+                        connectionSectionNotice
                         switch page {
                         case .modem: modemPage
                         case .preparation: preparationPage
+                        case .display: displayPage
                         case .imei: imeiPage
                         case .ttl: ttlPage
                         case .applications: applicationsPage
@@ -195,10 +203,13 @@ struct ContentView: View {
 
             VStack(alignment: .leading, spacing: 11) {
                 HStack(spacing: 7) {
-                    Circle().fill(model.connected ? StudioStyle.accent : StudioStyle.secondary)
+                    Circle().fill(model.connected ? (model.activeChannel == .adb ? StudioStyle.warning : StudioStyle.accent) : StudioStyle.secondary)
                         .frame(width: 6, height: 6)
-                    Text(model.connected ? "Модем подключён" : "Нет подключения")
+                    Text(model.connectionLabel)
                         .font(.system(size: 11, weight: .medium))
+                }
+                if model.connected && model.activeChannel == .adb {
+                    Text("Ограниченный доступ").font(.system(size: 10)).foregroundStyle(StudioStyle.warning)
                 }
                 Text(model.host.isEmpty ? "192.168.0.1" : model.host)
                     .font(.system(size: 12, design: .monospaced))
@@ -244,6 +255,43 @@ struct ContentView: View {
         .padding(.vertical, 24)
     }
 
+    @ViewBuilder var connectionSectionNotice: some View {
+        if page != .preparation || preparationSection != .connection {
+            if !model.connected {
+                StudioNote(symbol: "cable.connector", text: "Нет подключения. Откройте «Подготовку модема» и подключитесь по SSH или USB ADB. Управление станет доступно после подключения по SSH.")
+            } else if model.activeChannel == .adb {
+                StudioNote(symbol: "info.circle", text: model.connectionCapabilityText)
+            }
+        }
+        if model.connected && !model.busy {
+            ForEach(pageRefreshErrors, id: \.0) { title, detail in
+                StudioNote(symbol: "exclamationmark.triangle", text: title + ": " + detail)
+            }
+            if !pageRefreshErrors.isEmpty {
+                Button("Повторить обновление разделов", action: model.refreshConnectedSections).buttonStyle(StudioButtonStyle())
+            }
+        }
+    }
+    var pageRefreshErrors: [(String, String)] {
+        let sections: [ConnectionOverviewSection]
+        switch page {
+        case .modem: sections = [.information]
+        case .display: sections = [] // The launcher has its own detailed error.
+        case .vpn: sections = []
+        case .ttl: sections = model.ttlStatus == nil ? [.ttl] : []
+        case .applications: sections = model.applicationInventory == nil ? [.applications] : []
+        case .preparation:
+            switch preparationSection {
+            case .connection: sections = []
+            case .agent: sections = model.agentInstallationStatus == nil ? [.agent] : []
+            case .localization: sections = model.screenLocalizationStatus == nil ? [.screen] : []
+            }
+        case .administration: sections = administrationSection == .access && model.accessState == nil ? [.access] : []
+        case .imei: sections = []
+        }
+        return sections.compactMap { section in model.sectionRefreshErrors[section].map { (section.title, $0) } }
+    }
+
     var modemPage: some View {
         VStack(alignment: .leading, spacing: 22) {
             Picker("Раздел настроек модема", selection: $modemSection) {
@@ -264,7 +312,7 @@ struct ContentView: View {
             if !model.connected {
                 StudioCard {
                     Text("Сведения о подключённом устройстве").font(.system(size: 18, weight: .semibold))
-                    Text("Для первого подключения откройте «Подготовка модема». Если SSH уже настроен, сведения и диагностику можно прочитать даже при непроверенной прошивке.")
+                    Text("Подключитесь в «Подготовке модема» по SSH или USB ADB. После подключения сведения и состояние разделов обновятся автоматически.")
                         .font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
                     Button("Перейти к подготовке") { page = .preparation }.buttonStyle(StudioButtonStyle())
                 }
@@ -287,91 +335,59 @@ struct ContentView: View {
     }
 
     var connectionPage: some View {
-        VStack(alignment: .leading, spacing: 22) {
+        VStack(alignment: .leading, spacing: 18) {
             StudioCard {
-                HStack(alignment: .top, spacing: 20) {
-                    Image(systemName: "wifi.router")
-                        .font(.system(size: 34, weight: .light))
-                        .foregroundStyle(StudioStyle.accent)
-                        .frame(width: 68, height: 68)
-                        .background(StudioStyle.accent.opacity(0.07), in: RoundedRectangle(cornerRadius: 17))
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("ZTE U60 Pro").font(.system(size: 22, weight: .semibold))
-                        Text(model.skipFirmwareCheck ? "MU5250 · непроверенный режим" : "MU5250 · профиль B31").font(.system(size: 12, weight: .medium)).foregroundStyle(StudioStyle.secondary)
-                        Text(model.connected ? "Подключение проверено. Обновите сведения об устройстве, чтобы прочитать состояние системы и памяти." : "Подключите модем по USB и к его сети. Для первой настройки нужен только пароль веб-интерфейса.")
-                            .font(.system(size: 12))
-                            .foregroundStyle(StudioStyle.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    Spacer(minLength: 0)
+                HStack {
+                    Label("Параметры подключения", systemImage: "wifi.router")
+                        .font(.system(size: 16, weight: .semibold))
+                    Spacer()
+                    Text("MU5250 / U60 Pro").font(.system(size: 11)).foregroundStyle(StudioStyle.secondary)
                 }
-
-                HStack(alignment: .bottom, spacing: 12) {
+                HStack(alignment: .bottom, spacing: 14) {
                     StudioField(label: "АДРЕС МОДЕМА", placeholder: "192.168.0.1", text: $model.host)
-                        .frame(maxWidth: 290)
+                        .onChange(of: model.host) { _ in model.invalidateChannelConnection() }
                     StudioField(label: "SSH-ПОРТ", placeholder: "2222", text: $model.port)
                         .frame(width: 100)
-                    Spacer(minLength: 0)
-                    Button(action: model.connect) {
-                        Label(!model.webPassword.isEmpty ? "Настроить автоматически" : (model.connected ? "Обновить данные" : "Подключиться"), systemImage: model.connected ? "arrow.clockwise" : "arrow.right")
-                    }
-                    .buttonStyle(StudioButtonStyle(prominent: true))
-                    .disabled(model.busy || model.host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-                .disabled(model.busy)
-                .padding(.top, 8)
-
-                VStack(alignment: .leading, spacing: 11) {
-                    Text("ПАРОЛЬ ВЕБ-ИНТЕРФЕЙСА").font(.system(size: 9, weight: .semibold)).tracking(1).foregroundStyle(StudioStyle.secondary)
-                    SecureField("Введите пароль устройства", text: $model.webPassword)
-                        .textFieldStyle(.plain).font(.system(size: 14))
-                        .padding(13).background(StudioStyle.canvas, in: RoundedRectangle(cornerRadius: 8))
-                        .accessibilityLabel("Пароль веб-интерфейса")
-                        .disabled(model.busy)
-                    Text("Приложение проверит устройство и настроит доступ по USB, SSH и агент на модеме. Уже настроенный доступ будет сохранён. Пароль не записывается в настройки и журнал.")
-                        .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
-                    if model.setupPending {
-                        Label("Есть незавершённая настройка. Введите пароль и нажмите «Настроить автоматически».", systemImage: "arrow.clockwise")
-                            .font(.system(size: 11)).foregroundStyle(StudioStyle.warning)
-                    }
-                    Text("КЛЮЧ РАСШИФРОВКИ БЭКАПА (BACKUP-KEY SUFFIX)").font(.system(size: 9, weight: .semibold)).foregroundStyle(StudioStyle.secondary)
-                    SecureField("Ключ для вашей прошивки", text: $model.backupSuffix)
-                        .textFieldStyle(.roundedBorder).disabled(model.busy)
-                        .accessibilityLabel("Ключ расшифровки бэкапа")
-                    Text("Нужен для первоначальной подготовки. В публичную сборку ключ не включён и на диске не сохраняется. Источник и пояснение — в требованиях проекта.")
-                        .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
-                    Link("Где найти ключ", destination: URL(string: "https://github.com/jesther-ai/open-u60-pro/issues/8")!)
-                }.padding(.top, 8)
-
-                VStack(alignment: .leading, spacing: 10) {
-                    Toggle("Отключить проверку прошивки в приложении", isOn: Binding(get: { model.skipFirmwareCheck }, set: { model.setFirmwareCheckSkipped($0) }))
+                        .onChange(of: model.port) { _ in model.invalidateChannelConnection() }
+                }.disabled(model.busy)
+                HStack(alignment: .top, spacing: 14) {
+                    connectionPasswordField("ПАРОЛЬ WEB", placeholder: "Пароль штатной панели", text: $model.webPassword)
+                    connectionPasswordField("ПАРОЛЬ АГЕНТА", placeholder: "Текущий или новый пароль", text: $model.agentPassword)
+                }.disabled(model.busy)
+                connectionPasswordField("КЛЮЧ БЭКАПА (BACKUP-KEY SUFFIX)", placeholder: "Ключ для вашей прошивки", text: $model.backupSuffix).disabled(model.busy)
+                HStack(alignment: .center, spacing: 14) {
+                    Toggle("Не проверять прошивку", isOn: Binding(get: { model.skipFirmwareCheck }, set: { model.setFirmwareCheckSkipped($0) }))
                         .toggleStyle(.checkbox).font(.system(size: 12, weight: .medium)).disabled(model.busy)
-                    Text(model.skipFirmwareCheck ? FirmwareCheck.warning : "Режим для непроверенной прошивки. Включая его, вы действуете на свой страх и риск: возможно повреждение модема и потеря данных.")
-                        .font(.system(size: 11)).foregroundStyle(StudioStyle.warning).fixedSize(horizontal: false, vertical: true)
-                    Text("Отключает общую сверку версии и хэшей с B31 при подключении. Проверки бэкапов, устройства, формата NV/EFS и ограничения установщиков сохраняются. После перезапуска приложения галочка снимается.")
-                        .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
-                }.padding(14).background(StudioStyle.warning.opacity(0.07), in: RoundedRectangle(cornerRadius: 9))
-
+                        .help("Отключает общую сверку версии и хэшей с B31 и разрешает повторную предварительную подготовку при доступном SSH. Проверки устройства, бэкапов, NV/EFS и ограничения установщиков сохраняются. При перезапуске приложения проверка включается снова.")
+                    Spacer(minLength: 0)
+                    Text("Пароли не сохраняются на Mac")
+                        .font(.system(size: 10)).foregroundStyle(StudioStyle.secondary)
+                }
                 DisclosureGroup(isExpanded: $settingsExpanded) {
-                    VStack(alignment: .leading, spacing: 14) {
-                        Text("Дополнительные настройки для уже установленного агента. При автоматической настройке ключ и доверие SSH создаются без ручного ввода.")
-                            .font(.system(size: 11))
-                            .foregroundStyle(StudioStyle.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("При подготовке ключ и доверие SSH создаются автоматически. Здесь можно выбрать файлы для уже подготовленного модема.")
+                            .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
                         pathSetting(label: "ПРИВАТНЫЙ SSH-КЛЮЧ", placeholder: "Путь к id_ed25519", text: $model.keyPath, action: model.chooseKey)
                         pathSetting(label: "ИЗВЕСТНЫЕ SSH-ХОСТЫ", placeholder: "Путь к known_hosts", text: $model.knownHostsPath, action: model.chooseKnownHosts)
-                    }
-                    .padding(.top, 14)
-                    .disabled(model.busy)
+                    }.padding(.top, 10).disabled(model.busy)
                 } label: {
-                    Label("Настройки доступа", systemImage: "key.horizontal")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(StudioStyle.secondary)
+                    Label("Параметры SSH", systemImage: "key.horizontal")
+                        .font(.system(size: 11, weight: .medium)).foregroundStyle(StudioStyle.secondary)
                 }
-                .padding(.top, 7)
             }
-
+            connectionRoutingCard
+        }.onAppear {
+            if !model.connectionsChecked && !model.busy { model.discoverConnectionsPassively() }
         }
+    }
+    func connectionPasswordField(_ label: String, placeholder: String, text: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(label).font(.system(size: 9, weight: .semibold)).tracking(1).foregroundStyle(StudioStyle.secondary)
+            SecureField(placeholder, text: text)
+                .textFieldStyle(.plain).font(.system(size: 13))
+                .padding(12).background(StudioStyle.canvas, in: RoundedRectangle(cornerRadius: 8))
+                .accessibilityLabel(label == "ПАРОЛЬ WEB" ? "Пароль веб-интерфейса" : "Пароль агента")
+        }.frame(maxWidth: .infinity, alignment: .leading)
     }
 
     var currentPair: some View {
@@ -453,11 +469,12 @@ struct ContentView: View {
                     }
                     .buttonStyle(StudioButtonStyle(prominent: true))
                     .disabled(!model.canApply || model.busy)
+                    OperationInfoButton(topic: .imei)
                 }
             }
 
             if !model.connected {
-                StudioNote(symbol: "network", text: "Введите пароль в разделе «Подготовка модема». Кнопка «Настроить и записать IMEI» выполнит первоначальную настройку, прочитает текущую пару и создаст бэкап перед записью.")
+                StudioNote(symbol: "network", text: "Выберите SSH или автоматическое подключение и заполните пароли Web и агента в разделе «Подготовка модема». Кнопка «Настроить и записать IMEI» выполнит первоначальную настройку, прочитает текущую пару и создаст бэкап перед записью.")
             }
         }
     }

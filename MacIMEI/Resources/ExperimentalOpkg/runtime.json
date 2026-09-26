@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "sha256": "a78ea29007d1c30616172760f725a64655f9ae1889721b9c323e78b899ee54fe",
+  "bytes": 3476366,
+  "manifestSHA256": "d1d57d4e1ff6a32a5a9dfeb0561081de73c90615986412a4ca98b00382f59336",
+  "files": 30,
+  "opkgVersion": "2022-02-24-d038e5b6-2"
+}

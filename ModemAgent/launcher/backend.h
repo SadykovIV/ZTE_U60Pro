@@ -2,9 +2,11 @@
 #define ZTE_LAUNCHER_BACKEND_H
 #include <pthread.h>
 #include <stdint.h>
+#include "telemetry.h"
+#include "info-layout.h"
 #define MAX_PROFILES 32
 struct profile_summary {char id[37],name[257];int active;};
-struct snapshot {int valid,enabled,running,network_ok,count,busy,error;unsigned generation;uint64_t ram_free,ram_total,disk_free,disk_total,uptime;struct profile_summary profiles[MAX_PROFILES];};
+struct snapshot {int valid,enabled,running,network_ok,count,busy,error;unsigned generation;char ssid[33],ssid_2g[33],ssid_5g[33];struct profile_summary profiles[MAX_PROFILES];struct modem_telemetry telemetry;struct info_layout layout;};
 void backend_start(void);
 void backend_refresh(void);
 void backend_snapshot(struct snapshot *out);

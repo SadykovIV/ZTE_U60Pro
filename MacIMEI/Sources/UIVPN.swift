@@ -4,7 +4,7 @@ import AppKit
 extension ContentView {
     var vpnPage: some View {
         VStack(alignment: .leading, spacing: 22) {
-            StudioNote(symbol: "network", text: "VPN работает на самом модеме: профиль задаёт сервер и параметры подключения. Профили импортируются и выбираются в агенте. Отдельная сеть «ZTE-VPN» направляет трафик через выбранный профиль; основная сеть Wi-Fi сохраняет обычное подключение. Профиль и WiFi с VPN можно переключать на экране модема.")
+            StudioNote(symbol: "network", text: "VPN работает на самом модеме: профиль задаёт сервер и параметры подключения. Профили импортируются и выбираются в агенте. Отдельная сеть Wi-Fi с VPN направляет трафик через выбранный профиль; основная сеть Wi-Fi сохраняет обычное подключение. Профиль и WiFi с VPN можно переключать на экране модема.")
             StudioCard {
                 HStack {
                     Text("Компоненты VPN").font(.system(size: 18, weight: .semibold))
@@ -19,13 +19,15 @@ extension ContentView {
                     informationRow("Агент с управлением VPN", check.agentReady ? "Готов" : "Требуется обновление")
                     informationRow("Веб-панель агента", check.dashboardReady ? "Готова" : "Требуется обновление")
                     informationRow("Страницы на экране модема", check.launcherReady ? "Установлены · информация и VPN" : "Требуется установка или восстановление")
-                    if !check.helperReady || !check.agentReady || !check.dashboardReady || !check.launcherReady {
-                        Button("Установить необходимые компоненты") { model.installVPN() }
-                            .buttonStyle(StudioButtonStyle()).disabled(!model.canManage || !check.missingCapabilities.isEmpty)
-                        Text("Компоненты входят в приложение. После установки импортируйте профиль в агенте модема. VPN будет работать на самом модеме.")
-                            .font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
-                    }
-                } else { Text("Сначала проверьте установленное на модеме ПО.").foregroundStyle(StudioStyle.secondary) }
+                } else { Text("Проверка выполнится перед установкой компонентов.").foregroundStyle(StudioStyle.secondary) }
+                if model.vpnInspection == nil || model.vpnInspection?.helperReady != true || model.vpnInspection?.agentReady != true || model.vpnInspection?.dashboardReady != true || model.vpnInspection?.launcherReady != true {
+                    Button(model.vpnInspection?.status.installed == true ? "Обновить компоненты VPN" : "Установить компоненты VPN", action: model.installVPN)
+                        .buttonStyle(StudioButtonStyle(prominent: true))
+                        .disabled(!model.canManage || model.vpnInspection?.missingCapabilities.isEmpty == false)
+                    Text("Установка добавит ядро VPN, управление в агенте и страницы Launcher. Она не включает сеть Wi-Fi с VPN. Название и пароль задаются в Launcher → Управление VPN; профиль импортируется в агенте.")
+                        .font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             if !model.vpnError.isEmpty { StudioNote(symbol: "exclamationmark.triangle", text: model.vpnError) }
             StudioCard {
@@ -36,8 +38,8 @@ extension ContentView {
                     var address = URLComponents()
                     address.scheme = "http"; address.host = model.host; address.port = 8080
                     if let url = address.url { NSWorkspace.shared.open(url) }
-                }.buttonStyle(StudioButtonStyle()).disabled(model.vpnInspection?.dashboardReady != true)
+                }.buttonStyle(StudioButtonStyle()).disabled(!model.connected || model.vpnInspection?.dashboardReady != true)
             }
-        }.onAppear { if model.canManage { model.refreshVPN() } }
+        }
     }
 }

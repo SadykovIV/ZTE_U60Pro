@@ -60,6 +60,13 @@ if [ -e "$root" ] || [ -L "$root" ]; then
 else
  [ ! -e /etc/init.d/zte_launcher ] && [ ! -L /etc/init.d/zte_launcher ] || exit 73
 fi
+# Keep the user's order and selections across library upgrades. A configuration
+# is data outside the payload manifest; never follow or copy an unsafe path.
+layout="$root/info-layout.conf"
+if [ -e "$layout" ] || [ -L "$layout" ]; then
+ [ -f "$layout" ] && [ ! -L "$layout" ] && [ "$(stat -c %u:%a:%h "$layout")" = 0:600:1 ] || exit 73
+ [ "$(wc -c < "$layout")" -le 512 ] || exit 73
+fi
 mkdir -m 700 "$transaction"
 printf '%s\n' zte-launcher-update-v1 > "$transaction/owner"
 cat /sys/block/mmcblk0/device/cid > "$transaction/cid"
@@ -72,6 +79,10 @@ cp "$transaction/cid" "$transaction/new/cid"
 if [ -d "$root" ]; then cp -p "$root/rc.local.backup" "$transaction/new/rc.local.backup"
 else cp -p /etc/rc.local "$transaction/new/rc.local.backup";fi
 chmod 600 "$transaction/new/rc.local.backup"
+if [ -f "$layout" ]; then
+ cp -p "$layout" "$transaction/new/info-layout.conf"
+ cmp -s "$layout" "$transaction/new/info-layout.conf" || exit 73
+fi
 for file in launcher.so launcher-run.sh launcher-watch.sh launcher-service.sh launcher-start.sh launcher.sha256; do
  cp "$stage/$file" "$transaction/new/$file";chmod 700 "$transaction/new/$file"
 done

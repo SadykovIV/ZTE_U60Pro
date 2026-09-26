@@ -1,0 +1,14 @@
+{
+  "source": "https://github.com/PowerShell/Win32-OpenSSH/releases/download/10.0.0.0p2-Preview/OpenSSH-Win64.zip",
+  "archive_sha256": "23f50f3458c4c5d0b12217c6a5ddfde0137210a30fa870e98b29827f7b43aba5",
+  "files": {
+    "ssh.exe": "6890c128c86cc2c38aad9fcb32a82b851ff3d38c714a1f656b8e445d7cd5e1c6",
+    "ssh-keygen.exe": "b51fdd26be0f7c83398d18e5354a0acb0406a9de25516791758fe63bbe3ae870",
+    "ssh-keyscan.exe": "32eb6a2b80443207a2481085582c0ed01bbddcfef4b1f3f2cc680aa16d0f3135",
+    "sftp.exe": "97271ea46fa2eeb5e9e22cd5e919931727a2a11f79993c1ef151b4f618d9fd22",
+    "scp.exe": "ca014ddb0a3c058719e7061eb604de7dfe1f7732954792ac8176e6c1fc99b4a3",
+    "libcrypto.dll": "4652e861c0335ee80a51306ceab75aa35c8865b235f97ce7dd5a0fd9dab44b5d",
+    "LICENSE.txt": "568c41f330a50a7d2d2eba9d3f7807caaaf4e091705ab6652ec26a3f9d1acfdb",
+    "NOTICE.txt": "2cd5f5d0064bc909dfe0f0fc8f4787882c7c379f2730d89e5faa0c2bc57c620b"
+  }
+}

@@ -24,21 +24,47 @@ python3 tools/build.py
 
 `fetch_dependencies.py` загружает только закреплённый архив **из Releases этого
 репозитория**, проверяет SHA-256 архива и каждого бинарника и распаковывает
-разрешённые обычные файлы. Манифест — `tools/dependencies.json`. Это ADB, Dropbear,
-OpenDoas, uhttpd и официальный Mihomo; SSClash в нём нет. Лицензии и архивы
-исходников Mihomo/OpenDoas находятся в том же архиве. Каталоги кэша и сборки
+разрешённые обычные файлы. Манифест — `tools/dependencies.json`. Это ADB, OpenSSH, Dropbear, OpenDoas, uhttpd, официальный Mihomo,
+диагностические пакеты, изолированный opkg и публичные модемные помощники.
+SSClash в нём нет. Лицензии входят в комплект, соответствующие исходники
+опубликованы отдельно в `Third-party-sources-1.19.0.tar.gz`. Каталоги кэша и сборки
 исключены из Git.
 
 `build.py` последовательно собирает расширение экрана, VPN-контроллер, агент,
-веб-панель и C-помощники, обновляет зависимые SHA-256 и собирает `.app`/ZIP.
+веб-панель, C-помощники и `zte-timeout`, обновляет зависимые SHA-256 и собирает `.app`/ZIP.
 Пути домашнего каталога в Rust и Swift переназначаются перед компиляцией.
-Результат: `MacIMEI/dist/ZTE-IMEI-Studio-1.9.1-arm64.zip` и `build-manifest.json`.
+Результат: `MacIMEI/dist/ZTE-IMEI-Studio-1.19.0-arm64.zip` и `build-manifest.json`.
 Сборка подписывается ad-hoc; сертификат разработчика и нотарификация не требуются.
 
 Проверка ABI расширения на исходном UI необязательна для повторной сборки:
 укажите `ZTE_STOCK_UI` и `ZTE_RUSSIAN_UI` для её выполнения. Полные файлы прошивки
 в Git не включайте. При установке и запуске на устройстве проверки SHA-256
 штатного UI остаются обязательными независимо от этой сборочной проверки.
+
+## Windows x64
+
+На Windows нужен .NET SDK 10, Python 3 для получения зависимостей и PowerShell.
+После клонирования публичного репозитория:
+
+```powershell
+python tools/fetch_dependencies.py
+.\Windows_x64\build.cmd
+```
+
+Результат — `Windows_x64/dist/ZTE-IMEI-Studio-1.19.0-Windows-x64-portable.zip`.
+Готовому приложению SDK, Python и отдельно установленная .NET не нужны.
+Не удаляйте `Resources` рядом с EXE. Для USB ADB может понадобиться драйвер ZTE.
+EXE не подписан сертификатом. Версии NuGet закреплены lock-файлами.
+
+Исходники Windows полностью находятся в `Windows_x64`. Модемные ARM64 ELF и
+Windows ADB/OpenSSH загружаются из закреплённого архива зависимостей, поэтому
+обычная Windows-сборка не требует Mac или ARM64-компилятора. Если вы изменили
+код агента, сначала пересоберите цепь на Mac/Linux; после публичной полной
+сборки выполните `python3 Windows_x64/sync_public_resources.py`, затем `build.cmd`.
+Синхронизация обновляет хэши C# и ресурсов, не использует частный проект.
+
+Тесты: [Windows README](../Windows_x64/README.md). Cross-publish на Mac выполняется
+через `pwsh -File Windows_x64/build.ps1`; это не проверка исполнения EXE на Windows.
 
 ## Только агент / панель
 
@@ -83,9 +109,18 @@ python3 tools/audit_public.py
 
 `python3 tools/package_release.py` создаёт отдельный ELF, архив агента с панелью,
 ZIP приложения, архив сборочных зависимостей и SHA256SUMS в `release/`.
-Для упаковки нужны исходные архивы `mihomo-v1.19.31-source.tar.gz` и
-`opendoas-6.8.2.tar.xz` в `.cache`; они доступны в предыдущем архиве
-Build-dependencies (раздел sources) и по точным ссылкам в THIRD_PARTY_NOTICES.
+Для упаковки нужны обе готовые сборки. Скрипт создаёт версионные файлы для
+macOS/Windows, агент 2.8.0, `Build-dependencies-1.19.0.tar.gz`, отдельный
+`Third-party-sources-1.19.0.tar.gz`, манифесты и `SHA256SUMS`.
+
+Исходные архивы `mihomo-v1.19.31-source.tar.gz` и `opendoas-6.8.2.tar.xz`
+должны находиться в `.cache`, остальные соответствующие исходники и рецепты —
+в `.cache/public-sources`. Для повторной упаковки извлеките опубликованный
+Third-party-sources: два указанных архива переместите в `.cache`, остальное —
+в `.cache/public-sources`. Файлы `SOURCES.json`, `RECIPES.json` и
+`PACKAGE-RECIPE-MATCH.json` содержат версии, хэши и соответствие рецептам.
+`tools/dependencies.json` обновляется при упаковке: не публикуйте манифест
+без соответствующего архива зависимостей.
 
 Ни один скрипт сборки не публикует файлы автоматически. Перед Git push/release
 проверьте `git diff --cached`, прогоните аудит исходников и содержимого архивов.
