@@ -390,6 +390,7 @@ import AppKit
         manageApplications(action: "package", package: name)
     }
     func installSSClash() {
+        guard VerifiedCatalogStore.shared.allows("ssclash") else { append("Приложение пока не входит в проверенный каталог"); return }
         guard canManage && ssclashPasswordValid else { return }
         let password = ssclashPassword
         ssclashPassword = ""; ssclashPasswordConfirmation = ""
@@ -540,11 +541,11 @@ import AppKit
         if selectedBackupID == nil || !backups.contains(where: { $0.id == selectedBackupID }) { selectedBackupID = backups.first?.id }
     }
     func revealBackups() { try? secureDirectory(storage.appendingPathComponent("Backups")); NSWorkspace.shared.open(storage.appendingPathComponent("Backups")) }
-    func chooseKey() { let p = NSOpenPanel(); p.title = "Закрытый SSH-ключ установленного агента"; p.canChooseDirectories = false; p.showsHiddenFiles = true; if p.runModal() == .OK, let url = p.url { keyPath = url.path; invalidateChannelConnection(clearIdentity: false) } }
-    func chooseKnownHosts() { let p = NSOpenPanel(); p.title = "Файл с проверенным ключом SSH-сервера модема"; p.canChooseDirectories = false; p.showsHiddenFiles = true; if p.runModal() == .OK, let url = p.url { knownHostsPath = url.path; invalidateChannelConnection(clearIdentity: false) } }
+    func chooseKey() { let p = NSOpenPanel(); p.title = L10n.text("Закрытый SSH-ключ установленного агента"); p.canChooseDirectories = false; p.showsHiddenFiles = true; if p.runModal() == .OK, let url = p.url { keyPath = url.path; invalidateChannelConnection(clearIdentity: false) } }
+    func chooseKnownHosts() { let p = NSOpenPanel(); p.title = L10n.text("Файл с проверенным ключом SSH-сервера модема"); p.canChooseDirectories = false; p.showsHiddenFiles = true; if p.runModal() == .OK, let url = p.url { knownHostsPath = url.path; invalidateChannelConnection(clearIdentity: false) } }
     func importBackup() {
         guard !busy && !pendingOperation else { return }
-        let p = NSOpenPanel(); p.title = "Папка бэкапа приложения или исходного IMEI-бэкапа проекта"; p.canChooseDirectories = true; p.canChooseFiles = false
+        let p = NSOpenPanel(); p.title = L10n.text("Папка бэкапа приложения или исходного IMEI-бэкапа проекта"); p.canChooseDirectories = true; p.canChooseFiles = false
         if p.runModal() == .OK, let url = p.url { perform { engine in _ = try engine.importBackup(url); engine.update("Бэкап импортирован и проверен.", 1); return nil } }
     }
 }

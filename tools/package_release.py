@@ -10,7 +10,7 @@ import tarfile
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / 'release'
 RES = ROOT / 'MacIMEI/Resources'
-VERSION = '1.19.0'
+VERSION = '1.20.0'
 AGENT_VERSION = '2.8.0'
 RELEASE_URL = f'https://github.com/SadykovIV/ZTE_U60Pro/releases/download/v{VERSION}/'
 OUT.mkdir(exist_ok=True)
@@ -46,10 +46,10 @@ def copy_artifact(source, name):
 
 
 artifacts = []
-artifacts.append(copy_artifact(ROOT / f'MacIMEI/dist/ZTE-IMEI-Studio-{VERSION}-arm64.zip',
-                               f'ZTE-IMEI-Studio-{VERSION}-macOS-arm64.zip'))
-artifacts.append(copy_artifact(ROOT / f'Windows_x64/dist/ZTE-IMEI-Studio-{VERSION}-Windows-x64-portable.zip',
-                               f'ZTE-IMEI-Studio-{VERSION}-Windows-x64-portable.zip'))
+artifacts.append(copy_artifact(ROOT / f'MacIMEI/dist/ZTE-U60Pro-Manager-{VERSION}-arm64.zip',
+                               f'ZTE-U60Pro-Manager-{VERSION}-macOS-arm64.zip'))
+artifacts.append(copy_artifact(ROOT / f'Windows_x64/dist/ZTE-U60Pro-Manager-{VERSION}-Windows-x64-portable.zip',
+                               f'ZTE-U60Pro-Manager-{VERSION}-Windows-x64-portable.zip'))
 agent = copy_artifact(RES / 'Onboarding/zte-agent', f'zte-agent-{AGENT_VERSION}-aarch64-linux-musl')
 agent.chmod(0o755)
 artifacts.append(agent)
@@ -121,7 +121,7 @@ artifacts.append(source_archive)
 artifacts.append(copy_artifact(ROOT / 'MacIMEI/dist/build-manifest.json', 'macOS-build-manifest.json'))
 artifacts.append(copy_artifact(ROOT / 'Windows_x64/dist/windows-build-manifest.json', 'Windows-build-manifest.json'))
 release_manifest = OUT / 'release-manifest.json'
-release_manifest.write_text(json.dumps({'version': VERSION, 'previousRelease': 'v1.9.1', 'agentVersion': AGENT_VERSION,
+release_manifest.write_text(json.dumps({'version': VERSION, 'previousRelease': 'v1.19.0', 'agentVersion': AGENT_VERSION,
                                       'vpnctlVersion': '1.3.0',
                                       'artifacts': {path.name: {'bytes': path.stat().st_size, 'sha256': sha(path)}
                                                     for path in sorted(artifacts)}}, indent=2) + '\n')

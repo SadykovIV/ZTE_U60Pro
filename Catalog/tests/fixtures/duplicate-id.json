@@ -1,0 +1,98 @@
+{
+  "schemaVersion": 1,
+  "revision": 2,
+  "issuedAt": "2026-09-26T00:00:00Z",
+  "minimumManagerVersion": "1.20.0",
+  "apps": [
+    {
+      "id": "htop",
+      "name": "htop",
+      "version": "3.3.0-1",
+      "installerID": "htop",
+      "description": {
+        "ru": "Процессы, загрузка CPU и использование памяти.",
+        "en": "Processes, CPU load and memory usage."
+      },
+      "firmware": [
+        "MU5250-B31"
+      ],
+      "architecture": [
+        "aarch64_cortex-a53"
+      ],
+      "openwrt": [
+        "23.05.4"
+      ],
+      "verification": {
+        "date": "2026-09-25",
+        "result": "passed",
+        "level": "physical-modem-install-and-launch",
+        "evidence": "evidence/B31-apps-20260925.md",
+        "evidenceSHA256": "099404d17efbb4db7c3cf0b5f3c92ecce9911bdb51f3392689cc0b68c415aed2",
+        "summary": {
+          "ru": "На B31 проверены установка и запуск --version. Интерактивная работа пока не проверена.",
+          "en": "Installation and --version startup verified on B31. Interactive operation has not been verified."
+        }
+      }
+    },
+    {
+      "id": "opkg",
+      "name": "opkg",
+      "version": "2022-02-24-d038e5b6-2",
+      "installerID": "opkg",
+      "description": {
+        "ru": "Экспериментальный менеджер пакетов в отдельном хранилище /data.",
+        "en": "Experimental package manager in isolated /data storage."
+      },
+      "firmware": [
+        "MU5250-B31"
+      ],
+      "architecture": [
+        "aarch64_cortex-a53"
+      ],
+      "openwrt": [
+        "23.05.4"
+      ],
+      "verification": {
+        "date": "2026-09-25",
+        "result": "passed",
+        "level": "physical-modem-install-and-launch",
+        "evidence": "evidence/B31-apps-20260925.md",
+        "evidenceSHA256": "099404d17efbb4db7c3cf0b5f3c92ecce9911bdb51f3392689cc0b68c415aed2",
+        "summary": {
+          "ru": "На B31 проверены установка адаптера, запуск и list-installed. Установка пакетов из интернета пока не проверена.",
+          "en": "Adapter installation, startup and list-installed verified on B31. Internet package installation has not been verified."
+        }
+      }
+    },
+    {
+      "id": "htop",
+      "name": "htop",
+      "version": "3.3.0-1",
+      "installerID": "htop",
+      "description": {
+        "ru": "Процессы, загрузка CPU и использование памяти.",
+        "en": "Processes, CPU load and memory usage."
+      },
+      "firmware": [
+        "MU5250-B31"
+      ],
+      "architecture": [
+        "aarch64_cortex-a53"
+      ],
+      "openwrt": [
+        "23.05.4"
+      ],
+      "verification": {
+        "date": "2026-09-25",
+        "result": "passed",
+        "level": "physical-modem-install-and-launch",
+        "evidence": "evidence/B31-apps-20260925.md",
+        "evidenceSHA256": "099404d17efbb4db7c3cf0b5f3c92ecce9911bdb51f3392689cc0b68c415aed2",
+        "summary": {
+          "ru": "На B31 проверены установка и запуск --version. Интерактивная работа пока не проверена.",
+          "en": "Installation and --version startup verified on B31. Interactive operation has not been verified."
+        }
+      }
+    }
+  ]
+}

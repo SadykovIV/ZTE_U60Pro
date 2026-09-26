@@ -1,0 +1,5 @@
+private/
+__pycache__/
+.tests-build/
+**/bin/
+**/obj/

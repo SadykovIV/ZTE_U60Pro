@@ -5,9 +5,9 @@ extension ContentView {
     var modemInformationCards: some View {
         StudioCard {
             HStack {
-                Text("Система и устройство").font(.system(size: 18, weight: .semibold))
+                Text(L10n.text("Система и устройство")).font(.system(size: 18, weight: .semibold))
                 Spacer()
-                Button(action: model.refreshModemInformation) { Label("Обновить сведения", systemImage: "arrow.clockwise") }
+                Button(action: model.refreshModemInformation) { Label(L10n.text("Обновить сведения"), systemImage: "arrow.clockwise") }
                     .buttonStyle(StudioButtonStyle()).disabled(!model.canCollectDiagnostics)
             }
             if let info = model.modemInformation {
@@ -23,7 +23,7 @@ extension ContentView {
                 informationRow("Нагрузка · 1 / 5 / 15 мин", info.loadAverage)
                 informationRow("Аккумулятор", info.batteryPercent.map { "\($0)% · " + batteryLabel(info.batteryState) } ?? "Нет данных")
                 informationRow("Агент на модеме", info.agentVersion)
-                DisclosureGroup("Идентификаторы и время проверки") {
+                DisclosureGroup(L10n.text("Идентификаторы и время проверки")) {
                     VStack(spacing: 10) {
                         informationRow("CID накопителя", info.identity.cid)
                         informationRow("Сеанс загрузки", info.bootID)
@@ -39,9 +39,9 @@ extension ContentView {
                 ForEach(summary.fields.keys.filter { $0 != "firmware" && $0 != "routerSHA256" }.sorted(), id: \.self) { key in
                     informationRow(channelFieldTitle(key), summary.fields[key] ?? "—")
                 }
-                Text(model.connectionCapabilityText).font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
+                Text(L10n.text(model.connectionCapabilityText)).font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
             } else {
-                Text("Сведения считываются непосредственно с модема. Подключитесь и нажмите «Обновить сведения».")
+                Text(L10n.text("Сведения считываются непосредственно с модема. Подключитесь и нажмите «Обновить сведения»."))
                     .font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
             }
         }
@@ -54,8 +54,8 @@ extension ContentView {
     }
     func informationRow(_ title: String, _ value: String) -> some View {
         HStack(alignment: .top, spacing: 20) {
-            Text(title).foregroundStyle(StudioStyle.secondary).frame(width: 185, alignment: .leading)
-            Text(value).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+            Text(L10n.text(title)).foregroundStyle(StudioStyle.secondary).frame(width: 185, alignment: .leading)
+            Text(L10n.text(value)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
         }.font(.system(size: 12)).fixedSize(horizontal: false, vertical: true)
     }
     func durationLabel(_ seconds: Double) -> String {
@@ -68,14 +68,14 @@ extension ContentView {
     var memoryPage: some View {
         VStack(alignment: .leading, spacing: 22) {
             HStack {
-                Text("Память и накопители").font(.system(size: 18, weight: .semibold))
+                Text(L10n.text("Память и накопители")).font(.system(size: 18, weight: .semibold))
                 Spacer()
-                Button(action: model.refreshModemInformation) { Label("Обновить", systemImage: "arrow.clockwise") }
+                Button(action: model.refreshModemInformation) { Label(L10n.text("Обновить"), systemImage: "arrow.clockwise") }
                     .buttonStyle(StudioButtonStyle()).disabled(!model.canCollectDiagnostics)
             }
             if let info = model.modemInformation {
                 StudioCard {
-                    Text("Оперативная память · RAM").font(.system(size: 15, weight: .semibold))
+                    Text(L10n.text("Оперативная память · RAM")).font(.system(size: 15, weight: .semibold))
                     informationRow("Всего", AppModel.bytesLabel(kib: info.memoryTotalKiB))
                     informationRow("Доступно приложениям", AppModel.bytesLabel(kib: info.memoryAvailableKiB))
                     ProgressView(value: Double(info.memoryTotalKiB - info.memoryAvailableKiB), total: Double(info.memoryTotalKiB))
@@ -83,16 +83,16 @@ extension ContentView {
                     informationRow("Подкачка", info.swapTotalKiB == 0 ? "Не используется" : AppModel.bytesLabel(kib: info.swapFreeKiB) + " свободно из " + AppModel.bytesLabel(kib: info.swapTotalKiB))
                 }
                 StudioCard {
-                    Text("Разделы и файловые системы").font(.system(size: 15, weight: .semibold))
-                    Text("/tmp — временная файловая система в RAM. Размеры разделов не складываются в общий объём накопителя.")
+                    Text(L10n.text("Разделы и файловые системы")).font(.system(size: 15, weight: .semibold))
+                    Text(L10n.text("/tmp — временная файловая система в RAM. Размеры разделов не складываются в общий объём накопителя."))
                         .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary)
                     ForEach(info.volumes) { volume in
                         VStack(alignment: .leading, spacing: 7) {
                             HStack {
-                                Text(volume.mount).font(.system(size: 12, weight: .medium, design: .monospaced))
-                                if info.readOnlyMounts.contains(volume.mount) { Image(systemName: "lock").help("Только чтение") }
+                                Text(L10n.text(volume.mount)).font(.system(size: 12, weight: .medium, design: .monospaced))
+                                if info.readOnlyMounts.contains(volume.mount) { Image(systemName: "lock").help(L10n.text("Только чтение")) }
                                 Spacer()
-                                Text("Свободно \(AppModel.bytesLabel(kib: volume.availableKiB)) из \(AppModel.bytesLabel(kib: volume.totalKiB))")
+                                Text(L10n.text("Свободно \(AppModel.bytesLabel(kib: volume.availableKiB)) из \(AppModel.bytesLabel(kib: volume.totalKiB))"))
                                     .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary)
                             }
                             ProgressView(value: Double(volume.usedKiB), total: Double(volume.totalKiB))
@@ -103,7 +103,7 @@ extension ContentView {
                 StudioCard {
                     informationRow("RAM всего, КиБ", total)
                     informationRow("RAM доступно, КиБ", summary.fields["memoryAvailableKiB"] ?? "Нет данных")
-                    Text("Сведения API агента. Для списка разделов и файловых систем выберите SSH или ADB.").font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
+                    Text(L10n.text("Сведения API агента. Для списка разделов и файловых систем выберите SSH или ADB.")).font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
                 }
             } else { StudioNote(symbol: "memorychip", text: "Выберите SSH, ADB или агент и обновите сведения. Web не предоставляет данные о памяти.") }
         }
@@ -113,29 +113,29 @@ extension ContentView {
             diagnosticExportCard
             StudioCard {
                 HStack {
-                    Text("Диагностика модема").font(.system(size: 18, weight: .semibold))
+                    Text(L10n.text("Диагностика модема")).font(.system(size: 18, weight: .semibold))
                     Spacer()
-                    Button(action: model.collectDiagnostics) { Label("Собрать диагностику", systemImage: "doc.text.magnifyingglass") }
+                    Button(action: model.collectDiagnostics) { Label(L10n.text("Собрать диагностику"), systemImage: "doc.text.magnifyingglass") }
                         .buttonStyle(StudioButtonStyle(prominent: true)).disabled(!model.canCollectDiagnostics)
                 }
-                Text("Системный журнал, ядро, сеть, маршруты, firewall, процессы, USB, питание, температуры и структура каталогов. Системные разделы читаются через SSH или работающий ADB по USB. Через агент и Web сохраняются доступные сведения API; остальные разделы отмечаются как пропущенные. Сбор соблюдает выбранный способ подключения и не требует соответствия B31. Для каждого раздела сохраняются результат чтения и контрольная сумма; известные поля с паролями и токенами скрываются.")
+                Text(L10n.text("Системный журнал, ядро, сеть, маршруты, firewall, процессы, USB, питание, температуры и структура каталогов. Системные разделы читаются через SSH или работающий ADB по USB. Через агент и Web сохраняются доступные сведения API; остальные разделы отмечаются как пропущенные. Сбор соблюдает выбранный способ подключения и не требует соответствия B31. Для каждого раздела сохраняются результат чтения и контрольная сумма; известные поля с паролями и токенами скрываются."))
                     .font(.system(size: 12)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
                 if let report = model.diagnosticReport {
-                    ForEach(report.warnings ?? [], id: \.self) { Text($0).font(.system(size: 11)).foregroundStyle(StudioStyle.warning) }
+                    ForEach(report.warnings ?? [], id: \.self) { Text(L10n.text($0)).font(.system(size: 11)).foregroundStyle(StudioStyle.warning) }
                     informationRow("Собрано", report.created)
                     informationRow("Подключение", report.transport.flatMap(ConnectionMode.init(rawValue:))?.title ?? (report.transport == nil ? "Не указано в старом отчёте" : "Не установлено"))
                     if let reason = report.selectionReason {
-                        Text(reason).font(.system(size: 11)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
+                        Text(L10n.text(reason)).font(.system(size: 11)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
                     }
                     informationRow("Результаты сбора", report.outcomeSummary)
-                    Button(action: model.revealDiagnostics) { Label("Открыть папку отчёта", systemImage: "folder") }.buttonStyle(StudioButtonStyle())
-                    Text("Отчёт может содержать адреса сети и идентификаторы устройства. Просмотрите его перед отправкой.")
+                    Button(action: model.revealDiagnostics) { Label(L10n.text("Открыть папку отчёта"), systemImage: "folder") }.buttonStyle(StudioButtonStyle())
+                    Text(L10n.text("Отчёт может содержать адреса сети и идентификаторы устройства. Просмотрите его перед отправкой."))
                         .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary)
                 }
             }
             if let report = model.diagnosticReport {
-                Picker("Раздел отчёта", selection: $model.selectedDiagnostic) {
-                    ForEach(report.files) { file in Text(file.title + (file.effectiveOutcome == .succeeded ? "" : " · " + file.statusLabel)).tag(file.name) }
+                Picker(L10n.text("Раздел отчёта"), selection: $model.selectedDiagnostic) {
+                    ForEach(report.files) { file in Text(L10n.text(file.title) + (file.effectiveOutcome == .succeeded ? "" : " · " + L10n.text(file.statusLabel))).tag(file.name) }
                 }.onChange(of: model.selectedDiagnostic) { _ in model.loadDiagnosticText() }
                 ScrollView([.horizontal, .vertical]) {
                     Text(model.diagnosticText).font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
@@ -146,16 +146,16 @@ extension ContentView {
     }
     var imeiPage: some View {
         VStack(alignment: .leading, spacing: 22) {
-            Picker("IMEI", selection: $imeiSection) {
-                ForEach(IMEISection.allCases) { Text($0.rawValue).tag($0) }
+            Picker(L10n.text("IMEI"), selection: $imeiSection) {
+                ForEach(IMEISection.allCases) { Text(L10n.text($0.rawValue)).tag($0) }
             }.pickerStyle(.segmented)
             switch imeiSection { case .imei: changePage; case .backups: imeiBackupsPage }
         }
     }
     var administrationPage: some View {
         VStack(alignment: .leading, spacing: 22) {
-            Picker("Раздел администрирования", selection: $administrationSection) {
-                ForEach(AdministrationSection.allCases) { Text($0.rawValue).tag($0) }
+            Picker(L10n.text("Раздел администрирования"), selection: $administrationSection) {
+                ForEach(AdministrationSection.allCases) { Text(L10n.text($0.rawValue)).tag($0) }
             }.pickerStyle(.segmented)
             switch administrationSection {
             case .access: accessPage
@@ -167,9 +167,9 @@ extension ContentView {
     var accessPage: some View {
         VStack(alignment: .leading, spacing: 22) {
             HStack {
-                Text("Службы и способы входа").font(.system(size: 18, weight: .semibold))
+                Text(L10n.text("Службы и способы входа")).font(.system(size: 18, weight: .semibold))
                 Spacer()
-                Button(action: model.refreshAccess) { Label("Проверить доступы", systemImage: "arrow.clockwise") }
+                Button(action: model.refreshAccess) { Label(L10n.text("Проверить доступы"), systemImage: "arrow.clockwise") }
                     .buttonStyle(StudioButtonStyle()).disabled(!model.canManage)
             }
             if let state = model.accessState {
@@ -181,22 +181,22 @@ extension ContentView {
     func accessCard(_ service: AccessServiceState) -> some View {
         StudioCard {
             HStack {
-                Text(service.title).font(.system(size: 15, weight: .semibold))
+                Text(L10n.text(service.title)).font(.system(size: 15, weight: .semibold))
                 Spacer()
-                Text(serviceStateLabel(service.state)).font(.system(size: 11, weight: .medium))
+                Text(L10n.text(serviceStateLabel(service.state))).font(.system(size: 11, weight: .medium))
                     .foregroundStyle(service.state == .running ? StudioStyle.accent : StudioStyle.secondary)
             }
             informationRow("Адрес", service.endpoint)
-            Text(service.credentialModel).font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
-            Text(service.detail).font(.system(size: 11)).foregroundStyle(StudioStyle.secondary)
+            Text(L10n.text(service.credentialModel)).font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
+            Text(L10n.text(service.detail)).font(.system(size: 11)).foregroundStyle(StudioStyle.secondary)
             if !service.allowedActions.isEmpty {
                 HStack {
                     ForEach(service.allowedActions, id: \.rawValue) { action in
-                        Button(action.title) { model.changeService(service.id, action: action) }
+                        Button(L10n.text(action.title)) { model.changeService(service.id, action: action) }
                             .buttonStyle(StudioButtonStyle()).disabled(!model.canManage)
                     }
                     Spacer()
-                    Text("До перезагрузки модема").font(.system(size: 10)).foregroundStyle(StudioStyle.secondary)
+                    Text(L10n.text("До перезагрузки модема")).font(.system(size: 10)).foregroundStyle(StudioStyle.secondary)
                 }
             }
         }
@@ -208,60 +208,60 @@ extension ContentView {
         VStack(alignment: .leading, spacing: 22) {
             systemBackupsCard
             StudioCard {
-                Text("Отдельные данные и настройки").font(.system(size: 18, weight: .semibold))
-                Text("Выберите состав копии. Каждый архив сохраняется на Mac с проверкой устройства, размера и SHA256.")
+                Text(L10n.text("Отдельные данные и настройки")).font(.system(size: 18, weight: .semibold))
+                Text(L10n.text("Выберите состав копии. Каждый архив сохраняется на Mac с проверкой устройства, размера и SHA256."))
                     .font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
-                Picker("Состав резервной копии", selection: $model.deviceBackupKind) {
-                    ForEach(DeviceBackupKind.allCases) { Text($0.title).tag($0) }
+                Picker(L10n.text("Состав резервной копии"), selection: $model.deviceBackupKind) {
+                    ForEach(DeviceBackupKind.allCases) { Text(L10n.text($0.title)).tag($0) }
                 }.pickerStyle(.segmented).disabled(model.busy)
-                Text(model.deviceBackupKind.scope).font(.system(size: 12)).fixedSize(horizontal: false, vertical: true)
-                Text(model.deviceBackupKind.limitations).font(.system(size: 11)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
+                Text(L10n.text(model.deviceBackupKind.scope)).font(.system(size: 12)).fixedSize(horizontal: false, vertical: true)
+                Text(L10n.text(model.deviceBackupKind.limitations)).font(.system(size: 11)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
                 HStack {
-                    Button(action: model.createDeviceBackup) { Label("Создать копию", systemImage: "plus") }
+                    Button(action: model.createDeviceBackup) { Label(L10n.text("Создать копию"), systemImage: "plus") }
                         .buttonStyle(StudioButtonStyle(prominent: true)).disabled(!model.canManage)
-                    Button(action: model.refreshDeviceBackups) { Label("Обновить список", systemImage: "arrow.clockwise") }
+                    Button(action: model.refreshDeviceBackups) { Label(L10n.text("Обновить список"), systemImage: "arrow.clockwise") }
                         .buttonStyle(StudioButtonStyle()).disabled(model.busy)
                     Spacer()
-                    Button(action: model.revealDeviceBackups) { Label("Папка копий", systemImage: "folder") }.buttonStyle(StudioButtonStyle())
+                    Button(action: model.revealDeviceBackups) { Label(L10n.text("Папка копий"), systemImage: "folder") }.buttonStyle(StudioButtonStyle())
                 }
             }
             if !model.deviceBackups.isEmpty {
                 StudioCard {
-                    Text("Модемные, пользовательские и конфигурационные копии").font(.system(size: 14, weight: .semibold))
+                    Text(L10n.text("Модемные, пользовательские и конфигурационные копии")).font(.system(size: 14, weight: .semibold))
                     ForEach(model.deviceBackups) { item in
                         Button { model.selectedDeviceBackupID = item.id } label: {
                             HStack {
                                 Image(systemName: model.selectedDeviceBackupID == item.id ? "checkmark.circle.fill" : "circle")
                                 VStack(alignment: .leading, spacing: 4) {
-                                    Text(item.kind.title).font(.system(size: 12, weight: .medium))
-                                    Text(item.date).font(.system(size: 10)).foregroundStyle(StudioStyle.secondary)
+                                    Text(L10n.text(item.kind.title)).font(.system(size: 12, weight: .medium))
+                                    Text(L10n.text(item.date)).font(.system(size: 10)).foregroundStyle(StudioStyle.secondary)
                                 }
                                 Spacer()
-                                Text(ByteCountFormatter.string(fromByteCount: item.bytes, countStyle: .file)).font(.system(size: 11))
+                                Text(L10n.text(ByteCountFormatter.string(fromByteCount: item.bytes, countStyle: .file))).font(.system(size: 11))
                             }.padding(10).contentShape(Rectangle())
                         }.buttonStyle(.plain).disabled(model.busy)
                     }
                     HStack {
-                        Button(action: model.verifyDeviceBackup) { Label("Проверить целостность", systemImage: "checkmark.shield") }.buttonStyle(StudioButtonStyle())
-                        Button(action: model.exportDeviceBackup) { Label("Экспортировать", systemImage: "square.and.arrow.up") }.buttonStyle(StudioButtonStyle())
+                        Button(action: model.verifyDeviceBackup) { Label(L10n.text("Проверить целостность"), systemImage: "checkmark.shield") }.buttonStyle(StudioButtonStyle())
+                        Button(action: model.exportDeviceBackup) { Label(L10n.text("Экспортировать"), systemImage: "square.and.arrow.up") }.buttonStyle(StudioButtonStyle())
                     }.disabled(model.busy || model.selectedDeviceBackupID == nil)
                 }
             }
             StudioNote(symbol: "simcard", text: "Резервные копии NV550 и EFS для смены IMEI находятся в разделе «IMEI» → «Бэкапы IMEI».")
-            Button("Открыть бэкапы IMEI") { page = .imei; imeiSection = .backups }.buttonStyle(StudioButtonStyle())
+            Button(L10n.text("Открыть бэкапы IMEI")) { page = .imei; imeiSection = .backups }.buttonStyle(StudioButtonStyle())
         }.onAppear { model.refreshDeviceBackups(); model.refreshBackups(); model.refreshSystemBackups() }
     }
     var activityPage: some View {
         VStack(alignment: .leading, spacing: 18) {
             diagnosticExportCard
             StudioCard {
-                Text("Постоянный журнал действий").font(.system(size: 18, weight: .semibold))
-                Text("Сохраняется между запусками: этапы, проверки прошивки, SSH, USB/ADB и HTTP, длительность, коды завершения, ошибки и очищенный вывод. Запросы связаны с операциями и сеансом приложения. Секретный ввод не сохраняется; известные конфиденциальные поля скрываются.")
+                Text(L10n.text("Постоянный журнал действий")).font(.system(size: 18, weight: .semibold))
+                Text(L10n.text("Сохраняется между запусками: этапы, проверки прошивки, SSH, USB/ADB и HTTP, длительность, коды завершения, ошибки и очищенный вывод. Запросы связаны с операциями и сеансом приложения. Секретный ввод не сохраняется; известные конфиденциальные поля скрываются."))
                     .font(.system(size: 12)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
                 HStack {
-                    Button(action: model.refreshActivity) { Label("Обновить", systemImage: "arrow.clockwise") }.buttonStyle(StudioButtonStyle())
-                    Button(action: model.revealActivity) { Label("Весь журнал", systemImage: "folder") }.buttonStyle(StudioButtonStyle())
-                    Button(action: model.revealOperationLogs) { Label("Трассировки запросов", systemImage: "doc.text") }.buttonStyle(StudioButtonStyle())
+                    Button(action: model.refreshActivity) { Label(L10n.text("Обновить"), systemImage: "arrow.clockwise") }.buttonStyle(StudioButtonStyle())
+                    Button(action: model.revealActivity) { Label(L10n.text("Весь журнал"), systemImage: "folder") }.buttonStyle(StudioButtonStyle())
+                    Button(action: model.revealOperationLogs) { Label(L10n.text("Трассировки запросов"), systemImage: "doc.text") }.buttonStyle(StudioButtonStyle())
                 }
                 StudioField(label: "ПОИСК В ПОСЛЕДНИХ 400 СОБЫТИЯХ", placeholder: "Операция, ошибка или идентификатор", text: $model.activitySearch)
                 if !model.journalWarning.isEmpty { StudioNote(symbol: "exclamationmark.triangle", text: model.journalWarning) }
@@ -270,20 +270,20 @@ extension ContentView {
                 ForEach(model.filteredActivity) { event in
                     DisclosureGroup {
                         VStack(alignment: .leading, spacing: 5) {
-                            Text("Операция: " + event.operationID).textSelection(.enabled)
+                            Text(L10n.text("Операция: " + event.operationID)).textSelection(.enabled)
                             ForEach(event.details.keys.sorted(), id: \.self) { key in
-                                Text(key + ": " + (event.details[key] ?? "")).textSelection(.enabled)
+                                Text(L10n.text(key + ": " + (event.details[key] ?? ""))).textSelection(.enabled)
                             }
                         }.font(.system(size: 10, design: .monospaced)).padding(.vertical, 8)
                     } label: {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(event.title).font(.system(size: 12))
-                            Text(activityDateLabel(event.timestamp) + " · " + activityResultLabel(event.result)).font(.system(size: 10)).foregroundStyle(StudioStyle.secondary)
+                            Text(L10n.text(event.title)).font(.system(size: 12))
+                            Text(activityDateLabel(event.timestamp) + " · " + L10n.text(activityResultLabel(event.result))).font(.system(size: 10)).foregroundStyle(StudioStyle.secondary)
                         }
                     }.padding(12).background(StudioStyle.surface, in: RoundedRectangle(cornerRadius: 8))
                 }
             }
-            DisclosureGroup("Сообщения текущего сеанса") { journalPage.padding(.top, 12) }
+            DisclosureGroup(L10n.text("Сообщения текущего сеанса")) { journalPage.padding(.top, 12) }
         }.onAppear { model.refreshActivity() }
     }
     func activityDateLabel(_ value: String) -> String {

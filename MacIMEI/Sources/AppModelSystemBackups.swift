@@ -97,10 +97,10 @@ final class SystemBackupCancellation: @unchecked Sendable {
         let allowLive = systemAllowLiveCapture
         let alert = NSAlert()
         alert.alertStyle = .critical
-        alert.messageText = plan.isResume ? "Продолжить восстановление модема?" : "Восстановить полный образ модема?"
-        alert.informativeText = "Модем CID …\(plan.inventory.cid.suffix(8)). Образ от \(plan.backup.created), \(ByteCountFormatter.string(fromByteCount: plan.backup.bytes, countStyle: .file)). Содержимое основной и загрузочных областей eMMC будет заменено. Перед первой записью сохраняется текущий полный образ. После начала записи не отключайте питание."
-        alert.addButton(withTitle: plan.isResume ? "Продолжить восстановление" : "Восстановить")
-        alert.addButton(withTitle: "Отмена")
+        alert.messageText = L10n.text(plan.isResume ? "Продолжить восстановление модема?" : "Восстановить полный образ модема?")
+        alert.informativeText = L10n.text("Модем CID …\(plan.inventory.cid.suffix(8)). Образ от \(plan.backup.created), \(ByteCountFormatter.string(fromByteCount: plan.backup.bytes, countStyle: .file)). Содержимое основной и загрузочных областей eMMC будет заменено. Перед первой записью сохраняется текущий полный образ. После начала записи не отключайте питание.")
+        alert.addButton(withTitle: L10n.text(plan.isResume ? "Продолжить восстановление" : "Восстановить"))
+        alert.addButton(withTitle: L10n.text("Отмена"))
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         systemRestoreConfirmation = ""
         runSystemBackupOperation(plan.isResume ? "Продолжаю восстановление образа…" : "Сохраняю текущее состояние перед восстановлением…", work: {

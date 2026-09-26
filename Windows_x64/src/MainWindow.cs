@@ -5,6 +5,8 @@ using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
+using Avalonia.Media.Imaging;
+using System.Diagnostics;
 using ZteImeiStudio.Windows.Core;
 
 namespace ZteImeiStudio.Windows;
@@ -34,7 +36,7 @@ public sealed class MainWindow : Window
 
     private static readonly Page[] Pages =
     [
-        new("Подготовка модема", "Подключение, агент и русский интерфейс", "⌁", ["Подключение и настройка", "Агент", "Русификация"]),
+        new("Подготовка модема", "Подключение, агент и русский интерфейс", "⌁", ["Настройка подключения", "Установка агента", "Русификация"]),
         new("Launcher", "Экран модема и его плитки", "▣", ["Информация о модеме", "Управление VPN"]),
         new("IMEI", "Чтение, смена и резервные копии", "◈", ["Смена IMEI", "Бэкапы IMEI"]),
         new("TTL", "Правила исходящего и входящего TTL", "⇄", ["Настройки TTL"]),
@@ -44,17 +46,24 @@ public sealed class MainWindow : Window
         new("О модеме", "Устройство, память и диагностика", "ⓘ", ["Об устройстве", "Память", "Диагностика"]),
     ];
 
-    private static readonly IBrush Canvas = Brush("#101418");
-    private static readonly IBrush Sidebar = Brush("#151B20");
-    private static readonly IBrush Surface = Brush("#1B2429");
-    private static readonly IBrush Elevated = Brush("#253137");
-    private static readonly new IBrush Foreground = Brush("#EAF1F0");
-    private static readonly IBrush Secondary = Brush("#96A6AA");
-    private static readonly IBrush Accent = Brush("#58D4BB");
+    private static readonly IBrush Canvas = Brush("#081528");
+    private static readonly IBrush Sidebar = Brush("#0B1B30");
+    private static readonly IBrush Surface = Brush("#10243D");
+    private static readonly IBrush Elevated = Brush("#193650");
+    private static readonly new IBrush Foreground = Brush("#EAF3FC");
+    private static readonly IBrush Secondary = Brush("#9BAFC5");
+    private static readonly IBrush Accent = Brush("#0C89DB");
     private static readonly IBrush Warn = Brush("#E9B86D");
 
     private readonly IModemService _service;
-    private readonly StackPanel _sidebarItems = new() { Spacing = 5 };
+    private readonly StackPanel _sidebarItems = new() { Spacing = 6 };
+    private readonly TextBlock _pageTitle = new() { Foreground = Foreground, FontSize = 30, FontWeight = FontWeight.Bold };
+    private readonly TextBlock _pageSubtitle = new() { Foreground = Secondary, FontSize = 13, TextWrapping = TextWrapping.Wrap };
+    private readonly Button _aboutButton = new();
+    private readonly TextBlock _sidebarCaption = new() { Foreground = Secondary, FontSize = 11, TextWrapping = TextWrapping.Wrap };
+    private bool _terminalOpening;
+    private CancellationTokenSource? _terminalOpenCancellation;
+    private bool _terminalAutoAttempted;
     private readonly StackPanel _body = new() { Spacing = 18 };
     private readonly TextBlock _status = new() { Foreground = Secondary, FontSize = 12 };
     private readonly TextBlock _connection = new() { Foreground = Accent, FontSize = 12 };
@@ -80,80 +89,101 @@ public sealed class MainWindow : Window
     private bool _busy;
     private int _page;
 
-    public MainWindow(IModemService service)
+    public MainWindow(IModemService service, bool persistPreferences = true)
     {
         _service = service;
-        Title = "ZTE IMEI Studio — Windows x64";
-        Width = 1120;
-        Height = 790;
-        MinWidth = 880;
-        MinHeight = 620;
+        Title = "ZTE U60Pro Manager";
+        Width = 1220;
+        Height = 860;
+        MinWidth = 980;
+        MinHeight = 680;
         Background = Canvas;
+        FontFamily = new FontFamily("Segoe UI, Inter, sans-serif");
+        var iconPath = Path.Combine(AppContext.BaseDirectory, "Resources", "Branding", "manager-icon.png");
+        if (File.Exists(iconPath)) Icon = new WindowIcon(iconPath);
 
-        var layout = new Grid { ColumnDefinitions = new ColumnDefinitions("232,*") };
-        var side = new Border { Background = Sidebar, Padding = new Thickness(16, 23, 16, 16) };
-        var sideStack = new StackPanel { Spacing = 12 };
-        sideStack.Children.Add(new TextBlock
+        var layout = new Grid { ColumnDefinitions = new ColumnDefinitions("250,*") };
+        var side = new Border { Background = Sidebar, BorderBrush = Elevated, BorderThickness = new Thickness(0, 0, 1, 0), Padding = new Thickness(16, 25, 16, 16) };
+        var sideLayout = new Grid { RowDefinitions = new RowDefinitions("Auto,*,Auto") };
+        var brand = new StackPanel { Spacing = 10, Margin = new Thickness(9, 0, 0, 26) };
+        var brandRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 11 };
+        if (File.Exists(iconPath)) brandRow.Children.Add(new Image { Source = new Bitmap(iconPath), Width = 44, Height = 44 });
+        else brandRow.Children.Add(new TextBlock { Text = "▂▄▆█", Foreground = Accent, FontSize = 23, VerticalAlignment = VerticalAlignment.Center });
+        var brandText = new StackPanel { Spacing = 3, VerticalAlignment = VerticalAlignment.Center };
+        brandText.Children.Add(new TextBlock { Text = "ZTE U60Pro", Foreground = Foreground, FontSize = 19, FontWeight = FontWeight.Bold });
+        brandText.Children.Add(new TextBlock { Text = "MANAGER", Foreground = Secondary, FontSize = 11, LetterSpacing = 2 });
+        brandRow.Children.Add(brandText);
+        brand.Children.Add(brandRow);
+        sideLayout.Children.Add(brand);
+        var navigation = new ScrollViewer { Content = _sidebarItems, HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled };
+        Grid.SetRow(navigation, 1);
+        sideLayout.Children.Add(navigation);
+        var sideBottom = new StackPanel { Spacing = 12, Margin = new Thickness(7, 20, 7, 0) };
+        sideBottom.Children.Add(new Border { Height = 1, Background = Elevated, Margin = new Thickness(0, 0, 0, 5) });
+        sideBottom.Children.Add(_sidebarConnection);
+        sideBottom.Children.Add(_sidebarCaption);
+        var language = new ComboBox
         {
-            Text = "⌁  ZTE",
-            Foreground = Accent,
-            FontSize = 24,
-            FontWeight = FontWeight.SemiBold,
-            Margin = new Thickness(6, 0, 0, 0),
-        });
-        sideStack.Children.Add(new TextBlock
+            Name = "LanguagePicker", ItemsSource = new[] { "Русский", "English" },
+            SelectedIndex = Localization.IsEnglish ? 1 : 0, HorizontalAlignment = HorizontalAlignment.Stretch,
+            Background = Surface, Foreground = Foreground,
+        };
+        language.SelectionChanged += (_, _) =>
         {
-            Text = "IMEI STUDIO  ·  WINDOWS",
-            Foreground = Secondary,
-            FontSize = 10,
-            Margin = new Thickness(7, -9, 0, 17),
-        });
-        sideStack.Children.Add(_sidebarItems);
-        sideStack.Children.Add(new Border { Height = 1, Background = Elevated, Margin = new Thickness(0, 18, 0, 7) });
-        sideStack.Children.Add(_sidebarConnection);
-        sideStack.Children.Add(new TextBlock
-        {
-            Text = "Локальное управление модемом",
-            Foreground = Secondary,
-            FontSize = 11,
-            TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(6, 0, 6, 0),
-        });
-        side.Child = sideStack;
+            Localization.SetLanguage(language.SelectedIndex == 1 ? "en" : "ru", persist: persistPreferences);
+            RenderSidebar(); RenderPage(); UpdateConnectionLabels();
+            SetStatus("Язык интерфейса изменён.");
+        };
+        sideBottom.Children.Add(language);
+        _aboutButton.Background = Brushes.Transparent;
+        _aboutButton.Foreground = Secondary;
+        _aboutButton.BorderThickness = new Thickness(0);
+        _aboutButton.Padding = new Thickness(0, 7);
+        _aboutButton.HorizontalAlignment = HorizontalAlignment.Stretch;
+        _aboutButton.HorizontalContentAlignment = HorizontalAlignment.Left;
+        _aboutButton.Click += async (_, _) => await ShowAboutAsync();
+        sideBottom.Children.Add(_aboutButton);
+        Grid.SetRow(sideBottom, 2);
+        sideLayout.Children.Add(sideBottom);
+        side.Child = sideLayout;
         layout.Children.Add(side);
 
         var right = new Grid { RowDefinitions = new RowDefinitions("Auto,*,Auto") };
         Grid.SetColumn(right, 1);
-        var header = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), Margin = new Thickness(29, 19, 29, 17) };
-        var titleStack = new StackPanel { Spacing = 4 };
-        titleStack.Children.Add(new TextBlock
-        {
-            Text = "ZTE IMEI Studio",
-            Foreground = Foreground,
-            FontSize = 21,
-            FontWeight = FontWeight.SemiBold,
-        });
-        titleStack.Children.Add(_connection);
+        var headerBorder = new Border { BorderBrush = Elevated, BorderThickness = new Thickness(0, 0, 0, 1), Padding = new Thickness(30, 28, 30, 25) };
+        var header = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), ColumnSpacing = 15 };
+        var titleStack = new StackPanel { Spacing = 7 };
+        titleStack.Children.Add(_pageTitle);
+        titleStack.Children.Add(_pageSubtitle);
         header.Children.Add(titleStack);
-        var refresh = ActionButton("Обновить", async () => await RefreshAsync(), false);
+        var headerActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12, VerticalAlignment = VerticalAlignment.Center };
+        headerActions.Children.Add(new Border
+        {
+            Child = new TextBlock { Text = "WINDOWS · X64", Foreground = Secondary, FontSize = 11, FontWeight = FontWeight.SemiBold, LetterSpacing = 1 },
+            CornerRadius = new CornerRadius(20), BorderBrush = Elevated, BorderThickness = new Thickness(1), Padding = new Thickness(15, 9),
+        });
+        var refresh = ActionButton("↻", async () => await RefreshAsync(), false);
+        refresh.Name = "RefreshPage";
+        ToolTip.SetTip(refresh, Localization.Translate("Обновить"));
+        refresh.Margin = new Thickness(0);
         _refreshButton = refresh;
-        Grid.SetColumn(refresh, 1);
-        refresh.VerticalAlignment = VerticalAlignment.Center;
-        header.Children.Add(refresh);
-        right.Children.Add(header);
-
+        headerActions.Children.Add(refresh);
+        Grid.SetColumn(headerActions, 1);
+        header.Children.Add(headerActions);
+        headerBorder.Child = header;
+        right.Children.Add(headerBorder);
         var scroller = new ScrollViewer
         {
             Content = _body,
             HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled,
             VerticalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
         };
-        _body.Margin = new Thickness(29, 12, 29, 28);
+        _body.Margin = new Thickness(30, 26, 30, 30);
         Grid.SetRow(scroller, 1);
         right.Children.Add(scroller);
-
-        var footer = new Border { Background = Sidebar, Padding = new Thickness(28, 11) };
-        _status.Text = "Готово к подключению";
+        var footer = new Border { Background = Sidebar, BorderBrush = Elevated, BorderThickness = new Thickness(0, 1, 0, 0), Padding = new Thickness(30, 11) };
+        _status.Text = Localization.Translate("Готово к подключению");
+        _status.TextWrapping = TextWrapping.Wrap;
         footer.Child = _status;
         Grid.SetRow(footer, 2);
         right.Children.Add(footer);
@@ -172,6 +202,8 @@ public sealed class MainWindow : Window
         _form["ssid"] = "ZTE-VPN";
         RenderSidebar();
         RenderPage();
+        UpdateConnectionLabels();
+        VerifiedCatalogStore.Shared.Changed += CatalogChanged;
         Opened += async (_, _) => await RefreshAsync();
         Closed += async (_, _) => await ShutdownAsync();
     }
@@ -181,13 +213,17 @@ public sealed class MainWindow : Window
     private void RenderSidebar()
     {
         _sidebarItems.Children.Clear();
+        _aboutButton.Content = "ⓘ  " + Localization.Translate("О программе");
+        _sidebarCaption.Text = Localization.Translate("Локальное управление модемом");
         for (var i = 0; i < Pages.Length; i++)
         {
             var index = i;
             var selected = i == _page;
             var button = new Button
             {
-                Content = $"{Pages[i].Icon}   {Pages[i].Title}",
+                Content = NavigationLabel(i, selected),
+                Name = "Navigation" + i,
+                CornerRadius = new CornerRadius(10),
                 HorizontalAlignment = HorizontalAlignment.Stretch,
                 HorizontalContentAlignment = HorizontalAlignment.Left,
                 Background = selected ? Elevated : Brushes.Transparent,
@@ -198,6 +234,7 @@ public sealed class MainWindow : Window
             };
             button.Click += async (_, _) =>
             {
+                if (_page != index) _terminalAutoAttempted = false;
                 _page = index;
                 RenderSidebar();
                 RenderPage();
@@ -207,6 +244,34 @@ public sealed class MainWindow : Window
         }
     }
 
+    private static Control NavigationLabel(int index, bool selected)
+    {
+        string[] paths = [
+            "M15 3 L19 7 M12 6 L6 12 M5 11 L3 13 L7 17 L9 15 M11 13 L17 19 L20 16 L14 10 M13 5 L16 2 L21 7 L18 10",
+            "M3 4 H21 V17 H3 Z M8 21 H16 M12 17 V21",
+            "M6 2 H14 L19 7 V22 H6 Z M9 10 H16 V18 H9 Z M12 10 V18 M9 14 H16",
+            "M3 6 H21 M3 12 H21 M3 18 H21 M8 3 V9 M16 9 V15 M10 15 V21",
+            "M12 2 A10 10 0 1 0 12 22 A10 10 0 1 0 12 2 M2 12 H22 M12 2 C6 7 6 17 12 22 M12 2 C18 7 18 17 12 22",
+            "M3 3 H9 V9 H3 Z M15 3 H21 V9 H15 Z M3 15 H9 V21 H3 Z M15 15 H21 V21 H15 Z",
+            "M9 4 A4 4 0 1 0 9 12 A4 4 0 1 0 9 4 M2 21 C2 12 16 12 16 21 M20 13 A3 3 0 1 0 20 19 M18 19 V23 M18 21 H21",
+            "M3 10 H21 V20 H3 Z M7 15 H8 M11 15 H12 M17 10 V5 M12 2 C16 0 20 2 22 5 M13 5 C15 4 17 5 18 7"
+        ];
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
+        row.Children.Add(new Avalonia.Controls.Shapes.Path { Data = Geometry.Parse(paths[index]), Width = 18, Height = 18,
+            Stretch = Stretch.Uniform, Stroke = selected ? Accent : Secondary, StrokeThickness = 1.7, VerticalAlignment = VerticalAlignment.Center });
+        row.Children.Add(new TextBlock { Text = Localization.Translate(Pages[index].Title), Foreground = selected ? Accent : Foreground, FontSize = 13, VerticalAlignment = VerticalAlignment.Center });
+        return row;
+    }
+
+    private static Control FieldPair(Control first, Control second)
+    {
+        var columns = new Grid { ColumnDefinitions = new ColumnDefinitions("*,*"), ColumnSpacing = 18 };
+        columns.Children.Add(first);
+        Grid.SetColumn(second, 1);
+        columns.Children.Add(second);
+        return columns;
+    }
+
     private void RenderPage()
     {
         _body.Children.Clear();
@@ -214,25 +279,12 @@ public sealed class MainWindow : Window
         _previewRows = null;
         _metricCount = null;
         ClearSecrets();
-        _secretFields.Clear();
         _actionButtons.Clear();
         _preparationButton = null;
         if (_refreshButton is not null) _actionButtons.Add(_refreshButton);
         var page = Pages[_page];
-        _body.Children.Add(new TextBlock
-        {
-            Text = page.Title,
-            Foreground = Foreground,
-            FontSize = 29,
-            FontWeight = FontWeight.SemiBold,
-        });
-        _body.Children.Add(new TextBlock
-        {
-            Text = page.Subtitle,
-            Foreground = Secondary,
-            FontSize = 13,
-            Margin = new Thickness(0, -12, 0, 3),
-        });
+        _pageTitle.Text = Localization.Translate(page.Title);
+        _pageSubtitle.Text = Localization.Translate(page.Subtitle);
         if (page.Sections.Length > 1)
         {
             var tabs = new WrapPanel { ItemHeight = 36, Orientation = Orientation.Horizontal };
@@ -241,15 +293,17 @@ public sealed class MainWindow : Window
                 var section = i;
                 var tab = new Button
                 {
-                    Content = page.Sections[i],
-                    Background = i == _sections[_page] ? Elevated : Brushes.Transparent,
-                    Foreground = i == _sections[_page] ? Accent : Secondary,
+                    Content = Localization.Translate(page.Sections[i]),
+                    CornerRadius = new CornerRadius(8),
+                    Background = i == _sections[_page] ? Accent : Surface,
+                    Foreground = i == _sections[_page] ? Brushes.White : Secondary,
                     BorderThickness = new Thickness(0),
                     Padding = new Thickness(12, 8),
                     Margin = new Thickness(0, 0, 6, 6),
                 };
                 tab.Click += async (_, _) =>
                 {
+                    if (_sections[_page] != section) _terminalAutoAttempted = false;
                     _sections[_page] = section;
                     RenderPage();
                     await LoadPageDataAsync();
@@ -278,16 +332,14 @@ public sealed class MainWindow : Window
             case 0:
                 AddCard("Подключение к модему", "Адрес и учётные данные используются для выбранного способа подключения.", panel =>
                 {
-                    panel.Children.Add(Field("Адрес модема", "host", "192.168.0.1"));
-                    panel.Children.Add(Field("Пользователь SSH", "username", "root"));
-                    panel.Children.Add(Field("Пароль веб-интерфейса", "web_password", "Введите пароль", secret: true));
-                    panel.Children.Add(Field("Пароль агента / SSH", "agent_password", "Введите пароль", secret: true));
+                    panel.Children.Add(FieldPair(Field("Адрес модема", "host", "192.168.0.1"), Field("Пользователь SSH", "username", "root")));
+                    panel.Children.Add(FieldPair(Field("Пароль веб-интерфейса", "web_password", "Введите пароль", secret: true), Field("Пароль агента / SSH", "agent_password", "Введите пароль", secret: true)));
                     panel.Children.Add(Field("Backup-key suffix", "backup_key_suffix", "Суффикс ключа резервной копии вашей прошивки", secret: true));
                     panel.Children.Add(Muted("Суффикс нужен только для предварительной подготовки через Web; он не включён в публичную сборку и не сохраняется."));
                     panel.Children.Add(Muted("Режим подключения"));
                     var modes = new ComboBox
                     {
-                        ItemsSource = new[] { "Автоматически", "SSH", "ADB" },
+                        ItemsSource = new[] { "Автоматически", "SSH", "ADB" }.Select(Localization.Translate).ToArray(),
                         SelectedIndex = Get("mode") switch { "SSH" => 1, "ADB" => 2, _ => 0 },
                         MinWidth = 220,
                         HorizontalAlignment = HorizontalAlignment.Left,
@@ -297,11 +349,11 @@ public sealed class MainWindow : Window
                         1 => "SSH", 2 => "ADB", _ => "Автоматически",
                     };
                     panel.Children.Add(modes);
-                    panel.Children.Add(FileField("Существующий SSH private key", "key_path", "Использовать локальный ключ"));
-                    panel.Children.Add(FileField("Существующий known_hosts", "known_hosts_path", "Использовать локальный known_hosts"));
+                    panel.Children.Add(FileField("Приватный ключ SSH", "key_path", "Использовать локальный ключ"));
+                    panel.Children.Add(FileField("Файл known_hosts", "known_hosts_path", "Использовать локальный known_hosts"));
                     var skipCheck = new CheckBox
                     {
-                        Content = "Пропустить проверку прошивки",
+                        Content = Localization.Translate("Пропустить проверку прошивки"),
                         IsChecked = Get("skip_firmware_check") == "true",
                         Foreground = Warn,
                     };
@@ -368,7 +420,7 @@ public sealed class MainWindow : Window
                 panel.Children.Add(Muted("Режим пароля"));
                 var passwordModes = new ComboBox
                 {
-                    ItemsSource = new[] { "Пароль основной сети", "Новый пароль", "Сохранить текущий" },
+                    ItemsSource = new[] { "Пароль основной сети", "Новый пароль", "Сохранить текущий" }.Select(Localization.Translate).ToArray(),
                     SelectedIndex = Get("password_mode") switch { "custom" => 1, "preserve" => 2, _ => 0 },
                     MinWidth = 240,
                     HorizontalAlignment = HorizontalAlignment.Left,
@@ -434,7 +486,7 @@ public sealed class MainWindow : Window
         var previewColumn = new StackPanel { Spacing = 9, Margin = new Thickness(18, 0, 0, 0) };
         previewColumn.Children.Add(new TextBlock
         {
-            Text = "ПРЕДПРОСМОТР ЭКРАНА", Foreground = Secondary,
+            Text = Localization.Translate("ПРЕДПРОСМОТР ЭКРАНА"), Foreground = Secondary,
             FontSize = 10, FontWeight = FontWeight.SemiBold,
         });
         var screen = new StackPanel { Spacing = 8, Margin = new Thickness(11) };
@@ -445,15 +497,15 @@ public sealed class MainWindow : Window
         });
         screen.Children.Add(new TextBlock
         {
-            Text = vpn is null ? "SSID не прочитан" :
-                string.IsNullOrWhiteSpace(vpn.Ssid) ? "Сеть не настроена" : vpn.Ssid,
+            Text = Localization.Translate(vpn is null ? "SSID не прочитан" :
+                string.IsNullOrWhiteSpace(vpn.Ssid) ? "Сеть не настроена" : vpn.Ssid),
             Foreground = Secondary, FontSize = 12,
             TextTrimming = TextTrimming.CharacterEllipsis,
         });
         screen.Children.Add(VpnPreviewRow("Wi-Fi с VPN", vpn?.Enabled == true ? "Вкл" : "Выкл", vpn?.Enabled == true));
         screen.Children.Add(new TextBlock
         {
-            Text = "Профиль VPN", Foreground = Foreground, FontSize = 14,
+            Text = Localization.Translate("Профиль VPN"), Foreground = Foreground, FontSize = 14,
             FontWeight = FontWeight.SemiBold, Margin = new Thickness(0, 2, 0, 0),
         });
         var profiles = new StackPanel { Spacing = 5 };
@@ -475,11 +527,11 @@ public sealed class MainWindow : Window
         screen.Children.Add(navigation);
         screen.Children.Add(new TextBlock
         {
-            Text = vpn is null ? "Состояние не прочитано" :
+            Text = Localization.Translate(vpn is null ? "Состояние не прочитано" :
                 !vpn.Installed ? "Установите компоненты VPN" :
                 !vpn.Configured ? "Сеть ещё не настроена" :
                 !vpn.Enabled ? "Wi-Fi с VPN выключен" :
-                vpn.CoreRunning ? "Ядро VPN запущено" : "Проверьте состояние VPN",
+                vpn.CoreRunning ? "Ядро VPN запущено" : "Проверьте состояние VPN"),
             Foreground = Secondary, FontSize = 10,
             TextTrimming = TextTrimming.CharacterEllipsis,
         });
@@ -502,7 +554,7 @@ public sealed class MainWindow : Window
         var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
         row.Children.Add(new TextBlock
         {
-            Text = title, Foreground = active ? Accent : Foreground,
+            Text = Localization.Translate(title), Foreground = active ? Accent : Foreground,
             FontSize = 11, VerticalAlignment = VerticalAlignment.Center,
             TextTrimming = TextTrimming.CharacterEllipsis,
         });
@@ -510,7 +562,7 @@ public sealed class MainWindow : Window
         {
             var value = new TextBlock
             {
-                Text = detail, Foreground = active ? Accent : Secondary,
+                Text = Localization.Translate(detail), Foreground = active ? Accent : Secondary,
                 FontSize = 10, VerticalAlignment = VerticalAlignment.Center,
             };
             Grid.SetColumn(value, 1);
@@ -563,13 +615,13 @@ public sealed class MainWindow : Window
         var previewColumn = new StackPanel { Spacing = 9, Margin = new Thickness(18, 0, 0, 0) };
         previewColumn.Children.Add(new TextBlock
         {
-            Text = "ПРЕДПРОСМОТР ЭКРАНА", Foreground = Secondary, FontSize = 10,
+            Text = Localization.Translate("ПРЕДПРОСМОТР ЭКРАНА"), Foreground = Secondary, FontSize = 10,
             FontWeight = FontWeight.SemiBold,
         });
         previewColumn.Children.Add(Muted("Тип страницы на модеме"));
         var styles = new ComboBox
         {
-            ItemsSource = new[] { "Список", "Плитки" },
+            ItemsSource = new[] { "Список", "Плитки" }.Select(Localization.Translate).ToArray(),
             SelectedIndex = Get("style") == "tiles" ? 1 : 0,
             HorizontalAlignment = HorizontalAlignment.Stretch,
         };
@@ -582,10 +634,10 @@ public sealed class MainWindow : Window
         var screen = new StackPanel { Spacing = 5, Margin = new Thickness(11) };
         screen.Children.Add(new TextBlock
         {
-            Text = "О модеме", Foreground = Foreground, FontSize = 20,
+            Text = Localization.Translate("О модеме"), Foreground = Foreground, FontSize = 20,
             FontWeight = FontWeight.SemiBold,
         });
-        screen.Children.Add(new TextBlock { Text = "Данные модема", Foreground = Secondary, FontSize = 11 });
+        screen.Children.Add(new TextBlock { Text = Localization.Translate("Данные модема"), Foreground = Secondary, FontSize = 11 });
         _previewRows = new StackPanel { Spacing = 6 };
         screen.Children.Add(new ScrollViewer
         {
@@ -681,7 +733,7 @@ public sealed class MainWindow : Window
         var order = MetricOrder();
         var enabled = EnabledMetrics();
         if (_metricCount is not null)
-            _metricCount.Text = $"ПОКАЗАТЕЛИ  ·  {enabled.Count} из {DisplayMetrics.Length}";
+            _metricCount.Text = Localization.Translate($"ПОКАЗАТЕЛИ  ·  {enabled.Count} из {DisplayMetrics.Length}");
         for (var index = 0; index < order.Length; index++)
         {
             var id = order[index];
@@ -699,13 +751,13 @@ public sealed class MainWindow : Window
             var label = new StackPanel { Spacing = 2 };
             label.Children.Add(new TextBlock
             {
-                Text = metric.Title, Foreground = selected ? Foreground : Secondary,
+                Text = Localization.Translate(metric.Title), Foreground = selected ? Foreground : Secondary,
                 FontSize = 12, FontWeight = FontWeight.Medium,
                 TextWrapping = TextWrapping.Wrap,
             });
             label.Children.Add(new TextBlock
             {
-                Text = metric.Detail, Foreground = Secondary, FontSize = 10,
+                Text = Localization.Translate(metric.Detail), Foreground = Secondary, FontSize = 10,
                 TextWrapping = TextWrapping.Wrap,
             });
             var box = new CheckBox
@@ -727,7 +779,7 @@ public sealed class MainWindow : Window
                     Padding = new Thickness(4, 0), FontSize = 10,
                     IsEnabled = !_busy && index + delta >= 0 && index + delta < order.Length,
                 };
-                ToolTip.SetTip(arrow, delta < 0 ? "Переместить выше" : "Переместить ниже");
+                ToolTip.SetTip(arrow, Localization.Translate(delta < 0 ? "Переместить выше" : "Переместить ниже"));
                 arrow.Click += (_, _) => MoveMetricBy(id, step);
                 arrows.Children.Add(arrow);
             }
@@ -739,7 +791,7 @@ public sealed class MainWindow : Window
                 VerticalAlignment = VerticalAlignment.Center,
                 Margin = new Thickness(6, 0, 2, 0),
             };
-            ToolTip.SetTip(handle, "Перетащить для изменения порядка");
+            ToolTip.SetTip(handle, Localization.Translate("Перетащить для изменения порядка"));
             handle.PointerPressed += async (_, e) =>
             {
                 if (_busy || !e.GetCurrentPoint(handle).Properties.IsLeftButtonPressed) return;
@@ -802,13 +854,13 @@ public sealed class MainWindow : Window
         var content = new StackPanel { Spacing = tile ? 7 : 2 };
         content.Children.Add(new TextBlock
         {
-            Text = tile ? metric.TileTitle : metric.Title,
+            Text = Localization.Translate(tile ? metric.TileTitle : metric.Title),
             Foreground = Secondary, FontSize = tile ? 11 : 10,
             TextWrapping = TextWrapping.Wrap,
         });
         content.Children.Add(new TextBlock
         {
-            Text = metric.Example, Foreground = Foreground,
+            Text = Localization.Translate(metric.Example), Foreground = Foreground,
             FontSize = tile ? 14 : 15, FontWeight = FontWeight.SemiBold,
             TextWrapping = TextWrapping.Wrap,
         });
@@ -909,15 +961,26 @@ public sealed class MainWindow : Window
     {
         if (_sections[5] == 2)
         {
-            AddCard("Terminal и opkg", "Полный терминал модема доступен ниже. Изолированный opkg работает в /data; штатные системные пакеты не изменяются.", panel =>
+            AddCard("Установка пакетов через opkg", "Для установки приложений через терминал сначала установите opkg. Сам терминал открывается автоматически при подключении по SSH.", panel =>
             {
-                panel.Children.Add(Muted("Платформа проверенной прошивки B31: OpenWrt 23.05.4, aarch64_cortex-a53. Сначала установите адаптер, прочитайте источники и выполните opkg update. Затем можно выполнить opkg list, opkg install <пакет> или opkg remove <пакет>."));
-                panel.Children.Add(Actions(
-                    ("Проверить opkg", ModemOperation.RefreshOpkg, null),
-                    ("Установить адаптер", ModemOperation.InstallOpkg, null),
-                    ("Удалить адаптер", ModemOperation.RemoveOpkg, null)));
-                panel.Children.Add(Field("Команда opkg", "command", "opkg list-installed"));
-                panel.Children.Add(Actions(("Выполнить", ModemOperation.RunOpkgCommand, ["command"])));
+                panel.Children.Add(Muted("OpenWrt 23.05.4 · aarch64_cortex-a53 · /data"));
+                var opkg = _applications.FirstOrDefault(app => app.Id == "opkg");
+                panel.Children.Add(Muted(opkg?.StatusKnown == true ? opkg.Installed ? "opkg установлен" : "opkg не установлен" : "Состояние opkg пока не проверено"));
+                if (_terminal?.IsConnected == true)
+                    panel.Children.Add(ActionButton("Отключить терминал для управления opkg", async () => { _terminalAutoAttempted = true; await CloseTerminalAsync(); }, false));
+                else
+                {
+                    panel.Children.Add(Actions(("Проверить opkg", ModemOperation.RefreshOpkg, null)));
+                    if (opkg?.Installed != true && VerifiedCatalogStore.Shared.Allows("opkg"))
+                        panel.Children.Add(Actions(("Установить opkg", ModemOperation.InstallOpkg, null)));
+                }
+            });
+            AddTerminalCard();
+            AddCard("Инструкция opkg", "Платформа проверенной прошивки B31: OpenWrt 23.05.4, aarch64_cortex-a53. Сначала установите адаптер, прочитайте источники и выполните opkg update. Затем можно выполнить opkg list, opkg install <пакет> или opkg remove <пакет>.", panel =>
+            {
+                panel.Children.Add(Muted("opkg update\nopkg list\nopkg install <package>\nopkg remove <package>"));
+                if (_terminal?.IsConnected != true)
+                    panel.Children.Add(Actions(("Удалить адаптер", ModemOperation.RemoveOpkg, null)));
             });
             AddCard("Источники пакетов opkg", "Редактор приватного адаптера. Одна запись src/gz на строку.", panel =>
             {
@@ -925,19 +988,31 @@ public sealed class MainWindow : Window
                 panel.Children.Add(Field("Источники", "feeds", "src/gz имя https://адрес/каталога", multiline: true));
                 panel.Children.Add(ActionButton("Сохранить источники", async () => await ExecuteAsync(ModemOperation.SaveOpkgFeeds, ["feeds"]), true));
             });
-            AddTerminalCard();
             return;
         }
         AddCard(_sections[5] == 0 ? "Установленные приложения" : "Каталог приложений",
             "Каждое приложение показывает текущий статус на модеме и доступное действие.", panel =>
         {
+            var catalog = VerifiedCatalogStore.Shared;
             panel.Children.Add(Actions(("Обновить список", ModemOperation.RefreshApplications, null)));
+            if (_sections[5] == 1)
+            {
+                panel.Children.Add(Muted("В каталоге только приложения, проверенные на модеме. Список обновляется отдельно от программы через GitHub."));
+                panel.Children.Add(Muted(catalog.StatusText(Localization.Language)));
+                if (!string.IsNullOrWhiteSpace(catalog.Error)) panel.Children.Add(Muted(catalog.ErrorText(Localization.Language)));
+                var update = ActionButton("Обновить каталог с GitHub", async () => { await catalog.UpdateAsync(); RenderPage(); }, false);
+                update.IsEnabled = !catalog.IsUpdating;
+                panel.Children.Add(update);
+            }
             var apps = _applications.Where(app => _sections[5] == 0
                 ? app.Installed
-                : !app.Id.StartsWith("stock:", StringComparison.OrdinalIgnoreCase)).ToList();
+                : VerifiedCatalogStore.Shared.Allows(app.Id)).ToList();
+            if (_sections[5] == 1)
+                apps = catalog.Entries.Select(entry => _applications.FirstOrDefault(app => app.Id == entry.Id)
+                    ?? new ModemAppInfo(entry.Id, entry.Name, entry.Version, false, entry.Description.Text(Localization.Language), false)).ToList();
             if (apps.Count == 0)
             {
-                panel.Children.Add(Muted("Список пока пуст. Подключитесь и нажмите «Обновить список»."));
+                panel.Children.Add(Muted(_sections[5] == 1 ? "В проверенном каталоге пока нет приложений для этой версии программы." : "Список пока пуст. Подключитесь и нажмите «Обновить список»."));
                 return;
             }
             foreach (var app in apps)
@@ -945,20 +1020,27 @@ public sealed class MainWindow : Window
                 var isStock = app.Id.StartsWith("stock:", StringComparison.OrdinalIgnoreCase);
                 var isSsclash = app.Id.Contains("ssclash", StringComparison.OrdinalIgnoreCase) ||
                     app.Name.Contains("SSClash", StringComparison.OrdinalIgnoreCase);
-                var row = new StackPanel { Spacing = 5 };
-                row.Children.Add(new TextBlock { Text = app.Name + (app.Version is null ? "" : $" · {app.Version}"), Foreground = Foreground, FontWeight = FontWeight.SemiBold });
-                row.Children.Add(Muted(app.Description ?? app.Id));
+                var row = new StackPanel { Spacing = 7 };
+                var applicationLayout = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), ColumnSpacing = 18 };
+                applicationLayout.Children.Add(row);
+                var verifiedEntry = VerifiedCatalogStore.Shared.Entry(app.Id);
+                var displayVersion = _sections[5] == 1 ? verifiedEntry?.Version ?? app.Version : app.Version;
+                row.Children.Add(new TextBlock { Text = app.Name + (displayVersion is null ? "" : $" · {displayVersion}"), Foreground = Foreground, FontWeight = FontWeight.SemiBold });
+                row.Children.Add(Muted(verifiedEntry?.Description.Text(Localization.Language) ?? app.Description ?? app.Id));
+                if (_sections[5] == 1 && verifiedEntry is not null)
+                    row.Children.Add(Muted(verifiedEntry.Verification.Summary.Text(Localization.Language)));
                 if (isStock) row.Children.Add(Muted("Штатное приложение модема"));
                 else row.Children.Add(Muted(app.StatusKnown
                     ? app.Installed ? "● Установлено" : "○ Не установлено"
                     : "○ Состояние не проверено"));
                 if (isSsclash && !app.Installed)
                 {
-                    row.Children.Add(Muted("При установке SSClash-Go загружается из официального релиза GitHub; проверьте его лицензию в Resources/Applications."));
                     row.Children.Add(Field("Пароль SSClash-Go", "ssclash_password", "От 8 до 128 символов", secret: true));
                     row.Children.Add(Field("Повторите пароль", "ssclash_confirmation", "Повторите пароль", secret: true));
                 }
-                if (!isStock && app.StatusKnown) row.Children.Add(ActionButton(app.Installed ? "Удалить" : isSsclash ? "Скачать и установить" : "Установить", async () =>
+                if (!isStock && app.StatusKnown)
+                {
+                var appAction = ActionButton(app.Installed ? "Удалить" : isSsclash ? "Скачать и установить" : "Установить", async () =>
                 {
                     if (app.Installed && !await ConfirmAsync("Удалить приложение?", app.Name)) return;
                     if (isSsclash && !app.Installed)
@@ -976,10 +1058,15 @@ public sealed class MainWindow : Window
                     await ExecuteAsync(app.Installed ? ModemOperation.RemoveApplication : ModemOperation.InstallApplication,
                         parameters);
                     await RefreshApplicationsAsync();
-                }, !app.Installed));
+                }, !app.Installed);
+                Grid.SetColumn(appAction, 1);
+                appAction.VerticalAlignment = VerticalAlignment.Center;
+                appAction.Margin = new Thickness(0);
+                applicationLayout.Children.Add(appAction);
+                }
                 panel.Children.Add(new Border
                 {
-                    Child = row,
+                    Child = applicationLayout,
                     Background = Elevated,
                     CornerRadius = new CornerRadius(9),
                     Padding = new Thickness(13),
@@ -1126,12 +1213,12 @@ public sealed class MainWindow : Window
         AddCard("Интерактивный терминал", "Полный shell модема: команды, скрипты и интерактивные программы. Ввод отправляется по Enter.", panel =>
         {
             var buttons = new WrapPanel();
-            buttons.Children.Add(ActionButton("Открыть Terminal", OpenTerminalAsync, true));
+            buttons.Children.Add(ActionButton(_terminal?.IsConnected == true ? "Переподключить" : "Подключить Terminal", async () => { await CloseTerminalAsync(); await OpenTerminalAsync(); }, true));
             buttons.Children.Add(ActionButton("Ctrl+C", async () =>
             {
                 if (_terminal?.IsConnected == true) await _terminal.SendAsync("\u0003", _lifetime.Token);
             }, false));
-            buttons.Children.Add(ActionButton("Отключить", CloseTerminalAsync, false));
+            buttons.Children.Add(ActionButton("Отключить", async () => { _terminalAutoAttempted = true; await CloseTerminalAsync(); }, false));
             panel.Children.Add(buttons);
             _terminalOutput = new TextBox
             {
@@ -1146,7 +1233,8 @@ public sealed class MainWindow : Window
                 Foreground = Foreground,
             };
             panel.Children.Add(_terminalOutput);
-            _terminalInput = new TextBox { Watermark = "Команда", Background = Elevated, Foreground = Foreground };
+            if (_snapshot?.IsConnected != true || _snapshot.ConnectionMode != "SSH") panel.Children.Add(Muted("Для терминала подключитесь к модему по SSH."));
+            _terminalInput = new TextBox { Watermark = Localization.Translate("Команда"), Background = Elevated, Foreground = Foreground };
             _terminalInput.KeyDown += async (_, args) =>
             {
                 if (args.Key == Avalonia.Input.Key.Enter)
@@ -1162,14 +1250,33 @@ public sealed class MainWindow : Window
 
     private async Task OpenTerminalAsync()
     {
+        if (_terminalOpening || _terminal?.IsConnected == true) return;
+        if (_snapshot?.IsConnected != true || _snapshot.ConnectionMode != "SSH")
+        {
+            SetStatus("Для терминала подключитесь к модему по SSH.", true);
+            return;
+        }
+        _terminalOpening = true;
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+        _terminalOpenCancellation = cancellation;
         try
         {
-            await CloseTerminalAsync();
-            _terminal = await _service.OpenTerminalAsync(_lifetime.Token);
+            await CloseTerminalAsync(cancelOpening: false);
+            var terminal = await _service.OpenTerminalAsync(cancellation.Token);
+            if (cancellation.IsCancellationRequested)
+            {
+                await terminal.DisposeAsync();
+                cancellation.Token.ThrowIfCancellationRequested();
+            }
+            _terminal = terminal;
             _terminal.OutputReceived += TerminalOutputReceived;
             SetStatus("Терминал подключён.");
+            if (_page == 5 && _sections[5] == 2) RenderPage();
+            _terminalInput?.Focus();
         }
+        catch (OperationCanceledException) { SetStatus("Подключение терминала отменено."); }
         catch (Exception error) { SetStatus(error.Message, true); }
+        finally { _terminalOpening = false; _terminalOpenCancellation = null; }
     }
 
     private void TerminalOutputReceived(object? sender, TerminalDataEventArgs args) =>
@@ -1201,25 +1308,28 @@ public sealed class MainWindow : Window
         catch (Exception error) { SetStatus(error.Message, true); }
     }
 
-    private async Task CloseTerminalAsync()
+    private async Task CloseTerminalAsync(bool cancelOpening = true)
     {
+        if (cancelOpening) _terminalOpenCancellation?.Cancel();
         if (_terminal is null) return;
         _terminal.OutputReceived -= TerminalOutputReceived;
         await _terminal.DisposeAsync();
         _terminal = null;
         SetStatus("Терминал отключён.");
+        if (!_lifetime.IsCancellationRequested && _page == 5 && _sections[5] == 2) RenderPage();
     }
 
     private void AddCard(string title, string description, Action<StackPanel> build)
     {
         var panel = new StackPanel { Spacing = 13 };
-        panel.Children.Add(new TextBlock { Text = title, Foreground = Foreground, FontSize = 18, FontWeight = FontWeight.SemiBold });
+        panel.Children.Add(new TextBlock { Text = Localization.Translate(title), Foreground = Foreground, FontSize = 18, FontWeight = FontWeight.SemiBold });
         panel.Children.Add(Muted(description));
         build(panel);
         _body.Children.Add(new Border
         {
             Background = Surface,
-            CornerRadius = new CornerRadius(12),
+            CornerRadius = new CornerRadius(14),
+            BorderBrush = Elevated, BorderThickness = new Thickness(1),
             Padding = new Thickness(20),
             Child = panel,
         });
@@ -1227,7 +1337,7 @@ public sealed class MainWindow : Window
 
     private static TextBlock Muted(string value) => new()
     {
-        Text = value,
+        Text = Localization.Translate(value),
         Foreground = Secondary,
         FontSize = 12,
         TextWrapping = TextWrapping.Wrap,
@@ -1236,8 +1346,8 @@ public sealed class MainWindow : Window
     private static Control ValueLine(string label, string? value)
     {
         var row = new Grid { ColumnDefinitions = new ColumnDefinitions("170,*") };
-        row.Children.Add(new TextBlock { Text = label, Foreground = Secondary, FontSize = 12 });
-        var data = new TextBlock { Text = string.IsNullOrWhiteSpace(value) ? "—" : value, Foreground = Foreground, FontSize = 12, TextWrapping = TextWrapping.Wrap };
+        row.Children.Add(new TextBlock { Text = Localization.Translate(label), Foreground = Secondary, FontSize = 12 });
+        var data = new TextBlock { Text = string.IsNullOrWhiteSpace(value) ? "—" : Localization.Translate(value), Foreground = Foreground, FontSize = 12, TextWrapping = TextWrapping.Wrap };
         Grid.SetColumn(data, 1);
         row.Children.Add(data);
         return row;
@@ -1246,16 +1356,17 @@ public sealed class MainWindow : Window
     private Control Field(string label, string key, string watermark, bool secret = false, bool multiline = false)
     {
         var stack = new StackPanel { Spacing = 5 };
-        stack.Children.Add(new TextBlock { Text = label, Foreground = Secondary, FontSize = 12 });
+        stack.Children.Add(new TextBlock { Text = Localization.Translate(label), Foreground = Secondary, FontSize = 12 });
         var input = new TextBox
         {
             Text = secret ? "" : Get(key),
-            Watermark = watermark,
+            Watermark = Localization.Translate(watermark),
             Background = Elevated,
             Foreground = Foreground,
-            MaxWidth = 480,
-            HorizontalAlignment = HorizontalAlignment.Left,
-            MinWidth = 300,
+            MaxWidth = 600,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            MinWidth = 220,
+            MinHeight = 36, Padding = new Thickness(10, 7),
         };
         if (secret) input.PasswordChar = '●';
         if (multiline)
@@ -1274,15 +1385,15 @@ public sealed class MainWindow : Window
     {
         var stack = new StackPanel { Spacing = 5 };
         stack.Children.Add(Muted(label));
-        var row = new WrapPanel();
+        var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), ColumnSpacing = 8 };
         var input = new TextBox
         {
-            Text = Get(key), Watermark = watermark, Background = Elevated, Foreground = Foreground,
-            MinWidth = 300, MaxWidth = 560, Margin = new Thickness(0, 0, 8, 0),
+            Text = Get(key), Watermark = Localization.Translate(watermark), Background = Elevated, Foreground = Foreground,
+            MinWidth = 220, MinHeight = 36, Padding = new Thickness(10, 7), HorizontalAlignment = HorizontalAlignment.Stretch,
         };
         input.TextChanged += (_, _) => _form[key] = input.Text ?? "";
         row.Children.Add(input);
-        row.Children.Add(ActionButton("Обзор…", async () =>
+        var browse = ActionButton("▱", async () =>
         {
             var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
             {
@@ -1290,7 +1401,14 @@ public sealed class MainWindow : Window
             });
             if (files.Count == 1 && files[0].Path.IsFile)
                 input.Text = files[0].Path.LocalPath;
-        }, false));
+        }, false);
+        browse.Name = key + "_browse";
+        browse.FontSize = 20;
+        ToolTip.SetTip(browse, Localization.Translate("Выбрать файл") + ": " + Localization.Translate(label));
+        Avalonia.Automation.AutomationProperties.SetName(browse, Localization.Translate("Выбрать файл") + ": " + Localization.Translate(label));
+        browse.Margin = new Thickness(0);
+        Grid.SetColumn(browse, 1);
+        row.Children.Add(browse);
         stack.Children.Add(row);
         return stack;
     }
@@ -1322,16 +1440,61 @@ public sealed class MainWindow : Window
             MinWidth = 37,
             MinHeight = 35,
         };
-        ToolTip.SetTip(button, topic.AccessibleName);
+        ToolTip.SetTip(button, Localization.Translate(topic.AccessibleName));
         button.Click += async (_, _) => await ShowOperationHelpAsync(topic);
         return button;
+    }
+
+    private async Task ShowAboutAsync()
+    {
+        var dialog = new Window { Title = Localization.Translate("О программе"), Width = 580, Height = 395,
+            CanResize = false, Background = Surface, WindowStartupLocation = WindowStartupLocation.CenterOwner };
+        var panel = new StackPanel { Margin = new Thickness(28), Spacing = 15 };
+        panel.Children.Add(new TextBlock { Text = "ZTE U60Pro Manager", Foreground = Foreground, FontSize = 25, FontWeight = FontWeight.Bold });
+        panel.Children.Add(Muted("Windows x64 · " + typeof(MainWindow).Assembly.GetName().Version?.ToString(3)));
+        var attribution = new WrapPanel { Orientation = Orientation.Horizontal };
+        Button LinkButton(string title, string url)
+        {
+            var button = new Button { Content = new TextBlock { Text = title, TextDecorations = TextDecorations.Underline, Foreground = Accent, FontSize = 13 },
+                Background = Brushes.Transparent, BorderThickness = new Thickness(0), Padding = new Thickness(0), MinHeight = 0, MinWidth = 0, Tag = url };
+            button.Click += (_, _) => { try { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); } catch (Exception error) { SetStatus(error.Message, true); } };
+            return button;
+        }
+        var sentence = Localization.IsEnglish
+            ? "Developed with support from the uFactor expert division of UserGate."
+            : "Приложение разработано при поддержке экспертного подразделения uFactor компании UserGate.";
+        foreach (var word in sentence.Split(' '))
+        {
+            var brandWord = word.TrimEnd('.');
+            if (brandWord is "uFactor" or "UserGate")
+            {
+                var link = LinkButton(word, brandWord == "uFactor" ? "https://usergate.com/ufactor" : "https://usergate.com");
+                link.Height = 23;
+                link.VerticalContentAlignment = VerticalAlignment.Center;
+                link.Margin = new Thickness(0, 0, 3, 0);
+                attribution.Children.Add(link);
+            }
+            else
+                attribution.Children.Add(new Border { Height = 23, Margin = new Thickness(0, 0, word == "." ? 0 : 3, 0), Child = new TextBlock
+                { Text = word, Foreground = Secondary, FontSize = 13, VerticalAlignment = VerticalAlignment.Center } });
+        }
+        panel.Children.Add(attribution);
+        var github = LinkButton("GitHub ↗", "https://github.com/SadykovIV/ZTE_U60Pro");
+        github.HorizontalAlignment = HorizontalAlignment.Left;
+        panel.Children.Add(github);
+        panel.Children.Add(Muted("Настройки подключения и резервные копии сохраняются в существующем профиле ZTE IMEI Studio."));
+        var close = new Button { Content = Localization.Translate("Закрыть"), HorizontalAlignment = HorizontalAlignment.Right, Background = Accent, Foreground = Brushes.White, CornerRadius = new CornerRadius(8), Padding = new Thickness(15, 8) };
+        close.Click += (_, _) => dialog.Close();
+        panel.Children.Add(close);
+        dialog.Content = panel;
+        await dialog.ShowDialog(this);
     }
 
     private async Task ShowOperationHelpAsync(OperationHelpTopic topic)
     {
         var dialog = new Window
         {
-            Title = topic.Title,
+            Title = Localization.Translate(topic.Title),
             Width = 800,
             Height = 690,
             MinWidth = 610,
@@ -1342,12 +1505,12 @@ public sealed class MainWindow : Window
         var layout = new Grid { RowDefinitions = new RowDefinitions("Auto,*") };
         var header = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), Margin = new Thickness(25, 20, 25, 16) };
         var heading = new StackPanel { Spacing = 5 };
-        heading.Children.Add(new TextBlock { Text = topic.Title, Foreground = Foreground, FontSize = 21, FontWeight = FontWeight.SemiBold });
-        heading.Children.Add(new TextBlock { Text = "Последовательность, команды и сохраняемые файлы", Foreground = Secondary, FontSize = 12 });
+        heading.Children.Add(new TextBlock { Text = Localization.Translate(topic.Title), Foreground = Foreground, FontSize = 21, FontWeight = FontWeight.SemiBold });
+        heading.Children.Add(new TextBlock { Text = Localization.Translate("Последовательность, команды и сохраняемые файлы"), Foreground = Secondary, FontSize = 12 });
         header.Children.Add(heading);
         var close = new Button
         {
-            Content = "Закрыть",
+            Content = Localization.Translate("Закрыть"),
             Background = Elevated,
             Foreground = Foreground,
             BorderThickness = new Thickness(0),
@@ -1360,10 +1523,10 @@ public sealed class MainWindow : Window
         layout.Children.Add(header);
 
         var sections = new StackPanel { Spacing = 18, Margin = new Thickness(25, 9, 25, 25) };
-        sections.Children.Add(new TextBlock { Text = topic.Introduction, TextWrapping = TextWrapping.Wrap, Foreground = Foreground, FontSize = 13 });
+        sections.Children.Add(new TextBlock { Text = Localization.Translate(topic.Introduction), TextWrapping = TextWrapping.Wrap, Foreground = Foreground, FontSize = 13 });
         sections.Children.Add(new TextBlock
         {
-            Text = "<…> обозначает значение конкретной операции. Пароли и приватные ключи не показаны. Это основные команды для объяснения процесса; вводить их вручную не нужно.",
+            Text = Localization.Translate("<…> обозначает значение конкретной операции. Пароли и приватные ключи не показаны. Это основные команды для объяснения процесса; вводить их вручную не нужно."),
             TextWrapping = TextWrapping.Wrap,
             Foreground = Secondary,
             FontSize = 12,
@@ -1371,8 +1534,8 @@ public sealed class MainWindow : Window
         foreach (var section in topic.Sections)
         {
             var content = new StackPanel { Spacing = 8 };
-            content.Children.Add(new TextBlock { Text = section.Title, TextWrapping = TextWrapping.Wrap, Foreground = Accent, FontSize = 15, FontWeight = FontWeight.SemiBold });
-            content.Children.Add(new TextBlock { Text = section.Body, TextWrapping = TextWrapping.Wrap, Foreground = Foreground, FontSize = 13 });
+            content.Children.Add(new TextBlock { Text = Localization.Translate(section.Title), TextWrapping = TextWrapping.Wrap, Foreground = Accent, FontSize = 15, FontWeight = FontWeight.SemiBold });
+            content.Children.Add(new TextBlock { Text = Localization.Translate(section.Body), TextWrapping = TextWrapping.Wrap, Foreground = Foreground, FontSize = 13 });
             if (section.Commands is { Length: > 0 } commands)
             {
                 content.Children.Add(new TextBox
@@ -1409,9 +1572,11 @@ public sealed class MainWindow : Window
     {
         var button = new Button
         {
-            Content = label,
+            Content = Localization.Translate(label),
             Background = prominent ? Accent : Elevated,
-            Foreground = prominent ? Canvas : Foreground,
+            Foreground = prominent ? Brushes.White : Foreground,
+            CornerRadius = new CornerRadius(8),
+            HorizontalAlignment = HorizontalAlignment.Left,
             BorderThickness = new Thickness(0),
             Padding = new Thickness(13, 8),
             Margin = new Thickness(0, 0, 8, 7),
@@ -1489,19 +1654,31 @@ public sealed class MainWindow : Window
         if (_snapshot.LauncherMetricOrder is { } order) _form["metric_order"] = order;
         if (_snapshot.VpnSsid is { } ssid) _form["ssid"] = ssid;
         if (_snapshot.VpnPasswordMode is { } passwordMode) _form["password_mode"] = passwordMode;
-        _connection.Text = _snapshot.IsConnected
-            ? $"●  {_snapshot.Model ?? "Модем"} · {_snapshot.IpAddress ?? _snapshot.ConnectionMode ?? "подключён"}"
-            : $"○  {_snapshot.Status}";
-        _connection.Foreground = _snapshot.IsConnected ? Accent : Warn;
-        _sidebarConnection.Text = _snapshot.IsConnected
-            ? "● Подключено · " + (_snapshot.ConnectionMode ?? "модем")
-            : "○ Нет подключения";
-        _sidebarConnection.Foreground = _snapshot.IsConnected ? Accent : Warn;
+        UpdateConnectionLabels();
         RenderPage();
+    }
+
+    private void UpdateConnectionLabels()
+    {
+        _connection.Text = _snapshot?.IsConnected == true
+            ? $"●  {_snapshot?.Model ?? "Модем"} · {_snapshot?.IpAddress ?? _snapshot?.ConnectionMode ?? "подключён"}"
+            : $"○  {_snapshot?.Status}";
+        _connection.Foreground = _snapshot?.IsConnected == true ? Accent : Warn;
+        _sidebarConnection.Text = _snapshot?.IsConnected == true
+            ? "● Подключено · " + (_snapshot?.ConnectionMode ?? "модем")
+            : "○ Нет подключения";
+        _sidebarConnection.Foreground = _snapshot?.IsConnected == true ? Accent : Warn;
+        _connection.Text = Localization.Translate(_connection.Text ?? "");
+        _sidebarConnection.Text = Localization.Translate(_sidebarConnection.Text ?? "");
     }
 
     private async Task LoadPageDataAsync()
     {
+        if (_page == 5 && _sections[5] == 2 && !_busy && !_terminalAutoAttempted && _snapshot?.IsConnected == true && _snapshot.ConnectionMode == "SSH")
+        {
+            _terminalAutoAttempted = true;
+            await OpenTerminalAsync();
+        }
         if (_page == 2 && _sections[2] == 1 || _page == 6 && _sections[6] == 1)
             await RefreshBackupsAsync();
         else if (_page == 5 && _sections[5] != 2)
@@ -1515,6 +1692,11 @@ public sealed class MainWindow : Window
         try { _backups = await _service.ListBackupsAsync(_lifetime.Token); RenderPage(); }
         catch (Exception error) { SetStatus(error.Message, true); }
     }
+
+    private void CatalogChanged() => Dispatcher.UIThread.Post(() =>
+    {
+        if (_page == 5 && _sections[5] == 1) RenderPage();
+    });
 
     private async Task RefreshApplicationsAsync()
     {
@@ -1534,16 +1716,19 @@ public sealed class MainWindow : Window
         foreach (var button in _actionButtons) button.IsEnabled = !busy;
         if (_preparationButton is not null)
             _preparationButton.IsEnabled = !busy && !(_snapshot?.IsConnected == true && _snapshot.ConnectionMode == "SSH");
+        if (!busy && _page == 5 && _sections[5] == 2 && !_terminalAutoAttempted)
+            _ = LoadPageDataAsync();
     }
 
     private void ClearSecrets()
     {
         foreach (var input in _secretFields.Values) input.Text = "";
+        _secretFields.Clear();
     }
 
     private void SetStatus(string message, bool error = false)
     {
-        _status.Text = message;
+        _status.Text = Localization.Translate(message);
         _status.Foreground = error ? Warn : Secondary;
     }
 
@@ -1551,7 +1736,7 @@ public sealed class MainWindow : Window
     {
         var dialog = new Window
         {
-            Title = title,
+            Title = Localization.Translate(title),
             Width = 430,
             Height = 185,
             CanResize = false,
@@ -1559,11 +1744,11 @@ public sealed class MainWindow : Window
             Background = Surface,
         };
         var panel = new StackPanel { Spacing = 17, Margin = new Thickness(22) };
-        panel.Children.Add(new TextBlock { Text = message, Foreground = Foreground, TextWrapping = TextWrapping.Wrap });
+        panel.Children.Add(new TextBlock { Text = Localization.Translate(message), Foreground = Foreground, TextWrapping = TextWrapping.Wrap });
         var actions = new WrapPanel { HorizontalAlignment = HorizontalAlignment.Right };
-        var cancel = new Button { Content = "Отмена", Margin = new Thickness(0, 0, 8, 0) };
+        var cancel = new Button { Content = Localization.Translate("Отмена"), Margin = new Thickness(0, 0, 8, 0) };
         cancel.Click += (_, _) => dialog.Close(false);
-        var accept = new Button { Content = "Продолжить", Background = Accent, Foreground = Canvas };
+        var accept = new Button { Content = Localization.Translate("Продолжить"), Background = Accent, Foreground = Brushes.White };
         accept.Click += (_, _) => dialog.Close(true);
         actions.Children.Add(cancel);
         actions.Children.Add(accept);
@@ -1576,7 +1761,7 @@ public sealed class MainWindow : Window
     {
         var dialog = new Window
         {
-            Title = title,
+            Title = Localization.Translate(title),
             Width = 520,
             Height = 310,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
@@ -1585,10 +1770,10 @@ public sealed class MainWindow : Window
         var panel = new StackPanel { Spacing = 15, Margin = new Thickness(20) };
         panel.Children.Add(new ScrollViewer
         {
-            Content = new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap, Foreground = Foreground },
+            Content = new TextBlock { Text = Localization.Translate(message), TextWrapping = TextWrapping.Wrap, Foreground = Foreground },
             Height = 225,
         });
-        var close = new Button { Content = "Закрыть", HorizontalAlignment = HorizontalAlignment.Right };
+        var close = new Button { Content = Localization.Translate("Закрыть"), HorizontalAlignment = HorizontalAlignment.Right };
         close.Click += (_, _) => dialog.Close();
         panel.Children.Add(close);
         dialog.Content = panel;
@@ -1597,6 +1782,7 @@ public sealed class MainWindow : Window
 
     private async Task ShutdownAsync()
     {
+        VerifiedCatalogStore.Shared.Changed -= CatalogChanged;
         _lifetime.Cancel();
         try { await CloseTerminalAsync(); }
         catch { /* Window is already closing. */ }

@@ -5,6 +5,7 @@ import AppKit
     var diagnosticToolsBundle: DiagnosticToolsBundle? { try? DiagnosticToolsManager.bundle(resources: resources) }
     var canInstallDiagnosticTools: Bool { canManage && diagnosticToolsPlan != nil && diagnosticToolsPlan?.before.active != diagnosticToolsPlan?.bundleID && diagnosticToolsStatus?.running != true }
     func installDiagnosticTool(_ toolID: String) {
+        guard catalogAllowsInstallation(toolID) else { return }
         guard DiagnosticTool.catalog.contains(where: { $0.id == toolID }), diagnosticToolsStatus?.isInstalled(toolID) == false else { return }
         manageDiagnosticTools("install-one", toolID: toolID)
     }
@@ -13,7 +14,10 @@ import AppKit
         manageDiagnosticTools("remove-one", toolID: toolID)
     }
     func prepareDiagnosticTools() { manageDiagnosticTools("prepare") }
-    func installDiagnosticTools() { guard canInstallDiagnosticTools else { return }; manageDiagnosticTools("install") }
+    func installDiagnosticTools() {
+        guard canInstallDiagnosticTools, DiagnosticTool.ids.allSatisfy({ catalogAllowsInstallation($0) }) else { return }
+        manageDiagnosticTools("install")
+    }
     func removeDiagnosticTools() { guard diagnosticToolsStatus?.installed == true else { return }; manageDiagnosticTools("remove") }
     func rollbackDiagnosticTools() { guard diagnosticToolsStatus?.canRollback == true else { return }; manageDiagnosticTools("rollback") }
     func refreshDiagnosticTools() { manageDiagnosticTools("inspect") }

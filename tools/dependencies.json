@@ -1,6 +1,6 @@
 {
-  "archive": "Build-dependencies-1.19.0.tar.gz",
-  "url": "https://github.com/SadykovIV/ZTE_U60Pro/releases/download/v1.19.0/Build-dependencies-1.19.0.tar.gz",
+  "archive": "Build-dependencies-1.20.0.tar.gz",
+  "url": "https://github.com/SadykovIV/ZTE_U60Pro/releases/download/v1.20.0/Build-dependencies-1.20.0.tar.gz",
   "sha256": "90ec14b09f383da82ebab95b7abb2f51fd90de5a39097f99be423a0683d4cd77",
   "files": {
     "MacIMEI/DeviceHelpers/bin/manifest.json": "5a521b52f74c89e2608a0fd874f44da5ecd2e6aaef289fe14521421d20e5ca7a",

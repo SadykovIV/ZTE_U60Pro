@@ -146,9 +146,9 @@ import AppKit
     }
     func deleteSSHAccount(_ username: String) {
         guard canManage else { return }
-        let alert = NSAlert(); alert.messageText = "Удалить SSH-пользователя \(username)?"
-        alert.informativeText = "Вход этого пользователя будет отключён. Перед удалением приложение сохранит настройки и домашний каталог для восстановления. Служебный доступ приложения останется включённым."
-        alert.addButton(withTitle: "Удалить пользователя"); alert.addButton(withTitle: "Отмена")
+        let alert = NSAlert(); alert.messageText = L10n.text("Удалить SSH-пользователя \(username)?")
+        alert.informativeText = L10n.text("Вход этого пользователя будет отключён. Перед удалением приложение сохранит настройки и домашний каталог для восстановления. Служебный доступ приложения останется включённым.")
+        alert.addButton(withTitle: L10n.text("Удалить пользователя")); alert.addButton(withTitle: L10n.text("Отмена"))
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         runManaged("Удаляю SSH-пользователя \(username)…", work: { engine in
             try SSHAccountManager(root: engine.root, resources: engine.resources, connection: engine.connection).delete(username: username)
@@ -156,9 +156,9 @@ import AppKit
     }
     func removeSSClash() {
         guard canManage else { return }
-        let alert = NSAlert(); alert.messageText = "Удалить SSClash-Go с модема?"
-        alert.informativeText = "Приложение остановит принадлежащую ему службу и сохранит архив с настройками перед удалением. Активная маршрутизация прокси должна быть выключена в SSClash."
-        alert.addButton(withTitle: "Удалить приложение"); alert.addButton(withTitle: "Отмена")
+        let alert = NSAlert(); alert.messageText = L10n.text("Удалить SSClash-Go с модема?")
+        alert.informativeText = L10n.text("Приложение остановит принадлежащую ему службу и сохранит архив с настройками перед удалением. Активная маршрутизация прокси должна быть выключена в SSClash.")
+        alert.addButton(withTitle: L10n.text("Удалить приложение")); alert.addButton(withTitle: L10n.text("Отмена"))
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         runManaged("Удаляю SSClash-Go с сохранением копии…", work: { engine in
             try engine.locked {

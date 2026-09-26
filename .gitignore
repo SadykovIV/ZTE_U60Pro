@@ -53,3 +53,8 @@ Windows_x64/Resources/DiagnosticTools/bundle.tar.gz
 Windows_x64/Resources/ExperimentalOpkg/runtime.tar.gz
 Windows_x64/Resources/HostTools/zte-timeout
 Windows_x64/Resources/Applications/ssclash-linux-arm64
+
+# Public catalog verification keys; private signing keys remain excluded.
+!Catalog/catalog-public-key.pem
+!MacIMEI/Resources/Catalog/catalog-public-key.pem
+!Windows_x64/Resources/Catalog/catalog-public-key.pem

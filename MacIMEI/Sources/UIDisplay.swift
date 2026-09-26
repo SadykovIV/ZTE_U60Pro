@@ -13,42 +13,42 @@ extension ContentView {
             StudioCard {
                 HStack(alignment: .top, spacing: 16) {
                     VStack(alignment: .leading, spacing: 7) {
-                        Text("Плитки на экране модема").font(.system(size: 18, weight: .semibold))
-                        Text("Две дополнительные страницы штатного лаунчера. Выберите страницу ниже, настройте её и проверьте предпросмотр.")
+                        Text(L10n.text("Плитки на экране модема")).font(.system(size: 18, weight: .semibold))
+                        Text(L10n.text("Две дополнительные страницы штатного лаунчера. Выберите страницу ниже, настройте её и проверьте предпросмотр."))
                             .font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer(minLength: 0)
                     VStack(alignment: .trailing, spacing: 8) {
-                        Button(displayInstallTitle, action: model.installDisplay)
+                        Button(L10n.text(displayInstallTitle), action: model.installDisplay)
                             .buttonStyle(StudioButtonStyle(prominent: true)).disabled(!canInstallDisplay)
-                            .help("Установить обе страницы лаунчера с выбранным оформлением информационной страницы")
-                        Button("Проверить лаунчер", action: model.refreshDisplay)
+                            .help(L10n.text("Установить обе страницы лаунчера с выбранным оформлением информационной страницы"))
+                        Button(L10n.text("Проверить лаунчер"), action: model.refreshDisplay)
                             .buttonStyle(StudioButtonStyle()).disabled(!model.canManage)
                     }
                 }
                 if let state = model.displayInspection {
                     informationRow("Состояние", state.title)
-                    Text(state.detail).font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
+                    Text(L10n.text(state.detail)).font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     if let warning = state.layoutWarning, !warning.isEmpty {
-                        Label(warning, systemImage: "exclamationmark.triangle")
+                        Label(L10n.text(warning), systemImage: "exclamationmark.triangle")
                             .font(.system(size: 11)).foregroundStyle(StudioStyle.warning)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 } else {
-                    Label(model.activeChannel == .ssh ? "Перед установкой приложение проверит совместимость и текущее состояние лаунчера." : "Для установки подключитесь по SSH в разделе «Подготовка модема». Настройки можно выбрать заранее.", systemImage: "cable.connector")
+                    Label(L10n.text(model.activeChannel == .ssh ? "Перед установкой приложение проверит совместимость и текущее состояние лаунчера." : "Для установки подключитесь по SSH в разделе «Подготовка модема». Настройки можно выбрать заранее."), systemImage: "cable.connector")
                         .font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                Text("Установка может перезапустить экран. Профили и текущий режим установленного VPN сохраняются.")
+                Text(L10n.text("Установка может перезапустить экран. Профили и текущий режим установленного VPN сохраняются."))
                     .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if !model.displayError.isEmpty { StudioNote(symbol: "exclamationmark.triangle", text: model.displayError) }
             if !model.displayLayoutMessage.isEmpty { StudioNote(symbol: "info.circle", text: model.displayLayoutMessage) }
-            Picker("Страница лаунчера", selection: $launcherSection) {
-                ForEach(LauncherSection.allCases) { section in Text(section.title).tag(section) }
+            Picker(L10n.text("Страница лаунчера"), selection: $launcherSection) {
+                ForEach(LauncherSection.allCases) { section in Text(L10n.text(section.title)).tag(section) }
             }.pickerStyle(.segmented)
             switch launcherSection {
             case .information: DisplayLayoutEditor(model: model)
@@ -63,8 +63,8 @@ extension ContentView {
             StudioCard {
                 HStack(alignment: .top, spacing: 24) {
                     VStack(alignment: .leading, spacing: 14) {
-                        Label("Управление VPN", systemImage: "network").font(.system(size: 17, weight: .semibold))
-                        Text("На экране модема можно включить Wi-Fi с VPN и выбрать профиль. Смена профиля требует подтверждения и переподключает VPN.")
+                        Label(L10n.text("Управление VPN"), systemImage: "network").font(.system(size: 17, weight: .semibold))
+                        Text(L10n.text("На экране модема можно включить Wi-Fi с VPN и выбрать профиль. Смена профиля требует подтверждения и переподключает VPN."))
                             .font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                         if let check = model.vpnInspection {
@@ -75,25 +75,25 @@ extension ContentView {
                                 launcherVPNStatusRow("Активный профиль", active.name)
                             }
                             if !check.missingCapabilities.isEmpty {
-                                Text("Отсутствуют системные компоненты: " + check.missingCapabilities.joined(separator: ", "))
+                                Text(L10n.text("Отсутствуют системные компоненты: " + check.missingCapabilities.joined(separator: ", ")))
                                     .font(.system(size: 11)).foregroundStyle(StudioStyle.warning)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
                         } else {
-                            Text("Проверьте VPN, чтобы увидеть установленные компоненты и профили.")
+                            Text(L10n.text("Проверьте VPN, чтобы увидеть установленные компоненты и профили."))
                                 .font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
                         }
-                        Button("Обновить состояние VPN", action: model.refreshVPN)
+                        Button(L10n.text("Обновить состояние VPN"), action: model.refreshVPN)
                             .buttonStyle(StudioButtonStyle()).disabled(!model.canManage)
                         if model.vpnInspection == nil || model.vpnInspection?.helperReady != true || model.vpnInspection?.agentReady != true || model.vpnInspection?.dashboardReady != true || model.vpnInspection?.launcherReady != true {
-                            Button(model.vpnInspection?.status.installed == true ? "Обновить компоненты VPN" : "Установить компоненты VPN", action: model.installVPN)
+                            Button(L10n.text(model.vpnInspection?.status.installed == true ? "Обновить компоненты VPN" : "Установить компоненты VPN"), action: model.installVPN)
                                 .buttonStyle(StudioButtonStyle()).disabled(!model.canManage || model.vpnInspection?.missingCapabilities.isEmpty == false)
                         }
                         Divider().overlay(StudioStyle.line)
-                        Text("Импорт, названия и параметры профилей задаются в панели агента. На плитке появятся те же профили; длинный список листается кнопками «Назад» и «Далее».")
+                        Text(L10n.text("Импорт, названия и параметры профилей задаются в панели агента. На плитке появятся те же профили; длинный список листается кнопками «Назад» и «Далее»."))
                             .font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
                             .fixedSize(horizontal: false, vertical: true)
-                        Button("Настроить профили в агенте") {
+                        Button(L10n.text("Настроить профили в агенте")) {
                             var address = URLComponents()
                             address.scheme = "http"; address.host = model.host; address.port = 8080
                             if let url = address.url { NSWorkspace.shared.open(url) }
@@ -101,10 +101,10 @@ extension ContentView {
                             .disabled(!model.connected || model.vpnInspection?.dashboardReady != true)
                     }.frame(maxWidth: .infinity, alignment: .leading)
                     VStack(spacing: 13) {
-                        Text("ПРЕДПРОСМОТР ЭКРАНА")
+                        Text(L10n.text("ПРЕДПРОСМОТР ЭКРАНА"))
                             .font(.system(size: 9, weight: .semibold)).tracking(1.1).foregroundStyle(StudioStyle.secondary)
                         ModemVPNPagePreview(status: model.vpnInspection?.status)
-                        Text(model.vpnInspection == nil ? "Состояние появится после проверки VPN." : "Последнее прочитанное состояние модема.\nУправление — на модеме или в агенте.")
+                        Text(L10n.text(model.vpnInspection == nil ? "Состояние появится после проверки VPN." : "Последнее прочитанное состояние модема.\nУправление — на модеме или в агенте."))
                             .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary)
                             .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
                     }.frame(width: 240)
@@ -117,8 +117,8 @@ extension ContentView {
 
     private func launcherVPNStatusRow(_ title: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.system(size: 10)).foregroundStyle(StudioStyle.secondary)
-            Text(value).font(.system(size: 12, weight: .medium)).textSelection(.enabled)
+            Text(L10n.text(title)).font(.system(size: 10)).foregroundStyle(StudioStyle.secondary)
+            Text(L10n.text(value)).font(.system(size: 12, weight: .medium)).textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -156,60 +156,60 @@ private struct VPNWiFiEditor: View {
 
     var body: some View {
         StudioCard {
-            Label("Сеть Wi-Fi с VPN", systemImage: "wifi").font(.system(size: 17, weight: .semibold))
+            Label(L10n.text("Сеть Wi-Fi с VPN"), systemImage: "wifi").font(.system(size: 17, weight: .semibold))
             if let status {
                 if status.configured {
-                    Text("SSID на модеме: " + (status.actualSSID.isEmpty ? "не прочитан" : status.actualSSID))
+                    Text(L10n.text("SSID на модеме: ") + (status.actualSSID.isEmpty ? L10n.text("не прочитан") : status.actualSSID))
                         .font(.system(size: 12, weight: .medium)).textSelection(.enabled)
                     if let second = status.ssid2G, let fifth = status.ssid5G, second != fifth {
-                        Text("2,4 ГГц: \(second) · 5 ГГц: \(fifth)").font(.system(size: 11)).foregroundStyle(StudioStyle.secondary)
+                        Text(L10n.text("2,4 ГГц: ", "2.4 GHz: ") + second + L10n.text(" · 5 ГГц: ", " · 5 GHz: ") + fifth).font(.system(size: 11)).foregroundStyle(StudioStyle.secondary)
                     }
                 } else {
-                    Text("VPN-сеть ещё не создана. По умолчанию: ZTE-VPN, пароль основной сети.")
+                    Text(L10n.text("VPN-сеть ещё не создана. По умолчанию: ZTE-VPN, пароль основной сети."))
                         .font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
                 }
             }
             HStack(alignment: .top, spacing: 20) {
                 VStack(alignment: .leading, spacing: 7) {
-                    Text("Название сети (SSID)").font(.system(size: 12, weight: .medium))
-                    TextField("ZTE-VPN", text: Binding(get: { draft.ssid }, set: { draft.ssid = $0; draft.isDirty = true; saved = false }))
+                    Text(L10n.text("Название сети (SSID)")).font(.system(size: 12, weight: .medium))
+                    TextField(L10n.text("ZTE-VPN"), text: Binding(get: { draft.ssid }, set: { draft.ssid = $0; draft.isDirty = true; saved = false }))
                         .textFieldStyle(.roundedBorder)
-                    Text("До 32 байт UTF-8; одно название для 2,4 и 5 ГГц.")
+                    Text(L10n.text("До 32 байт UTF-8; одно название для 2,4 и 5 ГГц."))
                         .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary)
                 }.frame(maxWidth: .infinity, alignment: .leading)
                 VStack(alignment: .leading, spacing: 7) {
-                    Text("Пароль VPN-сети").font(.system(size: 12, weight: .medium))
-                    Picker("Пароль VPN-сети", selection: Binding(get: { draft.passwordMode }, set: { draft.setPasswordMode($0); saved = false })) {
-                        if status?.configured == true { Text(VPNWiFiPasswordMode.preserve.title).tag(VPNWiFiPasswordMode.preserve) }
-                        Text(VPNWiFiPasswordMode.main.title).tag(VPNWiFiPasswordMode.main)
-                        Text(VPNWiFiPasswordMode.custom.title).tag(VPNWiFiPasswordMode.custom)
+                    Text(L10n.text("Пароль VPN-сети")).font(.system(size: 12, weight: .medium))
+                    Picker(L10n.text("Пароль VPN-сети"), selection: Binding(get: { draft.passwordMode }, set: { draft.setPasswordMode($0); saved = false })) {
+                        if status?.configured == true { Text(L10n.text(VPNWiFiPasswordMode.preserve.title)).tag(VPNWiFiPasswordMode.preserve) }
+                        Text(L10n.text(VPNWiFiPasswordMode.main.title)).tag(VPNWiFiPasswordMode.main)
+                        Text(L10n.text(VPNWiFiPasswordMode.custom.title)).tag(VPNWiFiPasswordMode.custom)
                     }.labelsHidden()
-                    Text(passwordDetail).font(.system(size: 11)).foregroundStyle(StudioStyle.secondary)
+                    Text(L10n.text(passwordDetail)).font(.system(size: 11)).foregroundStyle(StudioStyle.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }.frame(maxWidth: .infinity, alignment: .leading)
             }.disabled(!editable)
             if draft.passwordMode == .custom {
                 HStack(spacing: 20) {
-                    SecureField("Новый пароль", text: Binding(get: { draft.password }, set: { draft.password = $0; draft.isDirty = true; saved = false }))
-                    SecureField("Повторите пароль", text: Binding(get: { draft.confirmation }, set: { draft.confirmation = $0; draft.isDirty = true; saved = false }))
+                    SecureField(L10n.text("Новый пароль"), text: Binding(get: { draft.password }, set: { draft.password = $0; draft.isDirty = true; saved = false }))
+                    SecureField(L10n.text("Повторите пароль"), text: Binding(get: { draft.confirmation }, set: { draft.confirmation = $0; draft.isDirty = true; saved = false }))
                 }.textFieldStyle(.roundedBorder).disabled(!editable)
             }
             if let message = validationMessage, draft.isDirty {
-                Text(message).font(.system(size: 11)).foregroundStyle(StudioStyle.warning)
+                Text(L10n.text(message)).font(.system(size: 11)).foregroundStyle(StudioStyle.warning)
             }
             if status?.enabled == true {
-                Label("Сначала выключите Wi-Fi с VPN на экране модема или в агенте. После этого обновите состояние.", systemImage: "info.circle")
+                Label(L10n.text("Сначала выключите Wi-Fi с VPN на экране модема или в агенте. После этого обновите состояние."), systemImage: "info.circle")
                     .font(.system(size: 12)).foregroundStyle(StudioStyle.warning)
             } else if status?.settingsSupported != true {
-                Text("Для настройки сети установите или обновите компоненты VPN кнопкой выше.")
+                Text(L10n.text("Для настройки сети установите или обновите компоненты VPN кнопкой выше."))
                     .font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
             }
             HStack(alignment: .center, spacing: 16) {
-                Text(saved ? "Настройки сохранены. Wi-Fi с VPN остаётся выключенным." : status?.wifiSettingsPending == true ? "Сохранённые настройки применятся при следующем включении Wi-Fi с VPN." : "Сохранение не включает сеть. Новое имя и пароль будут использоваться при следующем включении Wi-Fi с VPN.")
+                Text(L10n.text(saved ? "Настройки сохранены. Wi-Fi с VPN остаётся выключенным." : status?.wifiSettingsPending == true ? "Сохранённые настройки применятся при следующем включении Wi-Fi с VPN." : "Сохранение не включает сеть. Новое имя и пароль будут использоваться при следующем включении Wi-Fi с VPN."))
                     .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
-                Button("Сохранить настройки сети") {
+                Button(L10n.text("Сохранить настройки сети")) {
                     model.saveVPNWiFi(draft.configuration) { success in
                         if success { draft.saved(model.vpnInspection?.status); saved = true }
                     }
@@ -244,22 +244,22 @@ private struct DisplayLayoutEditor: View {
         StudioCard {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 7) {
-                    Label("Информация о модеме", systemImage: "chart.bar.xaxis")
+                    Label(L10n.text("Информация о модеме"), systemImage: "chart.bar.xaxis")
                         .font(.system(size: 17, weight: .semibold))
-                    Text("Отметьте показатели и перетащите их за ручку справа, чтобы изменить порядок на экране модема.")
+                    Text(L10n.text("Отметьте показатели и перетащите их за ручку справа, чтобы изменить порядок на экране модема."))
                         .font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 12)
-                Button("По умолчанию", action: model.resetDisplayLayout)
+                Button(L10n.text("По умолчанию"), action: model.resetDisplayLayout)
                     .buttonStyle(StudioButtonStyle()).disabled(model.busy || model.displayLayout == .defaultLayout)
             }
             HStack(alignment: .top, spacing: 24) {
                 VStack(alignment: .leading, spacing: 9) {
                     HStack {
-                        Text("ПОКАЗАТЕЛИ").font(.system(size: 9, weight: .semibold)).tracking(1.1)
+                        Text(L10n.text("ПОКАЗАТЕЛИ")).font(.system(size: 9, weight: .semibold)).tracking(1.1)
                         Spacer()
-                        Text("\(model.displayLayout.enabledCount) из 12")
+                        Text(L10n.text("\(model.displayLayout.enabledCount) из 12"))
                             .font(.system(size: 11, weight: .semibold)).foregroundStyle(StudioStyle.accent)
                     }.foregroundStyle(StudioStyle.secondary)
                     VStack(spacing: 5) {
@@ -267,41 +267,41 @@ private struct DisplayLayoutEditor: View {
                             metricRow(item)
                         }
                     }.coordinateSpace(name: "displayMetricRows")
-                    Text(limitMessage)
+                    Text(L10n.text(limitMessage))
                         .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 VStack(alignment: .center, spacing: 13) {
-                    Text("ПРЕДПРОСМОТР ЭКРАНА")
+                    Text(L10n.text("ПРЕДПРОСМОТР ЭКРАНА"))
                         .font(.system(size: 9, weight: .semibold)).tracking(1.1)
                         .foregroundStyle(StudioStyle.secondary)
                     VStack(alignment: .leading, spacing: 7) {
-                        Text("Тип страницы на модеме").font(.system(size: 12, weight: .medium))
-                        Picker("Тип страницы на модеме", selection: Binding(get: { model.displayLayout.style }, set: { model.setDisplayStyle($0) })) {
-                            ForEach(ModemDisplayPageStyle.allCases) { style in Text(style.title).tag(style) }
+                        Text(L10n.text("Тип страницы на модеме")).font(.system(size: 12, weight: .medium))
+                        Picker(L10n.text("Тип страницы на модеме"), selection: Binding(get: { model.displayLayout.style }, set: { model.setDisplayStyle($0) })) {
+                            ForEach(ModemDisplayPageStyle.allCases) { style in Text(L10n.text(style.title)).tag(style) }
                         }.pickerStyle(.segmented).labelsHidden().disabled(model.busy)
                     }
                     ModemDisplayLayoutPreview(layout: model.displayLayout)
-                    Text("Выбранное оформление будет на модеме.\nДанные для примера.")
+                    Text(L10n.text("Выбранное оформление будет на модеме.\nДанные для примера."))
                         .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary)
                         .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
-                    Label("Листайте вверх и вниз", systemImage: "arrow.up.arrow.down")
+                    Label(L10n.text("Листайте вверх и вниз"), systemImage: "arrow.up.arrow.down")
                         .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary)
                 }.frame(width: 240)
             }
             Divider().overlay(StudioStyle.line)
             HStack(alignment: .center, spacing: 16) {
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(saveStatus).font(.system(size: 12, weight: .medium))
-                    Text(actionDetail).font(.system(size: 11)).foregroundStyle(StudioStyle.secondary)
+                    Text(L10n.text(saveStatus)).font(.system(size: 12, weight: .medium))
+                    Text(L10n.text(actionDetail)).font(.system(size: 11)).foregroundStyle(StudioStyle.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 8)
-                Button("Применить настройки", action: performAction)
+                Button(L10n.text("Применить настройки"), action: performAction)
                     .buttonStyle(StudioButtonStyle(prominent: true)).disabled(!canPerformAction)
             }
-            Text("Недоступные значения на модеме обозначаются прочерком, устаревшие — звёздочкой. Несущие показывают активные подключения, а не разрешённые диапазоны.")
+            Text(L10n.text("Недоступные значения на модеме обозначаются прочерком, устаревшие — звёздочкой. Несущие показывают активные подключения, а не разрешённые диапазоны."))
                 .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -356,31 +356,31 @@ private struct DisplayLayoutEditor: View {
                     Image(systemName: metric.symbol).foregroundStyle(item.enabled ? StudioStyle.accent : StudioStyle.secondary)
                         .font(.system(size: 13)).frame(width: 18)
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(metric.title).font(.system(size: 12, weight: .medium))
+                        Text(L10n.text(metric.title)).font(.system(size: 12, weight: .medium))
                             .foregroundStyle(item.enabled ? StudioStyle.text : StudioStyle.secondary)
                             .lineLimit(2)
-                        Text(metric.detail).font(.system(size: 10)).foregroundStyle(StudioStyle.secondary)
+                        Text(L10n.text(metric.detail)).font(.system(size: 10)).foregroundStyle(StudioStyle.secondary)
                             .lineLimit(2)
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
             .toggleStyle(.checkbox).disabled(checkboxDisabled)
-            .help(checkboxDisabled && !model.busy ? limitMessage : "Показывать на информационной странице модема")
+            .help(L10n.text(checkboxDisabled && !model.busy ? limitMessage : "Показывать на информационной странице модема"))
             VStack(spacing: 3) {
                 Button { move(metric, delta: -1) } label: { Image(systemName: "chevron.up") }
                     .disabled(model.busy || index == 0)
-                    .accessibilityLabel("Выше: \(metric.title)").help("Переместить выше")
+                    .accessibilityLabel(L10n.text("Выше: \(metric.title)")).help(L10n.text("Переместить выше"))
                 Button { move(metric, delta: 1) } label: { Image(systemName: "chevron.down") }
                     .disabled(model.busy || index == model.displayLayout.items.count - 1)
-                    .accessibilityLabel("Ниже: \(metric.title)").help("Переместить ниже")
+                    .accessibilityLabel(L10n.text("Ниже: \(metric.title)")).help(L10n.text("Переместить ниже"))
             }
             .font(.system(size: 9, weight: .semibold)).buttonStyle(.borderless)
             .foregroundStyle(StudioStyle.secondary)
             Image(systemName: "line.3.horizontal")
                 .font(.system(size: 15, weight: .medium)).foregroundStyle(StudioStyle.secondary)
                 .frame(width: 23, height: 44).contentShape(Rectangle())
-                .help("Перетащите, чтобы изменить порядок")
-                .accessibilityLabel("Перетащить: \(metric.title)")
+                .help(L10n.text("Перетащите, чтобы изменить порядок"))
+                .accessibilityLabel(L10n.text("Перетащить: \(metric.title)"))
                 .gesture(DragGesture(minimumDistance: 4, coordinateSpace: .named("displayMetricRows"))
                     .onChanged { value in
                         guard !model.busy else { return }

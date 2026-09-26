@@ -9,10 +9,12 @@
     <UsedAvaloniaProducts></UsedAvaloniaProducts>
   </PropertyGroup>
   <ItemGroup>
-    <Reference Include="ZTE IMEI Studio">
-      <HintPath>../src/bin/Debug/net10.0/osx-arm64/ZTE IMEI Studio.dll</HintPath>
+    <Content Include="../Resources/Branding/*"><Link>Resources/Branding/%(Filename)%(Extension)</Link><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory></Content>
+    <Reference Include="ZTE U60Pro Manager">
+      <HintPath>../src/bin/Debug/net10.0/osx-arm64/ZTE U60Pro Manager.dll</HintPath>
     </Reference>
     <PackageReference Include="Avalonia.Headless" Version="11.3.12" />
+    <PackageReference Include="Avalonia.Skia" Version="11.3.12" />
     <PackageReference Include="Avalonia.Themes.Simple" Version="11.3.12" />
   </ItemGroup>
 </Project>

@@ -186,8 +186,8 @@ struct OperationInfoButton: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help(topic.accessibilityLabel)
-        .accessibilityLabel(topic.accessibilityLabel)
+        .help(L10n.text(topic.accessibilityLabel))
+        .accessibilityLabel(L10n.text(topic.accessibilityLabel))
         .accessibilityIdentifier("operation-help-" + topic.rawValue)
         .sheet(isPresented: $isPresented) { OperationHelpSheet(topic: topic) }
     }
@@ -204,12 +204,12 @@ struct OperationHelpSheet: View {
                 Image(systemName: "info.circle.fill")
                     .font(.system(size: 24)).foregroundStyle(StudioStyle.accent)
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(topic.title).font(.system(size: 20, weight: .semibold))
-                    Text("Последовательность, команды и сохраняемые данные")
+                    Text(L10n.text(topic.title)).font(.system(size: 20, weight: .semibold))
+                    Text(L10n.text("Последовательность, команды и сохраняемые данные"))
                         .font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
                 }
                 Spacer(minLength: 0)
-                Button("Закрыть") { dismiss() }
+                Button(L10n.text("Закрыть")) { dismiss() }
                     .keyboardShortcut(.cancelAction)
                     .accessibilityIdentifier("operation-help-close")
             }
@@ -217,17 +217,17 @@ struct OperationHelpSheet: View {
             Divider().overlay(StudioStyle.line)
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
-                    Text(topic.introduction)
+                    Text(L10n.text(topic.introduction))
                         .font(.system(size: 13)).lineSpacing(4)
-                    Text("В примерах <…> обозначает адрес, UUID, путь, хэш или другой параметр конкретной операции. Пароли и ключи здесь не показываются. Приведены основные вызовы; приложение дополнительно выполняет описанные проверки и защитные обёртки. Команды не нужно вводить вручную.")
+                    Text(L10n.text("В примерах <…> обозначает адрес, UUID, путь, хэш или другой параметр конкретной операции. Пароли и ключи здесь не показываются. Приведены основные вызовы; приложение дополнительно выполняет описанные проверки и защитные обёртки. Команды не нужно вводить вручную."))
                         .font(.system(size: 12)).lineSpacing(3)
                         .foregroundStyle(StudioStyle.secondary)
                         .padding(14)
                         .background(StudioStyle.elevated, in: RoundedRectangle(cornerRadius: 10))
                     ForEach(topic.sections) { section in
                         VStack(alignment: .leading, spacing: 10) {
-                            Text(section.title).font(.system(size: 15, weight: .semibold))
-                            Text(section.body).font(.system(size: 13)).lineSpacing(4)
+                            Text(L10n.text(section.title)).font(.system(size: 15, weight: .semibold))
+                            Text(L10n.text(section.body)).font(.system(size: 13)).lineSpacing(4)
                             if let commands = section.commands {
                                 Text(commands)
                                     .font(.system(size: 11, design: .monospaced))

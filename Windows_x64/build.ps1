@@ -12,10 +12,10 @@ $resourceRoot = Join-Path $projectRoot 'Resources'
 $distRoot = Join-Path $projectRoot 'dist'
 $portableRoot = Join-Path $distRoot 'portable'
 $stageRoot = Join-Path $distRoot 'portable.stage'
-$exePath = Join-Path $portableRoot 'ZTE IMEI Studio.exe'
-$stageExePath = Join-Path $stageRoot 'ZTE IMEI Studio.exe'
-$zipPath = Join-Path $distRoot "ZTE-IMEI-Studio-$version-Windows-x64-portable.zip"
-$stageZipPath = Join-Path $distRoot 'ZTE-IMEI-Studio-Windows-x64-staging.zip'
+$exePath = Join-Path $portableRoot 'ZTE U60Pro Manager.exe'
+$stageExePath = Join-Path $stageRoot 'ZTE U60Pro Manager.exe'
+$zipPath = Join-Path $distRoot "ZTE-U60Pro-Manager-$version-Windows-x64-portable.zip"
+$stageZipPath = Join-Path $distRoot 'ZTE-U60Pro-Manager-Windows-x64-staging.zip'
 $manifestPath = Join-Path $distRoot 'windows-build-manifest.json'
 
 if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
@@ -117,7 +117,7 @@ $manifest = [ordered] @{
     version = $version
     platform = 'win-x64'
     selfContained = $true
-    exe = [ordered] @{ name = 'ZTE IMEI Studio.exe'; bytes = $exeBytes; sha256 = $exeHash }
+    exe = [ordered] @{ name = 'ZTE U60Pro Manager.exe'; bytes = $exeBytes; sha256 = $exeHash }
     resources = $resourceHashes
     resourceBytes = $resourceBytes
     zip = $zipManifest

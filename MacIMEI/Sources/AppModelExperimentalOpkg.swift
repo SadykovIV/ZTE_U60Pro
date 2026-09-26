@@ -9,7 +9,10 @@ import AppKit
         NSPasteboard.general.setString(ExperimentalOpkgManager.remoteRoot + "/opkg", forType: .string)
         append("Путь адаптера opkg скопирован для SSH-сеанса модема.")
     }
-    func installExperimentalOpkg() { manageExperimentalOpkg("install-adapter") }
+    func installExperimentalOpkg() {
+        guard catalogAllowsInstallation("opkg") else { return }
+        manageExperimentalOpkg("install-adapter")
+    }
     func removeExperimentalOpkg() { manageExperimentalOpkg("remove-adapter") }
     func rollbackExperimentalOpkg() { manageExperimentalOpkg("rollback") }
     func refreshExperimentalOpkg() { manageExperimentalOpkg("inspect") }

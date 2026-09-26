@@ -1,0 +1,17 @@
+{
+  "name": "ZTE U60Pro Manager",
+  "asset": "manager-icon.png",
+  "generation": "Built-in image_gen; original app icon inspired by UserGate symbol and cellular signal bars",
+  "officialReference": "https://usergate.com/f/dist/media/favicons/apple-touch-icon.png",
+  "usergate": "https://usergate.com",
+  "ufactor": "https://usergate.com/ufactor",
+  "palette": [
+    "#0C89DB",
+    "#3EB6E2",
+    "#4C7EA5",
+    "#263746",
+    "#081528"
+  ],
+  "sha256": "79e1348b55d27258e61c15661309d56783383006c38afb04ed92233f87f03a16",
+  "packaging": "sips sizes, iconutil ICNS, lossless PNG frames in ICO"
+}

@@ -4,7 +4,9 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <AssemblyName>ZTE IMEI Studio</AssemblyName>
+    <AssemblyName>ZTE U60Pro Manager</AssemblyName>
+    <Product>ZTE U60Pro Manager</Product>
+    <ApplicationIcon Condition="Exists('../Resources/Branding/AppIcon.ico')">../Resources/Branding/AppIcon.ico</ApplicationIcon>
     <RootNamespace>ZteImeiStudio.Windows</RootNamespace>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>true</SelfContained>
@@ -15,8 +17,8 @@
     <Deterministic>true</Deterministic>
     <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
     <PathMap>$(MSBuildProjectDirectory)=/src/Windows_x64/src</PathMap>
-    <SatelliteResourceLanguages>ru</SatelliteResourceLanguages>
-    <Version>1.19.0</Version>
+    <SatelliteResourceLanguages>ru;en</SatelliteResourceLanguages>
+    <Version>1.20.0</Version>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <UsedAvaloniaProducts></UsedAvaloniaProducts>
   </PropertyGroup>
@@ -26,6 +28,7 @@
     <PackageReference Include="SSH.NET" Version="2025.0.0" />
   </ItemGroup>
   <ItemGroup>
+    <EmbeddedResource Include="../Resources/Localization/en.json" LogicalName="ZteManager.Localization.en.json" />
     <Content Include="../Resources/**/*">
       <Link>Resources/%(RecursiveDir)%(Filename)%(Extension)</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>

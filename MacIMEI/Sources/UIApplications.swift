@@ -6,21 +6,21 @@ extension ContentView {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
                     if let storage = model.applicationInventory?.applicationStorage {
-                        Text("Свободно \(AppModel.bytesLabel(kib: storage.availableKiB)) · приложения занимают \(AppModel.bytesLabel(kib: storage.managedUsedKiB))")
+                        Text(L10n.text("Свободно \(AppModel.bytesLabel(kib: storage.availableKiB)) · приложения занимают \(AppModel.bytesLabel(kib: storage.managedUsedKiB))"))
                             .font(.system(size: 12, weight: .medium))
-                        Text("Хранилище /data · в занятом месте учтены копии для отката")
+                        Text(L10n.text("Хранилище /data · в занятом месте учтены копии для отката"))
                             .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary)
                     } else {
-                        Text(model.connected ? "Обновите приложения, чтобы проверить свободное место на модеме." : "Подключитесь по SSH, чтобы получить список приложений модема.")
+                        Text(L10n.text(model.connected ? "Обновите приложения, чтобы проверить свободное место на модеме." : "Подключитесь по SSH, чтобы получить список приложений модема."))
                             .font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
                     }
                 }
                 Spacer()
                 Button(action: model.refreshApplications) { Image(systemName: "arrow.clockwise") }
-                    .buttonStyle(StudioButtonStyle()).disabled(!model.canManage).help("Обновить только приложения и место для них")
+                    .buttonStyle(StudioButtonStyle()).disabled(!model.canManage).help(L10n.text("Обновить только приложения и место для них"))
             }
-            Picker("Раздел приложений", selection: $applicationSection) {
-                ForEach(ApplicationSection.allCases) { Text($0.rawValue).tag($0) }
+            Picker(L10n.text("Раздел приложений"), selection: $applicationSection) {
+                ForEach(ApplicationSection.allCases) { Text(L10n.text($0.rawValue)).tag($0) }
             }.pickerStyle(.segmented)
             switch applicationSection {
             case .installed: installedApplicationsPage
@@ -32,14 +32,13 @@ extension ContentView {
             ssclashInstallSheet
         }
     }
-    var applicationColumns: [GridItem] { [GridItem(.adaptive(minimum: 250), spacing: 12, alignment: .top)] }
     var installedApplicationsPage: some View {
         VStack(alignment: .leading, spacing: 14) {
             applicationInspectionErrors
             if model.applicationInventory == nil {
                 StudioNote(symbol: "square.grid.2x2", text: "Список ещё не получен. Нажмите обновление после подключения к модему.")
             }
-            LazyVGrid(columns: applicationColumns, alignment: .leading, spacing: 12) {
+            LazyVStack(alignment: .leading, spacing: 10) {
                 ForEach(DiagnosticTool.catalog.filter { model.diagnosticToolsStatus?.isInstalled($0.id) == true }) { tool in
                     diagnosticApplicationCard(tool)
                 }
@@ -53,8 +52,8 @@ extension ContentView {
             }
             if model.applicationsFullyChecked && model.installedApplicationCount == 0 {
                 StudioCard {
-                    Text("Дополнительных приложений пока нет").font(.system(size: 15, weight: .medium))
-                    Button("Открыть каталог") { applicationSection = .available }.buttonStyle(StudioButtonStyle())
+                    Text(L10n.text("Дополнительных приложений пока нет")).font(.system(size: 15, weight: .medium))
+                    Button(L10n.text("Открыть каталог")) { applicationSection = .available }.buttonStyle(StudioButtonStyle())
                 }
             }
             if model.applicationInventory?.ssclashUnmanaged == true {
@@ -62,19 +61,19 @@ extension ContentView {
             }
             diagnosticToolsMaintenance
             if let inventory = model.applicationInventory {
-                DisclosureGroup("Компоненты прошивки · \(inventory.installedPackages.count)") {
+                DisclosureGroup(L10n.text("Компоненты прошивки · \(inventory.installedPackages.count)")) {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("Системные компоненты показаны для справки. Удаление компонентов прошивки недоступно.")
+                        Text(L10n.text("Системные компоненты показаны для справки. Удаление компонентов прошивки недоступно."))
                             .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary)
                         StudioField(label: "ПОИСК КОМПОНЕНТА", placeholder: "Название пакета", text: $model.packageSearch)
                         ForEach(Array(model.filteredPackages.prefix(50))) { package in
                             HStack {
-                                Text(package.name).font(.system(size: 11, design: .monospaced))
+                                Text(L10n.text(package.name)).font(.system(size: 11, design: .monospaced))
                                 Spacer()
-                                Text(package.version).font(.system(size: 10)).foregroundStyle(StudioStyle.secondary)
+                                Text(L10n.text(package.version)).font(.system(size: 10)).foregroundStyle(StudioStyle.secondary)
                             }
                         }
-                        if model.filteredPackages.count > 50 { Text("Уточните поиск, чтобы увидеть остальные компоненты.").font(.system(size: 11)) }
+                        if model.filteredPackages.count > 50 { Text(L10n.text("Уточните поиск, чтобы увидеть остальные компоненты.")).font(.system(size: 11)) }
                     }.padding(.top, 10)
                 }.font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
             }
@@ -82,13 +81,41 @@ extension ContentView {
     }
     var applicationCatalogPage: some View {
         VStack(alignment: .leading, spacing: 14) {
+            verifiedCatalogHeader
             applicationInspectionErrors
-            LazyVGrid(columns: applicationColumns, alignment: .leading, spacing: 12) {
-                ForEach(DiagnosticTool.catalog) { diagnosticApplicationCard($0) }
-                ssclashApplicationCard
-                opkgApplicationCard
+            LazyVStack(alignment: .leading, spacing: 10) {
+                ForEach(DiagnosticTool.catalog.filter { verifiedCatalog.allows($0.id) }) { diagnosticApplicationCard($0) }
+                if verifiedCatalog.allows("ssclash") { ssclashApplicationCard }
+                if verifiedCatalog.allows("opkg") { opkgApplicationCard }
+            }
+            if verifiedCatalog.entries.isEmpty {
+                StudioNote(symbol: "checkmark.shield", text: L10n.text("В этом каталоге пока нет совместимых проверенных приложений.", "This catalog has no compatible verified applications yet."))
             }
             diagnosticToolsMaintenance
+        }
+    }
+    var verifiedCatalogHeader: some View {
+        StudioCard {
+            HStack(alignment: .top, spacing: 16) {
+                Image(systemName: "checkmark.shield.fill").font(.system(size: 22)).foregroundStyle(StudioStyle.accent)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(L10n.text("Проверенные приложения", "Verified applications")).font(.system(size: 14, weight: .semibold))
+                    Text(L10n.text("В каталоге только приложения, проверенные на модеме. Новые добавляются после проверки; список обновляется отдельно от программы.", "The catalog contains applications tested on the modem. New entries are added after verification; the list updates independently of the application."))
+                        .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
+                    if !verifiedCatalog.status.isEmpty {
+                        Text(verifiedCatalog.statusText(language: L10n.language)).font(.system(size: 10)).foregroundStyle(StudioStyle.secondary)
+                    }
+                }
+                Spacer(minLength: 0)
+                Button {
+                    Task { await verifiedCatalog.refresh() }
+                } label: {
+                    Label(L10n.text(verifiedCatalog.isUpdating ? "Проверяем…" : "Обновить каталог", verifiedCatalog.isUpdating ? "Checking…" : "Update catalog"), systemImage: "arrow.clockwise")
+                }.buttonStyle(StudioButtonStyle()).disabled(verifiedCatalog.isUpdating)
+            }
+            if !verifiedCatalog.error.isEmpty {
+                Text(verifiedCatalog.errorText(language: L10n.language)).font(.system(size: 11)).foregroundStyle(StudioStyle.warning).fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
     @ViewBuilder var applicationInspectionErrors: some View {
@@ -97,7 +124,7 @@ extension ContentView {
         if !model.experimentalOpkgError.isEmpty { applicationError("opkg: " + model.experimentalOpkgError) }
     }
     func applicationError(_ text: String) -> some View {
-        Label(text, systemImage: "exclamationmark.triangle")
+        Label(L10n.text(text), systemImage: "exclamationmark.triangle")
             .font(.system(size: 11)).foregroundStyle(StudioStyle.warning)
             .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
     }
@@ -112,35 +139,35 @@ extension ContentView {
             if present {
                 HStack(spacing: 8) {
                     if inventory?.ssclashRunning == true {
-                        Button("Открыть", action: model.openSSClash).buttonStyle(StudioButtonStyle()).disabled(!model.canManage)
+                        Button(L10n.text("Открыть"), action: model.openSSClash).buttonStyle(StudioButtonStyle()).disabled(!model.canManage)
                     } else {
-                        Button("Запустить", action: model.startSSClash).buttonStyle(StudioButtonStyle()).disabled(!model.canManage || inventory?.ssclashUnmanaged == true)
+                        Button(L10n.text("Запустить"), action: model.startSSClash).buttonStyle(StudioButtonStyle()).disabled(!model.canManage || inventory?.ssclashUnmanaged == true)
                     }
                     Spacer(minLength: 0)
-                    Button("Удалить", action: model.removeSSClash).buttonStyle(StudioButtonStyle()).disabled(!model.canManage || app?.canRemove != true)
+                    Button(L10n.text("Удалить"), action: model.removeSSClash).buttonStyle(StudioButtonStyle()).disabled(!model.canManage || app?.canRemove != true)
                 }
-                if let reason = app?.removalBlockReason { Text(reason).font(.system(size: 10)).foregroundStyle(StudioStyle.secondary) }
+                if let reason = app?.removalBlockReason { Text(L10n.text(reason)).font(.system(size: 10)).foregroundStyle(StudioStyle.secondary) }
             } else {
-                Button("Установить") { expandedApplication = "ssclash" }
+                Button(L10n.text("Установить")) { expandedApplication = "ssclash" }
                     .buttonStyle(StudioButtonStyle(prominent: true)).disabled(!model.canManage || installed == nil)
             }
         }
     }
     var ssclashInstallSheet: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Установка SSClash-Go").font(.title2.bold())
-            Text("Задайте пароль для веб-панели. Ядро прокси и профиль подключения настраиваются после установки.")
+            Text(L10n.text("Установка SSClash-Go")).font(.title2.bold())
+            Text(L10n.text("Задайте пароль для веб-панели. Ядро прокси и профиль подключения настраиваются после установки."))
                 .font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
             secureSetting(label: "ПАРОЛЬ SSCLASH", placeholder: "Не менее 8 символов", text: $model.ssclashPassword)
             secureSetting(label: "ПОВТОР ПАРОЛЯ", placeholder: "Повторите пароль", text: $model.ssclashPasswordConfirmation)
-            Text("Нужно 64 МиБ на /data. Перед удалением программа сохраняет архив приложения и настроек.")
+            Text(L10n.text("Нужно 64 МиБ на /data. Перед удалением программа сохраняет архив приложения и настроек."))
                 .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary)
-            DisclosureGroup("Лицензия") { Text(ModemApplications.catalog[0].licenseSummary).font(.system(size: 11)) }
+            DisclosureGroup(L10n.text("Лицензия")) { Text(L10n.text(ModemApplications.catalog[0].licenseSummary)).font(.system(size: 11)) }
             HStack {
-                Button("Отмена") { expandedApplication = nil; model.ssclashPassword = ""; model.ssclashPasswordConfirmation = "" }
+                Button(L10n.text("Отмена")) { expandedApplication = nil; model.ssclashPassword = ""; model.ssclashPasswordConfirmation = "" }
                     .buttonStyle(StudioButtonStyle())
                 Spacer()
-                Button("Установить") { model.installSSClash(); expandedApplication = nil }
+                Button(L10n.text("Установить")) { model.installSSClash(); expandedApplication = nil }
                     .buttonStyle(StudioButtonStyle(prominent: true))
                     .disabled(!model.canManage || !model.ssclashPasswordValid || (model.applicationInventory?.applicationStorage?.availableKiB ?? 0) < 64 * 1024)
             }
@@ -154,23 +181,44 @@ struct ApplicationTile<Actions: View>: View {
     let summary: String
     let installed: Bool?
     var statusText: String? = nil
+    var verification: String? = nil
     @ViewBuilder let actions: () -> Actions
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(name).font(.system(size: 15, weight: .semibold)).lineLimit(1).help(name).layoutPriority(1)
-                Spacer(minLength: 0)
-                Text(version).font(.system(size: 10)).foregroundStyle(StudioStyle.secondary).lineLimit(1).truncationMode(.middle).frame(maxWidth: 110, alignment: .trailing).help(version)
-            }
-            Text(summary).font(.system(size: 11)).foregroundStyle(StudioStyle.secondary).lineLimit(3).help(summary)
-                .fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, minHeight: 30, alignment: .topLeading)
-            Label(statusText ?? installed.map { $0 ? "Установлено" : "Не установлено" } ?? "Не проверено",
-                  systemImage: installed == true ? "checkmark.circle.fill" : "circle")
-                .font(.system(size: 10)).foregroundStyle(installed == true ? StudioStyle.accent : statusText != nil ? StudioStyle.warning : StudioStyle.secondary)
-            actions()
+    private var symbol: String {
+        switch name.lowercased() {
+        case "htop": return "chart.bar.xaxis"
+        case "iperf3": return "speedometer"
+        case "mtr": return "point.3.connected.trianglepath.dotted"
+        case "tcpdump": return "waveform.path"
+        case "opkg": return "shippingbox"
+        case "ssclash-go": return "network"
+        default: return "app.dashed"
         }
-        .padding(16).frame(maxWidth: .infinity, alignment: .topLeading)
-        .background(StudioStyle.surface, in: RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(StudioStyle.line, lineWidth: 1))
+    }
+    var body: some View {
+        HStack(alignment: .center, spacing: 16) {
+            Image(systemName: symbol)
+                .font(.system(size: 20, weight: .medium)).foregroundStyle(StudioStyle.accent)
+                .frame(width: 44, height: 44)
+                .background(StudioStyle.accent.opacity(0.10), in: RoundedRectangle(cornerRadius: 11))
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(alignment: .firstTextBaseline, spacing: 9) {
+                    Text(L10n.text(name)).font(.system(size: 15, weight: .semibold)).textSelection(.enabled)
+                    Text(L10n.text(version)).font(.system(size: 10)).foregroundStyle(StudioStyle.secondary)
+                    if let verification {
+                        Image(systemName: "checkmark.seal.fill").foregroundStyle(StudioStyle.accent).font(.system(size: 11))
+                            .help(verification).accessibilityLabel(L10n.text("Проверено на B31", "Verified on B31"))
+                    }
+                }
+                Text(L10n.text(summary)).font(.system(size: 11)).foregroundStyle(StudioStyle.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Label(L10n.text(statusText ?? installed.map { $0 ? "Установлено" : "Не установлено" } ?? "Не проверено"),
+                      systemImage: installed == true ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 10)).foregroundStyle(installed == true ? StudioStyle.accent : statusText != nil ? StudioStyle.warning : StudioStyle.secondary)
+            }.frame(maxWidth: .infinity, alignment: .leading)
+            actions().frame(width: 230, alignment: .trailing)
+        }
+        .padding(16).frame(maxWidth: .infinity, alignment: .leading)
+        .background(StudioStyle.surface, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(StudioStyle.line, lineWidth: 1))
     }
 }

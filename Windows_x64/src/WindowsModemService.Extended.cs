@@ -40,6 +40,7 @@ public sealed partial class WindowsModemService
             case ModemOperation.InstallApplication:
             {
                 var id = Param(p, "id");
+                if (!VerifiedCatalogStore.Shared.Allows(id)) throw new InvalidDataException("Приложение пока не входит в проверенный каталог.");
                 if (id == "opkg")
                 {
                     var installed = await _features!.InstallPrivateOpkgAsync(ct);
@@ -89,6 +90,7 @@ public sealed partial class WindowsModemService
             }
             case ModemOperation.InstallOpkg:
             {
+                if (!VerifiedCatalogStore.Shared.Allows("opkg")) throw new InvalidDataException("opkg пока не входит в проверенный каталог.");
                 var result = await _features!.InstallPrivateOpkgAsync(ct);
                 return result.Output.Length > 0 ? result.Output : result.Status.Installed ? "Изолированный opkg установлен." : "Установка opkg требует проверки.";
             }
