@@ -20,6 +20,37 @@
 Интерфейс доступен на русском и английском. Приложение разработано при поддержке
 экспертного подразделения [uFactor](https://usergate.com/ufactor) компании [UserGate](https://usergate.com).
 
+## Скриншоты
+
+Предпросмотр подготовленного интерфейса **1.23.2**. Этот выпуск ещё не опубликован; последняя доступная версия — **1.20.0**.
+
+### eSIM
+
+Установка из QR или LPA-строки, отдельные поля **SM-DP+ Address** и **Activation code**, список профилей и выбор активного. Нужна **съёмная физическая eUICC в SIM-слоте**; проверена 9eSIM V0. Встроенная eSIM ZTE этим выпуском не поддерживается.
+
+| macOS | Windows UI |
+| --- | --- |
+| ![eSIM на macOS](docs/images/macos-esim-ru.png) | ![eSIM в Windows UI](docs/images/windows-esim-ru.png) |
+
+### Страницы экрана модема
+
+Галочками выбираются «Информация», VPN и eSIM; стрелки задают порядок страниц.
+
+| macOS | Windows UI |
+| --- | --- |
+| ![Launcher на macOS](docs/images/macos-launcher-ru.png) | ![Launcher в Windows UI](docs/images/windows-launcher-ru.png) |
+
+<details>
+<summary>Подключение и подготовка модема</summary>
+
+| macOS | Windows UI |
+| --- | --- |
+| ![Подключение на macOS](docs/images/macos-connection-ru.png) | ![Подключение в Windows UI](docs/images/windows-connection-ru.png) |
+
+</details>
+
+Снимки настоящего интерфейса с демонстрационными данными. Windows UI отрисован через Avalonia на macOS; это не проверка запуска в Windows. [Все скриншоты RU/EN и сведения об их происхождении](docs/images/README.md).
+
 ## Требования к модему
 
 ### Источники и благодарности — прочитайте до установки
