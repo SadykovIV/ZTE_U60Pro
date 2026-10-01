@@ -282,11 +282,18 @@ public sealed class OnboardingEngine
             await File.ReadAllBytesAsync(hashPath, ct).ConfigureAwait(false))
             ?? throw new InvalidDataException("Манифест компонентов настройки пуст.");
         var required = new[] { "zte-agent", "dropbear", "setup-agent.sh", "start_zte_imei_studio.sh" };
-        if (!hashes.Keys.ToHashSet(StringComparer.Ordinal).SetEquals(required))
+        // The release also ships provenance and license files. Only these four
+        // executable/setup components are uploaded by onboarding.
+        if (!required.All(hashes.ContainsKey))
             throw new InvalidDataException("Неполный манифест компонентов настройки.");
+        if (hashes["zte-agent"] != AgentPackage.Sha256)
+            throw new InvalidDataException("Комплект настройки содержит другую сборку агента.");
         foreach (var name in required)
-            if (Sha(await File.ReadAllBytesAsync(Path.Combine(basePath, name), ct).ConfigureAwait(false)) != hashes[name])
-                throw new InvalidDataException("Повреждён компонент настройки: " + name);
+        {
+            var bytes = await File.ReadAllBytesAsync(Path.Combine(basePath, name), ct).ConfigureAwait(false);
+            if (Sha(bytes) != hashes[name]) throw new InvalidDataException("Повреждён компонент настройки: " + name);
+            if (name == "zte-agent") AgentPackage.VerifyPayload(bytes);
+        }
         await VerifyToolHashAsync(Path.Combine(_resources, "Tools", "adb.exe"),
             "b4a6b455702684652cccf7b46258b29e653538904359a58fd4931cf3ef286b3f", ct)
             .ConfigureAwait(false);

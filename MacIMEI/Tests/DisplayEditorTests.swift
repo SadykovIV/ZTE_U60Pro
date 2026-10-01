@@ -4,8 +4,8 @@ import Foundation
     @MainActor static func main() throws {
         let model = AppModel()
         var checks = 0
-        func check(_ condition: @autoclosure () -> Bool, _ message: String) throws {
-            guard condition() else { throw IMEIError.message(message) }; checks += 1
+        func check(_ condition: @autoclosure () throws -> Bool, _ message: String) throws {
+            guard try condition() else { throw IMEIError.message(message) }; checks += 1
         }
         try check(model.displayLayout == .defaultLayout && model.displayLayout.enabledCount == 6, "Default layout changed")
         try check(model.displayLayout.style == .list, "Native default style is not list")
@@ -48,12 +48,45 @@ import Foundation
         let encoded = try model.displayLayout.encoded()
         let decoded = try ModemDisplayLayout.decode(encoded)
         try check(decoded == model.displayLayout, "Editor order does not round-trip")
+        try check(model.displayPages == .defaultPages && model.displayPageRows == [.info, .vpn, .esim], "Default page selection changed")
+        model.setDisplayPage(.info, enabled: false)
+        model.moveDisplayPage(.esim, by: -1)
+        try check(model.displayPages.pages == [.esim, .vpn] && model.displayPagesDraftEdited, "Page checkbox or order ignored")
+        let pagesDraft = model.displayPages
+        model.moveDisplayPage(.esim, by: -1)
+        model.moveDisplayPage(.vpn, by: 1)
+        try check(model.displayPages == pagesDraft, "Page move escaped boundaries")
+        model.busy = true
+        model.setDisplayPage(.info, enabled: true); model.moveDisplayPage(.vpn, by: -1)
+        try check(model.displayPages == pagesDraft, "Page editor changed during operation")
+        model.busy = false
+        let identity = Identity(cid: String(repeating: "a", count: 32), firmwareHash: ModemEngine.firmwareHash)
+        var state = ModemDisplayInspection(state: .ready, detail: "fixture", identity: identity, bootID: "fixture", expectedHash: "fixture")
+        state.pages = ModemLauncherPages(pages: [.info])
+        let metricDraft = model.displayLayout
+        model.receiveDisplayInspection(state)
+        try check(model.displayPages == pagesDraft && model.displaySavedPages == state.pages && model.displayPagesChanged, "Refresh replaced unsaved pages")
+        try check(model.displayLayout == metricDraft, "Refresh replaced unsaved metric layout")
+        state.pages = pagesDraft
+        model.receiveDisplayInspection(state, appliedPages: true)
+        try check(!model.displayPagesDraftEdited && !model.displayPagesChanged && model.displayLayout == metricDraft && model.displayDraftEdited, "Page save consumed metric draft")
+        for page in ModemLauncherPage.allCases { model.setDisplayPage(page, enabled: false) }
+        try check(model.displayPages.pages.isEmpty && ModemLauncherPages.decode(model.displayPages.encoded()).pages.isEmpty, "Stock-only pages cannot be selected")
+        model.setDisplayPage(.info, enabled: true)
+        state.layout = .defaultLayout
+        model.receiveDisplayInspection(state, appliedLayout: true)
+        try check(model.displayPages.pages == [.info] && model.displayPagesDraftEdited && !model.displayDraftEdited, "Metric save consumed page draft")
+        model.clearConnectedData(preserveDisplayDraft: true)
+        try check(model.displayPages.pages == [.info] && model.displayPagesDraftEdited && model.displaySavedPages == nil, "Temporary disconnect lost page draft or retained stale saved pages")
         model.connectionMode = .adb
         model.connected = true
-        model.installDisplay(); model.applyDisplayLayout(); model.refreshDisplay()
+        model.installDisplay(); model.installEsimDisplay(); model.applyDisplayLayout(); model.applyDisplayPages(); model.refreshDisplay()
         try check(model.operationTask == nil && !model.busy, "Manual ADB invoked SSH display mutation")
+        model.esimPreview = true
+        try check(!model.canInstallEsimDisplay, "Synthetic eSIM preview can install launcher")
         model.invalidateChannelConnection()
         try check(model.displayLayout == .defaultLayout && model.displaySavedLayout == nil && !model.displayDraftEdited, "Connection change retained another modem draft")
+        try check(model.displayPages == .defaultPages && model.displaySavedPages == nil && !model.displayPagesDraftEdited, "Connection change retained another modem page draft")
         print("PASS DisplayEditorTests \(checks) checks")
     }
 }

@@ -2,7 +2,7 @@
 # HTML is a release pointer; hashed JS/CSS may stay cached, HTML must not.
 set -eu
 file=${1:-}
-case "$file" in /data/www/index.html|/data/www/mobile.html|/data/open-u60-dashboards/*/index.html|/data/open-u60-dashboards/*/mobile.html) ;;
+case "$file" in /data/www/index.html|/data/www/mobile.html|/data/open-u60-dashboards/*/index.html|/data/open-u60-dashboards/*/mobile.html|/data/zte-dashboard-runtime/dashboards/*/index.html|/data/zte-dashboard-runtime/dashboards/*/mobile.html) ;;
     *) printf 'Status: 404 Not Found\r\nContent-Type: text/plain\r\n\r\nNot found\n'; exit 0;;
 esac
 [ -f "$file" ] && [ ! -L "$file" ] || exit 1

@@ -18,7 +18,7 @@ extension ContentView {
                     informationRow("Ядро Mihomo", check.status.coreAvailable ? check.status.coreVersion : "Будет установлено из комплекта приложения")
                     informationRow("Агент с управлением VPN", check.agentReady ? "Готов" : "Требуется обновление")
                     informationRow("Веб-панель агента", check.dashboardReady ? "Готова" : "Требуется обновление")
-                    informationRow("Страницы на экране модема", check.launcherReady ? "Установлены · информация и VPN" : "Требуется установка или восстановление")
+                    informationRow("Страницы на экране модема", check.launcherReady ? "Установлены · информация, VPN и eSIM" : "Требуется установка или восстановление")
                 } else { Text(L10n.text("Проверка выполнится перед установкой компонентов.")).foregroundStyle(StudioStyle.secondary) }
                 if model.vpnInspection == nil || model.vpnInspection?.helperReady != true || model.vpnInspection?.agentReady != true || model.vpnInspection?.dashboardReady != true || model.vpnInspection?.launcherReady != true {
                     Button(L10n.text(model.vpnInspection?.status.installed == true ? "Обновить компоненты VPN" : "Установить компоненты VPN"), action: model.installVPN)

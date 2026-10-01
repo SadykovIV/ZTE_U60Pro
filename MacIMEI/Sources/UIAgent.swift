@@ -10,16 +10,17 @@ extension ContentView {
                     Spacer()
                     Button(L10n.text("Проверить агент")) { model.refreshAgent() }.buttonStyle(StudioButtonStyle()).disabled(!model.canManage)
                 }
+                informationRow("Поставляемый агент", BundledAgent.version + " · eSIM")
                 if let state = model.agentInstallationStatus {
                     informationRow("Процесс", state.running ? "Запущен" : "Не запущен")
-                    informationRow("Файл", state.hash == "absent" ? "Не установлен" : state.hash == VPNSettingsManager.agentHash ? "Из комплекта приложения · 2.8.0" : "Другая сборка / свой агент")
+                    informationRow("Файл", BundledAgent.description(for: state.hash))
                     informationRow("SHA256", state.hash)
                     informationRow("Сценарий запуска", state.startupReady ? "Сценарий запуска доступен" : "Требуется автоматическая подготовка")
                     if state.recoveryPending { StudioNote(symbol: "arrow.uturn.backward", text: "Есть незавершённая замена. Сначала восстановите предыдущий агент.") }
                 }
-                Button(L10n.text("Установить / обновить штатный агент")) { model.installAgent(custom: false) }
+                Button(L10n.text("Установить / обновить агент и веб-панель")) { model.installAgent(custom: false) }
                     .buttonStyle(StudioButtonStyle(prominent: true)).disabled(!model.canManage || model.agentInstallationStatus?.recoveryPending == true)
-                Text(L10n.text("Устанавливается агент, включённый в приложение. Пароль и настройки его запуска сохраняются. Веб-панель и компоненты VPN проверяются в разделе VPN."))
+                Text(L10n.text("Устанавливается агент с eSIM и его веб-панель. Пароль и настройки запуска сохраняются. VPN устанавливать не требуется. При первой автоматической подготовке ставится агент; эта кнопка также добавляет панель. Для загрузки профиля из браузера нужен интернет модема; раздел eSIM приложения использует интернет Mac."))
                     .font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
             }
             StudioCard {

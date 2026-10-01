@@ -15,6 +15,7 @@ private final class Remote: RemoteTransport {
     let cid = String(repeating: "a", count: 32), boot = "11111111-2222-3333-4444-555555555555"
     var commands: [String] = [], requests: [[String: Any]] = []
     var locked = false, installed = true, helperReady = true
+    var installedHelperHash: String?
     var badReceipt = false, enabledReceipt = false, mutateSSIDReceipt = false, bad2GReceipt = false
     var identityCalls = 0, swappedAt = 0, mutationError: String?
     var payload: [String: Any] = [
@@ -42,6 +43,20 @@ private final class Remote: RemoteTransport {
             let request = try JSONSerialization.jsonObject(with: input ?? Data()) as! [String: Any]
             requests.append(request)
             let action = request["action"] as? String
+            if let installedHelperHash {
+                // Execute the actual emitted case-pattern locally. The guard
+                // stays before the fake helper response and any fixture write.
+                let marker = "| cut -d ' ' -f1)\" in "
+                guard let start = command.range(of: marker),
+                      let end = command.range(of: ") ;; *) exit 1;; esac;", range: start.upperBound..<command.endIndex) else {
+                    throw IMEIError.message("TEST: Missing helper hash guard")
+                }
+                let pattern = String(command[start.upperBound..<end.lowerBound])
+                let process = Process(); process.executableURL = URL(fileURLWithPath: "/bin/sh")
+                process.arguments = ["-c", "case \"$1\" in " + pattern + ") exit 0;; *) exit 1;; esac", "--", installedHelperHash]
+                try process.run(); process.waitUntilExit()
+                if process.terminationStatus != 0 { return result(status: 1) }
+            }
             if action == "configure_wifi" {
                 try check(locked, "Mutation has no common remote lock")
                 try check(command.contains(cid) && command.contains(boot) && command.contains(VPNSettingsManager.helperHash), "Mutation not bound to target and pinned helper")
@@ -86,6 +101,28 @@ private final class Fixture {
             let status = try f.manager.request(["action": "status"])
             try check(status.actualSSID == "Guest 5G" && status.editableSSID == "Guest 5G" && status.initialPasswordMode == .preserve && status.settingsSupported == nil, "Legacy guest would be renamed")
             try check(VPNStatus().editableSSID == "ZTE-VPN" && VPNStatus().actualSSID.isEmpty, "Absent default pretends to be a live SSID")
+        }
+        try test("Previous .7 helper is accepted only for status, never mutation") {
+            let f = try Fixture()
+            f.remote.installedHelperHash = "3142fb503e64ddba79d523be3c87f0344d6efa78673e30a4b740714d8e9389ca"
+            let status = try f.manager.request(["action": "status"])
+            try check(status.installed, "Previous .7 status rejected before upgrade")
+            let before = try JSONSerialization.data(withJSONObject: f.remote.payload, options: .sortedKeys)
+            try rejects { _ = try f.manager.request(["action": "configure_wifi"]) }
+            try check(try JSONSerialization.data(withJSONObject: f.remote.payload, options: .sortedKeys) == before, "Legacy helper mutation reached the fixture")
+        }
+        try test("Previous public 1.20 helper is accepted only for status, never mutation") {
+            let f = try Fixture()
+            f.remote.installedHelperHash = "f620dab27f951c7de2de77a89376975b51c79f57f8a8a24cec95392c9c61eea4"
+            let status = try f.manager.request(["action": "status"])
+            try check(status.installed, "Previous .7 status rejected before upgrade")
+            let before = try JSONSerialization.data(withJSONObject: f.remote.payload, options: .sortedKeys)
+            try rejects { _ = try f.manager.request(["action": "configure_wifi"]) }
+            try check(try JSONSerialization.data(withJSONObject: f.remote.payload, options: .sortedKeys) == before, "Legacy helper mutation reached the fixture")
+        }
+        try test("Unknown helper remains rejected even for status") {
+            let f = try Fixture(); f.remote.installedHelperHash = String(repeating: "0", count: 64)
+            try rejects { _ = try f.manager.request(["action": "status"]) }
         }
         try test("SSID validation uses UTF8 bytes and rejects controls without shell interpolation") {
             try VPNWiFiConfiguration(ssid: String(repeating: "я", count: 16), passwordMode: .main).validate(configured: false)

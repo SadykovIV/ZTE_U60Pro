@@ -1,0 +1,18 @@
+[
+  {
+    "file": "gsma-rsp2-root-ci1.pem",
+    "subject": "GSM Association - RSP2 Root CI1",
+    "der_sha256": "5e3e91fd454327c3af5d32a7a73bbc59fe43aa7d85fd32d5db44423f80a56bb3",
+    "pem_sha256": "01374ed6bc89ffa446d9dd38d52a8280624c5add811ba9dee7bea0bdc14b26e9",
+    "source": "https://www.gsma.com/solutions-and-impact/technologies/internet-of-things/wp-content/uploads/2017/03/Symantec_GSMA_RSPv2-Root-CI1.txt",
+    "production": true
+  },
+  {
+    "file": "oiste-gsma-ci-g1.pem",
+    "subject": "OISTE GSMA CI G1",
+    "der_sha256": "9c9fa2e94602c260137122d9704d79993a6ef6d067ce0999ec2f4c109dd7a1a2",
+    "pem_sha256": "94fbb56b36263619cf85386d5f7e927f05de3deb15bc7275d167f0008428feef",
+    "source": "https://www.gsma.com/solutions-and-impact/technologies/esim/wp-content/uploads/2024/01/CERT_CI_SIG_OISTE.pem_.zip",
+    "production": true
+  }
+]

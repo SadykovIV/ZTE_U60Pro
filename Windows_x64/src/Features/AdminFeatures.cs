@@ -1,10 +1,15 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using ZteImeiStudio.Windows.Core;
 
 namespace ZteImeiStudio.Windows.Features;
 
-public sealed record AgentInstallationStatus(string Hash, bool Running, bool StartupReady, bool RecoveryPending, string? BackupHash);
+public sealed record AgentInstallationStatus(string Hash, bool Running, bool StartupReady, bool RecoveryPending, string? BackupHash)
+{
+    public string? Version => AgentPackage.VersionForHash(Hash);
+    public bool IsCurrent => Hash == AgentPackage.Sha256;
+}
 public sealed record ScreenLocalizationStatus(string State, string Language, int Mounted, bool BootEnabled, int Pid, string Revision);
 
 public sealed partial class DeviceFeatureService
@@ -41,14 +46,16 @@ public sealed partial class DeviceFeatureService
             var manager = await ResourceAsync("AgentInstallation", "manager.sh", ct);
             Check(Sha(manager) == AgentManagerHash, "Несовместимый установщик агента.");
             var files = new Dictionary<string, byte[]> { ["manager.sh"] = manager };
+            Dictionary<string, byte[]>? dashboardFiles = null;
             if (action == "install")
             {
                 var agent = await File.ReadAllBytesAsync(Path.Combine(_resourcesRoot, "Onboarding", "zte-agent"), ct);
-                Check(Sha(agent) == VpnAgentHash && agent.Length is >= 64 and <= 64 * 1024 * 1024 && agent.AsSpan(0, 6).SequenceEqual(new byte[] { 0x7f, 0x45, 0x4c, 0x46, 2, 1 }),
-                    "Встроенный агент повреждён или относится к другой архитектуре.");
+                AgentPackage.VerifyPayload(agent);
                 files.Add("agent.bin", agent);
+                dashboardFiles = await LoadBundledDashboardAsync(ct);
             }
             var stage = await StageAsync("zte-agent-stage", files, ct);
+            var remoteFinished = true;
             try
             {
                 var before = await AgentStatusAtStageAsync(stage, ct);
@@ -57,21 +64,61 @@ public sealed partial class DeviceFeatureService
                 if (action == "install")
                 {
                     Check(!before.RecoveryPending && before.Hash != "absent" && before.StartupReady, "Сначала выполните подготовку SSH/агента либо восстановите предыдущую версию.");
-                    if (before.Hash == VpnAgentHash && before.Running) return before;
-                    await RunAsync(Guard(identity, token) + "sh " + Quote(stage + "/manager.sh") + " install " + Quote(stage + "/agent.bin") + " " + Quote(VpnAgentHash), seconds: 120, ct: ct);
-                    var after = await AgentStatusAtStageAsync(stage, ct);
-                    Check(after.Hash == VpnAgentHash && after.Running && after.BackupHash == before.Hash && !after.RecoveryPending,
-                        "Установка агента не подтверждена; проверьте состояние восстановления.");
-                    return after;
+                    // The agent may already be current while its separately served UI is old.
+                    await InstallBundledDashboardAsync(identity, token, dashboardFiles!, ct,
+                        () => InstallAgentBinaryAtStageAsync(identity, token, stage, before, ct, finished => remoteFinished = finished));
+                    var final = await AgentStatusAtStageAsync(stage, ct);
+                    Check(final.IsCurrent && final.Running && !final.RecoveryPending,
+                        "Агент после установки веб-панели требует проверки.");
+                    return final;
                 }
                 Check(action == "restore" && before.BackupHash != null, "Проверенной копии предыдущего агента нет.");
-                await RunAsync(Guard(identity, token) + "sh " + Quote(stage + "/manager.sh") + " restore", seconds: 120, ct: ct);
+                remoteFinished = false;
+                var restore = await _shell.RunAsync(Guard(identity, token) + "sh " + Quote(stage + "/manager.sh") + " restore", timeout: TimeSpan.FromSeconds(120), ct: ct);
+                remoteFinished = KnownInstallerExit(restore.ExitCode);
+                Check(remoteFinished && restore.Success, InstallerFailure("agent_restore", restore));
                 var restored = await AgentStatusAtStageAsync(stage, ct);
                 Check(restored.Hash == before.BackupHash && restored.Running && !restored.RecoveryPending, "Восстановление агента не подтверждено.");
                 return restored;
             }
-            finally { await CleanupStageAsync(stage, files.Keys, CancellationToken.None); }
+            catch (Exception) when (!ct.IsCancellationRequested && !remoteFinished)
+            {
+                throw new DeviceFeatureException("Установка агента не подтверждена: transport_unknown. Файлы установки сохранены; обновите состояние перед повтором.");
+            }
+            finally { if (remoteFinished) await CleanupStageAsync(stage, files.Keys, CancellationToken.None); }
         }
+    }
+
+    // Used under the existing operation/device lock by VPN integration as well.
+    // It deliberately does not install a dashboard or acquire a second lock.
+    private async Task InstallBundledAgentBinaryAsync(DeviceIdentity identity, string token, byte[] agent, byte[] manager, CancellationToken ct)
+    {
+        var files = new Dictionary<string, byte[]> { ["manager.sh"] = manager, ["agent.bin"] = agent };
+        var stage = await StageAsync("zte-agent-stage", files, ct);
+        var cleanup = true;
+        try
+        {
+            var before = await AgentStatusAtStageAsync(stage, ct);
+            Check(!before.RecoveryPending && before.Hash != "absent" && before.StartupReady, "Сначала выполните подготовку SSH/агента либо восстановите предыдущую версию.");
+            await InstallAgentBinaryAtStageAsync(identity, token, stage, before, ct, finished => cleanup = finished);
+        }
+        catch (Exception) when (!ct.IsCancellationRequested && !cleanup)
+        {
+            throw new DeviceFeatureException("Установка агента не подтверждена: transport_unknown. Файлы установки сохранены; обновите состояние перед повтором.");
+        }
+        finally { if (cleanup) await CleanupStageAsync(stage, files.Keys, CancellationToken.None); }
+    }
+
+    private async Task InstallAgentBinaryAtStageAsync(DeviceIdentity identity, string token, string stage, AgentInstallationStatus before, CancellationToken ct, Action<bool>? completion = null)
+    {
+        if (before.IsCurrent && before.Running) return;
+        completion?.Invoke(false);
+        var result = await _shell.RunAsync(Guard(identity, token) + "sh " + Quote(stage + "/manager.sh") + " install " + Quote(stage + "/agent.bin") + " " + Quote(VpnAgentHash), timeout: TimeSpan.FromSeconds(120), ct: ct);
+        completion?.Invoke(KnownInstallerExit(result.ExitCode));
+        Check(KnownInstallerExit(result.ExitCode) && result.Success, InstallerFailure("agent_install", result));
+        var after = await AgentStatusAtStageAsync(stage, ct);
+        Check(after.IsCurrent && after.Running && after.BackupHash == before.Hash && !after.RecoveryPending,
+            "Установка агента не подтверждена; проверьте состояние восстановления.");
     }
 
     private async Task<AgentInstallationStatus> AgentStatusAtStageAsync(string stage, CancellationToken ct)

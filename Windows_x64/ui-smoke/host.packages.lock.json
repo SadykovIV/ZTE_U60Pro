@@ -34,6 +34,12 @@
           "Microsoft.Extensions.Logging.Abstractions": "8.0.3"
         }
       },
+      "ZXing.Net": {
+        "type": "Direct",
+        "requested": "[0.16.11, )",
+        "resolved": "0.16.11",
+        "contentHash": "OZfAVu88hl87BffQ+rlWCj/vLvAhhCK4QnFaoveeF/MY8SjHNSYBQ3qyUEWlPKNgBQGh1syXhCDg10vUnCsqkg=="
+      },
       "Avalonia": {
         "type": "Transitive",
         "resolved": "11.3.12",

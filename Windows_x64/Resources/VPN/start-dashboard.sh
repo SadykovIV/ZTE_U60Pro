@@ -1,11 +1,29 @@
 #!/bin/sh
+# All executable dashboard files live below one application-owned private root.
 set -eu
-sh /data/local/tmp/stop_open_u60_listener.sh dashboard-uhttpd 1F90
+umask 077
+runtime=/data/zte-dashboard-runtime
+for dir in /data "$runtime"; do
+    test -d "$dir" && test ! -L "$dir" || exit 1
+    test "$(stat -c %u "$dir")" = 0
+    mode=$(stat -c %a "$dir"); test "$((0$mode & 022))" = 0
+done
+test "$(stat -c %a "$runtime")" = 700
+for file in dashboard.log dashboard.pid; do
+    path=$runtime/$file
+    if [ -e "$path" ] || [ -L "$path" ]; then
+        test -f "$path" && test ! -L "$path" || exit 1
+        test "$(stat -c '%u:%h' "$path")" = 0:1
+        mode=$(stat -c %a "$path"); test "$((0$mode & 022))" = 0
+    else (umask 077; set -C; : > "$path"); fi
+done
+sh "$runtime/stop-owned-listener.sh" dashboard-uhttpd 1F90
 sleep 1
-docroot=/data/www
-if [ -L /data/www.current ]; then docroot=$(readlink -f /data/www.current); fi
+test -L "$runtime/current"
+docroot=$(readlink -f "$runtime/current")
+case "$docroot" in /data/www|/data/open-u60-dashboards/*|/data/zte-dashboard-runtime/dashboards/*) ;; *) exit 1;; esac
 test -d "$docroot"
-test -x /data/local/tmp/dashboard-html.sh
+test -x "$runtime/dashboard-html.sh"
 trap '' HUP
-nohup /data/bin/dashboard-uhttpd -f -h "$docroot" -p 0.0.0.0:8080 -D -i .html=/data/local/tmp/dashboard-html.sh >/tmp/dashboard-uhttpd.log 2>&1 </dev/null &
-echo $! > /var/run/dashboard-uhttpd.pid
+nohup "$runtime/dashboard-uhttpd" -f -h "$docroot" -p 0.0.0.0:8080 -D -i ".html=$runtime/dashboard-html.sh" >"$runtime/dashboard.log" 2>&1 </dev/null &
+echo $! > "$runtime/dashboard.pid"

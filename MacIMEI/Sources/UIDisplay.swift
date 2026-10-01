@@ -2,9 +2,11 @@ import SwiftUI
 import AppKit
 
 enum LauncherSection: String, CaseIterable, Identifiable {
-    case information, vpn
+    case information, vpn, esim
     var id: String { rawValue }
-    var title: String { self == .information ? "Информация о модеме" : "Управление VPN" }
+    var title: String {
+        switch self { case .information: return "Информация о модеме"; case .vpn: return "Управление VPN"; case .esim: return "eSIM" }
+    }
 }
 
 extension ContentView {
@@ -14,7 +16,7 @@ extension ContentView {
                 HStack(alignment: .top, spacing: 16) {
                     VStack(alignment: .leading, spacing: 7) {
                         Text(L10n.text("Плитки на экране модема")).font(.system(size: 18, weight: .semibold))
-                        Text(L10n.text("Две дополнительные страницы штатного лаунчера. Выберите страницу ниже, настройте её и проверьте предпросмотр."))
+                        Text(L10n.text("Отметьте дополнительные страницы и задайте их порядок. Home и Settings остаются на экране всегда."))
                             .font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -22,7 +24,7 @@ extension ContentView {
                     VStack(alignment: .trailing, spacing: 8) {
                         Button(L10n.text(displayInstallTitle), action: model.installDisplay)
                             .buttonStyle(StudioButtonStyle(prominent: true)).disabled(!canInstallDisplay)
-                            .help(L10n.text("Установить обе страницы лаунчера с выбранным оформлением информационной страницы"))
+                            .help(L10n.text("Установить страницы лаунчера с выбранным оформлением информационной страницы"))
                         Button(L10n.text("Проверить лаунчер"), action: model.refreshDisplay)
                             .buttonStyle(StudioButtonStyle()).disabled(!model.canManage)
                     }
@@ -32,6 +34,11 @@ extension ContentView {
                     Text(L10n.text(state.detail)).font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     if let warning = state.layoutWarning, !warning.isEmpty {
+                        Label(L10n.text(warning), systemImage: "exclamationmark.triangle")
+                            .font(.system(size: 11)).foregroundStyle(StudioStyle.warning)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let warning = state.pagesWarning, !warning.isEmpty {
                         Label(L10n.text(warning), systemImage: "exclamationmark.triangle")
                             .font(.system(size: 11)).foregroundStyle(StudioStyle.warning)
                             .fixedSize(horizontal: false, vertical: true)
@@ -47,12 +54,15 @@ extension ContentView {
             }
             if !model.displayError.isEmpty { StudioNote(symbol: "exclamationmark.triangle", text: model.displayError) }
             if !model.displayLayoutMessage.isEmpty { StudioNote(symbol: "info.circle", text: model.displayLayoutMessage) }
+            if !model.displayPagesMessage.isEmpty { StudioNote(symbol: "info.circle", text: model.displayPagesMessage) }
+            LauncherPagesEditor(model: model)
             Picker(L10n.text("Страница лаунчера"), selection: $launcherSection) {
                 ForEach(LauncherSection.allCases) { section in Text(L10n.text(section.title)).tag(section) }
             }.pickerStyle(.segmented)
             switch launcherSection {
             case .information: DisplayLayoutEditor(model: model)
             case .vpn: launcherVPNPage
+            case .esim: EsimLauncherCard(model: model)
             }
             StudioNote(symbol: "hand.draw", text: "Показатели прокручиваются вверх и вниз. Горизонтальный свайп переключает страницы лаунчера. Поддерживается проверенный дисплей B31, включая русификацию. Для B02 и других сборок нужна отдельная проверка совместимости.")
         }
@@ -137,6 +147,57 @@ extension ContentView {
         guard model.canManage, (1...ModemDisplayLayout.maximumEnabled).contains(model.displayLayout.enabledCount) else { return false }
         guard let state = model.displayInspection else { return true }
         return state.canInstall && !(state.state == .ready && state.running)
+    }
+}
+
+@MainActor
+private struct LauncherPagesEditor: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        StudioCard {
+            Text(L10n.text("Страницы и порядок")).font(.system(size: 17, weight: .semibold))
+            Text(L10n.text("Чекбоксы включают страницы. Стрелки меняют порядок выбранных страниц после Home и Settings."))
+                .font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            ForEach(model.displayPageRows) { page in
+                pageRow(page)
+            }
+            Divider().overlay(StudioStyle.line)
+            HStack(alignment: .center, spacing: 16) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(L10n.text(model.displaySavedPages == nil ? "Выбор подготовлен локально" : model.displayPagesChanged ? "Есть неприменённые изменения страниц" : "Выбор совпадает с сохранённым на модеме"))
+                        .font(.system(size: 12, weight: .medium))
+                    if let saved = model.displaySavedPages {
+                        Text(L10n.text("На модеме:") + " Home → Settings" + saved.pages.map { " → " + L10n.text($0.title) }.joined())
+                            .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary)
+                    }
+                    Text(L10n.text(model.displayPages.pages.isEmpty ? "Все дополнительные страницы отключены. Останутся только Home и Settings." : "Выбор и порядок сохраняются без перезапуска экрана. До первой установки используйте кнопку «Установить плитки»."))
+                        .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                Button(L10n.text("Применить страницы"), action: model.applyDisplayPages)
+                    .buttonStyle(StudioButtonStyle(prominent: true))
+                    .disabled(!model.canManage || model.displayInspection?.canApplyPages != true || !model.displayPagesChanged)
+            }
+        }
+    }
+
+    private func pageRow(_ page: ModemLauncherPage) -> some View {
+        let index = model.displayPages.pages.firstIndex(of: page)
+        return HStack(spacing: 10) {
+            Toggle(L10n.text(page.title), isOn: Binding(get: { model.displayPages.pages.contains(page) }, set: { model.setDisplayPage(page, enabled: $0) }))
+                .toggleStyle(.checkbox).disabled(model.busy)
+            Spacer()
+            if let index {
+                Text(String(index + 1)).font(.system(size: 11, weight: .medium)).foregroundStyle(StudioStyle.secondary)
+            }
+            Button { model.moveDisplayPage(page, by: -1) } label: { Image(systemName: "chevron.up") }
+                .help(L10n.text("Переместить выше")).disabled(model.busy || index == nil || index == 0)
+            Button { model.moveDisplayPage(page, by: 1) } label: { Image(systemName: "chevron.down") }
+                .help(L10n.text("Переместить ниже")).disabled(model.busy || index == nil || index == model.displayPages.pages.count - 1)
+        }.padding(.vertical, 5)
     }
 }
 

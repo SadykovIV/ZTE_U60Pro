@@ -34,6 +34,8 @@ pub struct DashboardCache {
 }
 
 pub struct AppState {
+    #[cfg(feature = "esim")]
+    pub esim_jobs: Arc<crate::esim::web::Jobs>,
     pub binding: Arc<crate::lan::Binding>,
     pub lan: Arc<crate::lan::LanManager>,
     pub auth: AuthState,
@@ -56,6 +58,8 @@ impl AppState {
             binding,
             lan,
             auth: AuthState::new(),
+            #[cfg(feature = "esim")]
+            esim_jobs: Arc::new(crate::esim::web::Jobs::default()),
             cpu: CpuTracker::new(),
             speed: SpeedTracker::new(),
             proc_tracker: ProcessTracker::new(),

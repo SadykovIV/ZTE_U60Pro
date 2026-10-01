@@ -220,7 +220,7 @@ private final class Fixture {
             for mode in [ConnectionMode.agent, .web] {
                 let selected = session(mode), sections = try selected.readDiagnosticSections()
                 try check(selected.diagnosticSession == nil && sections.count == 1 && sections[0].source == mode.rawValue && sections[0].name == "device-info.json", "False shell capability")
-                try rejects("Выполнить предварительную подготовку модема") { _ = try selected.requireSSH() }
+                try rejects("Выполнить подготовку") { _ = try selected.requireSSH() }
             }
             let large = ConnectionDeviceSummary(imei: imei, fields: ["model": String(repeating: "x", count: 1025)])
             let result = try ConnectionRouter(probes: [.agent: { _ in session(.agent, large) }]).select(mode: .agent)

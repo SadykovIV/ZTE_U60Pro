@@ -5,13 +5,14 @@ import { useAlerts } from './HomeContext'
 import { IGauge, IGlobe, IHome, ISim, ISignal, IX, IMoon, ISun } from '../icons'
 import { Spinner } from '../ui/primitives'
 
-export type Group = 'home' | 'signal' | 'network' | 'modem' | 'system'
+export type Group = 'home' | 'signal' | 'network' | 'modem' | 'esim' | 'system'
 
 export const NAV: { id: Group; label: string; icon: (p: { size?: number; className?: string }) => ReactNode }[] = [
   { id: 'home', label: 'Home', icon: (p) => <IHome {...p} /> },
   { id: 'signal', label: 'Signal', icon: (p) => <ISignal {...p} /> },
   { id: 'network', label: 'Network', icon: (p) => <IGlobe {...p} /> },
   { id: 'modem', label: 'Modem', icon: (p) => <ISim {...p} /> },
+  { id: 'esim', label: 'eSIM', icon: (p) => <ISim {...p} /> },
   { id: 'system', label: 'System', icon: (p) => <IGauge {...p} /> },
 ]
 
@@ -20,6 +21,7 @@ const GROUP_TITLES: Record<Group, string> = {
   signal: 'Signal',
   network: 'Network',
   modem: 'Modem',
+  esim: 'eSIM',
   system: 'System',
 }
 

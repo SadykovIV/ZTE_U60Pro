@@ -28,6 +28,13 @@ mod util;
 mod validate;
 mod wifi;
 mod vpn;
+#[cfg(feature = "esim")]
+mod esim;
+
+#[cfg(feature = "esim")]
+const AGENT_VERSION: &str = "2.7.0-esim.8";
+#[cfg(not(feature = "esim"))]
+const AGENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 use std::sync::Arc;
 
@@ -38,6 +45,11 @@ const DEFAULT_THREADS: usize = 4;
 const STARTUP_SCRIPT: &str = "/data/local/tmp/start_zte_agent.sh";
 
 fn main() {
+    #[cfg(feature = "esim")]
+    if let Some(code) = esim::early_entry() {
+        std::process::exit(code);
+    }
+
     let threads: usize = std::env::var("ZTE_AGENT_THREADS")
         .ok()
         .and_then(|s| s.parse().ok())

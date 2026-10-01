@@ -12,6 +12,7 @@ import SignalGroup from './features/signal/SignalGroup'
 import NetworkGroup from './features/network/NetworkGroup'
 import ModemGroup from './features/modem/ModemGroup'
 import SystemGroup from './features/system/SystemGroup'
+import EsimPage from './features/esim/EsimPage'
 
 export default function App() {
   const [authed, setAuthed] = useState(hasToken())
@@ -42,6 +43,7 @@ export default function App() {
           {group === 'signal' && <SignalGroup />}
           {group === 'network' && <NetworkGroup />}
           {group === 'modem' && <ModemGroup />}
+          {group === 'esim' && <EsimPage />}
           {group === 'system' && (
             <SystemGroup
               onLogout={() => {

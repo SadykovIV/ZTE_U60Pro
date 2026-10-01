@@ -131,10 +131,11 @@ export default function VpnTab() {
         </form>
       </Card>
       <Card title={t('Modem display')}>
-        <p className="text-[13px] text-ink2">{t('Swipe through four pages in the stock launcher: Home, Settings, About modem and VPN. Wake and unlock the display to see a page selected here.')}</p>
+        <p className="text-[13px] text-ink2">{t('Swipe through five pages in the stock launcher: Home, Settings, About modem, VPN and eSIM. Wake and unlock the display to see a page selected here.')}</p>
         <div className="mt-3 flex flex-wrap gap-2">
           <Button disabled={busy || !status.screen?.ready} onClick={() => void change({ action: 'screen_open', page: 'modem' })}>{t('Show modem information')}</Button>
           <Button disabled={busy || !status.screen?.ready} onClick={() => void change({ action: 'screen_open', page: 'vpn' })}>{t('Show VPN controls')}</Button>
+          <Button disabled={busy || !status.screen?.ready} onClick={() => void change({ action: 'screen_open', page: 'esim' })}>{t('Show eSIM controls')}</Button>
           {status.screen?.active && <Button disabled={busy} onClick={() => void change({ action: 'screen_close' })}>{t('Show home screen')}</Button>}
         </div>
         {status.screen?.last_error && <p className="mt-2 text-xs text-danger">{t('The launcher extension is unavailable. Reinstall the display component in ZTE IMEI Studio.')}</p>}

@@ -1,0 +1,68 @@
+import Foundation
+private func check(_ condition: @autoclosure () throws -> Bool, _ text: String) throws { if try !condition() { throw IMEIError.message("TEST: " + text) } }
+private final class IntegrationRemote: RemoteTransport {
+    var commands = [String](), uploaded = [String: Data]()
+    var preflightFails = false, invalidReceipt = false, lostAt = "", failedAt = "", installed = BundledAgent.sha256
+    let cid = String(repeating:"a",count:32), boot = "11111111-2222-3333-4444-555555555555"
+    func output(_ text: String = "", _ code: Int32 = 0) -> CommandResult { .init(status:code,stdout:Data(text.utf8),stderr:Data()) }
+    func run(_ command: String, input: Data?, timeout: TimeInterval) throws -> CommandResult {
+        commands.append(command)
+        if command.contains("mkdir /tmp/zte-imei-app.lock") || command.contains("&& rm /tmp/zte-imei-app.lock/owner") { return output() }
+        if command.hasPrefix("if test -e /data/zte-vpn") { return output("PRESENT") }
+        if command.hasPrefix("test -d /data/zte-vpn") { return output() }
+        if command.hasPrefix("for c in lua nft") { return output("AGENT:" + BundledAgent.sha256 + "\n") }
+        if command.hasPrefix("test -d /data/zte-launcher") { return output() }
+        if command == "sha256sum /data/zte-agent | awk '{print $1}'" { return output(installed) }
+        if command.hasPrefix("sha256sum /firmware/image/modem.b16") { return output(ModemEngine.firmwareHash + " /firmware/image/modem.b16\n" + ModemEngine.routerHash + " /usr/bin/diag-router\n" + cid + "\n" + boot) }
+        if command.hasPrefix("umask 077; mkdir ") || command.hasPrefix("rm -f ") { return output() }
+        if command.hasPrefix("umask 077; cat > "), let bytes = input {
+            let path = command.components(separatedBy:"'")[1]; uploaded[path] = bytes
+            return output(digest(bytes) + "  " + path)
+        }
+        if command.contains("/manager.sh' status") { return output("AGENT_SHA " + BundledAgent.sha256 + "\nAGENT_RUNNING yes\nAGENT_STARTUP yes\n") }
+        if command.hasPrefix("sh '/tmp/zte-vpn-agent-") {
+            let name = URL(fileURLWithPath:command.components(separatedBy:"'")[1]).lastPathComponent
+            if command.hasSuffix(" preflight") { return output(invalidReceipt ? "WRONG" : "VPN_AGENT_PREFLIGHT_OK",preflightFails ? 1 : 0) }
+            if name == lostAt { return output("",255) }
+            if name == failedAt { return output("",1) }
+            guard ["upgrade-controller.sh","update-agent.sh","install-launcher.sh"].contains(name) else { throw IMEIError.message("TEST: unexpected helper") }
+            return output(name == "update-agent.sh" ? "VPN_AGENT_UPDATED" : "")
+        }
+        throw IMEIError.message("TEST: unexpected command")
+    }
+}
+@main enum VPNIntegrationTests {
+    static func main() throws {
+        let fm = FileManager.default, resources = URL(fileURLWithPath:fm.currentDirectoryPath).appendingPathComponent("Resources")
+        let base = fm.temporaryDirectory.appendingPathComponent("vpn-integration-" + UUID().uuidString)
+        try secureDirectory(base); defer { try? fm.removeItem(at:base) }
+        func run(_ remote: IntegrationRemote, fresh: Bool = false) throws {
+            let engine = try ModemEngine(root:base.appendingPathComponent(UUID().uuidString),resources:resources,connection:Connection(host:"192.0.2.1",port:"2222",keyPath:"/fixture/key",knownHostsPath:"/fixture/hosts"),transport:remote)
+            try engine.locked {
+                try engine.acquireRemoteLock()
+                if fresh { _ = try VPNSettingsManager(engine:engine).install() }
+                else { _ = try VPNSettingsManager(engine:engine).updateDisplayIntegrationIfNeeded() }
+            }
+        }
+        func reject(_ remote: IntegrationRemote) throws { do { try run(remote) } catch { if error.localizedDescription.hasPrefix("TEST:") { throw error }; return }; throw IMEIError.message("TEST: expected refusal") }
+        func helper(_ r: IntegrationRemote,_ n:String) -> Int? { r.commands.firstIndex { $0.hasPrefix("sh '") && $0.contains("/"+n+"'") && !$0.hasSuffix(" preflight") } }
+        for badReceipt in [false,true] {
+            let r=IntegrationRemote();r.preflightFails = !badReceipt;r.invalidReceipt=badReceipt;try reject(r)
+            try check(!r.commands.contains { $0.contains("/manager.sh' status") } && helper(r,"upgrade-controller.sh") == nil,"Failed preflight followed by mutation")
+        }
+        let good=IntegrationRemote();try run(good)
+        let preflight=good.commands.firstIndex { $0.hasSuffix(" preflight") }!, agent=good.commands.firstIndex { $0.contains("/manager.sh' status") }!
+        try check(preflight < agent && agent < helper(good,"upgrade-controller.sh")! && helper(good,"upgrade-controller.sh")! < helper(good,"update-agent.sh")! && helper(good,"update-agent.sh")! < helper(good,"install-launcher.sh")!,"Wrong update ordering")
+        for unknown in [false,true] {
+            let r=IntegrationRemote();if unknown { r.lostAt="upgrade-controller.sh" } else { r.failedAt="update-agent.sh" };try reject(r)
+            let cleanup=r.commands.contains { $0.hasPrefix("rm -f ") && $0.contains("zte-vpn-agent-") }
+            try check(cleanup != unknown && helper(r,"install-launcher.sh") == nil,"Unknown process lost recovery tools or failed update continued")
+        }
+        let custom=IntegrationRemote();custom.installed=String(repeating:"0",count:64);try reject(custom);try check(custom.uploaded.isEmpty,"Unknown agent reached upload")
+        let fresh=IntegrationRemote();fresh.preflightFails=true
+        do { try run(fresh,fresh:true);throw IMEIError.message("TEST: fresh install accepted failed preflight") }
+        catch { if error.localizedDescription.hasPrefix("TEST:") { throw error } }
+        try check(fresh.commands.contains { $0.hasSuffix(" preflight") } && !fresh.commands.contains { $0.hasPrefix("sh '") && $0.contains("/install.sh'") },"Initial VPN install preceded failed preflight")
+        print("PASS 7 VPN integration scenarios: preflight, ordered agent/controller/panel, known failure cleanup, unknown retention, custom refusal, initial install preflight; fake SSH only")
+    }
+}

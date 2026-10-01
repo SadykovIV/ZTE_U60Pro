@@ -1,0 +1,3606 @@
+{
+  "schemaVersion": 1,
+  "revision": 5,
+  "profiles": [
+    {
+      "id": "b31",
+      "firmwareSHA256": "604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263",
+      "routerSHA256": "55c54f74aaa427940254a2f16c36771e675a80a002363e4f10b0dfcb604d9c6f",
+      "architecture": "aarch64"
+    },
+    {
+      "id": "b02-experimental",
+      "firmwareSHA256": "7f1905a2844337640c08b66edffbde147adf20b3ab3e1e54fefe4939c40e633e",
+      "routerSHA256": "55c54f74aaa427940254a2f16c36771e675a80a002363e4f10b0dfcb604d9c6f",
+      "architecture": "aarch64"
+    }
+  ],
+  "probes": [
+    {
+      "id": "identity",
+      "title": {
+        "ru": "Архитектура и права текущего канала",
+        "en": "Architecture and current channel privileges"
+      },
+      "category": "identity",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed id uname\nuid=$(id -u); arch=$(uname -m)\nfact uid \"$uid\"; fact architecture \"$arch\"\nif test \"$uid\" = 0; then fact root 1; else fact root 0; fi\nuname -s; uname -r; uname -v\nif test -r /proc/self/status; then\n count=0\n while IFS= read -r line; do\n  count=$((count+1)); test \"$count\" -le 128 || break\n  case \"$line\" in CapInh:*|CapPrm:*|CapEff:*|CapBnd:*|CapAmb:*|NoNewPrivs:*|Seccomp:*) printf '%s\\n' \"$line\";; esac\n done < /proc/self/status\nfi\nif test -r /sys/fs/selinux/enforce; then enforced=; IFS= read -r enforced < /sys/fs/selinux/enforce || :; case \"$enforced\" in 0|1) fact selinux_enforcing \"$enforced\";; *) fact selinux_enforcing unknown;; esac; else fact selinux_enforcing missing; fi\n",
+      "timeoutSeconds": 12,
+      "maxBytes": 32768
+    },
+    {
+      "id": "fingerprint",
+      "title": {
+        "ru": "Обезличенный отпечаток устройства и загрузки",
+        "en": "Pseudonymous device and boot fingerprint"
+      },
+      "category": "identity",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed sha256sum\nhash_fact() {\n if test -f \"$2\" && test -r \"$2\"; then\n  value=$(sha256sum \"$2\") || { printf 'FR_ERROR hash_failed=%s\\n' \"$2\" >&2; exit 1; }\n  set -- \"$1\" $value\n  fact \"$1\" \"$2\"\n else fact \"$1\" missing; fi\n}\n\nhash_fact cid_sha256 /sys/block/mmcblk0/device/cid\nhash_fact boot_sha256 /proc/sys/kernel/random/boot_id\n",
+      "timeoutSeconds": 12,
+      "maxBytes": 32768
+    },
+    {
+      "id": "firmware-hashes",
+      "title": {
+        "ru": "Хэши прошивки и DIAG router",
+        "en": "Firmware and DIAG router hashes"
+      },
+      "category": "identity",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed sha256sum\nhash_fact() {\n if test -f \"$2\" && test -r \"$2\"; then\n  value=$(sha256sum \"$2\") || { printf 'FR_ERROR hash_failed=%s\\n' \"$2\" >&2; exit 1; }\n  set -- \"$1\" $value\n  fact \"$1\" \"$2\"\n else fact \"$1\" missing; fi\n}\n\nhash_fact firmware_sha256 /firmware/image/modem.b16\nhash_fact router_sha256 /usr/bin/diag-router\n",
+      "timeoutSeconds": 20,
+      "maxBytes": 32768
+    },
+    {
+      "id": "release",
+      "title": {
+        "ru": "Версии системы и ABI пакетов",
+        "en": "System versions and package ABI"
+      },
+      "category": "identity",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed awk\nif test -r /etc/openwrt_release; then\n awk -F= '/^DISTRIB_(ID|RELEASE|REVISION|TARGET|ARCH)=/ {v=substr($0,index($0,\"=\")+1); gsub(/\\047|\"/,\"\",v); print $1 \"=\" v; if($1==\"DISTRIB_RELEASE\"){r=v}; if($1==\"DISTRIB_ARCH\"){a=v}} END {print \"FR_FACT openwrt_release=\" (r!=\"\"?r:\"missing\"); print \"FR_FACT package_arch=\" (a!=\"\"?a:\"missing\")}' /etc/openwrt_release\nelse fact openwrt_release missing; fact package_arch missing; fi\nif test -r /etc/os-release; then awk 'NR<=60 && /^(ID|VERSION_ID|VERSION|BUILD_ID|PRETTY_NAME)=/ {print}' /etc/os-release; fi\nif test -r /etc/build.prop; then awk 'NR<=500 && /^ro\\.build\\.(display\\.id|version\\.release|version\\.incremental)=/ {print}' /etc/build.prop; fi\n",
+      "timeoutSeconds": 12,
+      "maxBytes": 32768
+    },
+    {
+      "id": "busybox",
+      "title": {
+        "ru": "Состав BusyBox и необязательные команды",
+        "en": "BusyBox inventory and optional commands"
+      },
+      "category": "capabilities",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed busybox awk\noutput=$(busybox --list)\nprintf '%s\\n' \"$output\" | awk 'NR<=512 {print \"APPLET \" $0} END {print \"FR_FACT applet_count=\" NR}'\nfor wanted in flock timeout tar gzip stat readlink; do\n if printf '%s\\n' \"$output\" | awk -v a=\"$wanted\" '$0==a {found=1} END {exit !found}'; then fact \"applet_$wanted\" 1; else fact \"applet_$wanted\" 0; fi\ndone\n",
+      "timeoutSeconds": 12,
+      "maxBytes": 32768
+    },
+    {
+      "id": "tools-core",
+      "title": {
+        "ru": "Команды предварительной подготовки",
+        "en": "Preparation command availability"
+      },
+      "category": "capabilities",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nfor tool in sh sha256sum awk grep tr sed cut stat df chmod mkdir cp mv rm rmdir cat sync pidof readlink nohup logger ubus curl; do\n if command -v \"$tool\" >/dev/null 2>&1; then fact \"tool_$tool\" 1; else fact \"tool_$tool\" 0; printf 'FR_NOTICE absent_tool=%s\\n' \"$tool\" >&2; fi\ndone\n",
+      "timeoutSeconds": 12,
+      "maxBytes": 32768
+    },
+    {
+      "id": "tools-network",
+      "title": {
+        "ru": "Сетевые команды и средства диагностики",
+        "en": "Network commands and diagnostic tools"
+      },
+      "category": "capabilities",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nfor tool in lua uci nft iptables ip6tables iptables-save iptables-restore ebtables dnsmasq ip ubus tc conntrack ss netstat iw iwinfo flock timeout; do\n if command -v \"$tool\" >/dev/null 2>&1; then fact \"tool_$tool\" 1; else fact \"tool_$tool\" 0; printf 'FR_NOTICE absent_tool=%s\\n' \"$tool\" >&2; fi\ndone\n",
+      "timeoutSeconds": 12,
+      "maxBytes": 32768
+    },
+    {
+      "id": "tools-packages",
+      "title": {
+        "ru": "Команды установки и резервного копирования",
+        "en": "Installation and backup command availability"
+      },
+      "category": "capabilities",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nfor tool in chroot flock cp tar gzip find sha256sum stat awk sed readlink mknod sort cmp od df sync dd mkfifo wc du chpasswd cryptpw openssl; do\n if command -v \"$tool\" >/dev/null 2>&1; then fact \"tool_$tool\" 1; else fact \"tool_$tool\" 0; printf 'FR_NOTICE absent_tool=%s\\n' \"$tool\" >&2; fi\ndone\n",
+      "timeoutSeconds": 12,
+      "maxBytes": 32768
+    },
+    {
+      "id": "permissions",
+      "title": {
+        "ru": "Каталоги подготовки: права и доступность родителей",
+        "en": "Preparation directories: permissions and parents"
+      },
+      "category": "filesystem",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed stat\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  printf 'PATH %s ' \"$1\"\n  stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\"\n else printf 'PATH %s missing\\n' \"$1\"; fi\n}\npresent() { if test -e \"$2\" || test -L \"$2\"; then fact \"$1\" 1; else fact \"$1\" 0; fi; }\n\nsafe_dir() {\n test -d \"$1\" && test ! -L \"$1\" || return 1\n owner=$(stat -c %u \"$1\") || return 1; mode=$(stat -c %a \"$1\") || return 1\n test \"$owner\" = 0 || return 1\n case \"$mode\" in ''|*[!0-7]*) return 1;; esac\n test \"$((0$mode & 022))\" = 0\n}\ntmp_stage_parent_safe() {\n test -d \"$1\" && test ! -L \"$1\" || return 1\n owner=$(stat -c %u \"$1\") || return 1; mode=$(stat -c %a \"$1\") || return 1\n test \"$owner\" = 0 || return 1\n case \"$mode\" in ''|*[!0-7]*) return 1;; esac\n test -w \"$1\" || return 1\n # A root-owned sticky shared /tmp supports a fresh private 0700 stage.\n test \"$((0$mode & 022))\" = 0 || test \"$((0$mode & 01000))\" != 0\n}\nfor path in / /data /data/local /data/local/tmp /data/bin /data/dropbear /etc /etc/dropbear /tmp /var/run /etc/config /etc/init.d /etc/rc.d /etc/hotplug.d /etc/hotplug.d/iface; do meta \"$path\"; done\nfor name in data etc tmp; do if safe_dir \"/$name\"; then fact \"${name}_safe\" 1; else fact \"${name}_safe\" 0; fi; done\nparents_safe=1\nfor path in /data/local /data/local/tmp /data/bin /data/dropbear /etc/dropbear /data/local/tmp/zte-imei-installations; do\n if test -e \"$path\" || test -L \"$path\"; then if ! safe_dir \"$path\"; then parents_safe=0; fi; fi\ndone\nfact setup_parents_safe \"$parents_safe\"\nfor name in data etc; do if test -d \"/$name\" && test -w \"/$name\"; then fact \"${name}_writable\" 1; else fact \"${name}_writable\" 0; fi; done\nif test -d /var/run && test -w /var/run; then fact runtime_writable 1; else fact runtime_writable 0; fi\nif test -d /etc/config && test -r /etc/config; then fact config_readable 1; else fact config_readable 0; fi\npresent local_tmp_exists /data/local/tmp\nif tmp_stage_parent_safe /tmp; then fact tmp_private_stage_parent 1; else fact tmp_private_stage_parent 0; fi\ndashboard_safe=1\nfor path in /data/zte-dashboard-runtime /data/zte-dashboard-runtime/dashboards /data/zte-dashboard-runtime/installer; do\n meta \"$path\"\n if test -e \"$path\" || test -L \"$path\"; then\n  if test -d \"$path\" && test ! -L \"$path\" && test \"$(stat -c '%u:%a' \"$path\")\" = 0:700; then :; else dashboard_safe=0; fi\n fi\ndone\nfact dashboard_runtime_safe \"$dashboard_safe\"\n",
+      "timeoutSeconds": 12,
+      "maxBytes": 32768
+    },
+    {
+      "id": "mounts",
+      "title": {
+        "ru": "Монтирования: read-only, noexec, nosuid, ZTEDATA",
+        "en": "Mounts: read-only, noexec, nosuid, ZTEDATA"
+      },
+      "category": "filesystem",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed awk\nif test ! -r /proc/self/mountinfo; then printf 'FR_ERROR unreadable=/proc/self/mountinfo\\n' >&2; exit 1; fi\nawk 'NR<=256 {print} END {if(NR>256)print \"FR_NOTICE mount_inventory_truncated\"}' /proc/self/mountinfo\nfor item in dashboard_runtime:/data/zte-dashboard-runtime data:/data etc:/etc setup_tmp:/data/local/tmp data_bin:/data/bin data_dropbear:/data/dropbear etc_dropbear:/etc/dropbear ztedata:/usr/zte_web; do\n name=${item%%:*}; path=${item#*:}\n awk -v path=\"$path\" -v name=\"$name\" '$5==\"/\" || $5==path || index(path,$5\"/\")==1 {n=length($5); if(n>best){best=n;count=0;opts=$6;type=\"missing\";for(i=7;i<=NF;i++)if($i==\"-\")type=$(i+1)};if(n==best)count++} END {known=(count==1); rw=known && opts ~ /(^|,)rw(,|$)/; executable=known && opts !~ /(^|,)noexec(,|$)/; print \"FR_FACT \" name \"_mount_known=\" (known?1:0); print \"FR_FACT \" name \"_rw=\" (rw?1:0); print \"FR_FACT \" name \"_exec=\" (executable?1:0); print \"FR_FACT \" name \"_suid=\" (known && opts !~ /(^|,)nosuid(,|$)/?1:0); print \"FR_FACT \" name \"_install_mount=\" (rw && executable && (type==\"ext4\"||type==\"overlay\")?1:0); print \"FR_FACT \" name \"_fs=\" (known?type:\"unknown\")}' /proc/self/mountinfo\ndone\n",
+      "timeoutSeconds": 12,
+      "maxBytes": 65536
+    },
+    {
+      "id": "storage",
+      "title": {
+        "ru": "Свободное место и пороги установщиков",
+        "en": "Free space and installer thresholds"
+      },
+      "category": "filesystem",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed df awk\nfor name in data etc tmp; do\n if test ! -d \"/$name\"; then fact \"${name}_free_kib\" missing; for threshold in 2048 16384 32768 65536 131072; do fact \"${name}_free_${threshold}\" 0; done; continue; fi\n output=$(df -Pk \"/$name\")\n free=$(printf '%s\\n' \"$output\" | awk 'END{print $4}')\n case \"$free\" in ''|*[!0-9]*) printf 'FR_ERROR invalid_free_space=%s\\n' \"$name\" >&2; exit 1;; esac\n fact \"${name}_free_kib\" \"$free\"\n for threshold in 2048 16384 32768 65536 131072; do if test \"$free\" -ge \"$threshold\"; then fact \"${name}_free_${threshold}\" 1; else fact \"${name}_free_${threshold}\" 0; fi; done\ndone\n",
+      "timeoutSeconds": 12,
+      "maxBytes": 32768
+    },
+    {
+      "id": "runtime-libraries",
+      "title": {
+        "ru": "Загрузчики и библиотеки ABI: метаданные и хэши",
+        "en": "ABI loaders and libraries: metadata and hashes"
+      },
+      "category": "runtime",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed stat sha256sum\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  printf 'PATH %s ' \"$1\"\n  stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\"\n else printf 'PATH %s missing\\n' \"$1\"; fi\n}\npresent() { if test -e \"$2\" || test -L \"$2\"; then fact \"$1\" 1; else fact \"$1\" 0; fi; }\nhash_fact() {\n if test -f \"$2\" && test -r \"$2\"; then\n  value=$(sha256sum \"$2\") || { printf 'FR_ERROR hash_failed=%s\\n' \"$2\" >&2; exit 1; }\n  set -- \"$1\" $value\n  fact \"$1\" \"$2\"\n else fact \"$1\" missing; fi\n}\n\nfor path in /lib/ld-linux-aarch64.so.1 /lib/ld-musl-aarch64.so.1 /lib/libc.so /lib/libc.so.6 /usr/lib/libdiag.so.1 /usr/lib/libubus.so /usr/lib/libubox.so /usr/lib/libuci.so /usr/lib/liblua.so.5.1; do meta \"$path\"; done\nhash_fact libdiag_sha256 /usr/lib/libdiag.so.1\nif test -r /usr/lib/libdiag.so.1; then fact libdiag_readable 1; else fact libdiag_readable 0; fi\nif test -e /lib/ld-linux-aarch64.so.1 || test -e /lib/ld-musl-aarch64.so.1; then fact loader_present 1; else fact loader_present 0; fi\n",
+      "timeoutSeconds": 12,
+      "maxBytes": 32768
+    },
+    {
+      "id": "kernel-features",
+      "title": {
+        "ru": "Возможности ядра: модули, файловые системы, netfilter",
+        "en": "Kernel capabilities: modules, filesystems, netfilter"
+      },
+      "category": "kernel",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed awk\nfor file in /proc/filesystems /proc/modules /proc/net/ip_tables_names /proc/net/ip_tables_targets /proc/net/ip_tables_matches; do\n printf 'SOURCE %s\\n' \"$file\"\n if test -r \"$file\"; then awk 'NR<=256 {print} END {if(NR>256)print \"FR_NOTICE inventory_truncated\"}' \"$file\"; else printf 'FR_NOTICE unavailable=%s\\n' \"$file\" >&2; fi\ndone\nif test -r /proc/net/ip_tables_targets && awk '$0==\"TTL\"{f=1}END{exit !f}' /proc/net/ip_tables_targets; then fact ttl_target 1; else fact ttl_target 0; fi\nif test -c /dev/net/tun; then fact tun 1; else fact tun 0; fi\nif test -r /proc/filesystems && awk '$NF==\"ext4\"{f=1}END{exit !f}' /proc/filesystems; then fact ext4 1; else fact ext4 0; fi\n",
+      "timeoutSeconds": 12,
+      "maxBytes": 65536
+    },
+    {
+      "id": "partitions",
+      "title": {
+        "ru": "Разметка eMMC без чтения разделов",
+        "en": "eMMC layout without reading partitions"
+      },
+      "category": "storage",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed cat awk stat\ncount=0\nfor path in /sys/class/block/mmcblk0 /sys/class/block/mmcblk0boot0 /sys/class/block/mmcblk0boot1 /sys/class/block/mmcblk0p*; do\n test -d \"$path\" || continue\n count=$((count+1)); if test \"$count\" -gt 160; then printf 'FR_ERROR partition_limit\\n' >&2; exit 1; fi\n name=${path##*/}; printf 'BLOCK %s\\n' \"$name\"\n for field in dev size start partition ro force_ro queue/logical_block_size queue/physical_block_size; do\n  if test -r \"$path/$field\"; then value=$(cat \"$path/$field\"); case \"$value\" in ''|*[!0-9:]*) printf 'FR_ERROR malformed_block_metadata\\n' >&2; exit 1;; esac; printf '%s=%s\\n' \"$field\" \"$value\"; fi\n done\n if test -r \"$path/uevent\"; then awk '/^PARTNAME=[A-Za-z0-9_:-]+$/ {print}' \"$path/uevent\"; fi\n if test -b \"/dev/$name\"; then stat -c 'node_mode=%a node_uid=%u major=%t minor=%T' \"/dev/$name\"; fi\ndone\nfact block_count \"$count\"\nfor name in mmcblk0 mmcblk0boot0 mmcblk0boot1; do if test -b \"/dev/$name\" && test ! -L \"/dev/$name\" && test -r \"/dev/$name\" && test -r \"/sys/class/block/$name/size\"; then fact \"${name}_readable\" 1; else fact \"${name}_readable\" 0; fi; done\nlayout=1\nfor pair in mmcblk0p8:modemst1:8192 mmcblk0p9:modemst2:8192 mmcblk0p10:fsg:8192 mmcblk0p56:persist:16384; do\n dev=${pair%%:*}; rest=${pair#*:}; name=${rest%%:*}; size=${rest##*:}\n if test -b \"/dev/$dev\" && test ! -L \"/dev/$dev\" && test -r \"/sys/class/block/$dev/size\" && test -r \"/sys/class/block/$dev/uevent\"; then\n  actual=$(cat \"/sys/class/block/$dev/size\")\n  if test \"$actual\" != \"$size\" || ! awk -v name=\"$name\" '$0==\"PARTNAME=\" name{f=1}END{exit !f}' \"/sys/class/block/$dev/uevent\"; then layout=0; fi\n else layout=0; fi\ndone\nfact modem_partition_layout_b31 \"$layout\"\n",
+      "timeoutSeconds": 15,
+      "maxBytes": 65536
+    },
+    {
+      "id": "boot-protection",
+      "title": {
+        "ru": "Защита записи: только наличие интерфейсов",
+        "en": "Write protection: interface presence only"
+      },
+      "category": "storage",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed stat\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  printf 'PATH %s ' \"$1\"\n  stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\"\n else printf 'PATH %s missing\\n' \"$1\"; fi\n}\npresent() { if test -e \"$2\" || test -L \"$2\"; then fact \"$1\" 1; else fact \"$1\" 0; fi; }\n\n# NEVER read sensor_id or codec_id: vendor implements side effects on read.\nfor path in /proc/driver/sensor_id /proc/driver/codec_id /sys/class/block/mmcblk0boot0/force_ro /sys/class/block/mmcblk0boot1/force_ro; do meta \"$path\"; done\npresent vendor_unlock_interface /proc/driver/sensor_id\npresent vendor_relock_interface /proc/driver/codec_id\nfact restore_readiness not-assessed\nfact partition_contents_collected 0\n",
+      "timeoutSeconds": 12,
+      "maxBytes": 32768
+    },
+    {
+      "id": "usb",
+      "title": {
+        "ru": "USB и ADB: функции устройства без серийных номеров",
+        "en": "USB and ADB: device functions without serial numbers"
+      },
+      "category": "access",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed stat cat\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  printf 'PATH %s ' \"$1\"\n  stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\"\n else printf 'PATH %s missing\\n' \"$1\"; fi\n}\npresent() { if test -e \"$2\" || test -L \"$2\"; then fact \"$1\" 1; else fact \"$1\" 0; fi; }\n\nfor path in /usr/bin/adbd /sbin/adbd /data/bin/adbd /dev/android_adb /sys/class/android_usb/android0 /sys/kernel/config/usb_gadget; do meta \"$path\"; done\nfor field in enable state functions idVendor idProduct; do\n path=/sys/class/android_usb/android0/$field\n if test -r \"$path\"; then value=$(cat \"$path\"); printf 'USB %s=%s\\n' \"$field\" \"$value\"; fi\ndone\nif command -v adbd >/dev/null 2>&1 || test -x /sbin/adbd || test -x /usr/bin/adbd; then fact adbd_present 1; else fact adbd_present 0; fi\n",
+      "timeoutSeconds": 12,
+      "maxBytes": 32768
+    },
+    {
+      "id": "services",
+      "title": {
+        "ru": "Службы без аргументов процессов",
+        "en": "Services without process arguments"
+      },
+      "category": "access",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed pidof stat\nfor name in adbd dropbear sshd zte-agent uhttpd diag-router zte_topsw_devui netifd ubusd procd ipacm dnsmasq mihomo; do\n if pidof \"$name\" >/dev/null; then fact \"running_$name\" 1; else code=$?; if test \"$code\" != 1; then printf 'FR_ERROR pidof_failed=%s\\n' \"$name\" >&2; exit \"$code\"; fi; fact \"running_$name\" 0; fi\ndone\nfor path in /etc/init.d/zte_topsw_devui /etc/init.d/dropbear /etc/init.d/zte_vpn /etc/init.d/zte_launcher /etc/init.d/zte_imei_screen_ru /etc/init.d/network /etc/rc.local; do if test -e \"$path\" || test -L \"$path\"; then printf 'SERVICE %s ' \"$path\"; stat -c 'type=%F mode=%a uid=%u' \"$path\"; fi; done\n",
+      "timeoutSeconds": 12,
+      "maxBytes": 32768
+    },
+    {
+      "id": "listeners",
+      "title": {
+        "ru": "Порты управления без IP-адресов соединений",
+        "en": "Management ports without connection IP addresses"
+      },
+      "category": "access",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed awk\nif test ! -r /proc/net/tcp; then printf 'FR_ERROR unreadable=/proc/net/tcp\\n' >&2; exit 1; fi\nawk 'BEGIN{split(\"0016 0050 01bb 08ae 1f90 1f91 115c 15b3\",ports,\" \");for(i in ports)wanted[ports[i]]=1} NR>1 && $4==\"0A\" {split($2,a,\":\");p=tolower(a[2]);if(p in wanted)found[p]=1} END{for(i=1;i<=8;i++){p=ports[i];print \"FR_FACT tcp_listen_hex_\" p \"=\" (found[p]?1:0)}}' /proc/net/tcp\nif test -r /proc/net/tcp6; then awk 'NR>1 && $4==\"0A\" {n++}END{print \"FR_FACT ipv6_listener_count=\" n+0}' /proc/net/tcp6; else fact ipv6_listener_count missing; fi\n",
+      "timeoutSeconds": 12,
+      "maxBytes": 32768
+    },
+    {
+      "id": "ubus-inventory",
+      "title": {
+        "ru": "Ubus: объекты и сигнатуры методов, без вызовов",
+        "en": "Ubus objects and method signatures, no calls"
+      },
+      "category": "access",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed ubus awk\nobjects=$(ubus list)\nprintf '%s\\n' \"$objects\" | awk 'NR<=256 {print \"OBJECT \" $0}END{if(NR>256)print \"FR_NOTICE ubus_inventory_truncated\"}'\nfor object in zwrt_web zwrt_router network wireless system; do\n if printf '%s\\n' \"$objects\" | awk -v wanted=\"$object\" '$0==wanted{f=1}END{exit !f}'; then\n  fact \"object_$object\" 1\n  methods=$(ubus -v list \"$object\")\n  printf '%s\\n' \"$methods\" | awk 'NR<=160{print}END{if(NR>160)print \"FR_NOTICE method_inventory_truncated\"}'\n else fact \"object_$object\" 0; fi\ndone\n",
+      "timeoutSeconds": 15,
+      "maxBytes": 65536
+    },
+    {
+      "id": "diag-structure",
+      "title": {
+        "ru": "DIAG и NV/EFS: только структура и зависимости",
+        "en": "DIAG and NV/EFS: structure and dependencies only"
+      },
+      "category": "imei",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed stat\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  printf 'PATH %s ' \"$1\"\n  stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\"\n else printf 'PATH %s missing\\n' \"$1\"; fi\n}\npresent() { if test -e \"$2\" || test -L \"$2\"; then fact \"$1\" 1; else fact \"$1\" 0; fi; }\n\nfor path in /usr/bin/diag-router /usr/lib/libdiag.so.1 /dev/diag /dev/diag_tty /dev/at_mdm0 /dev/at_mdm1 /dev/at_usb0 /dev/smd7 /dev/smd11; do meta \"$path\"; done\nif test -x /usr/bin/diag-router && test -r /usr/lib/libdiag.so.1; then fact diag_dependencies 1; else fact diag_dependencies 0; fi\nfact nv550_pair_validated not-performed\nfact efs_config_validated not-performed\nfact linux_config_is_efs_config 0\n",
+      "timeoutSeconds": 12,
+      "maxBytes": 32768
+    },
+    {
+      "id": "ttl-runtime",
+      "title": {
+        "ru": "TTL: версия iptables и доступный target",
+        "en": "TTL: iptables version and available target"
+      },
+      "category": "network",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed iptables awk\nversion=$(iptables --version); printf '%s\\n' \"$version\"\ncase \"$version\" in *'v1.8.8 (legacy)'*) fact iptables_b31 1;; *) fact iptables_b31 0;; esac\nif test -r /proc/net/ip_tables_targets && awk '$0==\"TTL\"{f=1}END{exit !f}' /proc/net/ip_tables_targets; then fact ttl_target 1; else fact ttl_target 0; fi\nfor path in /etc/hotplug.d/iface /etc/config/firewall; do if test -e \"$path\" && test -w \"$path\"; then printf 'WRITABLE %s\\n' \"$path\"; else printf 'NOT_WRITABLE %s\\n' \"$path\"; fi; done\nif test -d /etc/hotplug.d/iface && test -w /etc/hotplug.d/iface; then fact hotplug_writable 1; else fact hotplug_writable 0; fi\n",
+      "timeoutSeconds": 12,
+      "maxBytes": 32768
+    },
+    {
+      "id": "ipa-runtime",
+      "title": {
+        "ru": "IPA: хэши ускорителя и безопасные флаги",
+        "en": "IPA: acceleration hashes and safe flags"
+      },
+      "category": "network",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed sha256sum uci\nhash_fact() {\n if test -f \"$2\" && test -r \"$2\"; then\n  value=$(sha256sum \"$2\") || { printf 'FR_ERROR hash_failed=%s\\n' \"$2\" >&2; exit 1; }\n  set -- \"$1\" $value\n  fact \"$1\" \"$2\"\n else fact \"$1\" missing; fi\n}\n\nhash_fact switch_sha256 /sbin/ipacm_switch.sh\nhash_fact ipacm_sha256 /usr/bin/ipacm\nfor key in zwrt_router.tmp_router.close_ipa_acce zwrt_router.other.ipa_disable; do\n if value=$(uci -q get \"$key\"); then case \"$value\" in 0|1) printf 'SETTING %s=%s\\n' \"$key\" \"$value\";; *) printf 'FR_ERROR unexpected_ipa_flag=%s\\n' \"$key\" >&2; exit 1;; esac\n else code=$?; printf 'FR_NOTICE unavailable_setting=%s exit=%s\\n' \"$key\" \"$code\" >&2; fi\ndone\n",
+      "timeoutSeconds": 12,
+      "maxBytes": 32768
+    },
+    {
+      "id": "vpn-runtime",
+      "title": {
+        "ru": "VPN: TUN, Lua UCI/JSON и версии сетевых команд",
+        "en": "VPN: TUN, Lua UCI/JSON and network command versions"
+      },
+      "category": "network",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed lua nft iptables ip6tables ebtables dnsmasq\nif test -c /dev/net/tun; then fact tun 1; else fact tun 0; fi\nlua -e 'for _,name in ipairs({\"uci\",\"luci.jsonc\"}) do local ok=pcall(require,name); print(\"FR_FACT lua_\"..name:gsub(\"%.\",\"_\")..\"=\"..(ok and \"1\" or \"0\")); if not ok then io.stderr:write(\"FR_NOTICE missing_lua_module=\"..name..\"\\n\") end end'\nnft --version; iptables --version; ip6tables --version; ebtables --version; dnsmasq --version\n",
+      "timeoutSeconds": 15,
+      "maxBytes": 32768
+    },
+    {
+      "id": "wifi-structure",
+      "title": {
+        "ru": "Guest Wi-Fi: типы разделов без SSID и паролей",
+        "en": "Guest Wi-Fi: section types without SSIDs or passwords"
+      },
+      "category": "network",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed uci\nfor name in main_2g main_5g guest_2g guest_5g; do\n if kind=$(uci -q get \"wireless.$name\"); then\n  case \"$kind\" in wifi-iface) fact \"${name}_iface\" 1;; *) fact \"${name}_iface\" 0; printf 'FR_NOTICE unexpected_section_type=%s\\n' \"$name\" >&2;; esac\n else code=$?; fact \"${name}_iface\" 0; printf 'FR_NOTICE unavailable_section=%s exit=%s\\n' \"$name\" \"$code\" >&2; fi\ndone\n",
+      "timeoutSeconds": 12,
+      "maxBytes": 32768
+    },
+    {
+      "id": "launcher-abi",
+      "title": {
+        "ru": "Launcher: ABI дисплея и хэш службы",
+        "en": "Launcher: display ABI and service hash"
+      },
+      "category": "display",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed stat sha256sum\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  printf 'PATH %s ' \"$1\"\n  stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\"\n else printf 'PATH %s missing\\n' \"$1\"; fi\n}\npresent() { if test -e \"$2\" || test -L \"$2\"; then fact \"$1\" 1; else fact \"$1\" 0; fi; }\nhash_fact() {\n if test -f \"$2\" && test -r \"$2\"; then\n  value=$(sha256sum \"$2\") || { printf 'FR_ERROR hash_failed=%s\\n' \"$2\" >&2; exit 1; }\n  set -- \"$1\" $value\n  fact \"$1\" \"$2\"\n else fact \"$1\" missing; fi\n}\n\nfor path in /usr/bin/zte_topsw_devui /etc/init.d/zte_topsw_devui /usr/ui /usr/lib/libMiniGUI.so /dev/fb0 /dev/input /data/zte-launcher /data/zte-launcher-trial /tmp/zte-vpn-screen; do meta \"$path\"; done\nhash_fact ui_sha256 /usr/bin/zte_topsw_devui\nhash_fact ui_service_sha256 /etc/init.d/zte_topsw_devui\nif test -x /usr/bin/zte_topsw_devui && test -f /etc/init.d/zte_topsw_devui; then fact ui_present 1; else fact ui_present 0; fi\nservice_known=0\nif test -f /etc/init.d/zte_topsw_devui && test -r /etc/init.d/zte_topsw_devui; then\n value=$(sha256sum /etc/init.d/zte_topsw_devui); set -- $value\n case \"$1\" in a30da6481637f1fd94e037373d406e574be7e722937a4965325086740be67e35|0a462f4021b1306ac5fbf074a674bae9fef952f240436a47468c0126c5d41b50) service_known=1;; esac\nfi\nfact service_hash_known \"$service_known\"\nui_known=0\nif test -f /usr/bin/zte_topsw_devui && test -r /usr/bin/zte_topsw_devui; then\n value=$(sha256sum /usr/bin/zte_topsw_devui); set -- $value\n case \"$1\" in e3914e78a8488cb736770f0ac9fb8ce10e0e5222fa50285f08e9e8be90d7f1e9|16eb92e27f54b5cf5c6b316a6e7a62b782053a2a609d0d4904a7f08a7bc0afa4) ui_known=1;; esac\nfi\nfact ui_hash_known \"$ui_known\"\n",
+      "timeoutSeconds": 12,
+      "maxBytes": 32768
+    },
+    {
+      "id": "screen-abi",
+      "title": {
+        "ru": "Русификация: хэши ресурсов и метаданные кэша",
+        "en": "Screen localization: resource hashes and cache metadata"
+      },
+      "category": "display",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed stat sha256sum\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  printf 'PATH %s ' \"$1\"\n  stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\"\n else printf 'PATH %s missing\\n' \"$1\"; fi\n}\npresent() { if test -e \"$2\" || test -L \"$2\"; then fact \"$1\" 1; else fact \"$1\" 0; fi; }\nhash_fact() {\n if test -f \"$2\" && test -r \"$2\"; then\n  value=$(sha256sum \"$2\") || { printf 'FR_ERROR hash_failed=%s\\n' \"$2\" >&2; exit 1; }\n  set -- \"$1\" $value\n  fact \"$1\" \"$2\"\n else fact \"$1\" missing; fi\n}\n\nfor path in /usr/ui/language /usr/ui/language/English.ini /usr/ui/language/Chinese.ini /cache /cache/language.txt /data/zte-imei-screen-ru; do meta \"$path\"; done\nhash_fact english_sha256 /usr/ui/language/English.ini\nhash_fact chinese_sha256 /usr/ui/language/Chinese.ini\nassets_known=1\nfor language in English Chinese; do\n path=/usr/ui/language/$language.ini\n if test -f \"$path\" && test ! -L \"$path\" && test -r \"$path\"; then\n  value=$(sha256sum \"$path\"); set -- $value\n  case \"$language:$1\" in English:47348faa9783bc69109743eb9cfcc3bd3888508040e9eca51cb4a6460b7a70ce|English:d97925e40f9c119e05dd692e8fbce36593b55aa3faf718af373b2cb57075981a|Chinese:b84c05af9046dd2458b2220633320fb0089e1000e03c45c3dc81dc72df0c44fc|Chinese:5c4b6e3896593172608f2d8890da56c7ff521667129375d0a52383243bb760df) ;; *) assets_known=0;; esac\n else assets_known=0; fi\ndone\nfact language_hashes_known \"$assets_known\"\nif test -f /cache/language.txt && test ! -L /cache/language.txt; then fact cache_regular 1; else fact cache_regular 0; fi\n",
+      "timeoutSeconds": 12,
+      "maxBytes": 32768
+    },
+    {
+      "id": "agent-layout",
+      "title": {
+        "ru": "Агент: метаданные, хэш и зависимости",
+        "en": "Agent: metadata, hash and dependencies"
+      },
+      "category": "access",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed stat sha256sum\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  printf 'PATH %s ' \"$1\"\n  stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\"\n else printf 'PATH %s missing\\n' \"$1\"; fi\n}\npresent() { if test -e \"$2\" || test -L \"$2\"; then fact \"$1\" 1; else fact \"$1\" 0; fi; }\nhash_fact() {\n if test -f \"$2\" && test -r \"$2\"; then\n  value=$(sha256sum \"$2\") || { printf 'FR_ERROR hash_failed=%s\\n' \"$2\" >&2; exit 1; }\n  set -- \"$1\" $value\n  fact \"$1\" \"$2\"\n else fact \"$1\" missing; fi\n}\n\nfor path in /data/zte-agent /data/local/tmp/start_zte_agent.sh /data/local/tmp/start_zte_imei_studio.sh /usr/bin/curl /var/run; do meta \"$path\"; done\nhash_fact agent_sha256 /data/zte-agent\nif test -f /usr/bin/curl && test ! -L /usr/bin/curl && test -x /usr/bin/curl; then fact curl_regular_executable 1; else fact curl_regular_executable 0; fi\nif test -x /data/zte-agent; then fact agent_installed 1; else fact agent_installed 0; fi\nif test -f /data/zte-agent && test ! -L /data/zte-agent && test -x /data/zte-agent && test \"$(stat -c %u /data/zte-agent)\" = 0 && test -f /data/local/tmp/start_zte_agent.sh && test ! -L /data/local/tmp/start_zte_agent.sh && test \"$(stat -c %u /data/local/tmp/start_zte_agent.sh)\" = 0 && sh -n /data/local/tmp/start_zte_agent.sh >/dev/null 2>&1; then fact agent_update_layout 1; else fact agent_update_layout 0; fi\n",
+      "timeoutSeconds": 12,
+      "maxBytes": 32768
+    },
+    {
+      "id": "ssh-layout",
+      "title": {
+        "ru": "SSH: метаданные каталогов без содержимого ключей",
+        "en": "SSH: directory metadata without key contents"
+      },
+      "category": "access",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed stat sh\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  printf 'PATH %s ' \"$1\"\n  stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\"\n else printf 'PATH %s missing\\n' \"$1\"; fi\n}\npresent() { if test -e \"$2\" || test -L \"$2\"; then fact \"$1\" 1; else fact \"$1\" 0; fi; }\n\nfor path in /data/bin/dropbear /data/dropbear /etc/dropbear /etc/ssh /data/local/tmp/start_dropbear.sh /etc/rc.local /data/zte-imei-admin /etc/zte-imei-admin; do meta \"$path\"; done\nif test -x /data/bin/dropbear; then fact management_dropbear_present 1; else fact management_dropbear_present 0; fi\nif test -f /etc/rc.local && test ! -L /etc/rc.local && test -w /etc/rc.local; then fact rc_local_writable 1; else fact rc_local_writable 0; fi\nif test -f /etc/rc.local && test -r /etc/rc.local; then if sh -n /etc/rc.local 2>/dev/null; then fact rc_local_syntax 1; else fact rc_local_syntax 0; printf 'FR_ERROR invalid_rc_local_syntax\\n' >&2; exit 1; fi; else fact rc_local_syntax 0; fi\n",
+      "timeoutSeconds": 12,
+      "maxBytes": 32768
+    },
+    {
+      "id": "account-databases",
+      "title": {
+        "ru": "SSH-учётные записи: только типы и права файлов",
+        "en": "SSH accounts: database types and permissions only"
+      },
+      "category": "access",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed stat\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  printf 'PATH %s ' \"$1\"\n  stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\"\n else printf 'PATH %s missing\\n' \"$1\"; fi\n}\npresent() { if test -e \"$2\" || test -L \"$2\"; then fact \"$1\" 1; else fact \"$1\" 0; fi; }\n\nregular=1\nfor path in /etc/passwd /etc/group /etc/shadow; do\n meta \"$path\"\n if test ! -f \"$path\" || test -L \"$path\"; then regular=0; continue; fi\n owner=$(stat -c %u \"$path\"); if test \"$owner\" != 0; then regular=0; fi\ndone\nfact account_databases_regular \"$regular\"\n",
+      "timeoutSeconds": 12,
+      "maxBytes": 32768
+    },
+    {
+      "id": "package-inventory",
+      "title": {
+        "ru": "Пакеты: только названия, версии и архитектура",
+        "en": "Packages: names, versions and architecture only"
+      },
+      "category": "applications",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed awk stat\nfor path in /usr/lib/opkg/status /data/zte-imei-apps/diagnostics /data/zte-imei-apps/opkg /data/zte-imei-apps/ssclash; do if test -e \"$path\"; then printf 'PATH %s ' \"$path\"; stat -c 'type=%F mode=%a uid=%u' \"$path\"; fi; done\nif test -f /usr/lib/opkg/status && test -r /usr/lib/opkg/status; then\n awk 'BEGIN{n=0} /^(Package|Version|Architecture|Status): / {if(++n>1600){print \"FR_NOTICE package_inventory_truncated\";exit};print}' /usr/lib/opkg/status\n fact stock_package_database 1\nelse fact stock_package_database 0; fi\n",
+      "timeoutSeconds": 12,
+      "maxBytes": 131072
+    },
+    {
+      "id": "opkg-layout",
+      "title": {
+        "ru": "Адаптер opkg: структура без запуска менеджера",
+        "en": "opkg adapter: structure without manager execution"
+      },
+      "category": "applications",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed stat\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  printf 'PATH %s ' \"$1\"\n  stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\"\n else printf 'PATH %s missing\\n' \"$1\"; fi\n}\npresent() { if test -e \"$2\" || test -L \"$2\"; then fact \"$1\" 1; else fact \"$1\" 0; fi; }\n\nfor path in /data/zte-imei-apps /data/zte-imei-apps/opkg /data/zte-imei-apps/opkg/opkg /data/zte-imei-apps/opkg/active /data/zte-imei-apps/opkg/releases /data/zte-imei-apps/opkg/runners; do meta \"$path\"; done\npresent private_opkg_present /data/zte-imei-apps/opkg/opkg\nfact adapter_status_executed 0\n",
+      "timeoutSeconds": 12,
+      "maxBytes": 32768
+    },
+    {
+      "id": "backup-layout",
+      "title": {
+        "ru": "Резервное копирование: доступность источников без чтения",
+        "en": "Backups: source availability without content reads"
+      },
+      "category": "backup",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed stat\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  printf 'PATH %s ' \"$1\"\n  stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\"\n else printf 'PATH %s missing\\n' \"$1\"; fi\n}\npresent() { if test -e \"$2\" || test -L \"$2\"; then fact \"$1\" 1; else fact \"$1\" 0; fi; }\n\nfor path in /data /etc/config /etc/rc.local /data/zte-vpn/profiles /data/zte-vpn/config.json /data/zte-imei-ttl /data/zte-imei-screen-ru /data/zte-imei-admin; do meta \"$path\"; done\nif test -d /data && test -r /data; then fact data_readable 1; else fact data_readable 0; fi\nif test -d /etc/config && test -r /etc/config && test -f /etc/rc.local; then fact config_sources_present 1; else fact config_sources_present 0; fi\nfact backup_consistency_validated not-performed\nfact secret_contents_collected 0\n",
+      "timeoutSeconds": 12,
+      "maxBytes": 32768
+    },
+    {
+      "id": "pending-operations",
+      "title": {
+        "ru": "Незавершённые операции и обновление прошивки",
+        "en": "Pending operations and firmware update markers"
+      },
+      "category": "safety",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed stat\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  printf 'PATH %s ' \"$1\"\n  stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\"\n else printf 'PATH %s missing\\n' \"$1\"; fi\n}\npresent() { if test -e \"$2\" || test -L \"$2\"; then fact \"$1\" 1; else fact \"$1\" 0; fi; }\n\nclear=1\nfor path in /data/zte-dashboard-runtime/installer/lock /data/local/tmp/zte-imei-installations/active /data/local/tmp/zte-imei-installations/lock /data/local/tmp/open-u60-transactions/active /tmp/fota_install_processing /tmp/zte-imei-app.lock /tmp/zte-system-backup-helper.lock /data/zte-vpn/transaction /data/zte-vpn/controller-upgrade /data/zte-launcher-update /data/zte-imei-admin/active /data/zte-imei-screen-ru/.transaction /data/zte-imei-ttl/.transaction; do\n if test -e \"$path\" || test -L \"$path\"; then clear=0; meta \"$path\"; fi\ndone\nfact no_pending_operations \"$clear\"\n",
+      "timeoutSeconds": 12,
+      "maxBytes": 32768
+    },
+    {
+      "id": "system-resources",
+      "title": {
+        "ru": "CPU, память и температуры без идентификаторов",
+        "en": "CPU, memory and temperatures without identifiers"
+      },
+      "category": "runtime",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed awk cat\nfor file in /proc/meminfo /proc/loadavg /proc/uptime; do if test -r \"$file\"; then printf 'SOURCE %s\\n' \"$file\"; awk 'NR<=64{print}' \"$file\"; fi; done\nif test -r /proc/cpuinfo; then awk '/^(processor|BogoMIPS|Features|CPU implementer|CPU architecture|CPU variant|CPU part|CPU revision)[[:space:]]*:/ && NR<=1000 {print}' /proc/cpuinfo; fi\ncount=0\nfor path in /sys/class/thermal/thermal_zone*; do\n test -d \"$path\" || continue; count=$((count+1)); test \"$count\" -le 32 || break\n for field in type temp; do if test -r \"$path/$field\"; then value=$(cat \"$path/$field\"); printf 'THERMAL %s %s=%s\\n' \"${path##*/}\" \"$field\" \"$value\"; fi; done\ndone\nfact thermal_zone_count \"$count\"\n",
+      "timeoutSeconds": 12,
+      "maxBytes": 32768
+    },
+    {
+      "id": "kernel-health",
+      "title": {
+        "ru": "Ядро: счётчики I/O и ext4 ошибок без текста журнала",
+        "en": "Kernel: I/O and ext4 error counters without log text"
+      },
+      "category": "health",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed dmesg awk\noutput=$(dmesg)\nprintf '%s\\n' \"$output\" | awk '{s=tolower($0);if(s~/i\\/o error|buffer i\\/o/)io++;if(s~/ext4.*(error|warning|abort)/)ext++;if(s~/read-only file system|remounting filesystem read-only/)ro++;if(s~/out of memory|killed process/)oom++;if(s~/mmc.*(error|timeout)/)mmc++} END{print \"FR_FACT io_error_lines=\" io+0;print \"FR_FACT ext4_error_lines=\" ext+0;print \"FR_FACT readonly_error_lines=\" ro+0;print \"FR_FACT oom_lines=\" oom+0;print \"FR_FACT mmc_error_lines=\" mmc+0;print \"FR_FACT kernel_log_lines=\" NR}'\n",
+      "timeoutSeconds": 15,
+      "maxBytes": 32768
+    },
+    {
+      "id": "service-health",
+      "title": {
+        "ru": "Последние 200 строк системного журнала: только счётчики",
+        "en": "Latest 200 system log lines: counters only"
+      },
+      "category": "health",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed logread awk\noutput=$(logread -l 200)\nprintf '%s\\n' \"$output\" | awk '{s=tolower($0);if(s~/dropbear|sshd/)ssh++;if(s~/adbd|android.*usb/)adb++;if(s~/zte-agent/)agent++;if(s~/diag-router/)diag++;if(s~/error|failed|denied|refused/)errors++}END{print \"FR_FACT sampled_lines=\" NR;print \"FR_FACT ssh_lines=\" ssh+0;print \"FR_FACT adb_lines=\" adb+0;print \"FR_FACT agent_lines=\" agent+0;print \"FR_FACT diag_lines=\" diag+0;print \"FR_FACT error_lines=\" errors+0}'\n",
+      "timeoutSeconds": 15,
+      "maxBytes": 32768
+    },
+    {
+      "id": "network-structure",
+      "title": {
+        "ru": "Сетевые интерфейсы, мосты и число маршрутов без адресов",
+        "en": "Interfaces, bridges and route counts without addresses"
+      },
+      "category": "network",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed cat awk readlink\ncount=0\nfor path in /sys/class/net/*; do\n test -d \"$path\" || continue; count=$((count+1)); if test \"$count\" -gt 64; then printf 'FR_ERROR interface_limit\\n' >&2; exit 1; fi\n name=${path##*/}; case \"$name\" in ''|*[!a-zA-Z0-9_.:-]*) printf 'FR_ERROR invalid_interface_name\\n' >&2; exit 1;; esac\n printf 'INTERFACE %s\\n' \"$name\"\n for field in type mtu operstate; do\n  if test -r \"$path/$field\"; then value=$(cat \"$path/$field\"); printf '%s=%s\\n' \"$field\" \"$value\"; fi\n done\n if test -L \"$path/master\"; then target=$(readlink \"$path/master\"); printf 'master=%s\\n' \"${target##*/}\"; fi\ndone\nfact interface_count \"$count\"\nfor name in br-lan wlan1 wlan3; do if test -d \"/sys/class/net/$name\"; then fact \"interface_$name\" 1; else fact \"interface_$name\" 0; fi; done\nif test -r /proc/net/route; then\n awk 'NR>1{n++;seen[$1]++;if($2==\"00000000\")defaults++}END{print \"FR_FACT ipv4_route_count=\" n+0;print \"FR_FACT ipv4_default_route_count=\" defaults+0;for(i in seen)print \"ROUTE_INTERFACE \" i \" count=\" seen[i]}' /proc/net/route\nelse fact ipv4_route_count missing; fact ipv4_default_route_count missing; fi\nif test -r /proc/net/ipv6_route; then awk 'END{print \"FR_FACT ipv6_route_count=\" NR}' /proc/net/ipv6_route; else fact ipv6_route_count missing; fi\n",
+      "timeoutSeconds": 12,
+      "maxBytes": 32768
+    },
+    {
+      "id": "esim-components",
+      "title": {
+        "ru": "eSIM: компоненты и схема API без обращения к карте",
+        "en": "eSIM: components and API schema without card access"
+      },
+      "category": "capabilities",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() { printf 'FR_FACT %s=%s\\n' \"$1\" \"$2\"; }\nfor tool in stat sha256sum awk ubus; do command -v \"$tool\" >/dev/null 2>&1 || { printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; }; done\ncomponent() {\n key=$1; path=$2\n if test ! -f \"$path\" || test -L \"$path\" || test ! -r \"$path\"; then fact \"${key}_sha256\" missing; return; fi\n bytes=$(stat -c %s \"$path\")\n case \"$bytes\" in ''|*[!0-9]*) exit 1;; esac\n if test \"$bytes\" -gt 67108864; then fact \"${key}_sha256\" not-assessed; return; fi\n value=$(sha256sum \"$path\"); set -- $value\n fact \"${key}_sha256\" \"$1\"\n}\ncomponent esim_mdm /usr/bin/zte_topsw_mdm\ncomponent esim_sdk /usr/lib/libzte_SDKowrt.so\ncomponent esim_qcril /usr/bin/qcrilNrd\ncomponent esim_installed_agent /data/zte-agent\nif methods=$(ubus -t 5 -v list zwrt_zte_mdm.api 2>/dev/null); then\n if test \"${#methods}\" -gt 262144; then printf 'FR_ERROR schema_limit\\n' >&2; exit 1; fi\n for method in zte_get_current_slot_info get_sim_info zwrt_zte_mdm_activate_sim zwrt_mdm_change_provision_session; do\n  if printf '%s\\n' \"$methods\" | awk -v name=\"$method\" 'index($0,\"\\\"\" name \"\\\":\"){found=1;print \"METHOD \" $0}END{exit !found}'; then fact \"esim_method_$method\" 1; else fact \"esim_method_$method\" 0; fi\n done\nelse fact esim_method_inventory unknown; fi\nif command -v strings >/dev/null 2>&1 && test -f /usr/lib/libzte_SDKowrt.so && test ! -L /usr/lib/libzte_SDKowrt.so && test -r /usr/lib/libzte_SDKowrt.so; then\n bytes=$(stat -c %s /usr/lib/libzte_SDKowrt.so)\n case \"$bytes\" in ''|*[!0-9]*) exit 1;; esac\n if test \"$bytes\" -le 16777216; then\n  strings /usr/lib/libzte_SDKowrt.so | awk '$0==\"ZTD_GetCurrentSimSlot\" || $0==\"ZTD_SetCurrentSimSlot\" || $0==\"ZTD_SetActiveSimSlot\" {if(!seen[$0]++)print \"SDK_SYMBOL \" $0}'\n else fact esim_sdk_symbols not-assessed; fi\nelse fact esim_sdk_symbols unknown; fi\nfact physical_euicc_management not-assessed\nfact native_isdr_access not-assessed\n",
+      "timeoutSeconds": 25,
+      "maxBytes": 32768
+    }
+  ],
+  "features": [
+    {
+      "id": "preparation",
+      "title": {
+        "ru": "Предварительная подготовка через WEB/ADB",
+        "en": "Initial WEB/ADB preparation"
+      },
+      "profiles": [
+        "b31",
+        "b02-experimental"
+      ],
+      "requirements": [
+        {
+          "probe": "identity",
+          "fact": "root",
+          "equals": "1",
+          "label": {
+            "ru": "Права root в выбранном канале",
+            "en": "Root privileges on the selected channel"
+          }
+        },
+        {
+          "probe": "identity",
+          "fact": "architecture",
+          "equals": "aarch64",
+          "label": {
+            "ru": "Архитектура ARM64",
+            "en": "ARM64 architecture"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "data_safe",
+          "equals": "1",
+          "label": {
+            "ru": "Безопасный каталог /data",
+            "en": "Safe /data directory"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "etc_safe",
+          "equals": "1",
+          "label": {
+            "ru": "Безопасный каталог /etc",
+            "en": "Safe /etc directory"
+          }
+        },
+        {
+          "probe": "pending-operations",
+          "fact": "no_pending_operations",
+          "equals": "1",
+          "label": {
+            "ru": "Нет обнаруженных незавершённых операций",
+            "en": "No detected pending operations"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "setup_parents_safe",
+          "equals": "1",
+          "label": {
+            "ru": "Безопасные существующие родители /data/local/tmp",
+            "en": "Safe existing /data/local/tmp parents"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "data_writable",
+          "equals": "1",
+          "label": {
+            "ru": "Доступен /data",
+            "en": "Writable /data"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "etc_writable",
+          "equals": "1",
+          "label": {
+            "ru": "Доступен /etc",
+            "en": "Writable /etc"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "runtime_writable",
+          "equals": "1",
+          "label": {
+            "ru": "Доступен /var/run",
+            "en": "Writable /var/run"
+          }
+        },
+        {
+          "probe": "agent-layout",
+          "fact": "curl_regular_executable",
+          "equals": "1",
+          "label": {
+            "ru": "Штатный curl пригоден к запуску",
+            "en": "Stock curl is executable"
+          }
+        },
+        {
+          "probe": "ssh-layout",
+          "fact": "rc_local_writable",
+          "equals": "1",
+          "label": {
+            "ru": "Обычный файл /etc/rc.local доступен для записи",
+            "en": "Regular /etc/rc.local is writable"
+          }
+        },
+        {
+          "probe": "ssh-layout",
+          "fact": "rc_local_syntax",
+          "equals": "1",
+          "label": {
+            "ru": "Корректный синтаксис rc.local",
+            "en": "Valid rc.local shell syntax"
+          }
+        },
+        {
+          "probe": "storage",
+          "fact": "data_free_16384",
+          "equals": "1",
+          "label": {
+            "ru": "Не менее 16 МиБ свободно в /data",
+            "en": "At least 16 MiB free on /data"
+          }
+        },
+        {
+          "probe": "storage",
+          "fact": "etc_free_2048",
+          "equals": "1",
+          "label": {
+            "ru": "Не менее 2 МиБ свободно в /etc",
+            "en": "At least 2 MiB free on /etc"
+          }
+        },
+        {
+          "probe": "mounts",
+          "fact": "setup_tmp_install_mount",
+          "equals": "1",
+          "label": {
+            "ru": "Монтирование /data/local/tmp поддерживает установку",
+            "en": "Installation mount supports /data/local/tmp"
+          }
+        },
+        {
+          "probe": "mounts",
+          "fact": "data_bin_install_mount",
+          "equals": "1",
+          "label": {
+            "ru": "Монтирование /data/bin поддерживает установку",
+            "en": "Installation mount supports /data/bin"
+          }
+        },
+        {
+          "probe": "mounts",
+          "fact": "data_dropbear_install_mount",
+          "equals": "1",
+          "label": {
+            "ru": "Монтирование /data/dropbear поддерживает установку",
+            "en": "Installation mount supports /data/dropbear"
+          }
+        },
+        {
+          "probe": "mounts",
+          "fact": "etc_dropbear_install_mount",
+          "equals": "1",
+          "label": {
+            "ru": "Монтирование /etc/dropbear поддерживает установку",
+            "en": "Installation mount supports /etc/dropbear"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_sh",
+          "equals": "1",
+          "label": {
+            "ru": "Команда sh",
+            "en": "Command sh"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_sha256sum",
+          "equals": "1",
+          "label": {
+            "ru": "Команда sha256sum",
+            "en": "Command sha256sum"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_awk",
+          "equals": "1",
+          "label": {
+            "ru": "Команда awk",
+            "en": "Command awk"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_grep",
+          "equals": "1",
+          "label": {
+            "ru": "Команда grep",
+            "en": "Command grep"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_tr",
+          "equals": "1",
+          "label": {
+            "ru": "Команда tr",
+            "en": "Command tr"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_sed",
+          "equals": "1",
+          "label": {
+            "ru": "Команда sed",
+            "en": "Command sed"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_cut",
+          "equals": "1",
+          "label": {
+            "ru": "Команда cut",
+            "en": "Command cut"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_stat",
+          "equals": "1",
+          "label": {
+            "ru": "Команда stat",
+            "en": "Command stat"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_df",
+          "equals": "1",
+          "label": {
+            "ru": "Команда df",
+            "en": "Command df"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_chmod",
+          "equals": "1",
+          "label": {
+            "ru": "Команда chmod",
+            "en": "Command chmod"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_mkdir",
+          "equals": "1",
+          "label": {
+            "ru": "Команда mkdir",
+            "en": "Command mkdir"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_cp",
+          "equals": "1",
+          "label": {
+            "ru": "Команда cp",
+            "en": "Command cp"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_mv",
+          "equals": "1",
+          "label": {
+            "ru": "Команда mv",
+            "en": "Command mv"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_rm",
+          "equals": "1",
+          "label": {
+            "ru": "Команда rm",
+            "en": "Command rm"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_rmdir",
+          "equals": "1",
+          "label": {
+            "ru": "Команда rmdir",
+            "en": "Command rmdir"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_cat",
+          "equals": "1",
+          "label": {
+            "ru": "Команда cat",
+            "en": "Command cat"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_sync",
+          "equals": "1",
+          "label": {
+            "ru": "Команда sync",
+            "en": "Command sync"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_pidof",
+          "equals": "1",
+          "label": {
+            "ru": "Команда pidof",
+            "en": "Command pidof"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_readlink",
+          "equals": "1",
+          "label": {
+            "ru": "Команда readlink",
+            "en": "Command readlink"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_nohup",
+          "equals": "1",
+          "label": {
+            "ru": "Команда nohup",
+            "en": "Command nohup"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_logger",
+          "equals": "1",
+          "label": {
+            "ru": "Команда logger",
+            "en": "Command logger"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_ubus",
+          "equals": "1",
+          "label": {
+            "ru": "Команда ubus",
+            "en": "Command ubus"
+          }
+        }
+      ],
+      "limitations": {
+        "ru": "Проверяется только доступная файловая структура. Включение ADB через WEB, пароль и перенос файлов не выполняются. B02 остаётся экспериментальным профилем; отсутствие /data/local/tmp показано отдельно и само по себе не блокирует создание родителей.",
+        "en": "Only accessible filesystem prerequisites are surveyed. WEB activation of ADB, credentials and file transfer are not exercised. B02 remains experimental; missing /data/local/tmp is reported separately and does not by itself block parent creation."
+      }
+    },
+    {
+      "id": "agent",
+      "title": {
+        "ru": "Обновление агента и веб-панели",
+        "en": "Agent and dashboard update"
+      },
+      "profiles": [
+        "b31",
+        "b02-experimental"
+      ],
+      "requirements": [
+        {
+          "probe": "identity",
+          "fact": "root",
+          "equals": "1",
+          "label": {
+            "ru": "Права root в выбранном канале",
+            "en": "Root privileges on the selected channel"
+          }
+        },
+        {
+          "probe": "identity",
+          "fact": "architecture",
+          "equals": "aarch64",
+          "label": {
+            "ru": "Архитектура ARM64",
+            "en": "ARM64 architecture"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "data_safe",
+          "equals": "1",
+          "label": {
+            "ru": "Безопасный каталог /data",
+            "en": "Safe /data directory"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "etc_safe",
+          "equals": "1",
+          "label": {
+            "ru": "Безопасный каталог /etc",
+            "en": "Safe /etc directory"
+          }
+        },
+        {
+          "probe": "pending-operations",
+          "fact": "no_pending_operations",
+          "equals": "1",
+          "label": {
+            "ru": "Нет обнаруженных незавершённых операций",
+            "en": "No detected pending operations"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "data_writable",
+          "equals": "1",
+          "label": {
+            "ru": "Доступен /data",
+            "en": "Writable /data"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "etc_writable",
+          "equals": "1",
+          "label": {
+            "ru": "Доступен /etc",
+            "en": "Writable /etc"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "runtime_writable",
+          "equals": "1",
+          "label": {
+            "ru": "Доступен /var/run",
+            "en": "Writable /var/run"
+          }
+        },
+        {
+          "probe": "agent-layout",
+          "fact": "curl_regular_executable",
+          "equals": "1",
+          "label": {
+            "ru": "Штатный curl пригоден к запуску",
+            "en": "Stock curl is executable"
+          }
+        },
+        {
+          "probe": "ssh-layout",
+          "fact": "rc_local_writable",
+          "equals": "1",
+          "label": {
+            "ru": "Обычный файл /etc/rc.local доступен для записи",
+            "en": "Regular /etc/rc.local is writable"
+          }
+        },
+        {
+          "probe": "ssh-layout",
+          "fact": "rc_local_syntax",
+          "equals": "1",
+          "label": {
+            "ru": "Корректный синтаксис rc.local",
+            "en": "Valid rc.local shell syntax"
+          }
+        },
+        {
+          "probe": "storage",
+          "fact": "data_free_16384",
+          "equals": "1",
+          "label": {
+            "ru": "Не менее 16 МиБ свободно в /data",
+            "en": "At least 16 MiB free on /data"
+          }
+        },
+        {
+          "probe": "storage",
+          "fact": "etc_free_2048",
+          "equals": "1",
+          "label": {
+            "ru": "Не менее 2 МиБ свободно в /etc",
+            "en": "At least 2 MiB free on /etc"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_sh",
+          "equals": "1",
+          "label": {
+            "ru": "Команда sh",
+            "en": "Command sh"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_sha256sum",
+          "equals": "1",
+          "label": {
+            "ru": "Команда sha256sum",
+            "en": "Command sha256sum"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_awk",
+          "equals": "1",
+          "label": {
+            "ru": "Команда awk",
+            "en": "Command awk"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_grep",
+          "equals": "1",
+          "label": {
+            "ru": "Команда grep",
+            "en": "Command grep"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_tr",
+          "equals": "1",
+          "label": {
+            "ru": "Команда tr",
+            "en": "Command tr"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_sed",
+          "equals": "1",
+          "label": {
+            "ru": "Команда sed",
+            "en": "Command sed"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_cut",
+          "equals": "1",
+          "label": {
+            "ru": "Команда cut",
+            "en": "Command cut"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_stat",
+          "equals": "1",
+          "label": {
+            "ru": "Команда stat",
+            "en": "Command stat"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_df",
+          "equals": "1",
+          "label": {
+            "ru": "Команда df",
+            "en": "Command df"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_chmod",
+          "equals": "1",
+          "label": {
+            "ru": "Команда chmod",
+            "en": "Command chmod"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_mkdir",
+          "equals": "1",
+          "label": {
+            "ru": "Команда mkdir",
+            "en": "Command mkdir"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_cp",
+          "equals": "1",
+          "label": {
+            "ru": "Команда cp",
+            "en": "Command cp"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_mv",
+          "equals": "1",
+          "label": {
+            "ru": "Команда mv",
+            "en": "Command mv"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_rm",
+          "equals": "1",
+          "label": {
+            "ru": "Команда rm",
+            "en": "Command rm"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_rmdir",
+          "equals": "1",
+          "label": {
+            "ru": "Команда rmdir",
+            "en": "Command rmdir"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_cat",
+          "equals": "1",
+          "label": {
+            "ru": "Команда cat",
+            "en": "Command cat"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_sync",
+          "equals": "1",
+          "label": {
+            "ru": "Команда sync",
+            "en": "Command sync"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_pidof",
+          "equals": "1",
+          "label": {
+            "ru": "Команда pidof",
+            "en": "Command pidof"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_readlink",
+          "equals": "1",
+          "label": {
+            "ru": "Команда readlink",
+            "en": "Command readlink"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_nohup",
+          "equals": "1",
+          "label": {
+            "ru": "Команда nohup",
+            "en": "Command nohup"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_logger",
+          "equals": "1",
+          "label": {
+            "ru": "Команда logger",
+            "en": "Command logger"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_ubus",
+          "equals": "1",
+          "label": {
+            "ru": "Команда ubus",
+            "en": "Command ubus"
+          }
+        },
+        {
+          "probe": "ubus-inventory",
+          "fact": "object_zwrt_web",
+          "equals": "1",
+          "label": {
+            "ru": "Доступен объект zwrt_web",
+            "en": "zwrt_web object available"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "dashboard_runtime_safe",
+          "equals": "1",
+          "label": {
+            "ru": "Приватные каталоги веб-панели",
+            "en": "Private dashboard directories"
+          }
+        },
+        {
+          "probe": "mounts",
+          "fact": "dashboard_runtime_install_mount",
+          "equals": "1",
+          "label": {
+            "ru": "Монтирование нового каталога веб-панели поддерживает запуск",
+            "en": "New dashboard mount permits execution"
+          }
+        },
+        {
+          "probe": "agent-layout",
+          "fact": "agent_update_layout",
+          "equals": "1",
+          "label": {
+            "ru": "Существующий агент и сценарий запуска пригодны к обновлению",
+            "en": "Existing agent and startup script support update"
+          }
+        }
+      ],
+      "limitations": {
+        "ru": "Проверяются условия обновления уже подготовленного агента и панели в отдельном /data/zte-dashboard-runtime. Первичная подготовка WEB/ADB показана отдельно. Пароль не читается; службы не запускаются; точные payload/процессы проверяет установщик до изменений.",
+        "en": "Surveys updates of an already prepared agent and dashboard under private /data/zte-dashboard-runtime. Initial WEB/ADB preparation is separate. No password is read and no service starts; the installer checks exact payloads and processes before changes."
+      }
+    },
+    {
+      "id": "ssh",
+      "title": {
+        "ru": "Установка служебного SSH",
+        "en": "Management SSH installation"
+      },
+      "profiles": [
+        "b31",
+        "b02-experimental"
+      ],
+      "requirements": [
+        {
+          "probe": "identity",
+          "fact": "root",
+          "equals": "1",
+          "label": {
+            "ru": "Права root в выбранном канале",
+            "en": "Root privileges on the selected channel"
+          }
+        },
+        {
+          "probe": "identity",
+          "fact": "architecture",
+          "equals": "aarch64",
+          "label": {
+            "ru": "Архитектура ARM64",
+            "en": "ARM64 architecture"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "data_safe",
+          "equals": "1",
+          "label": {
+            "ru": "Безопасный каталог /data",
+            "en": "Safe /data directory"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "etc_safe",
+          "equals": "1",
+          "label": {
+            "ru": "Безопасный каталог /etc",
+            "en": "Safe /etc directory"
+          }
+        },
+        {
+          "probe": "pending-operations",
+          "fact": "no_pending_operations",
+          "equals": "1",
+          "label": {
+            "ru": "Нет обнаруженных незавершённых операций",
+            "en": "No detected pending operations"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "setup_parents_safe",
+          "equals": "1",
+          "label": {
+            "ru": "Безопасные существующие родители /data/local/tmp",
+            "en": "Safe existing /data/local/tmp parents"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "data_writable",
+          "equals": "1",
+          "label": {
+            "ru": "Доступен /data",
+            "en": "Writable /data"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "etc_writable",
+          "equals": "1",
+          "label": {
+            "ru": "Доступен /etc",
+            "en": "Writable /etc"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "runtime_writable",
+          "equals": "1",
+          "label": {
+            "ru": "Доступен /var/run",
+            "en": "Writable /var/run"
+          }
+        },
+        {
+          "probe": "agent-layout",
+          "fact": "curl_regular_executable",
+          "equals": "1",
+          "label": {
+            "ru": "Штатный curl пригоден к запуску",
+            "en": "Stock curl is executable"
+          }
+        },
+        {
+          "probe": "ssh-layout",
+          "fact": "rc_local_writable",
+          "equals": "1",
+          "label": {
+            "ru": "Обычный файл /etc/rc.local доступен для записи",
+            "en": "Regular /etc/rc.local is writable"
+          }
+        },
+        {
+          "probe": "ssh-layout",
+          "fact": "rc_local_syntax",
+          "equals": "1",
+          "label": {
+            "ru": "Корректный синтаксис rc.local",
+            "en": "Valid rc.local shell syntax"
+          }
+        },
+        {
+          "probe": "storage",
+          "fact": "data_free_16384",
+          "equals": "1",
+          "label": {
+            "ru": "Не менее 16 МиБ свободно в /data",
+            "en": "At least 16 MiB free on /data"
+          }
+        },
+        {
+          "probe": "storage",
+          "fact": "etc_free_2048",
+          "equals": "1",
+          "label": {
+            "ru": "Не менее 2 МиБ свободно в /etc",
+            "en": "At least 2 MiB free on /etc"
+          }
+        },
+        {
+          "probe": "mounts",
+          "fact": "setup_tmp_install_mount",
+          "equals": "1",
+          "label": {
+            "ru": "Монтирование /data/local/tmp поддерживает установку",
+            "en": "Installation mount supports /data/local/tmp"
+          }
+        },
+        {
+          "probe": "mounts",
+          "fact": "data_bin_install_mount",
+          "equals": "1",
+          "label": {
+            "ru": "Монтирование /data/bin поддерживает установку",
+            "en": "Installation mount supports /data/bin"
+          }
+        },
+        {
+          "probe": "mounts",
+          "fact": "data_dropbear_install_mount",
+          "equals": "1",
+          "label": {
+            "ru": "Монтирование /data/dropbear поддерживает установку",
+            "en": "Installation mount supports /data/dropbear"
+          }
+        },
+        {
+          "probe": "mounts",
+          "fact": "etc_dropbear_install_mount",
+          "equals": "1",
+          "label": {
+            "ru": "Монтирование /etc/dropbear поддерживает установку",
+            "en": "Installation mount supports /etc/dropbear"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_sh",
+          "equals": "1",
+          "label": {
+            "ru": "Команда sh",
+            "en": "Command sh"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_sha256sum",
+          "equals": "1",
+          "label": {
+            "ru": "Команда sha256sum",
+            "en": "Command sha256sum"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_awk",
+          "equals": "1",
+          "label": {
+            "ru": "Команда awk",
+            "en": "Command awk"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_grep",
+          "equals": "1",
+          "label": {
+            "ru": "Команда grep",
+            "en": "Command grep"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_tr",
+          "equals": "1",
+          "label": {
+            "ru": "Команда tr",
+            "en": "Command tr"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_sed",
+          "equals": "1",
+          "label": {
+            "ru": "Команда sed",
+            "en": "Command sed"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_cut",
+          "equals": "1",
+          "label": {
+            "ru": "Команда cut",
+            "en": "Command cut"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_stat",
+          "equals": "1",
+          "label": {
+            "ru": "Команда stat",
+            "en": "Command stat"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_df",
+          "equals": "1",
+          "label": {
+            "ru": "Команда df",
+            "en": "Command df"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_chmod",
+          "equals": "1",
+          "label": {
+            "ru": "Команда chmod",
+            "en": "Command chmod"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_mkdir",
+          "equals": "1",
+          "label": {
+            "ru": "Команда mkdir",
+            "en": "Command mkdir"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_cp",
+          "equals": "1",
+          "label": {
+            "ru": "Команда cp",
+            "en": "Command cp"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_mv",
+          "equals": "1",
+          "label": {
+            "ru": "Команда mv",
+            "en": "Command mv"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_rm",
+          "equals": "1",
+          "label": {
+            "ru": "Команда rm",
+            "en": "Command rm"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_rmdir",
+          "equals": "1",
+          "label": {
+            "ru": "Команда rmdir",
+            "en": "Command rmdir"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_cat",
+          "equals": "1",
+          "label": {
+            "ru": "Команда cat",
+            "en": "Command cat"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_sync",
+          "equals": "1",
+          "label": {
+            "ru": "Команда sync",
+            "en": "Command sync"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_pidof",
+          "equals": "1",
+          "label": {
+            "ru": "Команда pidof",
+            "en": "Command pidof"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_readlink",
+          "equals": "1",
+          "label": {
+            "ru": "Команда readlink",
+            "en": "Command readlink"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_nohup",
+          "equals": "1",
+          "label": {
+            "ru": "Команда nohup",
+            "en": "Command nohup"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_logger",
+          "equals": "1",
+          "label": {
+            "ru": "Команда logger",
+            "en": "Command logger"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_ubus",
+          "equals": "1",
+          "label": {
+            "ru": "Команда ubus",
+            "en": "Command ubus"
+          }
+        }
+      ],
+      "limitations": {
+        "ru": "Проверяется возможность подготовки SSH. Авторизация, доверие ключу сервера, занятый нестандартный порт и запуск нового сервера проверяются отдельной процедурой подключения.",
+        "en": "Surveys SSH preparation prerequisites. Authentication, host-key trust, custom port conflicts and server startup are checked by the connection workflow."
+      }
+    },
+    {
+      "id": "ssh-accounts",
+      "title": {
+        "ru": "SSH: создание и удаление учётных записей",
+        "en": "SSH account creation and removal"
+      },
+      "profiles": [
+        "b31"
+      ],
+      "requirements": [
+        {
+          "probe": "identity",
+          "fact": "root",
+          "equals": "1",
+          "label": {
+            "ru": "Права root в выбранном канале",
+            "en": "Root privileges on the selected channel"
+          }
+        },
+        {
+          "probe": "identity",
+          "fact": "architecture",
+          "equals": "aarch64",
+          "label": {
+            "ru": "Архитектура ARM64",
+            "en": "ARM64 architecture"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "data_safe",
+          "equals": "1",
+          "label": {
+            "ru": "Безопасный каталог /data",
+            "en": "Safe /data directory"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "etc_safe",
+          "equals": "1",
+          "label": {
+            "ru": "Безопасный каталог /etc",
+            "en": "Safe /etc directory"
+          }
+        },
+        {
+          "probe": "pending-operations",
+          "fact": "no_pending_operations",
+          "equals": "1",
+          "label": {
+            "ru": "Нет обнаруженных незавершённых операций",
+            "en": "No detected pending operations"
+          }
+        },
+        {
+          "probe": "mounts",
+          "fact": "data_install_mount",
+          "equals": "1",
+          "label": {
+            "ru": "/data доступен rw/exec на ext4 или overlay",
+            "en": "/data is rw/exec on ext4 or overlay"
+          }
+        },
+        {
+          "probe": "mounts",
+          "fact": "data_suid",
+          "equals": "1",
+          "label": {
+            "ru": "/data не смонтирован nosuid",
+            "en": "/data is not mounted nosuid"
+          }
+        },
+        {
+          "probe": "account-databases",
+          "fact": "account_databases_regular",
+          "equals": "1",
+          "label": {
+            "ru": "Файлы учётных записей обычные и принадлежат root",
+            "en": "Account databases are regular root-owned files"
+          }
+        },
+        {
+          "probe": "ssh-layout",
+          "fact": "rc_local_syntax",
+          "equals": "1",
+          "label": {
+            "ru": "Корректный синтаксис rc.local",
+            "en": "Valid rc.local syntax"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_flock",
+          "equals": "1",
+          "label": {
+            "ru": "Команда flock",
+            "en": "Command flock"
+          }
+        }
+      ],
+      "limitations": {
+        "ru": "Содержимое passwd/shadow, пароли, приватные ключи и список пользователей не читаются. Конфликты UID, владельцы конкретной учётной записи и активные сеансы проверяются перед операцией.",
+        "en": "Does not read passwd/shadow contents, passwords, private keys or user lists. UID conflicts, individual account ownership and active sessions are checked before a mutation."
+      }
+    },
+    {
+      "id": "imei",
+      "title": {
+        "ru": "IMEI: DIAG, NV550 и EFS /config",
+        "en": "IMEI: DIAG, NV550 and EFS /config"
+      },
+      "profiles": [
+        "b31"
+      ],
+      "requirements": [
+        {
+          "probe": "identity",
+          "fact": "root",
+          "equals": "1",
+          "label": {
+            "ru": "Права root в выбранном канале",
+            "en": "Root privileges on the selected channel"
+          }
+        },
+        {
+          "probe": "identity",
+          "fact": "architecture",
+          "equals": "aarch64",
+          "label": {
+            "ru": "Архитектура ARM64",
+            "en": "ARM64 architecture"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "data_safe",
+          "equals": "1",
+          "label": {
+            "ru": "Безопасный каталог /data",
+            "en": "Safe /data directory"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "etc_safe",
+          "equals": "1",
+          "label": {
+            "ru": "Безопасный каталог /etc",
+            "en": "Safe /etc directory"
+          }
+        },
+        {
+          "probe": "pending-operations",
+          "fact": "no_pending_operations",
+          "equals": "1",
+          "label": {
+            "ru": "Нет обнаруженных незавершённых операций",
+            "en": "No detected pending operations"
+          }
+        },
+        {
+          "probe": "mounts",
+          "fact": "data_install_mount",
+          "equals": "1",
+          "label": {
+            "ru": "/data доступен rw/exec на ext4 или overlay",
+            "en": "/data is rw/exec on ext4 or overlay"
+          }
+        },
+        {
+          "probe": "diag-structure",
+          "fact": "diag_dependencies",
+          "equals": "1",
+          "label": {
+            "ru": "Доступны DIAG router и libdiag",
+            "en": "DIAG router and libdiag available"
+          }
+        }
+      ],
+      "limitations": {
+        "ru": "Совпадение профиля и библиотек НЕ подтверждает запись IMEI. Исследование не открывает DIAG, не читает NV550 и EFS /config. Пара NV, длина и структура /config, API двух слотов и резервная копия проверяются штатной процедурой перед записью. Linux /config не является EFS /config.",
+        "en": "Matching hashes and libraries does NOT validate IMEI writes. Research does not open DIAG or read NV550/EFS /config. The normal operation validates the NV pair, /config length/structure, two-slot API and backup before writing. Linux /config is not EFS /config."
+      }
+    },
+    {
+      "id": "ttl",
+      "title": {
+        "ru": "TTL: правила IPv4 и ускорение IPA",
+        "en": "TTL: IPv4 rules and IPA acceleration"
+      },
+      "profiles": [
+        "b31"
+      ],
+      "requirements": [
+        {
+          "probe": "identity",
+          "fact": "root",
+          "equals": "1",
+          "label": {
+            "ru": "Права root в выбранном канале",
+            "en": "Root privileges on the selected channel"
+          }
+        },
+        {
+          "probe": "identity",
+          "fact": "architecture",
+          "equals": "aarch64",
+          "label": {
+            "ru": "Архитектура ARM64",
+            "en": "ARM64 architecture"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "data_safe",
+          "equals": "1",
+          "label": {
+            "ru": "Безопасный каталог /data",
+            "en": "Safe /data directory"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "etc_safe",
+          "equals": "1",
+          "label": {
+            "ru": "Безопасный каталог /etc",
+            "en": "Safe /etc directory"
+          }
+        },
+        {
+          "probe": "pending-operations",
+          "fact": "no_pending_operations",
+          "equals": "1",
+          "label": {
+            "ru": "Нет обнаруженных незавершённых операций",
+            "en": "No detected pending operations"
+          }
+        },
+        {
+          "probe": "ttl-runtime",
+          "fact": "iptables_b31",
+          "equals": "1",
+          "label": {
+            "ru": "iptables 1.8.8 legacy",
+            "en": "iptables 1.8.8 legacy"
+          }
+        },
+        {
+          "probe": "ttl-runtime",
+          "fact": "ttl_target",
+          "equals": "1",
+          "label": {
+            "ru": "Ядро уже предоставляет target TTL",
+            "en": "Kernel already exposes TTL target"
+          }
+        },
+        {
+          "probe": "ttl-runtime",
+          "fact": "hotplug_writable",
+          "equals": "1",
+          "label": {
+            "ru": "Доступен каталог hotplug iface",
+            "en": "Writable hotplug iface directory"
+          }
+        },
+        {
+          "probe": "ipa-runtime",
+          "fact": "switch_sha256",
+          "equals": "8947eee9c554453dc8eeb77df933cd12899f447c8c03df3505c57c7b526d22b9",
+          "label": {
+            "ru": "Проверенный IPA switch",
+            "en": "Pinned IPA switch"
+          }
+        },
+        {
+          "probe": "ipa-runtime",
+          "fact": "ipacm_sha256",
+          "equals": "95385816da7b2edb9a977cee328c091753463fcd4a70a67fa1676e8b335c11c0",
+          "label": {
+            "ru": "Проверенный ipacm",
+            "en": "Pinned ipacm"
+          }
+        },
+        {
+          "probe": "tools-network",
+          "fact": "tool_uci",
+          "equals": "1",
+          "label": {
+            "ru": "Команда uci",
+            "en": "Command uci"
+          }
+        },
+        {
+          "probe": "tools-network",
+          "fact": "tool_iptables_save",
+          "equals": "1",
+          "label": {
+            "ru": "Команда iptables-save",
+            "en": "Command iptables-save"
+          }
+        },
+        {
+          "probe": "tools-network",
+          "fact": "tool_iptables_restore",
+          "equals": "1",
+          "label": {
+            "ru": "Команда iptables-restore",
+            "en": "Command iptables-restore"
+          }
+        },
+        {
+          "probe": "tools-network",
+          "fact": "tool_flock",
+          "equals": "1",
+          "label": {
+            "ru": "Команда flock",
+            "en": "Command flock"
+          }
+        }
+      ],
+      "limitations": {
+        "ru": "Правила не создаются, модули не загружаются, ускорение не переключается. Наличие target TTL не доказывает прохождение реального трафика через netfilter; это требует отдельного испытания потока.",
+        "en": "Does not create rules, load modules or switch acceleration. TTL target presence does not prove real traffic traverses netfilter; a separate flow test is required."
+      }
+    },
+    {
+      "id": "vpn",
+      "title": {
+        "ru": "Установка VPN и Guest Wi-Fi",
+        "en": "VPN installation and Guest Wi-Fi"
+      },
+      "profiles": [
+        "b31"
+      ],
+      "requirements": [
+        {
+          "probe": "identity",
+          "fact": "root",
+          "equals": "1",
+          "label": {
+            "ru": "Права root в выбранном канале",
+            "en": "Root privileges on the selected channel"
+          }
+        },
+        {
+          "probe": "identity",
+          "fact": "architecture",
+          "equals": "aarch64",
+          "label": {
+            "ru": "Архитектура ARM64",
+            "en": "ARM64 architecture"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "data_safe",
+          "equals": "1",
+          "label": {
+            "ru": "Безопасный каталог /data",
+            "en": "Safe /data directory"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "etc_safe",
+          "equals": "1",
+          "label": {
+            "ru": "Безопасный каталог /etc",
+            "en": "Safe /etc directory"
+          }
+        },
+        {
+          "probe": "pending-operations",
+          "fact": "no_pending_operations",
+          "equals": "1",
+          "label": {
+            "ru": "Нет обнаруженных незавершённых операций",
+            "en": "No detected pending operations"
+          }
+        },
+        {
+          "probe": "mounts",
+          "fact": "data_install_mount",
+          "equals": "1",
+          "label": {
+            "ru": "/data доступен rw/exec на ext4 или overlay",
+            "en": "/data is rw/exec on ext4 or overlay"
+          }
+        },
+        {
+          "probe": "storage",
+          "fact": "data_free_131072",
+          "equals": "1",
+          "label": {
+            "ru": "Не менее 128 МиБ свободно в /data",
+            "en": "At least 128 MiB free on /data"
+          }
+        },
+        {
+          "probe": "vpn-runtime",
+          "fact": "tun",
+          "equals": "1",
+          "label": {
+            "ru": "Устройство TUN присутствует",
+            "en": "TUN device present"
+          }
+        },
+        {
+          "probe": "vpn-runtime",
+          "fact": "lua_uci",
+          "equals": "1",
+          "label": {
+            "ru": "Lua UCI загружается",
+            "en": "Lua UCI loads"
+          }
+        },
+        {
+          "probe": "vpn-runtime",
+          "fact": "lua_luci_jsonc",
+          "equals": "1",
+          "label": {
+            "ru": "Lua luci.jsonc загружается",
+            "en": "Lua luci.jsonc loads"
+          }
+        },
+        {
+          "probe": "wifi-structure",
+          "fact": "guest_2g_iface",
+          "equals": "1",
+          "label": {
+            "ru": "Раздел guest_2g имеет тип wifi-iface",
+            "en": "guest_2g is a wifi-iface section"
+          }
+        },
+        {
+          "probe": "wifi-structure",
+          "fact": "guest_5g_iface",
+          "equals": "1",
+          "label": {
+            "ru": "Раздел guest_5g имеет тип wifi-iface",
+            "en": "guest_5g is a wifi-iface section"
+          }
+        },
+        {
+          "probe": "tools-network",
+          "fact": "tool_lua",
+          "equals": "1",
+          "label": {
+            "ru": "Команда lua",
+            "en": "Command lua"
+          }
+        },
+        {
+          "probe": "tools-network",
+          "fact": "tool_nft",
+          "equals": "1",
+          "label": {
+            "ru": "Команда nft",
+            "en": "Command nft"
+          }
+        },
+        {
+          "probe": "tools-network",
+          "fact": "tool_iptables",
+          "equals": "1",
+          "label": {
+            "ru": "Команда iptables",
+            "en": "Command iptables"
+          }
+        },
+        {
+          "probe": "tools-network",
+          "fact": "tool_ip6tables",
+          "equals": "1",
+          "label": {
+            "ru": "Команда ip6tables",
+            "en": "Command ip6tables"
+          }
+        },
+        {
+          "probe": "tools-network",
+          "fact": "tool_ebtables",
+          "equals": "1",
+          "label": {
+            "ru": "Команда ebtables",
+            "en": "Command ebtables"
+          }
+        },
+        {
+          "probe": "tools-network",
+          "fact": "tool_dnsmasq",
+          "equals": "1",
+          "label": {
+            "ru": "Команда dnsmasq",
+            "en": "Command dnsmasq"
+          }
+        },
+        {
+          "probe": "tools-network",
+          "fact": "tool_ip",
+          "equals": "1",
+          "label": {
+            "ru": "Команда ip",
+            "en": "Command ip"
+          }
+        },
+        {
+          "probe": "tools-network",
+          "fact": "tool_ubus",
+          "equals": "1",
+          "label": {
+            "ru": "Команда ubus",
+            "en": "Command ubus"
+          }
+        },
+        {
+          "probe": "tools-network",
+          "fact": "tool_flock",
+          "equals": "1",
+          "label": {
+            "ru": "Команда flock",
+            "en": "Command flock"
+          }
+        }
+      ],
+      "limitations": {
+        "ru": "SSID, пароли Wi-Fi, профили и подписки VPN не читаются. Не меняются сеть, DNS и firewall; поддержка TPROXY, маршрутизации, конфликтов сетей и реальная передача трафика требуют транзакционных проверок установщика.",
+        "en": "Does not read SSIDs, Wi-Fi passwords, VPN profiles/subscriptions or change network/DNS/firewall. TPROXY, routing, network conflicts and real traffic still require installer transaction checks."
+      }
+    },
+    {
+      "id": "launcher",
+      "title": {
+        "ru": "Launcher: установка плиток и настройки",
+        "en": "Launcher tile installation and settings"
+      },
+      "profiles": [
+        "b31"
+      ],
+      "requirements": [
+        {
+          "probe": "identity",
+          "fact": "root",
+          "equals": "1",
+          "label": {
+            "ru": "Права root в выбранном канале",
+            "en": "Root privileges on the selected channel"
+          }
+        },
+        {
+          "probe": "identity",
+          "fact": "architecture",
+          "equals": "aarch64",
+          "label": {
+            "ru": "Архитектура ARM64",
+            "en": "ARM64 architecture"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "data_safe",
+          "equals": "1",
+          "label": {
+            "ru": "Безопасный каталог /data",
+            "en": "Safe /data directory"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "etc_safe",
+          "equals": "1",
+          "label": {
+            "ru": "Безопасный каталог /etc",
+            "en": "Safe /etc directory"
+          }
+        },
+        {
+          "probe": "pending-operations",
+          "fact": "no_pending_operations",
+          "equals": "1",
+          "label": {
+            "ru": "Нет обнаруженных незавершённых операций",
+            "en": "No detected pending operations"
+          }
+        },
+        {
+          "probe": "mounts",
+          "fact": "data_install_mount",
+          "equals": "1",
+          "label": {
+            "ru": "/data доступен rw/exec на ext4 или overlay",
+            "en": "/data is rw/exec on ext4 or overlay"
+          }
+        },
+        {
+          "probe": "launcher-abi",
+          "fact": "ui_hash_known",
+          "equals": "1",
+          "label": {
+            "ru": "Известный ABI бинарника дисплея",
+            "en": "Known display binary ABI"
+          }
+        },
+        {
+          "probe": "launcher-abi",
+          "fact": "ui_present",
+          "equals": "1",
+          "label": {
+            "ru": "Присутствует штатный экранный интерфейс",
+            "en": "Stock display UI present"
+          }
+        },
+        {
+          "probe": "launcher-abi",
+          "fact": "service_hash_known",
+          "equals": "1",
+          "label": {
+            "ru": "Хэш службы экрана известен",
+            "en": "Display service hash known"
+          }
+        },
+        {
+          "probe": "ssh-layout",
+          "fact": "rc_local_writable",
+          "equals": "1",
+          "label": {
+            "ru": "rc.local доступен для записи",
+            "en": "rc.local writable"
+          }
+        }
+      ],
+      "limitations": {
+        "ru": "Исследование не перезапускает дисплей и не загружает launcher.so. ABI библиотеки, владение установленными файлами и восстановление транзакции дополнительно проверяются установщиком.",
+        "en": "Does not restart the display or load launcher.so. Library ABI, installed-file ownership and recovery journals are additionally checked by the installer."
+      }
+    },
+    {
+      "id": "screen-localization",
+      "title": {
+        "ru": "Русификация экрана модема",
+        "en": "Modem screen localization"
+      },
+      "profiles": [
+        "b31"
+      ],
+      "requirements": [
+        {
+          "probe": "identity",
+          "fact": "root",
+          "equals": "1",
+          "label": {
+            "ru": "Права root в выбранном канале",
+            "en": "Root privileges on the selected channel"
+          }
+        },
+        {
+          "probe": "identity",
+          "fact": "architecture",
+          "equals": "aarch64",
+          "label": {
+            "ru": "Архитектура ARM64",
+            "en": "ARM64 architecture"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "data_safe",
+          "equals": "1",
+          "label": {
+            "ru": "Безопасный каталог /data",
+            "en": "Safe /data directory"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "etc_safe",
+          "equals": "1",
+          "label": {
+            "ru": "Безопасный каталог /etc",
+            "en": "Safe /etc directory"
+          }
+        },
+        {
+          "probe": "pending-operations",
+          "fact": "no_pending_operations",
+          "equals": "1",
+          "label": {
+            "ru": "Нет обнаруженных незавершённых операций",
+            "en": "No detected pending operations"
+          }
+        },
+        {
+          "probe": "mounts",
+          "fact": "data_install_mount",
+          "equals": "1",
+          "label": {
+            "ru": "/data доступен rw/exec на ext4 или overlay",
+            "en": "/data is rw/exec on ext4 or overlay"
+          }
+        },
+        {
+          "probe": "launcher-abi",
+          "fact": "service_hash_known",
+          "equals": "1",
+          "label": {
+            "ru": "Известная служба дисплея",
+            "en": "Known display service"
+          }
+        },
+        {
+          "probe": "launcher-abi",
+          "fact": "ui_hash_known",
+          "equals": "1",
+          "label": {
+            "ru": "Известный ABI бинарника дисплея",
+            "en": "Known display binary ABI"
+          }
+        },
+        {
+          "probe": "screen-abi",
+          "fact": "language_hashes_known",
+          "equals": "1",
+          "label": {
+            "ru": "Известные ресурсы языков",
+            "en": "Known language resources"
+          }
+        },
+        {
+          "probe": "screen-abi",
+          "fact": "cache_regular",
+          "equals": "1",
+          "label": {
+            "ru": "Обычный файл кэша языка",
+            "en": "Regular language cache file"
+          }
+        }
+      ],
+      "limitations": {
+        "ru": "Хэши English.ini, Chinese.ini и бинарника сохранены в отчёте. Для установки нужны исходные или собственные проверенные версии, корректные bind mounts и весь контроль владения. Исследование ничего не монтирует и не патчит.",
+        "en": "Hashes of English.ini, Chinese.ini and the UI binary are in the report. Installation requires stock or owned reviewed assets, valid bind mounts and complete ownership checks. Research never mounts or patches files."
+      }
+    },
+    {
+      "id": "diagnostic-apps",
+      "title": {
+        "ru": "Проверенный каталог диагностических приложений",
+        "en": "Verified diagnostic application catalog"
+      },
+      "profiles": [
+        "b31"
+      ],
+      "requirements": [
+        {
+          "probe": "identity",
+          "fact": "root",
+          "equals": "1",
+          "label": {
+            "ru": "Права root в выбранном канале",
+            "en": "Root privileges on the selected channel"
+          }
+        },
+        {
+          "probe": "identity",
+          "fact": "architecture",
+          "equals": "aarch64",
+          "label": {
+            "ru": "Архитектура ARM64",
+            "en": "ARM64 architecture"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "data_safe",
+          "equals": "1",
+          "label": {
+            "ru": "Безопасный каталог /data",
+            "en": "Safe /data directory"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "etc_safe",
+          "equals": "1",
+          "label": {
+            "ru": "Безопасный каталог /etc",
+            "en": "Safe /etc directory"
+          }
+        },
+        {
+          "probe": "pending-operations",
+          "fact": "no_pending_operations",
+          "equals": "1",
+          "label": {
+            "ru": "Нет обнаруженных незавершённых операций",
+            "en": "No detected pending operations"
+          }
+        },
+        {
+          "probe": "mounts",
+          "fact": "data_install_mount",
+          "equals": "1",
+          "label": {
+            "ru": "/data доступен rw/exec на ext4 или overlay",
+            "en": "/data is rw/exec on ext4 or overlay"
+          }
+        },
+        {
+          "probe": "release",
+          "fact": "openwrt_release",
+          "equals": "23.05.4",
+          "label": {
+            "ru": "ABI пакетов OpenWrt 23.05.4",
+            "en": "OpenWrt 23.05.4 package ABI"
+          }
+        },
+        {
+          "probe": "release",
+          "fact": "package_arch",
+          "equals": "aarch64_cortex-a53",
+          "label": {
+            "ru": "Архитектура пакетов aarch64_cortex-a53",
+            "en": "aarch64_cortex-a53 package architecture"
+          }
+        },
+        {
+          "probe": "storage",
+          "fact": "data_free_32768",
+          "equals": "1",
+          "label": {
+            "ru": "Не менее 32 МиБ свободно в /data",
+            "en": "At least 32 MiB free on /data"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_flock",
+          "equals": "1",
+          "label": {
+            "ru": "Команда flock",
+            "en": "Command flock"
+          },
+          "platforms": [
+            "macos"
+          ]
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_tar",
+          "equals": "1",
+          "label": {
+            "ru": "Команда tar",
+            "en": "Command tar"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_gzip",
+          "equals": "1",
+          "label": {
+            "ru": "Команда gzip",
+            "en": "Command gzip"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_od",
+          "equals": "1",
+          "label": {
+            "ru": "Команда od",
+            "en": "Command od"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_sha256sum",
+          "equals": "1",
+          "label": {
+            "ru": "Команда sha256sum",
+            "en": "Command sha256sum"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_stat",
+          "equals": "1",
+          "label": {
+            "ru": "Команда stat",
+            "en": "Command stat"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_find",
+          "equals": "1",
+          "label": {
+            "ru": "Команда find",
+            "en": "Command find"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_sort",
+          "equals": "1",
+          "label": {
+            "ru": "Команда sort",
+            "en": "Command sort"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_awk",
+          "equals": "1",
+          "label": {
+            "ru": "Команда awk",
+            "en": "Command awk"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_sed",
+          "equals": "1",
+          "label": {
+            "ru": "Команда sed",
+            "en": "Command sed"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_df",
+          "equals": "1",
+          "label": {
+            "ru": "Команда df",
+            "en": "Command df"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_sync",
+          "equals": "1",
+          "label": {
+            "ru": "Команда sync",
+            "en": "Command sync"
+          }
+        }
+      ],
+      "limitations": {
+        "ru": "Каталог отдельно ограничивает разрешённые приложения. timeout не требуется в прошивке: установщик поставляет собственный проверенный supervisor. Ни один пакет и его --version здесь не запускаются.",
+        "en": "The signed catalog independently restricts approved apps. Firmware timeout is not required: the installer bundles a pinned supervisor. Research does not execute packages, even with --version."
+      }
+    },
+    {
+      "id": "opkg",
+      "title": {
+        "ru": "Изолированный адаптер opkg",
+        "en": "Isolated opkg adapter"
+      },
+      "profiles": [
+        "b31"
+      ],
+      "requirements": [
+        {
+          "probe": "identity",
+          "fact": "root",
+          "equals": "1",
+          "label": {
+            "ru": "Права root в выбранном канале",
+            "en": "Root privileges on the selected channel"
+          }
+        },
+        {
+          "probe": "identity",
+          "fact": "architecture",
+          "equals": "aarch64",
+          "label": {
+            "ru": "Архитектура ARM64",
+            "en": "ARM64 architecture"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "data_safe",
+          "equals": "1",
+          "label": {
+            "ru": "Безопасный каталог /data",
+            "en": "Safe /data directory"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "etc_safe",
+          "equals": "1",
+          "label": {
+            "ru": "Безопасный каталог /etc",
+            "en": "Safe /etc directory"
+          }
+        },
+        {
+          "probe": "pending-operations",
+          "fact": "no_pending_operations",
+          "equals": "1",
+          "label": {
+            "ru": "Нет обнаруженных незавершённых операций",
+            "en": "No detected pending operations"
+          }
+        },
+        {
+          "probe": "mounts",
+          "fact": "data_install_mount",
+          "equals": "1",
+          "label": {
+            "ru": "/data доступен rw/exec на ext4 или overlay",
+            "en": "/data is rw/exec on ext4 or overlay"
+          }
+        },
+        {
+          "probe": "release",
+          "fact": "openwrt_release",
+          "equals": "23.05.4",
+          "label": {
+            "ru": "ABI пакетов OpenWrt 23.05.4",
+            "en": "OpenWrt 23.05.4 package ABI"
+          }
+        },
+        {
+          "probe": "release",
+          "fact": "package_arch",
+          "equals": "aarch64_cortex-a53",
+          "label": {
+            "ru": "Архитектура пакетов aarch64_cortex-a53",
+            "en": "aarch64_cortex-a53 package architecture"
+          }
+        },
+        {
+          "probe": "storage",
+          "fact": "data_free_65536",
+          "equals": "1",
+          "label": {
+            "ru": "Не менее 64 МиБ свободно в /data",
+            "en": "At least 64 MiB free on /data"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_chroot",
+          "equals": "1",
+          "label": {
+            "ru": "Команда chroot",
+            "en": "Command chroot"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_flock",
+          "equals": "1",
+          "label": {
+            "ru": "Команда flock",
+            "en": "Command flock"
+          },
+          "platforms": [
+            "macos"
+          ]
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_cp",
+          "equals": "1",
+          "label": {
+            "ru": "Команда cp",
+            "en": "Command cp"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_tar",
+          "equals": "1",
+          "label": {
+            "ru": "Команда tar",
+            "en": "Command tar"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_gzip",
+          "equals": "1",
+          "label": {
+            "ru": "Команда gzip",
+            "en": "Command gzip"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_find",
+          "equals": "1",
+          "label": {
+            "ru": "Команда find",
+            "en": "Command find"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_sha256sum",
+          "equals": "1",
+          "label": {
+            "ru": "Команда sha256sum",
+            "en": "Command sha256sum"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_stat",
+          "equals": "1",
+          "label": {
+            "ru": "Команда stat",
+            "en": "Command stat"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_awk",
+          "equals": "1",
+          "label": {
+            "ru": "Команда awk",
+            "en": "Command awk"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_sed",
+          "equals": "1",
+          "label": {
+            "ru": "Команда sed",
+            "en": "Command sed"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_readlink",
+          "equals": "1",
+          "label": {
+            "ru": "Команда readlink",
+            "en": "Command readlink"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_mknod",
+          "equals": "1",
+          "label": {
+            "ru": "Команда mknod",
+            "en": "Command mknod"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_sort",
+          "equals": "1",
+          "label": {
+            "ru": "Команда sort",
+            "en": "Command sort"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_cmp",
+          "equals": "1",
+          "label": {
+            "ru": "Команда cmp",
+            "en": "Command cmp"
+          }
+        }
+      ],
+      "limitations": {
+        "ru": "OpenWrt 23.05.4/aarch64_cortex-a53 — ABI приватного окружения. Совместимость произвольного пакета, его зависимостей и maintainer scripts не гарантируется. Доступность источников и TLS не проверяется сетевыми запросами; opkg status не запускается, так как он может создавать блокировки.",
+        "en": "OpenWrt 23.05.4/aarch64_cortex-a53 is the private runtime ABI. Arbitrary packages, dependencies and maintainer scripts are not guaranteed compatible. No feed/TLS network requests are made; opkg status is not run because it can create locks."
+      }
+    },
+    {
+      "id": "config-backup",
+      "title": {
+        "ru": "Резервная копия конфигурации",
+        "en": "Configuration backup"
+      },
+      "profiles": [
+        "b31"
+      ],
+      "requirements": [
+        {
+          "probe": "identity",
+          "fact": "root",
+          "equals": "1",
+          "label": {
+            "ru": "Права root в выбранном канале",
+            "en": "Root privileges on the selected channel"
+          }
+        },
+        {
+          "probe": "identity",
+          "fact": "architecture",
+          "equals": "aarch64",
+          "label": {
+            "ru": "Архитектура ARM64",
+            "en": "ARM64 architecture"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "data_safe",
+          "equals": "1",
+          "label": {
+            "ru": "Безопасный каталог /data",
+            "en": "Safe /data directory"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "etc_safe",
+          "equals": "1",
+          "label": {
+            "ru": "Безопасный каталог /etc",
+            "en": "Safe /etc directory"
+          }
+        },
+        {
+          "probe": "pending-operations",
+          "fact": "no_pending_operations",
+          "equals": "1",
+          "label": {
+            "ru": "Нет обнаруженных незавершённых операций",
+            "en": "No detected pending operations"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "tmp_private_stage_parent",
+          "equals": "1",
+          "label": {
+            "ru": "Каталог /tmp для приватного временного каталога",
+            "en": "/tmp parent for a private temporary directory"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_tar",
+          "equals": "1",
+          "label": {
+            "ru": "Команда tar",
+            "en": "Command tar"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_gzip",
+          "equals": "1",
+          "label": {
+            "ru": "Команда gzip",
+            "en": "Command gzip"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_sha256sum",
+          "equals": "1",
+          "label": {
+            "ru": "Команда sha256sum",
+            "en": "Command sha256sum"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_stat",
+          "equals": "1",
+          "label": {
+            "ru": "Команда stat",
+            "en": "Command stat"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_awk",
+          "equals": "1",
+          "label": {
+            "ru": "Команда awk",
+            "en": "Command awk"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_dd",
+          "equals": "1",
+          "label": {
+            "ru": "Команда dd",
+            "en": "Command dd"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_mkfifo",
+          "equals": "1",
+          "label": {
+            "ru": "Команда mkfifo",
+            "en": "Command mkfifo"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_wc",
+          "equals": "1",
+          "label": {
+            "ru": "Команда wc",
+            "en": "Command wc"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_du",
+          "equals": "1",
+          "label": {
+            "ru": "Команда du",
+            "en": "Command du"
+          }
+        },
+        {
+          "probe": "backup-layout",
+          "fact": "config_sources_present",
+          "equals": "1",
+          "label": {
+            "ru": "Источники конфигурации существуют",
+            "en": "Configuration sources exist"
+          }
+        }
+      ],
+      "limitations": {
+        "ru": "Файлы конфигурации и секреты не копируются в исследование. Согласованность живой системы, свободное место компьютера и контроль потока SHA256 проверяются настоящим резервным копированием.",
+        "en": "Configuration and secret contents are not copied into research. Live-system consistency, host free space and SHA256 stream verification belong to the real backup workflow."
+      }
+    },
+    {
+      "id": "user-data-backup",
+      "title": {
+        "ru": "Резервная копия /data",
+        "en": "User data backup"
+      },
+      "profiles": [
+        "b31"
+      ],
+      "requirements": [
+        {
+          "probe": "identity",
+          "fact": "root",
+          "equals": "1",
+          "label": {
+            "ru": "Права root в выбранном канале",
+            "en": "Root privileges on the selected channel"
+          }
+        },
+        {
+          "probe": "identity",
+          "fact": "architecture",
+          "equals": "aarch64",
+          "label": {
+            "ru": "Архитектура ARM64",
+            "en": "ARM64 architecture"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "data_safe",
+          "equals": "1",
+          "label": {
+            "ru": "Безопасный каталог /data",
+            "en": "Safe /data directory"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "etc_safe",
+          "equals": "1",
+          "label": {
+            "ru": "Безопасный каталог /etc",
+            "en": "Safe /etc directory"
+          }
+        },
+        {
+          "probe": "pending-operations",
+          "fact": "no_pending_operations",
+          "equals": "1",
+          "label": {
+            "ru": "Нет обнаруженных незавершённых операций",
+            "en": "No detected pending operations"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "tmp_private_stage_parent",
+          "equals": "1",
+          "label": {
+            "ru": "Каталог /tmp для приватного временного каталога",
+            "en": "/tmp parent for a private temporary directory"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_tar",
+          "equals": "1",
+          "label": {
+            "ru": "Команда tar",
+            "en": "Command tar"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_gzip",
+          "equals": "1",
+          "label": {
+            "ru": "Команда gzip",
+            "en": "Command gzip"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_sha256sum",
+          "equals": "1",
+          "label": {
+            "ru": "Команда sha256sum",
+            "en": "Command sha256sum"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_stat",
+          "equals": "1",
+          "label": {
+            "ru": "Команда stat",
+            "en": "Command stat"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_awk",
+          "equals": "1",
+          "label": {
+            "ru": "Команда awk",
+            "en": "Command awk"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_dd",
+          "equals": "1",
+          "label": {
+            "ru": "Команда dd",
+            "en": "Command dd"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_mkfifo",
+          "equals": "1",
+          "label": {
+            "ru": "Команда mkfifo",
+            "en": "Command mkfifo"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_wc",
+          "equals": "1",
+          "label": {
+            "ru": "Команда wc",
+            "en": "Command wc"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_du",
+          "equals": "1",
+          "label": {
+            "ru": "Команда du",
+            "en": "Command du"
+          }
+        },
+        {
+          "probe": "backup-layout",
+          "fact": "data_readable",
+          "equals": "1",
+          "label": {
+            "ru": "/data доступен для чтения",
+            "en": "/data readable"
+          }
+        }
+      ],
+      "limitations": {
+        "ru": "Размер и согласованность полного содержимого /data здесь не проверяются; рекурсивное чтение файлов и секретов не выполняется.",
+        "en": "Does not validate the size or consistency of all /data contents; no recursive file or secret reads occur."
+      }
+    },
+    {
+      "id": "modem-backup",
+      "title": {
+        "ru": "Резервная копия разделов модема",
+        "en": "Modem partition backup"
+      },
+      "profiles": [
+        "b31"
+      ],
+      "requirements": [
+        {
+          "probe": "identity",
+          "fact": "root",
+          "equals": "1",
+          "label": {
+            "ru": "Права root в выбранном канале",
+            "en": "Root privileges on the selected channel"
+          }
+        },
+        {
+          "probe": "identity",
+          "fact": "architecture",
+          "equals": "aarch64",
+          "label": {
+            "ru": "Архитектура ARM64",
+            "en": "ARM64 architecture"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "data_safe",
+          "equals": "1",
+          "label": {
+            "ru": "Безопасный каталог /data",
+            "en": "Safe /data directory"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "etc_safe",
+          "equals": "1",
+          "label": {
+            "ru": "Безопасный каталог /etc",
+            "en": "Safe /etc directory"
+          }
+        },
+        {
+          "probe": "pending-operations",
+          "fact": "no_pending_operations",
+          "equals": "1",
+          "label": {
+            "ru": "Нет обнаруженных незавершённых операций",
+            "en": "No detected pending operations"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "tmp_private_stage_parent",
+          "equals": "1",
+          "label": {
+            "ru": "Каталог /tmp для приватного временного каталога",
+            "en": "/tmp parent for a private temporary directory"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_tar",
+          "equals": "1",
+          "label": {
+            "ru": "Команда tar",
+            "en": "Command tar"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_gzip",
+          "equals": "1",
+          "label": {
+            "ru": "Команда gzip",
+            "en": "Command gzip"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_sha256sum",
+          "equals": "1",
+          "label": {
+            "ru": "Команда sha256sum",
+            "en": "Command sha256sum"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_stat",
+          "equals": "1",
+          "label": {
+            "ru": "Команда stat",
+            "en": "Command stat"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_awk",
+          "equals": "1",
+          "label": {
+            "ru": "Команда awk",
+            "en": "Command awk"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_dd",
+          "equals": "1",
+          "label": {
+            "ru": "Команда dd",
+            "en": "Command dd"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_mkfifo",
+          "equals": "1",
+          "label": {
+            "ru": "Команда mkfifo",
+            "en": "Command mkfifo"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_wc",
+          "equals": "1",
+          "label": {
+            "ru": "Команда wc",
+            "en": "Command wc"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_du",
+          "equals": "1",
+          "label": {
+            "ru": "Команда du",
+            "en": "Command du"
+          }
+        },
+        {
+          "probe": "partitions",
+          "fact": "modem_partition_layout_b31",
+          "equals": "1",
+          "label": {
+            "ru": "Размеры modemst1/2, fsg, persist соответствуют B31",
+            "en": "modemst1/2, fsg and persist layout matches B31"
+          }
+        }
+      ],
+      "limitations": {
+        "ru": "Сравниваются только sysfs-метаданные и типы узлов. Содержимое разделов, NV/EFS и радио-калибровки не читается.",
+        "en": "Compares sysfs metadata and node types only. Partition contents, NV/EFS and radio calibration are not read."
+      }
+    },
+    {
+      "id": "full-backup",
+      "title": {
+        "ru": "Полный образ eMMC и boot-разделов",
+        "en": "Full eMMC and boot partition image"
+      },
+      "profiles": [
+        "b31"
+      ],
+      "requirements": [
+        {
+          "probe": "identity",
+          "fact": "root",
+          "equals": "1",
+          "label": {
+            "ru": "Права root в выбранном канале",
+            "en": "Root privileges on the selected channel"
+          }
+        },
+        {
+          "probe": "identity",
+          "fact": "architecture",
+          "equals": "aarch64",
+          "label": {
+            "ru": "Архитектура ARM64",
+            "en": "ARM64 architecture"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "data_safe",
+          "equals": "1",
+          "label": {
+            "ru": "Безопасный каталог /data",
+            "en": "Safe /data directory"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "etc_safe",
+          "equals": "1",
+          "label": {
+            "ru": "Безопасный каталог /etc",
+            "en": "Safe /etc directory"
+          }
+        },
+        {
+          "probe": "pending-operations",
+          "fact": "no_pending_operations",
+          "equals": "1",
+          "label": {
+            "ru": "Нет обнаруженных незавершённых операций",
+            "en": "No detected pending operations"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "tmp_private_stage_parent",
+          "equals": "1",
+          "label": {
+            "ru": "Каталог /tmp для приватного временного каталога",
+            "en": "/tmp parent for a private temporary directory"
+          }
+        },
+        {
+          "probe": "partitions",
+          "fact": "mmcblk0_readable",
+          "equals": "1",
+          "label": {
+            "ru": "Доступен узел mmcblk0",
+            "en": "mmcblk0 node readable"
+          }
+        },
+        {
+          "probe": "partitions",
+          "fact": "mmcblk0boot0_readable",
+          "equals": "1",
+          "label": {
+            "ru": "Доступен узел mmcblk0boot0",
+            "en": "mmcblk0boot0 node readable"
+          }
+        },
+        {
+          "probe": "partitions",
+          "fact": "mmcblk0boot1_readable",
+          "equals": "1",
+          "label": {
+            "ru": "Доступен узел mmcblk0boot1",
+            "en": "mmcblk0boot1 node readable"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_flock",
+          "equals": "1",
+          "label": {
+            "ru": "Команда flock",
+            "en": "Command flock"
+          },
+          "platforms": [
+            "macos"
+          ]
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_dd",
+          "equals": "1",
+          "label": {
+            "ru": "Команда dd",
+            "en": "Command dd"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_sha256sum",
+          "equals": "1",
+          "label": {
+            "ru": "Команда sha256sum",
+            "en": "Command sha256sum"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_stat",
+          "equals": "1",
+          "label": {
+            "ru": "Команда stat",
+            "en": "Command stat"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_mkfifo",
+          "equals": "1",
+          "label": {
+            "ru": "Команда mkfifo",
+            "en": "Command mkfifo"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_wc",
+          "equals": "1",
+          "label": {
+            "ru": "Команда wc",
+            "en": "Command wc"
+          }
+        }
+      ],
+      "limitations": {
+        "ru": "Исследование не читает блоковые устройства и не изменяет защиту. Проверка чтения потока, размеров и контрольных сумм выполняется при создании образа. Активная система не является атомарным снимком.",
+        "en": "Research does not read block devices or alter protection. Stream reads, sizes and hashes are verified when an image is created. A running system is not an atomic snapshot."
+      }
+    },
+    {
+      "id": "full-restore",
+      "title": {
+        "ru": "Восстановление полного образа",
+        "en": "Full image restoration"
+      },
+      "profiles": [
+        "b31"
+      ],
+      "requirements": [
+        {
+          "probe": "identity",
+          "fact": "root",
+          "equals": "1",
+          "label": {
+            "ru": "Права root в выбранном канале",
+            "en": "Root privileges on the selected channel"
+          }
+        },
+        {
+          "probe": "identity",
+          "fact": "architecture",
+          "equals": "aarch64",
+          "label": {
+            "ru": "Архитектура ARM64",
+            "en": "ARM64 architecture"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "data_safe",
+          "equals": "1",
+          "label": {
+            "ru": "Безопасный каталог /data",
+            "en": "Safe /data directory"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "etc_safe",
+          "equals": "1",
+          "label": {
+            "ru": "Безопасный каталог /etc",
+            "en": "Safe /etc directory"
+          }
+        },
+        {
+          "probe": "pending-operations",
+          "fact": "no_pending_operations",
+          "equals": "1",
+          "label": {
+            "ru": "Нет обнаруженных незавершённых операций",
+            "en": "No detected pending operations"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "tmp_private_stage_parent",
+          "equals": "1",
+          "label": {
+            "ru": "Каталог /tmp для приватного временного каталога",
+            "en": "/tmp parent for a private temporary directory"
+          }
+        },
+        {
+          "probe": "partitions",
+          "fact": "mmcblk0_readable",
+          "equals": "1",
+          "label": {
+            "ru": "Доступен узел mmcblk0",
+            "en": "mmcblk0 node readable"
+          }
+        },
+        {
+          "probe": "partitions",
+          "fact": "mmcblk0boot0_readable",
+          "equals": "1",
+          "label": {
+            "ru": "Доступен узел mmcblk0boot0",
+            "en": "mmcblk0boot0 node readable"
+          }
+        },
+        {
+          "probe": "partitions",
+          "fact": "mmcblk0boot1_readable",
+          "equals": "1",
+          "label": {
+            "ru": "Доступен узел mmcblk0boot1",
+            "en": "mmcblk0boot1 node readable"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_flock",
+          "equals": "1",
+          "label": {
+            "ru": "Команда flock",
+            "en": "Command flock"
+          },
+          "platforms": [
+            "macos"
+          ]
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_dd",
+          "equals": "1",
+          "label": {
+            "ru": "Команда dd",
+            "en": "Command dd"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_sha256sum",
+          "equals": "1",
+          "label": {
+            "ru": "Команда sha256sum",
+            "en": "Command sha256sum"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_stat",
+          "equals": "1",
+          "label": {
+            "ru": "Команда stat",
+            "en": "Command stat"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_mkfifo",
+          "equals": "1",
+          "label": {
+            "ru": "Команда mkfifo",
+            "en": "Command mkfifo"
+          }
+        },
+        {
+          "probe": "tools-packages",
+          "fact": "tool_wc",
+          "equals": "1",
+          "label": {
+            "ru": "Команда wc",
+            "en": "Command wc"
+          }
+        },
+        {
+          "probe": "boot-protection",
+          "fact": "restore_readiness",
+          "equals": "verified-offline",
+          "label": {
+            "ru": "Готовность к восстановлению требует отдельной проверки",
+            "en": "Restoration readiness requires a separate preflight"
+          }
+        }
+      ],
+      "limitations": {
+        "ru": "Это исследование намеренно не подтверждает готовность записи. Нужны проверенный образ того же устройства, сверка разметки, отдельный план записи и проверки штатной процедуры восстановления. Узлы sensor_id/codec_id не читаются: даже чтение меняет защиту записи. В Windows восстановление пока не реализовано.",
+        "en": "Research intentionally cannot approve restoration writes. Requires a verified image for the same device, layout validation, a separate write plan and the restore workflow checks. sensor_id/codec_id are never read: reads themselves change write protection. Restoration is not implemented on Windows."
+      },
+      "platforms": [
+        "macos"
+      ]
+    },
+    {
+      "id": "physical-euicc",
+      "title": {
+        "ru": "Профили физической eUICC в SIM-слоте 1",
+        "en": "Profiles on a physical eUICC in SIM slot 1"
+      },
+      "profiles": [
+        "b31"
+      ],
+      "requirements": [
+        {
+          "probe": "identity",
+          "fact": "root",
+          "equals": "1",
+          "label": {
+            "ru": "Права root",
+            "en": "Root privileges"
+          }
+        },
+        {
+          "probe": "identity",
+          "fact": "architecture",
+          "equals": "aarch64",
+          "label": {
+            "ru": "Архитектура ARM64",
+            "en": "ARM64 architecture"
+          }
+        },
+        {
+          "probe": "esim-components",
+          "fact": "physical_euicc_management",
+          "equals": "verified",
+          "label": {
+            "ru": "Наличие и доступность eUICC требуют отдельного чтения",
+            "en": "eUICC presence and access require a separate read"
+          }
+        }
+      ],
+      "limitations": {
+        "ru": "Компоненты, экспортируемые имена и схема API не доказывают наличие eUICC, доступ к ISD-R или установку профиля. Исследование не читает EID/ICCID/профили, не отправляет APDU и не переключает SIM. Проверенный путь приложения — 9eSIM V0, физический слот 1, B31; интернет компьютера для desktop, интернет модема для веб-панели.",
+        "en": "Components, exported names and API schema do not prove eUICC presence, ISD-R access or profile installation. Research does not read EID/ICCID/profiles, send APDUs or switch SIMs. The tested application path is 9eSIM V0 in physical slot 1 on B31; desktop uses computer Internet, the web dashboard uses modem Internet."
+      }
+    },
+    {
+      "id": "native-esim",
+      "title": {
+        "ru": "Свой QR-профиль на встроенной карте ZTE",
+        "en": "Own QR profile on the built-in ZTE card"
+      },
+      "profiles": [],
+      "requirements": [
+        {
+          "probe": "esim-components",
+          "fact": "native_isdr_access",
+          "equals": "verified",
+          "label": {
+            "ru": "Политика и доступ к управлению встроенной картой не проверяются",
+            "en": "Built-in card policy and management access are not assessed"
+          }
+        }
+      ],
+      "limitations": {
+        "ru": "Этот сбор метаданных не устанавливает тип встроенного чипа и не подтверждает BYO QR. Наличие eSIM API, строк в бинарнике или пакета lpac не означает доступность стандартного ISD-R. Состояние остаётся неизвестным.",
+        "en": "This metadata collection does not identify the embedded chip or establish BYO QR support. eSIM APIs, binary strings or an lpac package do not establish standard ISD-R access. The result remains unknown."
+      }
+    }
+  ]
+}

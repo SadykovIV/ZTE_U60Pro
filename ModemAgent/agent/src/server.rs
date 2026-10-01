@@ -139,6 +139,10 @@ fn is_lan_origin(origin: &str) -> bool {
         || (octets[0] == 192 && octets[1] == 168)
 }
 
+fn needs_auth(method: &Method, path: &str) -> bool {
+    path != "/api/auth/login" && !(*method == Method::Post && path == "/api/router/lan/confirm")
+}
+
 fn handle_request(mut request: Request, state: &AppState) {
     let method = request.method().clone();
     let url = request.url().to_string();
@@ -172,9 +176,7 @@ fn handle_request(mut request: Request, state: &AppState) {
     // The LAN confirmation nonce authorises only the pending change. It lets
     // the browser prove connectivity without sending its session bearer token
     // to a new IP that might already be occupied by another host.
-    let needs_auth =
-        path != "/api/auth/login" && !(method == Method::Post && path == "/api/router/lan/confirm");
-    if needs_auth {
+    if needs_auth(&method, &path) {
         let authorized = request
             .headers()
             .iter()
@@ -286,6 +288,18 @@ fn handle_request(mut request: Request, state: &AppState) {
             json!({"ok": false, "error": "request body exceeds 1 MiB"}),
             origin_ref,
         );
+        return;
+    }
+
+    #[cfg(feature = "esim")]
+    if path.starts_with("/api/esim/") {
+        // The normal authentication check above has already accepted this token.
+        // Keep job ownership separate from the public route dispatcher.
+        let owner = request.headers().iter()
+            .find(|h| h.field.equiv("Authorization"))
+            .and_then(|h| h.value.as_str().strip_prefix("Bearer ")).unwrap_or_default();
+        let (status, value) = crate::esim::web::route(&state.esim_jobs, &method, &path, owner, &body);
+        respond(request, status, value, origin_ref);
         return;
     }
 
@@ -488,7 +502,7 @@ fn at_port(state: &AppState) -> (u16, Value) {
 fn agent_health() -> (u16, Value) {
     (
         200,
-        json!({"ok": true, "data": {"status": "ok", "version": env!("CARGO_PKG_VERSION"), "ttl_schema_version": 2}}),
+        json!({"ok": true, "data": {"status": "ok", "version": crate::AGENT_VERSION, "ttl_schema_version": 2}}),
     )
 }
 
@@ -510,10 +524,18 @@ mod tests {
     use super::{agent_health, is_at_command_allowed};
 
     #[test]
+    fn every_esim_job_route_requires_normal_bearer_auth() {
+        for path in ["/api/esim/capabilities", "/api/esim/jobs", "/api/esim/jobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"] {
+            assert!(super::needs_auth(&tiny_http::Method::Get,path));
+            assert!(super::needs_auth(&tiny_http::Method::Post,path));
+        }
+    }
+
+    #[test]
     fn health_exposes_release_and_ttl_contract() {
         let (status, body) = agent_health();
         assert_eq!(status, 200);
-        assert_eq!(body["data"]["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(body["data"]["version"], crate::AGENT_VERSION);
         assert_eq!(body["data"]["ttl_schema_version"], 2);
     }
 

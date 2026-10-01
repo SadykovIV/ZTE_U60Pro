@@ -6,7 +6,7 @@
 static unsigned checks;
 #define CHECK(x) do {checks++;if(!(x)){fprintf(stderr,"FAIL %s:%d: %s\n",__FILE__,__LINE__,#x);exit(1);}}while(0)
 static struct telemetry_radio_fields fixture(void){
- /* Synthetic serving/CA values cover active and inactive carrier states.
+ /* Self-contained serving/CA parser fixture.
     Band locks deliberately are not part of the parser contract. B7 is configured,
     but its state=1 means it must not be reported as an active carrier. */
  struct telemetry_radio_fields f={0};

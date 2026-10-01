@@ -73,6 +73,13 @@ import AppKit
     @Published var diagnosticReport: DiagnosticReport?
     @Published var selectedDiagnostic = "system.log"
     @Published var diagnosticText = ""
+    @Published var firmwareResearchReport: FirmwareResearchReport?
+    @Published var firmwareResearchRunning = false
+    @Published var firmwareResearchProgress: Double = 0
+    @Published var firmwareResearchMessage = ""
+    @Published var firmwareResearchExportURL: URL?
+    var firmwareResearchCancellation: ResearchCancellation?
+    var firmwareResearchLoaded = false
     @Published var activityEvents: [ActivityEvent] = []
     @Published var activitySearch = ""
     @Published var journalWarning = ""
@@ -93,10 +100,22 @@ import AppKit
     @Published var agentInstallationStatus: AgentInstallationStatus?
     @Published var displayInspection: ModemDisplayInspection?
     @Published var displayError = ""
+    @Published var esimSnapshot: EsimSnapshot?
+    @Published var esimSelectedICCID: String?
+    @Published var esimMessage = ""
+    @Published var esimError = ""
+    @Published var esimPreview = false
+    @Published var esimOperationActive = false
+    var esimAuthorization: String?
+    var esimLogID: UUID?
     @Published var displayLayout: ModemDisplayLayout = .defaultLayout
     @Published var displaySavedLayout: ModemDisplayLayout?
     @Published var displayLayoutMessage = ""
     var displayDraftEdited = false
+    @Published var displayPages: ModemLauncherPages = .defaultPages
+    @Published var displaySavedPages: ModemLauncherPages?
+    @Published var displayPagesMessage = ""
+    var displayPagesDraftEdited = false
     @Published var vpnInspection: VPNInspection?
     @Published var vpnError = ""
     @Published var ttlStatus: TTLStatus?
@@ -165,7 +184,8 @@ import AppKit
         ByteCountFormatter.string(fromByteCount: max(0, min(kib, Int64.max / 1024)) * 1024, countStyle: .decimal)
     }
     init() {
-        storage = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/ZTE IMEI Studio")
+        let esimFixture = CommandLine.arguments.contains("--esim-ui-fixture")
+        storage = esimFixture ? FileManager.default.temporaryDirectory.appendingPathComponent("zte-esim-ui-preview-" + UUID().uuidString) : FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/ZTE IMEI Studio")
         resources = Bundle.main.resourceURL ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("MacIMEI/Resources")
         keyPath = storage.appendingPathComponent("SSH/id_ed25519").path
         knownHostsPath = storage.appendingPathComponent("SSH/known_hosts").path
@@ -177,6 +197,7 @@ import AppKit
             try ActivityJournal(root: storage).record(operationID: sessionID, category: "session", title: "Запуск приложения", result: "started", details: ["macOS": ProcessInfo.processInfo.operatingSystemVersionString, "architecture": "arm64", "endpoint": host + ":" + port])
         } catch { journalWarning = "Журнал недоступен: " + error.localizedDescription }
         refreshActivity()
+        loadEsimPreview()
         if pendingOperation { status = "Есть незавершённая операция. Подключите тот же модем и нажмите «Продолжить»." }
     }
     var connection: Connection { Connection(host: host.trimmingCharacters(in: .whitespacesAndNewlines), port: port, keyPath: keyPath, knownHostsPath: knownHostsPath, skipFirmwareCheck: skipFirmwareCheck) }

@@ -90,6 +90,13 @@ public sealed partial class WindowsModemService : IModemService
     public Task<IReadOnlyList<ModemAppInfo>> ListApplicationsAsync(CancellationToken cancellationToken = default)
         => ListApplicationsCoreAsync(cancellationToken);
 
+    private static LauncherPages ParseLauncherPages(string value)
+    {
+        var pages = new LauncherPages(value.Length == 0 ? [] : value.Split(','));
+        _ = pages.Encode();
+        return pages;
+    }
+
     private static string Param(IReadOnlyDictionary<string,string>? values,string name,string fallback="")
         => values?.TryGetValue(name,out var value) == true ? value.Trim() : fallback;
     private void RequireSsh()
@@ -141,15 +148,28 @@ public sealed partial class WindowsModemService : IModemService
                     _snapshot = _snapshot with { Launcher = launcher.State,
                         LauncherStyle = launcher.Layout?.Style,
                         LauncherMetrics = launcher.Layout is null ? null : string.Join(',', launcher.Layout.Metrics.Where(x => x.Enabled).Select(x => x.Id)),
-                        LauncherMetricOrder = launcher.Layout is null ? null : string.Join(',', launcher.Layout.Metrics.Select(x => x.Id)) };
+                        LauncherMetricOrder = launcher.Layout is null ? null : string.Join(',', launcher.Layout.Metrics.Select(x => x.Id)),
+                        LauncherPages = launcher.Pages is null ? null : string.Join(',', launcher.Pages.Order) };
                     result = launcher.Detail ?? launcher.State; break;
                 case ModemOperation.InstallLauncher:
-                    RequireSsh(); launcher = await _features!.InstallLauncherAsync(cancellationToken);
+                case ModemOperation.InstallEsimLauncher:
+                    RequireSsh(); launcher = request.Operation == ModemOperation.InstallEsimLauncher
+                        ? await _features!.InstallEsimLauncherAsync(cancellationToken)
+                        : p?.ContainsKey("pages") == true
+                            ? await _features!.InstallLauncherPagesAsync(ParseLauncherPages(p["pages"]), cancellationToken)
+                            : await _features!.InstallLauncherAsync(cancellationToken);
                     _snapshot = _snapshot with { Launcher = launcher.State,
                         LauncherStyle = launcher.Layout?.Style,
                         LauncherMetrics = launcher.Layout is null ? null : string.Join(',', launcher.Layout.Metrics.Where(x => x.Enabled).Select(x => x.Id)),
-                        LauncherMetricOrder = launcher.Layout is null ? null : string.Join(',', launcher.Layout.Metrics.Select(x => x.Id)) };
-                    result = launcher.Detail ?? launcher.State; break;
+                        LauncherMetricOrder = launcher.Layout is null ? null : string.Join(',', launcher.Layout.Metrics.Select(x => x.Id)),
+                        LauncherPages = launcher.Pages is null ? null : string.Join(',', launcher.Pages.Order) };
+                    result = request.Operation == ModemOperation.InstallEsimLauncher ? "Страница eSIM установлена на экран модема. Профили не изменены." : launcher.Detail ?? launcher.State; break;
+                case ModemOperation.ApplyLauncherPages:
+                    RequireSsh();
+                    if (p?.ContainsKey("pages") != true) throw new InvalidDataException("Выбор страниц не передан.");
+                    launcher = await _features!.ApplyLauncherPagesAsync(ParseLauncherPages(p["pages"]), cancellationToken);
+                    _snapshot = _snapshot with { Launcher = launcher.State, LauncherPages = string.Join(',', launcher.Pages!.Order) };
+                    result = "Выбор и порядок страниц сохранены. Перезапуск экрана не требуется."; break;
                 case ModemOperation.ApplyLauncherLayout:
                     RequireSsh();
                     var style = Param(p,"style","list").ToLowerInvariant() switch
@@ -422,7 +442,8 @@ public sealed partial class WindowsModemService : IModemService
             _snapshot = _snapshot with { Launcher = status.State,
                 LauncherStyle = status.Layout?.Style,
                 LauncherMetrics = status.Layout is null ? null : string.Join(',', status.Layout.Metrics.Where(x => x.Enabled).Select(x => x.Id)),
-                LauncherMetricOrder = status.Layout is null ? null : string.Join(',', status.Layout.Metrics.Select(x => x.Id)) };
+                LauncherMetricOrder = status.Layout is null ? null : string.Join(',', status.Layout.Metrics.Select(x => x.Id)),
+                LauncherPages = status.Pages is null ? null : string.Join(',', status.Pages.Order) };
         });
         await Try("TTL",async () => {
             var status = await _features!.GetTtlStatusAsync(ct);

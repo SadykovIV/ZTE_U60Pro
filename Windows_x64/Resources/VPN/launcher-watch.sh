@@ -13,6 +13,15 @@ unlock() {
 }
 trap unlock EXIT
 trap 'exit 0' INT TERM
+stock_ui_pid() {
+ # The eSIM broker is a fork of the UI and retains its name/executable until
+ # completion. Only procd identifies the service process among those children.
+ cfg=$(ubus call service list '{"name":"zte_topsw_devui"}' 2>/dev/null) || return 1
+ pid=$(printf '%s' "$cfg" | jsonfilter -e '@.zte_topsw_devui.instances.instance1.pid' 2>/dev/null) || return 1
+ case "$pid" in ''|0|*[!0-9]*) return 1;; esac
+ [ "$(readlink "/proc/$pid/exe" 2>/dev/null)" = /usr/bin/zte_topsw_devui ] || return 1
+ printf '%s\n' "$pid"
+}
 set_ui() {
  if ! mkdir "$lock" 2>/dev/null; then return 1; fi
  owned=1; printf 'launcher-watch-%s' $$ > "$lock/owner"
@@ -51,7 +60,7 @@ while [ -f "$root/enabled" ]; do
   if [ "$fallback" = 0 ]; then set_ui plain && fallback=1 || true; fi
   continue
  fi
- pid=$(pidof zte_topsw_devui 2>/dev/null || true)
+ pid=$(stock_ui_pid || true)
  case "$pid" in ''|*[!0-9]*)
   if [ "$attempted" = 1 ]; then misses=$((misses+1)); fi
   if [ "$misses" -ge 4 ]; then printf '%s\n' START_FAILED > "$root/failed"; fi

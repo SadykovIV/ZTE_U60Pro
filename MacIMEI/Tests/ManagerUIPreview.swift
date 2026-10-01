@@ -19,10 +19,13 @@ import SwiftUI
         model.keyPath = "/preview/SSH/id_ed25519"
         model.knownHostsPath = "/preview/SSH/known_hosts"
         model.connectionsChecked = true // Suppress the preparation screen's passive discovery.
+        model.firmwareResearchLoaded = true // Never load real diagnostics in a synthetic preview.
         model.channelStatuses = ConnectionMode.discoveryOrder.map {
             ConnectionChannelStatus(mode: $0, state: .notChecked, message: "")
         }
         precondition(!model.connected && !model.canManage)
+        model.loadEsimPreview(force: true)
+        model.agentInstallationStatus = AgentInstallationStatus(hash: BundledAgent.sha256, running: true, startupReady: true)
         model.applicationInventory = .init(storage: [], memoryTotalKiB: 1048576,
             memoryAvailableKiB: 512000, installedPackages: [], opkgWritable: false,
             ssclashInstalled: false, ssclashRunning: false, architecture: "aarch64", release: "23.05.4",
@@ -34,14 +37,27 @@ import SwiftUI
         let catalog = VerifiedCatalogStore(cacheURL: model.storage.appendingPathComponent("catalog-preview.json"))
         precondition(catalog.entries.map(\.id) == ["htop", "opkg"])
         var paths: [String] = []
+        let syntheticResearch = FirmwareResearchReport(startedAt: "2026-09-27T12:00:00Z", finishedAt: "2026-09-27T12:02:08Z", specificationRevision: 4, transport: "adb", outcome: "partial", profile: nil,
+            attempts: [.init(transport: "ssh", outcome: "unconfigured", detail: "SSH key or known_hosts file is unavailable."), .init(transport: "adb", outcome: "available", detail: "USB ADB root shell is available.")],
+            warnings: ["The sole USB ADB device was selected. Its relationship to the configured WEB IP address is not established."],
+            features: [
+                .init(id: "agent", title: .init(ru: "Установка агента и SSH", en: "Agent and SSH installation"), state: "prerequisites_met", evidence: [.init(ru: "Права root: выполнено", en: "Root privilege: met")], limitations: .init(ru: "Установка не выполнялась. Результат не даёт разрешения на запись.", en: "No installation was performed. This finding grants no write permission.")),
+                .init(id: "imei", title: .init(ru: "Изменение IMEI", en: "IMEI changes"), state: "unknown", evidence: [.init(ru: "Нет совпадения с проверенным профилем прошивки", en: "No matching verified firmware profile")], limitations: .init(ru: "NV/EFS не читаются и не меняются исследованием.", en: "Research does not read or change NV/EFS contents.")),
+                .init(id: "vpn", title: .init(ru: "Компоненты VPN", en: "VPN components"), state: "blocked", evidence: [.init(ru: "Требуемая функция ядра: не выполнено", en: "Required kernel feature: not met")], limitations: .init(ru: "Сетевая конфигурация не менялась.", en: "Network configuration was not changed."))], application: ["fixture": "synthetic; no modem access"])
 
         for language in ["ru", "en"] {
             UserDefaults.standard.setVolatileDomain([L10n.preferenceKey: language], forName: UserDefaults.argumentDomain)
             precondition(L10n.language == language)
             let screens: [(String, AnyView)] = [
                 ("preparation", AnyView(ContentView(model: model, verifiedCatalog: catalog))),
+                ("agent-esim", AnyView(ContentView(model: model, verifiedCatalog: catalog, preparationSection: .agent))),
+                ("esim", AnyView(ContentView(model: model, verifiedCatalog: catalog, page: .esim))),
+                ("launcher-esim", AnyView(ContentView(model: model, verifiedCatalog: catalog, page: .display, launcherSection: .esim))),
+                ("esim-progress", AnyView(ContentView(model: model, verifiedCatalog: catalog, page: .esim))),
                 ("catalog", AnyView(ContentView(model: model, verifiedCatalog: catalog, page: .applications, applicationSection: .available))),
                 ("terminal", AnyView(ContentView(model: model, verifiedCatalog: catalog, page: .applications, applicationSection: .opkg))),
+                ("firmware-research-empty", AnyView(ZStack { StudioStyle.canvas; VStack(alignment: .leading, spacing: 18) { Text(L10n.text("Подготовка модема · Настройка подключения", "Modem preparation · Connection settings")).font(.title2); ContentView(model: model, verifiedCatalog: catalog).firmwareResearchCard; Spacer() }.padding(36) })),
+                ("firmware-research-result", AnyView(ZStack { StudioStyle.canvas; VStack(alignment: .leading, spacing: 18) { Text(L10n.text("Исследование прошивки · Пример отчёта", "Firmware research · Sample report")).font(.title2); ContentView(model: model, verifiedCatalog: catalog).firmwareResearchCard; Spacer() }.padding(36) })),
                 ("about", AnyView(ZStack {
                     StudioStyle.canvas
                     ContentView(model: model, verifiedCatalog: catalog).aboutSheet
@@ -50,7 +66,26 @@ import SwiftUI
                 }))
             ]
             for (screen, rootView) in screens {
-                let host = NSHostingView(rootView: rootView.frame(width: size.width, height: size.height))
+                model.displayPages = ModemLauncherPages(pages: [.esim, .info])
+                model.displaySavedPages = .defaultPages
+                model.displayPagesDraftEdited = true
+                model.busy = screen == "esim-progress"
+                model.esimOperationActive = model.busy
+                model.progress = 0
+                model.status = model.busy ? "eSIM · download · +15.0 s · host_http_waiting id=1 duration_ms=5000" : ""
+                model.esimMessage = model.busy ? "Ожидаю HTTPS-ответ оператора…" : "Демонстрационные данные. Подключение и операции с картой отключены."
+                model.firmwareResearchReport = screen == "firmware-research-result" ? syntheticResearch : nil
+                model.firmwareResearchMessage = screen == "firmware-research-result" ? ResearchUI.outcome("partial") : ""
+                let currentView: AnyView
+                if screen.hasPrefix("firmware-research-") {
+                    // Construct after the fixture change: a computed card is a value snapshot.
+                    currentView = AnyView(ZStack { StudioStyle.canvas; VStack(alignment: .leading, spacing: 18) {
+                        Text(screen.hasSuffix("result") ? L10n.text("Исследование прошивки · Пример отчёта", "Firmware research · Sample report") : L10n.text("Подготовка модема · Настройка подключения", "Modem preparation · Connection settings")).font(.title2)
+                        ContentView(model: model, verifiedCatalog: catalog).firmwareResearchCard
+                        Spacer()
+                    }.padding(36) })
+                } else { currentView = rootView }
+                let host = NSHostingView(rootView: currentView.frame(width: size.width, height: size.height))
                 host.frame = NSRect(origin: .zero, size: size)
                 let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless], backing: .buffered, defer: false)
                 window.isReleasedWhenClosed = false
@@ -77,6 +112,6 @@ import SwiftUI
         }
         let metadata: [String: Any] = ["source": "production SwiftUI views", "data": "synthetic fixture", "network": "none; disconnected model", "pixelSize": [1280, 900], "screens": paths]
         try JSONSerialization.data(withJSONObject: metadata, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("macos-preview-manifest.json"))
-        print("PASS: 8 production SwiftUI screens rendered without modem operations")
+        print("PASS: \(paths.count) production SwiftUI screens rendered without modem operations")
     }
 }

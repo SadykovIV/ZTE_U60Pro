@@ -1,5 +1,6 @@
 {
-  "version": "2.8.0",
-  "agent_sha256": "c50ba6b7ac6f77c581c2b657ba769f976d8d20aca0c6b7d08c9254ef2de9d346",
-  "vpn_helper_sha256": "f620dab27f951c7de2de77a89376975b51c79f57f8a8a24cec95392c9c61eea4"
+  "version": "2.7.0-esim.8",
+  "agent_sha256": "8ee8073b684613f358a5b857f7ed85ac165fc96f0d74980b04be006659ebea67",
+  "esim": true,
+  "web_download_requires_modem_internet": true
 }

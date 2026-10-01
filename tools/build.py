@@ -1,34 +1,43 @@
 #!/usr/bin/env python3
-"""Build public app and modem components; never connects to a modem."""
+"""Build public app/modem components from local sources; never contacts a modem."""
 from pathlib import Path
-import os,subprocess,hashlib,json,re,sys
-ROOT=Path(__file__).resolve().parents[1]
-RES=ROOT/'MacIMEI/Resources'
+import argparse,hashlib,importlib.util,json,re,subprocess,sys
+ROOT=Path(__file__).resolve().parents[1];RES=ROOT/'MacIMEI/Resources'
 def run(args,cwd=ROOT,env=None):
- print('+',' '.join(map(str,args)),flush=True)
+ print('+',' '.join(str(x).replace(str(ROOT),'.') for x in args),flush=True)
  subprocess.run(list(map(str,args)),cwd=cwd,env=env,check=True)
 def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()
-for name in ['Onboarding/adb','Onboarding/dropbear','SSHAccounts/doas','VPN/mihomo','VPN/dashboard-uhttpd']:
- if not (RES/name).is_file():sys.exit('Missing runtime dependency '+name+'; run python3 tools/fetch_dependencies.py')
-run([sys.executable,'ModemAgent/launcher/build.py'])
-env=os.environ.copy()
-rustup_bin=Path.home()/'.cargo/bin'
-if (rustup_bin/'rustup').exists(): env['PATH']=str(rustup_bin)+os.pathsep+env['PATH']
-# Remap panic/debug paths as well as the source checkout. No local user name in ELF.
-env['RUSTFLAGS']='--remap-path-prefix='+str(ROOT)+'=. --remap-path-prefix='+str(Path.home())+'=/build'
-env['CARGO_INCREMENTAL']='0'
-run(['cargo','build','--release','--target','aarch64-unknown-linux-musl','-p','zte-vpnctl'],ROOT/'ModemAgent',env)
-helper=sha(ROOT/'ModemAgent/target/aarch64-unknown-linux-musl/release/zte-vpnctl')
-p=ROOT/'ModemAgent/agent/src/vpn.rs';s=p.read_text();s=re.sub(r'const HELPER_SHA: &str = "[a-f0-9]+";',f'const HELPER_SHA: &str = "{helper}";',s);p.write_text(s)
-run(['cargo','build','--release','--target','aarch64-unknown-linux-musl','-p','zte-agent'],ROOT/'ModemAgent',env)
-if not (ROOT/'ModemAgent/web-app/node_modules').is_dir():run(['npm','ci'],ROOT/'ModemAgent/web-app')
-run(['npm','run','build'],ROOT/'ModemAgent/web-app')
-run([sys.executable,'MacIMEI/DeviceHelpers/build.py'])
-run([sys.executable,'MacIMEI/tools/build_host_tools.py'])
-run([sys.executable,'MacIMEI/tools/package_vpn.py'])
-# Refresh every resource manifest after all generated resources and notices settle.
-for folder in RES.iterdir():
- if not folder.is_dir() or not (folder/'SHA256.json').exists():continue
- manifest={str(p.relative_to(folder)):sha(p) for p in sorted(folder.rglob('*')) if p.is_file() and p.name!='SHA256.json'}
- (folder/'SHA256.json').write_text(json.dumps(manifest,indent=2)+'\n')
-run(['zsh','MacIMEI/build.sh'])
+def main():
+ ap=argparse.ArgumentParser();ap.add_argument('--modem-only',action='store_true');ap.add_argument('--tests',action='store_true');args=ap.parse_args()
+ spec=importlib.util.spec_from_file_location('esim_build',ROOT/'tools/esim-app/build_runtime.py');runtime=importlib.util.module_from_spec(spec);spec.loader.exec_module(runtime)
+ env=runtime.environment();logs=ROOT/'.build/esim';logs.mkdir(parents=True,exist_ok=True)
+ for name in ['Onboarding/adb','Onboarding/dropbear','SSHAccounts/doas','VPN/mihomo','VPN/dashboard-uhttpd']:
+  if not (RES/name).is_file():raise SystemExit('Missing runtime dependency '+name+'; run python3 tools/fetch_dependencies.py')
+ run([sys.executable,'ModemAgent/launcher/build.py'])
+ run(['cargo','build','--offline','--locked','--release','--target','aarch64-unknown-linux-musl','-p','zte-vpnctl'],ROOT/'ModemAgent',env)
+ helper=sha(ROOT/'ModemAgent/target/aarch64-unknown-linux-musl/release/zte-vpnctl')
+ p=ROOT/'ModemAgent/agent/src/vpn.rs';s=p.read_text();s,n=re.subn(r'const HELPER_SHA: &str = "[a-f0-9]+";',f'const HELPER_SHA: &str = "{helper}";',s)
+ if n!=1:raise SystemExit('Missing agent controller pin')
+ p.write_text(s)
+ run([sys.executable,'tools/esim-app/build_runtime.py',*(['--tests'] if args.tests else [])],env=env)
+ if args.tests:
+  run(['cargo','test','--offline','--locked','-p','zte-agent','--features','esim','--bin','zte-agent-esim'],ROOT/'ModemAgent',env)
+  run(['cargo','test','--offline','--locked','-p','zte-vpnctl'],ROOT/'ModemAgent',env)
+ run(['cargo','build','--offline','--locked','--release','--target','aarch64-unknown-linux-musl','-p','zte-agent','--features','esim','--bin','zte-agent-esim'],ROOT/'ModemAgent',env)
+ agent=ROOT/'ModemAgent/target/aarch64-unknown-linux-musl/release/zte-agent-esim';agent_sha=sha(agent)
+ for binary in [agent,ROOT/'ModemAgent/target/aarch64-unknown-linux-musl/release/zte-vpnctl',RES/'VPN/launcher.so']:
+  if str(ROOT).encode() in binary.read_bytes() or str(Path.home()).encode() in binary.read_bytes():raise SystemExit('Host path leaked into ELF')
+ web=ROOT/'ModemAgent/web-app'
+ if not (web/'node_modules').is_dir():run(['npm','ci','--ignore-scripts','--no-audit','--no-fund'],web)
+ if args.tests:
+  run(['npm','test'],web);run(['npm','run','lint'],web)
+ run(['npm','run','build'],web)
+ run([sys.executable,'tools/esim-app/package_permanent.py','--agent',agent,'--sha256',agent_sha])
+ run([sys.executable,'tools/esim-app/package_resources.py','--agent',agent,'--sha256',agent_sha])
+ receipt={'agent_version':'2.7.0-esim.8','public_source_rebuild':True,'hardware_tested':False,'agent_sha256':agent_sha,'vpnctl_sha256':helper,'launcher_sha256':sha(RES/'VPN/launcher.so'),'dashboard_installer_sha256':sha(RES/'AgentInstallation/dashboard.sh'),'dashboard_index_sha256':sha(RES/'AgentDashboard/index.html'),'esim_manifest_sha256':sha(RES/'Esim/SHA256.json')}
+ (logs/'public-modem-build.json').write_text(json.dumps(receipt,indent=2)+'\n');print(json.dumps(receipt,indent=2))
+ if not args.modem_only:
+  run([sys.executable,'MacIMEI/DeviceHelpers/build.py'])
+  run([sys.executable,'MacIMEI/tools/build_host_tools.py'])
+  run(['zsh','MacIMEI/build.sh'])
+if __name__=='__main__':main()

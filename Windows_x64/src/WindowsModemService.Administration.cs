@@ -28,6 +28,19 @@ public sealed partial class WindowsModemService
             ["skip_firmware_check"] = skipFirmware ? "true" : "false",
         };
         var message = await ConnectAsync(connection,ct);
+        if (setup.FirmwareHash == DeviceFeatureService.FirmwareHash)
+        {
+            try
+            {
+                if (await _features!.InstallDashboardForCurrentAgentAsync(ct))
+                    return "Предварительная подготовка завершена. Постоянный агент eSIM и веб-панель готовы. " + message;
+                return "Подключение готово. Существующий агент сохранён; обновите агент и веб-панель в разделе «Установка агента». " + message;
+            }
+            catch (Exception) when (!ct.IsCancellationRequested)
+            {
+                throw new InvalidOperationException("SSH готов, но установка веб-панели не подтверждена. Проверьте состояние и выполните «Установить / обновить» в разделе агента.");
+            }
+        }
         return "Предварительная подготовка завершена. " + message;
     }
 
@@ -47,7 +60,7 @@ public sealed partial class WindowsModemService
             {
                 var status = await _features!.InstallAgentAsync(ct);
                 _snapshot = _snapshot with { Agent = DescribeAgent(status) };
-                return _snapshot.Agent!;
+                return "Постоянный агент eSIM и веб-панель установлены. " + _snapshot.Agent!;
             }
             case ModemOperation.RestoreAgent:
             {
@@ -179,7 +192,9 @@ public sealed partial class WindowsModemService
     private static string DescribeAgent(AgentInstallationStatus status)
         => status.RecoveryPending ? "Требуется восстановление агента" :
             status.Hash == "absent" ? "Агент не установлен" :
-            status.Running ? "Агент установлен и запущен" : "Агент установлен, но не запущен";
+            status.Version is null ? (status.Running ? "Неизвестная сборка агента · запущен" : "Неизвестная сборка агента · не запущен") :
+            status.IsCurrent ? (status.Running ? $"Агент {status.Version} · запущен" : $"Агент {status.Version} · не запущен") :
+            status.Running ? $"Агент {status.Version} · предыдущая сборка · запущен" : $"Агент {status.Version} · предыдущая сборка · не запущен";
     private static string DescribeLocalization(ScreenLocalizationStatus status)
         => status.State switch {
             "enabled" => "Русификация включена (" + status.Language + ").",
@@ -201,7 +216,7 @@ public sealed partial class WindowsModemService
             connectionMode = _snapshot.ConnectionMode,
             model = _snapshot.Model,
             firmware = _snapshot.Firmware,
-            operations = logs.Select(x => new { x.Timestamp, x.Level, operation = x.Message.Split(':',2)[0] }).ToArray(),
+            operations = logs.Select(x => new { x.Timestamp, x.Level, operation = x.Message.StartsWith("eSIM[", StringComparison.Ordinal) ? x.Message : x.Message.Split(':',2)[0] }).ToArray(),
             note = "Пароли, команды, ответы модема, IMEI и CID в этот отчёт не включены."
         };
         await using var output = new FileStream(path,FileMode.CreateNew,FileAccess.Write,FileShare.None,4096,FileOptions.WriteThrough);

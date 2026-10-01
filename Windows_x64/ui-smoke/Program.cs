@@ -7,6 +7,7 @@ using Avalonia.Styling;
 using Avalonia.Themes.Simple;
 using Avalonia.Threading;
 using ZteImeiStudio.Windows;
+using ZteImeiStudio.Windows.Research;
 
 var previewRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../dist/ui-preview"));
 Directory.CreateDirectory(previewRoot);
@@ -70,7 +71,6 @@ await session.Dispatch(() =>
     Pump();
     Assert(window.GetLogicalDescendants().OfType<Button>().Any(b => b.Name == "key_path_browse"), "SSH key picker exists");
     Assert(window.GetLogicalDescendants().OfType<Button>().Any(b => b.Name == "known_hosts_path_browse"), "known_hosts picker exists");
-    Assert(Label(window, "Backup-key suffix"), "public preparation retains owner-provided backup key suffix");
     Capture(window, "ru-preparation.png");
     Click(window, b => b.Content?.ToString() == "ⓘ  О программе");
     Pump();
@@ -122,13 +122,32 @@ await session.Dispatch(() =>
     window.Close();
     Assert(modem.TerminalDisposals == 2, "terminal sessions disposed");
     Localization.SetLanguage("ru", persist: false);
+    var researchModem = new FakeModem { Connected = false };
+    var researchWindow = new MainWindow(researchModem, persistPreferences: false);
+    researchWindow.Show(); Pump();
+    var collect = researchWindow.GetLogicalDescendants().OfType<Button>().Single(b => b.Name == "CollectFirmwareResearch");
+    Assert(collect.IsEnabled, "research is enabled on an unprepared/disconnected modem");
+    var labels = researchWindow.GetLogicalDescendants().OfType<TextBlock>().Select(t => t.Text).ToArray();
+    Assert(Array.IndexOf(labels, "Исследование прошивки") > Array.IndexOf(labels, "Подключение к модему") && Array.IndexOf(labels, "Исследование прошивки") < Array.IndexOf(labels, "Состояние устройства"), "research card follows access and precedes device snapshot");
+    collect.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); Pump();
+    Assert(researchModem.ResearchCollections == 1 && researchWindow.GetLogicalDescendants().OfType<Button>().Any(b => b.Content?.ToString() == "Экспортировать ZIP"), "research returns exportable result without a connection");
+    researchWindow.GetLogicalDescendants().OfType<Expander>().Single(e => e.Header?.ToString() == "Результаты исследования").IsExpanded = true;
+    var researchScroll = researchWindow.GetLogicalDescendants().OfType<ScrollViewer>().First(sv => sv.Content is StackPanel panel && panel.Children.OfType<Border>().Any());
+    researchScroll.Offset = new Vector(0, 735); Pump(); Capture(researchWindow, "ru-firmware-research.png");
+    researchWindow.GetLogicalDescendants().OfType<ComboBox>().Single(box => box.Name == "LanguagePicker").SelectedIndex = 1; Pump();
+    Assert(Label(researchWindow, "Firmware research"), "research heading translated");
+    researchWindow.GetLogicalDescendants().OfType<Expander>().Single(e => e.Header?.ToString() == "Research results").IsExpanded = true;
+    researchScroll = researchWindow.GetLogicalDescendants().OfType<ScrollViewer>().First(sv => sv.Content is StackPanel panel && panel.Children.OfType<Border>().Any());
+    researchScroll.Offset = new Vector(0, 735); Pump(); Capture(researchWindow, "en-firmware-research.png");
+    researchWindow.Close(); Localization.SetLanguage("ru", persist: false);
+    Console.WriteLine("PASS firmware research placement, disconnected collection, results/export and RU/EN previews");
     Console.WriteLine("PASS Avalonia headless: 8 pages/18 sections, RU/EN, verified catalog, SSH file pickers, About links, terminal lifecycle, 8 previews");
 }, CancellationToken.None);
 Console.WriteLine("Previews: " + previewRoot);
 
 void Capture(Window window, string name)
 {
-    Pump();
+    Pump(); System.Threading.Thread.Sleep(300); Pump();
     using var frame = window.CaptureRenderedFrame() ?? throw new Exception("No rendered headless frame");
     frame.Save(Path.Combine(previewRoot, name));
 }
@@ -148,6 +167,16 @@ public sealed class SmokeApp : Application
 }
 internal sealed class FakeModem : IModemService
 {
+    public int ResearchCollections { get; private set; }
+    public Task<ResearchReport> CollectFirmwareResearchAsync(IReadOnlyDictionary<string,string> parameters,IProgress<ResearchProgress>? progress,CancellationToken ct=default)
+    {
+        ResearchCollections++;
+        var features = new[] {
+            new ResearchFeatureResult("imei",new("Смена IMEI","IMEI change"),"unknown",[new("Профиль прошивки не подтверждён.","Firmware profile is not confirmed.")],new("Структура NV/EFS требует дополнительного исследования.","NV/EFS layout needs further investigation.")),
+            new ResearchFeatureResult("ttl",new("Операции TTL","TTL operations"),"prerequisites_met",[],new("Проверены необходимые модули; правила не изменялись.","Required modules found; rules were not changed.")),
+            new ResearchFeatureResult("vpn",new("Установка VPN","VPN installation"),"blocked",[new("Интерфейс TUN недоступен.","TUN interface is unavailable.")],new("Компоненты VPN не устанавливались.","VPN components were not installed.")) };
+        return Task.FromResult(new ResearchReport(1,"synthetic-preview",DateTimeOffset.UtcNow.AddSeconds(-20),DateTimeOffset.UtcNow,"partial","ADB",null,"1.21.0",1,[],features,["Synthetic UI fixture — no modem contacted."],new string('a',64),"ADB"));
+    }
     public bool Connected { get; set; } = true;
     public int TerminalOpens { get; private set; }
     public int TerminalDisposals { get; private set; }

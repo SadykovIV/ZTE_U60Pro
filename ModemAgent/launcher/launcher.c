@@ -2,6 +2,8 @@
  * run on the stock LVGL thread; the worker only exchanges plain snapshots. */
 #define _GNU_SOURCE
 #include "backend.h"
+#include "esim-backend.h"
+#include "page-layout.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -116,12 +118,19 @@ static void format_info(const struct snapshot *s,int ru,struct info_text *out){
 #define CHAIN_HOR 256
 #define CHAIN_VER 512
 #define BUBBLE 16384
-static void *mainform,*pages[2],*dots[4],*titles[2];
+static struct page_layout page_order={3,{PAGE_INFO,PAGE_VPN,PAGE_ESIM}};
+static int page_count=5;
+static int page_kind(int page){return page>=3&&page<=page_count?page_order.ids[page-3]:-1;}
+static void *mainform,*pages[3],*dots[5],*titles[3];
 static void *info_cards[INFO_MAX_SELECTED],*info_titles[INFO_MAX_SELECTED],*info_values[INFO_MAX_SELECTED],*info_status,*info_scroll;
 static struct info_layout rendered_layout;static int has_rendered_layout;
 static void *wifi_card,*wifi_title,*wifi_ssid,*wifi_switch,*profile_heading,*profile_cards[3],*profile_labels[3],*profile_marks[3];
 static void *previous,*next,*previous_label,*next_label,*notice,*confirm,*confirm_title,*confirm_name,*confirm_hint,*confirm_yes,*confirm_no;
-static void *allocs[128],*timer;static int nalloc,current=1,offset,last_language=-1;
+static void *esim_scope,*esim_cards[3],*esim_labels[3],*esim_marks[3],*esim_prev,*esim_next,*esim_prev_label,*esim_next_label,*esim_notice,*esim_refresh_label;
+static void *esim_confirm,*esim_confirm_title,*esim_confirm_name,*esim_confirm_hint,*esim_yes,*esim_no;
+static struct esim_snapshot esim_shown;static unsigned esim_generation=(unsigned)-1,esim_selected_generation;
+static int esim_offset;static char esim_selected_id[21],esim_selected_name[129];
+static void *allocs[160],*timer;static int nalloc,current=1,offset,last_language=-1;
 static struct snapshot shown;static unsigned last_generation=(unsigned)-1;
 static int pending_wifi=-1;
 static char selected_id[37],selected_name[257];
@@ -131,7 +140,7 @@ static void pos(void *o,int x,int y){F(0x537450,void,void*,int,int)(o,x,y);}
 static void size(void *o,int w,int h){F(0x5382b4,void,void*,int,int)(o,w,h);}
 static void flag(void *o,unsigned f,int on){F(on?0x42e3c0:0x42e4f4,void,void*,unsigned)(P(o,8),f);}
 static void color(void *o,int offset,int text){unsigned char *p=(void*)(uintptr_t)(0xe80214+offset);F(text?0x52f904:0x53793c,void,void*,int,int,int,int)(o,p[0],p[1],p[2],255);}
-static void *objmem(size_t n){void *p=calloc(1,n);if(!p||nalloc>=128)_exit(70);allocs[nalloc++]=p;return p;}
+static void *objmem(size_t n){void *p=calloc(1,n);if(!p||nalloc>=160)_exit(70);allocs[nalloc++]=p;return p;}
 static void text(void *o,const char *s){struct{const char *p;size_t n;size_t cap;size_t pad;}str={s,strlen(s),strlen(s),0};F(0x52fa80,void,void*,void*,int)(o,&str,0);}
 static void *label(void *p,int x,int y,int w,int h,int font,const char *s){
  void *o=objmem(80);struct{const char *p;size_t n;size_t cap;size_t pad;}str={"",0,0,0};
@@ -143,14 +152,24 @@ static void *panel(void *p,int x,int y,int w,int h,int card){
  if(card){color(o,12,0);F(0x537868,void,void*,int)(o,12);}return o;
 }
 static void update_dots(void *form,int page){
- if(form!=mainform||!dots[3]){F(0x4bc1d0,void,void*,int)(form,page);return;}
+ if(form!=mainform||!dots[4]){F(0x4bc1d0,void,void*,int)(form,page);return;}
  current=page;
- for(int i=0;i<4;i++){int active=i==page-1;pos(dots[i],134+16*i,active?439:440);size(dots[i],active?8:6,active?8:6);F(0x537868,void,void*,int)(dots[i],active?4:3);color(dots[i],active?168:172,0);}
+ for(int i=0;i<5;i++){int active=i==page-1;flag(dots[i],HIDDEN,i>=page_count);pos(dots[i],156-8*(page_count-1)+16*i,active?439:440);size(dots[i],active?8:6,active?8:6);F(0x537868,void,void*,int)(dots[i],active?4:3);color(dots[i],active?168:172,0);}
 }
 static void goto_page(int page,int anim){
- if(!mainform)return;if(page<1)page=1;if(page>4)page=4;
+ if(!mainform)return;if(page<1)page=1;if(page>page_count)page=page_count;
  *((unsigned char*)mainform+840)=page;update_dots(mainform,page);F(0x538080,void,void*,int,int)(P(mainform,88),(page-1)*320,anim);
- if(page>=3)backend_refresh();
+ if(page_kind(page)==PAGE_INFO||page_kind(page)==PAGE_VPN)backend_refresh();if(page_kind(page)==PAGE_ESIM)esim_refresh();
+}
+static void apply_pages(void){
+ struct page_layout next;page_layout_read(&next);
+ if(!memcmp(&next,&page_order,sizeof next))return;
+ int kind=page_kind(current),target=current<=2?current:1;
+ page_order=next;page_count=2+page_order.count;
+ for(int id=0;id<3;id++)flag(pages[id],HIDDEN,1);
+ for(int i=0;i<page_order.count;i++){int id=page_order.ids[i];pos(pages[id],(i+2)*320,0);flag(pages[id],HIDDEN,0);if(id==kind)target=i+3;}
+ if(page_kind(target)!=PAGE_ESIM)esim_selected_id[0]=0;
+ goto_page(target,0);
 }
 static void scroll_release(void *form){
  if(form!=mainform){F(0x4bd9ec,void,void*)(form);return;}
@@ -171,6 +190,16 @@ static void wifi_changed(int enabled,void *unused){
 }
 static void clicked(void *event){
  int id=(int)(intptr_t)F(0x429128,void*,void*)(event);
+ if(id>=60){
+  if(esim_shown.busy)return;
+  if(id>=60&&id<63){int i=esim_offset+id-60;if(esim_shown.valid&&i<esim_shown.count){snprintf(esim_selected_id,sizeof esim_selected_id,"%s",esim_shown.profiles[i].iccid);snprintf(esim_selected_name,sizeof esim_selected_name,"%s",esim_shown.profiles[i].name);esim_selected_generation=esim_shown.generation;}}
+  else if(id==70){esim_offset-=3;if(esim_offset<0)esim_offset=0;}
+  else if(id==71&&esim_offset+3<esim_shown.count)esim_offset+=3;
+  else if(id==80&&esim_selected_id[0]){if(!esim_enable(esim_selected_id,esim_selected_generation))esim_refresh();esim_selected_id[0]=0;}
+  else if(id==81)esim_selected_id[0]=0;
+  else if(id==82){esim_selected_id[0]=0;esim_refresh();}
+  esim_snapshot(&esim_shown);render();return;
+ }
  if(shown.busy)return;
  if(id>=10&&id<13){int i=offset+id-10;if(i<shown.count&&!shown.profiles[i].active){snprintf(selected_id,sizeof selected_id,"%s",shown.profiles[i].id);snprintf(selected_name,sizeof selected_name,"%s",shown.profiles[i].name);}}
  else if(id==20){offset-=3;if(offset<0)offset=0;}
@@ -184,7 +213,36 @@ static void *button(void *parent,int x,int y,int w,int h,int id,void **caption){
  F(0x4291a0,void*,void*,void(*)(void*),int,void*)(P(o,8),clicked,7,(void*)(intptr_t)id);
  *caption=label(o,12,10,w-24,h-14,19,"");return o;
 }
+static const char *esim_stage(void){
+ const char *s=esim_shown.stage;
+ if(!strcmp(s,"radio_offline"))return tr("Автономный режим...","Entering flight mode...");
+ if(!strcmp(s,"radio_online"))return tr("Включение радио...","Restoring radio...");
+ if(!strcmp(s,"reading_modem"))return tr("Проверка SIM модемом...","Checking modem SIM...");
+ if(!strcmp(s,"enabling_profile")||!strcmp(s,"enabling"))return tr("Переключение профиля...","Switching profile...");
+ return tr("Чтение карты / проверка...","Reading card / checking...");
+}
+static void render_esim(void){
+ text(titles[2],"eSIM");text(esim_scope,tr("Физическая eUICC в SIM-слоте","Removable eUICC in SIM slot"));
+ if(esim_offset>=esim_shown.count)esim_offset=0;
+ for(int i=0;i<3;i++){
+  int idx=esim_offset+i;flag(esim_cards[i],HIDDEN,!esim_shown.cached||idx>=esim_shown.count);
+  flag(esim_cards[i],CLICKABLE,esim_shown.valid&&!esim_shown.busy);
+  if(idx<esim_shown.count){char caption[192];struct esim_profile *p=&esim_shown.profiles[idx];const char *tail=p->iccid+strlen(p->iccid)-4;
+   snprintf(caption,sizeof caption,"%s\n%s · ...%s",p->name,!esim_shown.valid?tr("Сохранённый список","Saved list"):p->enabled?tr("Активен","Active"):tr("Выбрать","Select"),tail);text(esim_labels[i],caption);flag(esim_marks[i],HIDDEN,!p->enabled||!esim_shown.valid);
+  }
+ }
+ flag(esim_prev,HIDDEN,esim_shown.count<=3||!esim_shown.cached);flag(esim_next,HIDDEN,esim_shown.count<=3||!esim_shown.cached);
+ text(esim_prev_label,tr("Назад","Previous"));text(esim_next_label,tr("Далее","Next"));
+ text(esim_refresh_label,tr("Обновить","Refresh"));
+ const char *error_text=!strcmp(esim_shown.error_code,"radio_restore_failed")?tr("Радио не включилось.\nПроверьте связь в приложении","Radio did not resume.\nCheck the modem in the app"):!strcmp(esim_shown.error_code,"card_power_restore_failed")?tr("Включение SIM не подтверждено.\nПерезагрузите модем","SIM power was not confirmed.\nRestart the modem"):!strcmp(esim_shown.error_code,"card_reset_failed")?tr("Перезапуск SIM не подтверждён.\nОбновите и проверьте профиль","SIM restart was not confirmed.\nRefresh and check the profile"):!strcmp(esim_shown.error_code,"card_cleanup_unknown")?tr("Состояние SIM неизвестно.\nПерезагрузите модем","SIM channel state unknown.\nRestart the modem"):!strcmp(esim_shown.error_code,"card_busy")?tr("Доступ к SIM заблокирован.\nНет операций — перезапустите","SIM access is locked.\nIf idle, restart the modem"):!strcmp(esim_shown.error_code,"card_not_ready")?tr("SIM ещё не готова.\nПодождите и обновите список","SIM is not ready yet.\nWait and refresh the list"):!strcmp(esim_shown.error_code,"card_open_rejected")?tr("SIM отклонила чтение.\nПодождите и обновите список","SIM rejected the read.\nWait and refresh the list"):esim_shown.mutation_failed?tr("Переключение не подтверждено.\nОбновите и проверьте профиль","Switch was not confirmed.\nRefresh and check the profile"):!strcmp(esim_shown.error_code,"esim_busy")?tr("Карта занята другим запросом.\nОбновите после его завершения","Card busy with another request.\nRefresh after it finishes"):!strcmp(esim_shown.error_code,"snapshot_cleanup_failed")?tr("Чтение карты не завершено.\nНажмите «Обновить»","Card read did not finish.\nTap Refresh"):tr("Не удалось обновить список.\nНажмите «Обновить»","Could not refresh the list.\nTap Refresh");
+ text(esim_notice,esim_shown.busy?esim_stage():esim_shown.error?error_text:!esim_shown.valid?tr("Ожидание агента eSIM","Waiting for eSIM agent"):!esim_shown.count?tr("На карте нет профилей","No profiles on card"):esim_shown.verified?tr("SIM перечитана модемом","Modem SIM verified"):tr("Нажмите профиль для выбора","Tap a profile to select"));
+ int active=0;for(int i=0;i<esim_shown.count;i++)if(!strcmp(esim_shown.profiles[i].iccid,esim_selected_id))active=esim_shown.profiles[i].enabled;
+ flag(esim_confirm,HIDDEN,!esim_selected_id[0]);text(esim_confirm_title,active?tr("Перечитать SIM?","Reread this SIM?"):tr("Выбрать профиль?","Select this profile?"));
+ text(esim_confirm_name,esim_selected_name);text(esim_confirm_hint,tr("Связь прервётся: автономный\nрежим, затем радио включится","Mobile data will pause: flight\nmode, then radio resumes"));
+ text(esim_yes,active?tr("Перечитать","Reread"):tr("Выбрать","Select"));text(esim_no,tr("Отмена","Cancel"));esim_generation=esim_shown.generation;
+}
 static void render(void){
+ render_esim();
  struct info_text info;format_info(&shown,tr_ru(),&info);
  text(titles[0],tr("О модеме","About modem"));text(info_status,info.status);
  struct info_layout layout=shown.layout;if(!info_layout_valid(&layout))info_layout_default(&layout);
@@ -220,10 +278,19 @@ static void render(void){
 }
 static void tick(void *unused){
  (void)unused;if(!mainform||*(unsigned char*)0x2287598)return;
- int fd=open("/tmp/zte-launcher/page",O_RDONLY|O_NOFOLLOW|O_CLOEXEC);if(fd>=0){char p=0;ssize_t n=read(fd,&p,1);close(fd);unlink("/tmp/zte-launcher/page");if(n==1&&p>='1'&&p<='4')goto_page(p-'0',0);}
+ apply_pages();
+ int fd=open("/tmp/zte-launcher/page",O_RDONLY|O_NOFOLLOW|O_CLOEXEC);if(fd>=0){
+  char name[16]={0};ssize_t n=read(fd,name,sizeof name-1);close(fd);unlink("/tmp/zte-launcher/page");
+  if(n==1&&name[0]>='1'&&name[0]<='0'+page_count)goto_page(name[0]-'0',0);
+  else if(n>0){
+   if(!strcmp(name,"home"))goto_page(1,0);
+   const char *const names[]={"info","vpn","esim"};
+   for(int i=0;i<page_order.count;i++)if(!strcmp(name,names[page_order.ids[i]])){goto_page(i+3,0);break;}
+  }
+ }
  unsigned old_stale=shown.telemetry.stale,old_valid=shown.telemetry.valid;
- backend_snapshot(&shown);if(shown.generation!=last_generation||shown.telemetry.stale!=old_stale||shown.telemetry.valid!=old_valid||tr_ru()!=last_language)render();
- static unsigned ticks;if(++ticks%10==0&&current>=3&& !*(unsigned char*)0x2287598&&F(0x538658,int,void*)(mainform))backend_refresh();
+ esim_snapshot(&esim_shown);backend_snapshot(&shown);if(esim_shown.generation!=esim_generation||shown.generation!=last_generation||shown.telemetry.stale!=old_stale||shown.telemetry.valid!=old_valid||tr_ru()!=last_language)render();
+ static unsigned ticks;if(++ticks%10==0&&current>=3&& !*(unsigned char*)0x2287598&&F(0x538658,int,void*)(mainform)){if(page_kind(current)==PAGE_ESIM){if(!esim_selected_id[0])esim_poll();}else backend_refresh();}
 }
 static void destroy(void *form){
  if(form==mainform){
@@ -235,9 +302,9 @@ static void destroy(void *form){
 }
 static void create(void *form){
  F(0x4bd900,void,void*)(form);if(mainform==form)return;
- mainform=form;current=1;offset=0;selected_id[0]=0;has_rendered_layout=0;
+ mainform=form;current=1;offset=0;esim_offset=0;esim_selected_id[0]=0;selected_id[0]=0;has_rendered_layout=0;
  void *parent=P(form,88);
- pages[0]=panel(parent,640,0,320,432,0);pages[1]=panel(parent,960,0,320,432,0);
+ pages[0]=panel(parent,640,0,320,432,0);pages[1]=panel(parent,960,0,320,432,0);pages[2]=panel(parent,1280,0,320,432,0);
  titles[0]=label(pages[0],16,12,288,34,24,"");info_status=label(pages[0],16,50,288,20,14,"");
  info_scroll=panel(pages[0],0,INFO_VIEWPORT_Y,320,INFO_VIEWPORT_HEIGHT,0);
  flag(info_scroll,CLICKABLE|SCROLLABLE|CHAIN_HOR,1);flag(info_scroll,CHAIN_VER|BUBBLE,0);
@@ -259,11 +326,17 @@ static void create(void *form){
  notice=label(pages[1],16,405,288,25,16,"");
  confirm=panel(pages[1],8,156,304,247,0);confirm_title=label(confirm,8,14,288,32,22,"");confirm_name=label(confirm,8,57,288,70,20,"");confirm_hint=label(confirm,8,132,288,28,17,"");
  button(confirm,6,186,146,48,30,&confirm_yes);button(confirm,158,186,140,48,31,&confirm_no);
- dots[0]=P(form,848);dots[1]=P(form,856);dots[2]=label(form,0,0,8,8,12,"");dots[3]=label(form,0,0,8,8,12,"");update_dots(form,1);
- backend_start();backend_snapshot(&shown);render();
+ titles[2]=label(pages[2],16,12,144,34,24,"eSIM");button(pages[2],178,8,128,38,82,&esim_refresh_label);esim_scope=label(pages[2],16,52,288,40,16,"");
+ for(int i=0;i<3;i++){esim_cards[i]=button(pages[2],14,104+70*i,292,62,60+i,&esim_labels[i]);pos(esim_labels[i],16,5);size(esim_labels[i],264,54);F(0x52fa04,void,void*,int)(esim_labels[i],16);F(0x52f73c,void,void*,int)(esim_labels[i],1);esim_marks[i]=panel(esim_cards[i],0,8,5,46,0);color(esim_marks[i],100,0);}
+ esim_prev=button(pages[2],14,320,140,40,70,&esim_prev_label);esim_next=button(pages[2],166,320,140,40,71,&esim_next_label);esim_notice=label(pages[2],16,371,288,58,16,"");
+ esim_confirm=panel(pages[2],8,99,304,260,0);esim_confirm_title=label(esim_confirm,8,14,288,32,22,"");esim_confirm_name=label(esim_confirm,8,56,288,60,20,"");esim_confirm_hint=label(esim_confirm,8,125,288,55,16,"");
+ button(esim_confirm,6,198,146,48,80,&esim_yes);button(esim_confirm,158,198,140,48,81,&esim_no);
+ dots[0]=P(form,848);dots[1]=P(form,856);dots[2]=label(form,0,0,8,8,12,"");dots[3]=label(form,0,0,8,8,12,"");dots[4]=label(form,0,0,8,8,12,"");update_dots(form,1);
+ page_order=(struct page_layout){255,{0}};page_count=2;apply_pages();
+ backend_start();esim_start();esim_snapshot(&esim_shown);backend_snapshot(&shown);render();
  timer=F(0x481428,void*,void(*)(void*),unsigned,void*)(tick,500,NULL);
  int fd=open("/tmp/zte-launcher/ready",O_WRONLY|O_CREAT|O_TRUNC|O_NOFOLLOW,0600);if(fd>=0){dprintf(fd,"%ld\n",(long)getpid());close(fd);}
- fprintf(stderr,"launcher: four native pages created\n");
+ fprintf(stderr,"launcher: configured native pages created\n");
 }
 static int hook(uintptr_t addr,uintptr_t before,void *after){
  if(*(uintptr_t*)addr!=before)return -1;uintptr_t page=addr&~(uintptr_t)4095;

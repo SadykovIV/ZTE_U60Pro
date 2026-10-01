@@ -1,0 +1,88 @@
+{
+  "agent_version": "2.7.0-esim.8",
+  "agent_sha256": "8ee8073b684613f358a5b857f7ed85ac165fc96f0d74980b04be006659ebea67",
+  "lpac_version": "2.3.0 + pinned stdio backports",
+  "lpac_commit": "c2fcf5e4b21c712d54e35a11da2ad9ad134fb821",
+  "lpac_linux_sha256": "92aaeb96bd02e8f3e7ab9847b15e3fae31795b244fcab92f70b595719b18718d",
+  "qmi_bridge_sha256": "d6c2b0b6946bafe0b89d5bf1f5a64069ea33cb34fd25625292cdbd287a137508",
+  "qmi_component": {
+    "component": "QMI/ES10 transport",
+    "license_status": "license_unspecified",
+    "notice": "COMPONENT-NOTICE.txt",
+    "scope": "Current adapted source identities; no license grant or claim of sole authorship.",
+    "files": [
+      {
+        "path": "tools/removable-euicc/device/src/qmi/mod.rs",
+        "sha256": "8e26620f5aee699435a6c7dbd10f8291582d11637c023edfcf6b29420a260de1",
+        "size": 107
+      },
+      {
+        "path": "tools/removable-euicc/device/src/qmi/qrtr.rs",
+        "sha256": "efe64b5a3e1b922bd5c12744fc50c8645c186abca91cc98fb759e8d0ecce589d",
+        "size": 11444
+      },
+      {
+        "path": "tools/removable-euicc/device/src/qmi/tlv.rs",
+        "sha256": "d4a4f4431fb8f94ce0ba773197429847ad48e862e9eb6161569eda502f406351",
+        "size": 5791
+      },
+      {
+        "path": "tools/removable-euicc/device/src/qmi/uim.rs",
+        "sha256": "63ab27d583a08de9660ad2e23c3d4d0b208f3903c17170ddb738f564faccd552",
+        "size": 15300
+      },
+      {
+        "path": "tools/removable-euicc/device/src/euicc/bertlv.rs",
+        "sha256": "e55401c24d2b24abbfc9ded72096fac02c0df7f1b06014c6261fcb6f078ab8e4",
+        "size": 6432
+      },
+      {
+        "path": "tools/removable-euicc/device/src/euicc/es10.rs",
+        "sha256": "68bcfbaf6548c1a91a0c85cb260e7bca0ac830b733e8f51228b72c4e36a71f63",
+        "size": 12967
+      },
+      {
+        "path": "ModemAgent/agent/src/esim/radio_qmi/qrtr.rs",
+        "sha256": "597847fd7e3a19afa36d61e468367d10b51e3e708ea8fd394b6ca9d7279ca712",
+        "size": 16230
+      },
+      {
+        "path": "ModemAgent/agent/src/esim/radio_qmi/tlv.rs",
+        "sha256": "fac9705068d167995ed64123ea3337acbf70087e95d0180d90a821a4055eabb8",
+        "size": 6016
+      }
+    ]
+  },
+  "qmi_component_manifest_sha256": "75700b88a17d6bd0c154034f8f9d3b4b030443316bf814dbf31c458a3c6734a5",
+  "license_status": {
+    "qmi_es10": "license_unspecified"
+  },
+  "archived_dependency_snapshot": {
+    "path": "tools/dependencies.json",
+    "source_ref": "da091fb7e6af804b81d51b913c20eb848303982e",
+    "sha256": "29c00a9cc4bd76f5190141be668230acf00ad008871fad72a200e17f40d4883b"
+  },
+  "source_archive_files": 435,
+  "source_archive_sha256": "2961909d723e1c7a6e8cd497e8ef40bac837bafe3cd5b6e6f4ab6cea6b991a51",
+  "gsma_pem_sha256": "7364a2ac4d2b5f77c1b83ee7e1c535e8fc806c67ee42e73ad97c35464d203477",
+  "gsma_roots": [
+    {
+      "file": "gsma-rsp2-root-ci1.pem",
+      "subject": "GSM Association - RSP2 Root CI1",
+      "der_sha256": "5e3e91fd454327c3af5d32a7a73bbc59fe43aa7d85fd32d5db44423f80a56bb3",
+      "pem_sha256": "01374ed6bc89ffa446d9dd38d52a8280624c5add811ba9dee7bea0bdc14b26e9",
+      "source": "https://www.gsma.com/solutions-and-impact/technologies/internet-of-things/wp-content/uploads/2017/03/Symantec_GSMA_RSPv2-Root-CI1.txt",
+      "production": true
+    },
+    {
+      "file": "oiste-gsma-ci-g1.pem",
+      "subject": "OISTE GSMA CI G1",
+      "der_sha256": "9c9fa2e94602c260137122d9704d79993a6ef6d067ce0999ec2f4c109dd7a1a2",
+      "pem_sha256": "94fbb56b36263619cf85386d5f7e927f05de3deb15bc7275d167f0008428feef",
+      "source": "https://www.gsma.com/solutions-and-impact/technologies/esim/wp-content/uploads/2024/01/CERT_CI_SIG_OISTE.pem_.zip",
+      "production": true
+    }
+  ],
+  "scope": "physical removable eUICC; 9eSIM V0; MU5250 B31; SSH",
+  "profile_mutations_hardware_tested_in_desktop_release": false
+}

@@ -38,8 +38,8 @@ private final class TestSuite {
 private func sampleRecords() -> [Data] {
     var first = Data(repeating: 0xa5, count: 128)
     var second = Data(repeating: 0x5a, count: 128)
-    first.replaceSubrange(0..<9, with: [0x08, 0x4a, 0x09, 0x51, 0x24, 0x30, 0x32, 0x57, 0x81])
-    second.replaceSubrange(0..<9, with: [0x08, 0x4a, 0x09, 0x51, 0x24, 0x30, 0x32, 0x57, 0x62])
+    first.replaceSubrange(0..<9, with: [0x08, 0x3a, 0x35, 0x94, 0x00, 0x86, 0x07, 0x21, 0x22])
+    second.replaceSubrange(0..<9, with: [0x08, 0x3a, 0x35, 0x94, 0x00, 0x86, 0x07, 0x21, 0x03])
     return [first, second]
 }
 
@@ -251,19 +251,12 @@ private final class EngineFixture {
 @main
 struct AppTests {
     static func main() throws {
-        var config = Data(repeating: 0, count: 15073)
-        func put(_ at: Int, _ value: UInt32) {
-            for i in 0..<4 { config[at+i] = UInt8(truncatingIfNeeded: value >> (8*i)) }
+        guard CommandLine.arguments.count == 2 else {
+            print("Usage: AppTests /path/to/config.original.bin")
+            exit(2)
         }
-        put(0, 0x78563412); put(4, 249); put(8, 15073)
-        var offset = 16
-        for i in 0..<249 {
-            let length = i < 4 ? 93 : i == 4 ? 95 : i == 5 ? 17 : i == 248 ? 291 : 59
-            put(offset, UInt32(i == 5 ? 102 : 1000+i)); put(offset+4, UInt32(length)); put(offset+8, 0x18080820)
-            for j in 16..<length { config[offset+j] = UInt8(truncatingIfNeeded: i+7*j) }
-            offset += length
-        }
-        config[499] = 0; put(15069, 0x21436587); put(12, ConfigFile.crc(config))
+        // The existing private config is read from outside the application/test source tree.
+        let config = try Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[1]))
         let tests = TestSuite()
 
         tests.run("Firmware override: session-only, absent from saved settings and journals") {
@@ -301,7 +294,7 @@ struct AppTests {
             let fixture = try EngineFixture(config: config, skipFirmwareCheck: true)
             fixture.remote.firmwareHash = String(repeating: "a", count: 64)
             fixture.remote.allowWrites = true
-            let result = try fixture.engine.locked { try fixture.engine.begin(targets: ["490154203237526", "490154203237534"]) }
+            let result = try fixture.engine.locked { try fixture.engine.begin(targets: ["353490068701230", "353490068701248"]) }
             try check(result.identity.firmwareHash == fixture.remote.firmwareHash && fixture.remote.rebootCommands.count == 2, "Unsafe identity across reboots")
             let items = try FileManager.default.contentsOfDirectory(at: fixture.engine.backupsURL, includingPropertiesForKeys: nil)
             try check(items.count == 1 && (try fixture.engine.loadBackup(items[0])).0.identity == result.identity, "Missing fresh real-identity backup")
@@ -310,33 +303,33 @@ struct AppTests {
             let fixture = try EngineFixture(config: config, skipFirmwareCheck: true)
             fixture.remote.firmwareHash = String(repeating: "a", count: 64)
             fixture.remote.config[100] ^= 1
-            try rejects { _ = try fixture.engine.locked { try fixture.engine.begin(targets: ["490154203237526", "490154203237534"]) } }
+            try rejects { _ = try fixture.engine.locked { try fixture.engine.begin(targets: ["353490068701230", "353490068701248"]) } }
             try fixture.remote.assertNoPersistentWrites()
         }
         tests.run("IMEI: known valid values and Luhn failure") {
-            try check(IMEI.valid("490154203237518"), "Known first IMEI rejected")
-            try check(IMEI.valid("490154203237526"), "Known second IMEI rejected")
-            try check(!IMEI.valid("490154203237519"), "Bad check digit accepted")
+            try check(IMEI.valid("353490068701222"), "Known first IMEI rejected")
+            try check(IMEI.valid("353490068701230"), "Known second IMEI rejected")
+            try check(!IMEI.valid("353490068701223"), "Bad check digit accepted")
         }
         tests.run("IMEI: ASCII only, exact length, no whitespace") {
-            for value in ["٤٩٠١٥٤٢٠٣٢٣٧٥١٨", "４９０１５４２０３２３７５１８", "49015420323751", "4901542032375182", "490154203237518 ", " 490154203237518", "49015420323751x"] {
+            for value in ["٣٥٣٤٩٠٠٦٨٧٠١٢٢٢", "３５３４９００６８７０１２２２", "35349006870122", "3534900687012222", "353490068701222 ", " 353490068701222", "35349006870122x"] {
                 try check(!IMEI.valid(value), "Invalid input accepted")
             }
         }
         tests.run("IMEI: derived second retains TAC and advances serial") {
-            try check(try IMEI.second("490154203237518") == "490154203237526", "Wrong generated second IMEI")
+            try check(try IMEI.second("353490068701222") == "353490068701230", "Wrong generated second IMEI")
         }
         tests.run("IMEI: second generation refuses serial overflow") {
-            let base = "49015420" + "999999"
+            let base = "35349006" + "999999"
             guard let last = (0...9).map({ base + String($0) }).first(where: IMEI.valid) else { throw TestFailure.assertion("No valid final serial") }
             try rejects("999999") { _ = try IMEI.second(last) }
         }
         tests.run("NV: fixed independent BCD fixture decodes") {
-            try check(try sampleRecords().map(IMEI.decode) == ["490154203237518", "490154203237526"], "BCD fixture decode failed")
+            try check(try sampleRecords().map(IMEI.decode) == ["353490068701222", "353490068701230"], "BCD fixture decode failed")
         }
         tests.run("NV: encoding preserves every one of the 119 tail bytes") {
             let original = sampleRecords()[0]
-            let changed = try IMEI.encode("490154203237526", preserving: original)
+            let changed = try IMEI.encode("353490068701230", preserving: original)
             try check(changed.count == 128 && changed.dropFirst(9) == original.dropFirst(9), "Tail or length changed")
             try check(changed.prefix(9) == sampleRecords()[1].prefix(9), "Encoded BCD is wrong")
         }
@@ -346,10 +339,10 @@ struct AppTests {
             try rejects { _ = try IMEI.decode(bad) }
             bad = sampleRecords()[0]; bad[8] = 0xff
             try rejects { _ = try IMEI.decode(bad) }
-            try rejects { _ = try IMEI.encode("490154203237519", preserving: sampleRecords()[0]) }
+            try rejects { _ = try IMEI.encode("353490068701223", preserving: sampleRecords()[0]) }
         }
-        tests.run("Config: synthetic B31-schema fixture and known SHA256") {
-            try check(digest(config) == "c0b7d9bfa0ce67785496010e39bf7bdeea9f5b2800d5b1cd5dae328fa223aee5", "Not the independently calculated synthetic fixture")
+        tests.run("Config: real B31 fixture and known SHA256") {
+            try check(digest(config) == "758b9b34e553409492f86dea6cb0e28e1e7fae6d6529a763711c7496e9130cc8", "Not the independently recorded original fixture")
             try check(try ConfigFile.validate(config) == 0, "Original config flag is not zero")
         }
         tests.run("Config: candidate changes only flag and four CRC bytes") {
@@ -357,7 +350,7 @@ struct AppTests {
             try check(try ConfigFile.validate(candidate) == 1, "Candidate flag not enabled")
             let changed = Set(config.indices.filter { config[$0] != candidate[$0] })
             try check(changed == Set([12, 13, 14, 15, 499]), "Unexpected config byte changes")
-            try check(digest(candidate) == "d810a5a2d99f9bc97d5ffa0957b002f47ba1a4d556c462194cc32096053657a4", "Candidate differs from independently calculated synthetic fixture")
+            try check(digest(candidate) == "785d188ced651895797daeeff3babc999c35780931d7d3fb32750e0d79130b72", "Candidate differs from independently verified device transaction")
             try rejects { _ = try ConfigFile.candidate(candidate) }
         }
         tests.run("Config: truncated and corrupt CRC reject") {
@@ -385,31 +378,31 @@ struct AppTests {
         tests.run("Engine: unknown firmware refuses before helpers or writes") {
             let fixture = try EngineFixture(config: config)
             fixture.remote.firmwareHash = String(repeating: "0", count: 64)
-            try rejects("Прошивка отличается") { _ = try fixture.engine.locked { try fixture.engine.begin(targets: ["490154203237526", "490154203237534"]) } }
+            try rejects("Прошивка отличается") { _ = try fixture.engine.locked { try fixture.engine.begin(targets: ["353490068701230", "353490068701248"]) } }
             try check(fixture.remote.snapshotCalls == 0, "A helper ran on unknown firmware")
             try fixture.remote.assertNoPersistentWrites()
         }
         tests.run("Engine: invalid target IMEI refuses before config write") {
             let fixture = try EngineFixture(config: config)
-            try rejects("контрольную цифру") { _ = try fixture.engine.locked { try fixture.engine.begin(targets: ["490154203237519", "490154203237526"]) } }
+            try rejects("контрольную цифру") { _ = try fixture.engine.locked { try fixture.engine.begin(targets: ["353490068701223", "353490068701230"]) } }
             try fixture.remote.assertNoPersistentWrites()
             try check(!FileManager.default.fileExists(atPath: fixture.engine.pendingURL.path), "Invalid request created pending transaction")
         }
         tests.run("Engine: duplicate input IMEIs refuse before writes") {
             let fixture = try EngineFixture(config: config)
-            try rejects("два разных IMEI") { _ = try fixture.engine.locked { try fixture.engine.begin(targets: ["490154203237518", "490154203237518"]) } }
+            try rejects("два разных IMEI") { _ = try fixture.engine.locked { try fixture.engine.begin(targets: ["353490068701222", "353490068701222"]) } }
             try fixture.remote.assertNoPersistentWrites()
         }
         tests.run("Engine: malformed NV snapshot refuses before writes") {
             let fixture = try EngineFixture(config: config)
             fixture.remote.records[0][0] = 0
-            try rejects("Неизвестный формат NV550") { _ = try fixture.engine.locked { try fixture.engine.begin(targets: ["490154203237526", "490154203237534"]) } }
+            try rejects("Неизвестный формат NV550") { _ = try fixture.engine.locked { try fixture.engine.begin(targets: ["353490068701230", "353490068701248"]) } }
             try fixture.remote.assertNoPersistentWrites()
         }
         tests.run("Engine: API and NV disagreement refuses before writes") {
             let fixture = try EngineFixture(config: config)
             fixture.remote.apiRecords = [sampleRecords()[1], sampleRecords()[0]]
-            try rejects("API и NV отличаются") { _ = try fixture.engine.locked { try fixture.engine.begin(targets: ["490154203237526", "490154203237534"]) } }
+            try rejects("API и NV отличаются") { _ = try fixture.engine.locked { try fixture.engine.begin(targets: ["353490068701230", "353490068701248"]) } }
             try fixture.remote.assertNoPersistentWrites()
         }
         tests.run("Engine: corrupt backup hash refuses before writes") {
@@ -427,16 +420,16 @@ struct AppTests {
         tests.run("Engine: unknown current NV during resume refuses before writes") {
             let fixture = try EngineFixture(config: config), backup = try fixture.backup()
             let originals = sampleRecords()
-            let desired = [try IMEI.encode("490154203237526", preserving: originals[0]), try IMEI.encode("490154203237534", preserving: originals[1])]
+            let desired = [try IMEI.encode("353490068701230", preserving: originals[0]), try IMEI.encode("353490068701248", preserving: originals[1])]
             try fixture.transaction(backup: backup, desired: desired)
-            fixture.remote.records[0] = try IMEI.encode("490154203237534", preserving: originals[0])
+            fixture.remote.records[0] = try IMEI.encode("353490068701248", preserving: originals[0])
             try rejects("ни с исходным, ни с целевым") { _ = try fixture.engine.locked { try fixture.engine.resume() } }
             try fixture.remote.assertNoPersistentWrites()
             try check(FileManager.default.fileExists(atPath: fixture.engine.pendingURL.path), "Rejected resume discarded the recovery journal")
         }
         tests.run("Engine: same IMEI with different NV tails is refused in journal") {
             let fixture = try EngineFixture(config: config), backup = try fixture.backup()
-            let desired = try sampleRecords().map { try IMEI.encode("490154203237534", preserving: $0) }
+            let desired = try sampleRecords().map { try IMEI.encode("353490068701248", preserving: $0) }
             try check(desired[0] != desired[1], "Fixture does not exercise distinct tails")
             try fixture.transaction(backup: backup, desired: desired)
             try rejects("одинаковые IMEI") { _ = try fixture.engine.locked { try fixture.engine.resume() } }
@@ -460,7 +453,7 @@ struct AppTests {
         tests.run("Engine: tampered helper rejects before upload") {
             let fixture = try EngineFixture(config: config)
             try savePrivate(Data("corrupt helper".utf8), fixture.engine.resources.appendingPathComponent("zte_nv"))
-            try rejects("Повреждён встроенный инструмент") { _ = try fixture.engine.locked { try fixture.engine.begin(targets: ["490154203237526", "490154203237534"]) } }
+            try rejects("Повреждён встроенный инструмент") { _ = try fixture.engine.locked { try fixture.engine.begin(targets: ["353490068701230", "353490068701248"]) } }
             try check(!fixture.remote.commands.contains { $0.hasPrefix("umask 077; cat > ") }, "Corrupt helper uploaded")
             try fixture.remote.assertNoPersistentWrites()
         }
@@ -471,7 +464,7 @@ struct AppTests {
             try savePrivate(Data("blocked backup destination".utf8), fixture.engine.backupsURL)
             try rejects {
                 _ = try fixture.engine.locked {
-                    try fixture.engine.begin(targets: ["490154203237526", "490154203237534"])
+                    try fixture.engine.begin(targets: ["353490068701230", "353490068701248"])
                 }
             }
             try fixture.remote.assertNoPersistentWrites()
@@ -482,7 +475,7 @@ struct AppTests {
         tests.run("Engine: full pair workflow, automatic config restore and two reboots") {
             let fixture = try EngineFixture(config: config)
             fixture.remote.allowWrites = true
-            let targets = ["490154203237526", "490154203237534"]
+            let targets = ["353490068701230", "353490068701248"]
             let expectedRecords = try zip(targets, sampleRecords()).map { try IMEI.encode($0.0, preserving: $0.1) }
             let final = try fixture.engine.locked { try fixture.engine.begin(targets: targets) }
             try check(final.records == expectedRecords && final.imeis == targets, "Final full records or IMEI pair mismatch")
@@ -506,7 +499,7 @@ struct AppTests {
             let fixture = try EngineFixture(config: config)
             fixture.remote.allowWrites = true
             fixture.remote.failAfterNVWriteOnce = true
-            let targets = ["490154203237526", "490154203237534"]
+            let targets = ["353490068701230", "353490068701248"]
             try rejects("Инструмент zte_nv остановился") {
                 _ = try fixture.engine.locked { try fixture.engine.begin(targets: targets) }
             }
@@ -530,7 +523,7 @@ struct AppTests {
             fixture.remote.allowWrites = true
             fixture.remote.cidAfterFirstReboot = String(repeating: "f", count: 32)
             try rejects("После перезагрузки подключён другой модем") {
-                _ = try fixture.engine.locked { try fixture.engine.begin(targets: ["490154203237526", "490154203237534"]) }
+                _ = try fixture.engine.locked { try fixture.engine.begin(targets: ["353490068701230", "353490068701248"]) }
             }
             try check(fixture.remote.rebootCommands.count == 1, "Wrong device caused a second reboot")
             try check(fixture.remote.configEnableCalls == 1 && fixture.remote.nvApplyCalls == 0 && fixture.remote.configRestoreCalls == 0, "A write was sent after CID mismatch")

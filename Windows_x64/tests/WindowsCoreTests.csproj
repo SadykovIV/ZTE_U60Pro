@@ -9,10 +9,12 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="SSH.NET" Version="2025.0.0" />
+    <Compile Include="../src/Research/*.cs" Link="Research/%(Filename)%(Extension)" />
     <Compile Include="../src/Transport/*.cs" Link="Transport/%(Filename)%(Extension)" />
     <Compile Include="../src/Core/BackupPatch*.cs" Link="Core/%(Filename)%(Extension)" />
     <Compile Include="../src/Core/ImeiCodec.cs" Link="Core/ImeiCodec.cs" />
     <Compile Include="../src/Core/ImeiEngine.cs" Link="Core/ImeiEngine.cs" />
+    <Compile Include="../src/Core/AgentPackage.cs" Link="Core/AgentPackage.cs" />
     <Compile Include="../src/Core/OnboardingEngine.cs" Link="Core/OnboardingEngine.cs" />
     <Compile Include="../src/Core/SystemBackupManager.cs" Link="Core/SystemBackupManager.cs" />
     <Compile Include="../src/Features/FeatureCore.cs" Link="Features/FeatureCore.cs" />

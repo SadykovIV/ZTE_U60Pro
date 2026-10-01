@@ -75,10 +75,11 @@ import Foundation
         diagnosticToolsStatus = nil; diagnosticToolsPlan = nil; diagnosticToolsError = ""
         agentInstallationStatus = nil; screenLocalizationStatus = nil; ttlStatus = nil
         ttlOutboundEnabled = false; ttlOutboundValue = "64"; ttlInboundIncrementEnabled = false; ttlInboundIncrementValue = "1"
-        vpnInspection = nil; vpnError = ""; displayInspection = nil; displaySavedLayout = nil; displayError = ""
+        vpnInspection = nil; vpnError = ""; displayInspection = nil; displaySavedLayout = nil; displaySavedPages = nil; displayError = ""
         if !preserveDisplayDraft { clearDisplayLayout() }
         sshAccounts = []; sshListenerReady = false; sshRecoveryPending = false; sshRecoveryKind = .none; sshAccountsLoaded = false
         currentIMEI1 = ""; currentIMEI2 = ""; firmware = ""
+        clearEsim()
         packagePreview = ""; packagePreviewName = ""
         sectionRefreshErrors = [:]; sectionsUpdatedAt = nil
         systemRestorePlan = nil; systemRestoreConfirmation = ""
@@ -159,9 +160,13 @@ import Foundation
             if let info = value.information { firmware = info.firmware }
         }
         if value.sections.contains(.display) {
-            displayInspection = value.display; displaySavedLayout = value.display?.layout
+            if let display = value.display { receiveDisplayInspection(display) }
+            else {
+                displayInspection = nil; displaySavedLayout = nil; displaySavedPages = nil
+                if !displayDraftEdited { displayLayout = .defaultLayout }
+                if !displayPagesDraftEdited { displayPages = .defaultPages }
+            }
             displayError = value.errors[.display] ?? ""
-            if !displayDraftEdited { displayLayout = value.display?.layout ?? .defaultLayout }
         }
         if value.sections.contains(.vpn) { vpnInspection = value.vpn; vpnError = value.errors[.vpn] ?? "" }
         if value.sections.contains(.ttl) {
@@ -204,6 +209,7 @@ import Foundation
         discoverConnections(authenticate: false)
     }
     private func discoverConnections(authenticate: Bool) {
+        guard !esimPreview else { return }
         guard !busy, !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         let config = connection, root = storage, assets = resources
         let expected = connectedIdentity, expectedWeb = connectedWebIdentity, expectedIMEI = connectedIMEI

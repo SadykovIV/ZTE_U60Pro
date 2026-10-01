@@ -32,10 +32,22 @@ class LauncherInstallTests(unittest.TestCase):
   self.script=self.base/'install.sh';self.script.write_text(script)
  def command(self,name,body):
   p=self.bin/name;p.write_text('#!/bin/sh\n'+body);p.chmod(0o700)
- def run_install(self,**env):
-  return subprocess.run(['/bin/sh',str(self.script),str(self.stage)],env={**os.environ,'PATH':str(self.bin)+':/usr/bin:/bin',**env},capture_output=True,timeout=15)
+ def run_install(self,mode=None,**env):
+  return subprocess.run(['/bin/sh',str(self.script),str(self.stage)]+([mode] if mode else []),env={**os.environ,'PATH':str(self.bin)+':/usr/bin:/bin',**env},capture_output=True,timeout=15)
  def tearDown(self):shutil.rmtree(self.stage);self.tmp.cleanup()
  def assert_success(self,result):self.assertEqual(result.returncode,0,result.stderr.decode())
+ def tree(self):
+  return {str(p.relative_to(self.base)):(p.read_bytes(),p.stat().st_mode) for p in self.base.rglob('*') if p.is_file()}
+ def test_preflight_is_read_only_for_first_and_existing_install(self):
+  before=self.tree();r=self.run_install('preflight');self.assert_success(r)
+  self.assertEqual(r.stdout.strip(),b'LAUNCHER_PREFLIGHT_OK');self.assertEqual(self.tree(),before)
+  self.assert_success(self.run_install());layout=self.root/'info-layout.conf';layout.write_text('existing layout');layout.chmod(0o600)
+  before=self.tree();self.assert_success(self.run_install('preflight'));self.assertEqual(self.tree(),before)
+ def test_preflight_never_recovers_pending_transaction(self):
+  self.transaction.mkdir(mode=0o700);(self.transaction/'owner').write_text('zte-launcher-update-v1\n');(self.transaction/'cid').write_bytes(self.cid.read_bytes())
+  before=self.tree();self.assertNotEqual(self.run_install('preflight').returncode,0);self.assertEqual(self.tree(),before);self.assertTrue(self.transaction.exists())
+ def test_unknown_mode_is_read_only(self):
+  before=self.tree();self.assertNotEqual(self.run_install('typo').returncode,0);self.assertEqual(self.tree(),before)
  def test_first_install_and_repeat_preserve_original_service_and_rc(self):
   stock=self.stock.read_bytes();self.assert_success(self.run_install());self.assert_success(self.run_install())
   self.assertEqual(self.stock.read_bytes(),stock)

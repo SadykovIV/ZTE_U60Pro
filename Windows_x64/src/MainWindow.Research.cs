@@ -1,0 +1,92 @@
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Layout;
+using Avalonia.Media;
+using Avalonia.Platform.Storage;
+using Avalonia.Threading;
+using ZteImeiStudio.Windows.Research;
+
+namespace ZteImeiStudio.Windows;
+public sealed partial class MainWindow
+{
+    private ResearchReport? _researchReport;
+    private CancellationTokenSource? _researchCancellation;
+    private TextBlock? _researchProgress;
+    private string _researchProgressText="";
+    private static string ResearchState(string state)=>state switch
+    {
+        "prerequisites_met"=>"Предпосылки подтверждены",
+        "blocked"=>"Есть препятствия",
+        _=>"Недостаточно данных",
+    };
+    private static string ResearchOutcome(string value)=>Localization.Translate(value switch
+    {
+        "complete"=>"Сбор завершён", "partial"=>"Частичный отчёт", "cancelled"=>"Сбор отменён", "device_changed"=>"Устройство изменилось", "connection_lost"=>"Подключение потеряно", "time_limit"=>"Лимит времени сбора", "trust_rejected"=>"Ключ SSH отклонён", _=>value,
+    });
+    private void BuildFirmwareResearch()
+    {
+        AddCard("Исследование прошивки","Проверка условий для функций программы, включая eSIM. Это не общий вердикт совместимости прошивки: отсутствие данных отличается от конкретного препятствия, например прав каталога. Доступна через работающий USB ADB или SSH без ключа бэкапа и отключения проверки прошивки.",panel=>
+        {
+            panel.Children.Add(Muted("Только чтение. Исследование не включает ADB, не устанавливает компоненты и не подтверждает безопасность изменяющих операций. В ручном режиме используется только выбранный канал."));
+            var row=new WrapPanel {Orientation=Orientation.Horizontal};
+            var collect=ActionButton("Исследовать прошивку",CollectFirmwareResearchAsync,true);
+            collect.Name="CollectFirmwareResearch";collect.IsEnabled=!_busy && _terminal?.IsConnected!=true && !_terminalOpening;
+            row.Children.Add(collect);
+            if(_researchCancellation is not null)
+            {
+                var cancel=new Button {Content=Localization.Translate("Остановить сбор"),Margin=new Thickness(0,0,8,7),Padding=new Thickness(13,8),Background=Elevated,Foreground=Foreground};
+                cancel.Click+=(_,_)=>_researchCancellation?.Cancel();row.Children.Add(cancel);
+            }
+            if(_researchReport is not null)row.Children.Add(ActionButton("Экспортировать ZIP",ExportFirmwareResearchAsync,false));
+            panel.Children.Add(row);
+            if(_terminal?.IsConnected==true || _terminalOpening)panel.Children.Add(Muted("Перед исследованием отключите интерактивный терминал."));
+            _researchProgress=Muted(_researchProgressText);panel.Children.Add(_researchProgress);
+            if(_researchReport is not { } report)return;
+            panel.Children.Add(Muted($"{report.CompletedAt.LocalDateTime:dd.MM.yyyy HH:mm:ss} · {report.Channel} · {ResearchOutcome(report.Outcome)} · {report.Profile??Localization.Translate("Неизвестная прошивка")}"));
+            panel.Children.Add(Muted("Отчёт сохраняется локально. ZIP можно экспортировать после отключения модема или перезапуска программы; пароли и личные идентификаторы скрываются."));
+            var details=new StackPanel {Spacing=12};
+            foreach(var feature in report.Features)
+            {
+                var featurePanel=new StackPanel {Spacing=4};
+                featurePanel.Children.Add(new TextBlock {Text=feature.Title.Text(Localization.IsEnglish)+" · "+Localization.Translate(ResearchState(feature.State)),Foreground=feature.State=="prerequisites_met"?Accent:Warn,FontWeight=FontWeight.SemiBold,TextWrapping=TextWrapping.Wrap});
+                foreach(var reason in feature.Reasons)featurePanel.Children.Add(Muted("• "+reason.Text(Localization.IsEnglish)));
+                featurePanel.Children.Add(Muted(feature.Limitations.Text(Localization.IsEnglish)));
+                details.Children.Add(new Border {Background=Elevated,Padding=new Thickness(12),CornerRadius=new CornerRadius(8),Child=featurePanel});
+            }
+            var faults=report.Probes.Where(p=>p.Status is not "success" and not "skipped").ToArray();
+            foreach(var fault in faults)details.Children.Add(Muted(fault.Title.Text(Localization.IsEnglish)+" · "+fault.Status+" · "+(fault.Stderr.Length>800?fault.Stderr[..800]+"…":fault.Stderr)));
+            details.Children.Add(Muted(Localization.IsEnglish?"Full commands, outputs, timings, omissions and checksums are included in the ZIP.":"Все команды, результаты, длительности, пропуски и контрольные суммы включаются в ZIP."));
+            panel.Children.Add(new Expander {Header=Localization.Translate("Результаты исследования"),Content=details,HorizontalAlignment=HorizontalAlignment.Stretch});
+        });
+    }
+    private async Task CollectFirmwareResearchAsync()
+    {
+        if(_busy || _terminal?.IsConnected==true || _terminalOpening)return;
+        _researchCancellation=CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+        SetBusy(true);_researchProgressText=Localization.Translate("Определение доступного канала…");RenderPage();
+        try
+        {
+            var parameters=_form.ToDictionary(x=>x.Key,x=>x.Value);
+            var progress=new Progress<ResearchProgress>(value=>Dispatcher.UIThread.Post(()=>
+            {
+                _researchProgressText=$"{value.Completed}/{value.Total} · {value.Title.Text(Localization.IsEnglish)}";
+                if(_researchProgress is not null)_researchProgress.Text=_researchProgressText;
+            }));
+            _researchReport=await _service.CollectFirmwareResearchAsync(parameters,progress,_researchCancellation.Token);
+            _researchProgressText=Localization.Translate("Исследование завершено. Частичный отчёт также доступен для экспорта.");
+        }
+        catch(Exception error) { _researchProgressText=error.Message; }
+        finally { _researchCancellation.Dispose();_researchCancellation=null;SetBusy(false);RenderPage(); }
+    }
+    private async Task ExportFirmwareResearchAsync()
+    {
+        if(_researchReport is not { } report || _busy)return;
+        var file=await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+        {
+            Title=Localization.Translate("Экспорт исследования прошивки"),SuggestedFileName="ZTE-firmware-research-"+report.CompletedAt.ToString("yyyyMMdd-HHmmss")+".zip",DefaultExtension="zip",
+            FileTypeChoices=[new FilePickerFileType("ZIP") {Patterns=["*.zip"]}],ShowOverwritePrompt=true,
+        });
+        if(file?.TryGetLocalPath() is not { } path)return;
+        await _service.ExportFirmwareResearchAsync(report,path,_lifetime.Token);SetStatus("Отчёт ZIP сохранён.");
+    }
+}

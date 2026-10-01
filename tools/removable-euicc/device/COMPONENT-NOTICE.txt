@@ -1,0 +1,8 @@
+QMI/ES10 transport component
+
+License status: license_unspecified.
+
+This adapted component includes code with no explicit license statement.
+This notice and its source manifest do not grant a license or assert sole
+authorship. The MIT notice for the base agent does not establish the license
+of this component. Existing copyright and license notices are retained.

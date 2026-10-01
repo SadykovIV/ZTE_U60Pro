@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.RegularExpressions;
+using ZteImeiStudio.Windows.Core;
 
 namespace ZteImeiStudio.Windows.Features;
 
@@ -55,12 +56,12 @@ public sealed record LauncherLayout(string Style, IReadOnlyList<LauncherMetric> 
 }
 
 public sealed record LauncherStatus(string State, bool Running, bool CanInstall, bool CanApplyLayout,
-    string? InstalledHash, LauncherLayout? Layout, string? Detail = null);
+    string? InstalledHash, LauncherLayout? Layout, string? Detail = null, LauncherPages? Pages = null);
 
 public sealed partial class DeviceFeatureService
 {
     private const string LauncherRoot = "/data/zte-launcher";
-    private const string LauncherManifestHash = "bdd536a2c83eb8167c278481f057108da038693b7de674b112105110c27a20ca";
+    private const string LauncherManifestHash = "54fd5c73d48f83e57fb7a3ddeeb43adbab5c3c4a71a909ac73bfdfde7a11c8f2";
     private static readonly string[] LauncherNames = ["launcher.so", "launcher-run.sh", "launcher-watch.sh", "launcher-service.sh", "launcher-start.sh", "launcher.sha256", "install-launcher.sh"];
     private static readonly HashSet<string> UiHashes = ["e3914e78a8488cb736770f0ac9fb8ce10e0e5222fa50285f08e9e8be90d7f1e9", "16eb92e27f54b5cf5c6b316a6e7a62b782053a2a609d0d4904a7f08a7bc0afa4"];
     private static readonly HashSet<string> InitHashes = ["a30da6481637f1fd94e037373d406e574be7e722937a4965325086740be67e35", "0a462f4021b1306ac5fbf074a674bae9fef952f240436a47468c0126c5d41b50"];
@@ -83,7 +84,7 @@ public sealed partial class DeviceFeatureService
         if (lines[4] == "absent")
         {
             if (lines[5] == "pending") return new LauncherStatus("recovery-pending", false, false, false, null, null, "Есть незавершённая установка Launcher.");
-            return new LauncherStatus(compatible ? "absent" : "unsupported", false, compatible, false, null, LauncherLayout.Default);
+            return new LauncherStatus(compatible ? "absent" : "unsupported", false, compatible, false, null, LauncherLayout.Default, Pages: LauncherPages.Default);
         }
         Check(lines[4] == "present" && lines.Length >= 14, "Неполный ответ установленного Launcher.");
         if (!compatible) return new LauncherStatus("unsupported", false, false, false, null, null, "Экранный интерфейс этой прошивки не поддерживается.");
@@ -94,10 +95,11 @@ public sealed partial class DeviceFeatureService
         var safe = lines[12] == "integrity-ok" && lines[11] == "service-ok" && lines[13] == "clear";
         if (!safe) return new LauncherStatus("failed", false, false, false, hash, null, "Файлы Launcher, служба или обновление требуют проверки.");
         var layout = await ReadLauncherLayoutAsync(ct);
+        var pages = await ReadLauncherPagesAsync(ct);
         var current = hash == LauncherHash && manifest == LauncherManifestHash && lines[10] == "enabled";
         var running = await RunTextAsync("if test -f /tmp/zte-launcher/ready && test ! -L /tmp/zte-launcher/ready && pidof zte_topsw_devui >/dev/null 2>&1; then echo running; else echo stopped; fi", ct: ct) == "running";
-        return new LauncherStatus(current ? "ready" : "outdated", running, layout != null, current && layout != null, hash, layout,
-            layout == null ? "Настройки Launcher изменены или повреждены." : current ? null : "Можно обновить Launcher из комплекта приложения.");
+        return new LauncherStatus(current ? "ready" : "outdated", running, layout != null && pages != null, current && layout != null && pages != null, hash, layout,
+            layout == null || pages == null ? "Настройки Launcher изменены или повреждены." : current ? null : "Можно обновить Launcher из комплекта приложения.", pages);
     }
 
     private async Task<LauncherLayout?> ReadLauncherLayoutAsync(CancellationToken ct)
@@ -110,25 +112,77 @@ public sealed partial class DeviceFeatureService
     }
 
     public Task<LauncherStatus> InstallLauncherAsync(CancellationToken ct = default)
+        => InstallLauncherWithPagesAsync(null, false, ct);
+
+    public Task<LauncherStatus> InstallLauncherPagesAsync(LauncherPages pages, CancellationToken ct = default)
+    {
+        _ = pages.Encode();
+        return InstallLauncherWithPagesAsync(pages, false, ct);
+    }
+
+    public Task<LauncherStatus> InstallEsimLauncherAsync(CancellationToken ct = default)
+        => InstallLauncherWithPagesAsync(null, true, ct);
+
+    private Task<LauncherStatus> InstallLauncherWithPagesAsync(LauncherPages? requested, bool includeEsim, CancellationToken ct)
         => MutateAsync(async (identity, token) =>
         {
             var before = await GetLauncherStatusAsync(ct);
-            Check(before.CanInstall, before.Detail ?? "Launcher не поддерживается на этом устройстве.");
-            var vpnPresent = await RunTextAsync("if test -e /data/zte-vpn || test -L /data/zte-vpn; then echo present; else echo absent; fi", ct: ct);
-            if (vpnPresent == "present") await UpdateVpnIntegrationAsync(identity, token, ct);
-            else
+            Check(before.CanInstall && before.Layout is not null && before.Pages is not null, before.Detail ?? "Launcher не поддерживается на этом устройстве.");
+            var savedLayout = before.Layout!.Encode();
+            var savedPages = before.Pages!;
+            var desiredPages = requested ?? (includeEsim ? savedPages.IncludeEsim() : savedPages);
+            var writePages = requested is not null || !desiredPages.Order.SequenceEqual(savedPages.Order);
+            var files = await LoadResourcesAsync("VPN", LauncherNames, ct);
+            if (writePages) files.Add("page-layout.conf", desiredPages.Encode());
+            var dashboard = await LoadBundledDashboardAsync(ct);
+            var agent = await File.ReadAllBytesAsync(Path.Combine(_resourcesRoot, "Onboarding", "zte-agent"), ct);
+            AgentPackage.VerifyPayload(agent);
+            var manager = await ResourceAsync("AgentInstallation", "manager.sh", ct);
+            Check(Sha(manager) == AgentManagerHash, "Несовместимый установщик агента.");
+            var stage = await StageAsync("zte-vpn-agent", files, ct);
+            var remoteFinished = false;
+            try
             {
-                var files = await LoadResourcesAsync("VPN", LauncherNames, ct);
-                var stage = await StageAsync("zte-vpn-agent", files, ct);
-                try
+                var command = Guard(identity, token) + "sh " + Quote(stage + "/install-launcher.sh") + " " + Quote(stage);
+                var check = await _shell.RunAsync(command + " preflight", timeout: TimeSpan.FromSeconds(60), ct: ct);
+                remoteFinished = KnownInstallerExit(check.ExitCode);
+                Check(remoteFinished && check.Success && Text(check.Stdout) == "LAUNCHER_PREFLIGHT_OK", InstallerFailure("launcher_preflight", check));
+                var vpn = await RunTextAsync("if test -e /data/zte-vpn || test -L /data/zte-vpn; then echo present; else echo absent; fi", ct: ct);
+                Check(vpn is "present" or "absent", "Каталог VPN требует ручной проверки.");
+                if (vpn == "present")
                 {
-                    var output = await RunTextAsync(Guard(identity, token) + "sh " + Quote(stage + "/install-launcher.sh") + " " + Quote(stage), seconds: 180, ct: ct);
-                    Check(output.Contains("LAUNCHER_INSTALLED", StringComparison.Ordinal), "Установка Launcher не подтверждена.");
+                    // The controller pins the launcher payload. Update it through its
+                    // existing transaction while preserving VPN profiles and settings.
+                    await UpdateVpnIntegrationAsync(identity, token, ct, pages: writePages ? desiredPages : null);
                 }
-                finally { await CleanupStageAsync(stage, files.Keys, CancellationToken.None); }
+                else
+                {
+                    await InstallBundledDashboardAsync(identity, token, dashboard, ct,
+                        () => InstallBundledAgentBinaryAsync(identity, token, agent, manager, ct));
+                    remoteFinished = false;
+                    var applied = await _shell.RunAsync(command, timeout: TimeSpan.FromSeconds(180), ct: ct);
+                    remoteFinished = KnownInstallerExit(applied.ExitCode);
+                    Check(remoteFinished && applied.Success && Text(applied.Stdout) == "LAUNCHER_INSTALLED", InstallerFailure("launcher_install", applied));
+                }
             }
+            catch (Exception) when (!ct.IsCancellationRequested && !remoteFinished)
+            {
+                throw new DeviceFeatureException("Установка страниц Launcher не подтверждена: transport_unknown. Файлы установки сохранены; обновите состояние перед повтором.");
+            }
+            finally { if (remoteFinished) await CleanupStageAsync(stage, files.Keys, CancellationToken.None); }
             var after = await GetLauncherStatusAsync(ct);
-            Check(after.State == "ready", "Launcher не подтвердил готовность после установки.");
+            // The launcher process may still be starting after a confirmed install.
+            // Recheck readiness only; never repeat the installation.
+            for (var attempt = 0; attempt < 5 && after.State == "ready" && !after.Running &&
+                after.Layout?.Encode().SequenceEqual(savedLayout) == true; attempt++)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(1), ct);
+                after = await GetLauncherStatusAsync(ct);
+            }
+            Check(after.State == "ready" && after.Running && after.Layout?.Encode().SequenceEqual(savedLayout) == true &&
+                after.Pages is not null && after.Pages.Order.SequenceEqual(desiredPages.Order) &&
+                after.Pages.UsesDefault == (!writePages && savedPages.UsesDefault),
+                "Установка страниц Launcher или сохранение настроек дисплея не подтверждены.");
             return after;
         }, ct);
 
@@ -147,7 +201,7 @@ public sealed partial class DeviceFeatureService
             {
                 var uploaded = await RunTextAsync(guard + "cat > " + Quote(path) + "; chmod 600 " + Quote(path) + "; sha256sum " + Quote(path), bytes, 30, ct);
                 Check(uploaded.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() == Sha(bytes), "Настройка дисплея повреждена при передаче.");
-                await RunAsync(guard + "f=" + Quote(LauncherRoot + "/info-layout.conf") + "; if test -e \"$f\" || test -L \"$f\"; then test -f \"$f\" && test ! -L \"$f\" && test \"$(stat -c %u:%a:%h \"$f\")\" = 0:600:1; fi; test \"$(sha256sum " + Quote(path) + " | cut -d ' ' -f1)\" = " + Quote(Sha(bytes)) + "; mv -f " + Quote(path) + " \"$f\"; sync", ct: ct);
+                await RunAsync(guard + "f=" + Quote(LauncherRoot + "/info-layout.conf") + "; if test -e \"$f\" || test -L \"$f\"; then test -f \"$f\" && test ! -L \"$f\" && test \"$(stat -c %u:%a:%h \"$f\")\" = 0:600:1 || exit 73; fi; test \"$(sha256sum " + Quote(path) + " | cut -d ' ' -f1)\" = " + Quote(Sha(bytes)) + "; mv -f " + Quote(path) + " \"$f\"; sync", ct: ct);
             }
             finally { await CleanupStageAsync(stage, ["layout"], CancellationToken.None); }
             var after = await GetLauncherStatusAsync(ct);

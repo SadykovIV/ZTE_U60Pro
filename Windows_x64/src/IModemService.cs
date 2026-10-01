@@ -1,3 +1,5 @@
+using ZteImeiStudio.Windows.Research;
+
 namespace ZteImeiStudio.Windows;
 
 public enum ModemOperation
@@ -47,6 +49,8 @@ public enum ModemOperation
     ExportDiagnostics,
     RefreshDiagnostics,
     RebootDevice,
+    InstallEsimLauncher,
+    ApplyLauncherPages,
 }
 
 public sealed record OperationRequest(
@@ -80,7 +84,8 @@ public sealed record DeviceSnapshot(
     string? VpnSsid = null,
     string? VpnPasswordMode = null,
     string? LauncherMetricOrder = null,
-    VpnPageSnapshot? VpnPage = null);
+    VpnPageSnapshot? VpnPage = null,
+    string? LauncherPages = null);
 
 public sealed record VpnPageSnapshot(
     bool Installed,
@@ -127,6 +132,10 @@ public interface ITerminalSession : IAsyncDisposable
 
 public interface IModemService
 {
+    Task<Esim.EsimResult> RunEsimAsync(Esim.EsimRequest request, IProgress<string>? progress, CancellationToken ct = default) => throw new Esim.EsimException();
+    Task<ResearchReport?> GetFirmwareResearchAsync(CancellationToken ct = default) => Task.FromResult<ResearchReport?>(null);
+    Task<ResearchReport> CollectFirmwareResearchAsync(IReadOnlyDictionary<string,string> parameters, IProgress<ResearchProgress>? progress, CancellationToken ct = default) => throw new NotSupportedException();
+    Task ExportFirmwareResearchAsync(ResearchReport report, string destination, CancellationToken ct = default) => throw new NotSupportedException();
     Task<DeviceSnapshot> GetDeviceSnapshotAsync(CancellationToken cancellationToken = default);
     Task<OperationResult> RunAsync(OperationRequest request, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<BackupInfo>> ListBackupsAsync(CancellationToken cancellationToken = default);

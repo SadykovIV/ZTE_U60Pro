@@ -242,7 +242,7 @@ checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
 
 [[package]]
 name = "zte-agent"
-version = "2.8.0"
+version = "2.7.0-vpn.1"
 dependencies = [
  "libc",
  "process-runner",

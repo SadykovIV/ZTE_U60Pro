@@ -75,7 +75,7 @@ final class AgentInstallationManager {
     let engine: ModemEngine
     static let scriptHash = "d12154677e50567a311ca1d9f7d4f4019565e2e6f41cf7dc75d10d47fc8ef3a1"
     init(engine: ModemEngine) { self.engine = engine }
-    private func staged<T>(_ work: (String, Identity, String) throws -> T) throws -> T {
+    private func staged<T>(cleanupAllowed: () -> Bool = { true }, _ work: (String, Identity, String) throws -> T) throws -> T {
         try require(engine.lockFD >= 0, "Установка агента требует блокировки приложения")
         try require(!engine.fm.fileExists(atPath: engine.pendingURL.path) && !engine.fm.fileExists(atPath: engine.root.appendingPathComponent("setup-pending.json").path), "Сначала завершите текущую подготовку или смену IMEI")
         let script = try Data(contentsOf: engine.resources.appendingPathComponent("AgentInstallation/manager.sh"))
@@ -84,7 +84,7 @@ final class AgentInstallationManager {
         try engine.acquireRemoteLock()
         let stage = "/tmp/zte-agent-stage-" + UUID().uuidString.lowercased()
         _ = try engine.remote("umask 077; mkdir " + shellQuote(stage))
-        defer { _ = try? engine.remote("rm -f " + shellQuote(stage + "/manager.sh") + " " + shellQuote(stage + "/agent.bin") + "; rmdir " + shellQuote(stage)) }
+        defer { if cleanupAllowed() { _ = try? engine.remote("rm -f " + shellQuote(stage + "/manager.sh") + " " + shellQuote(stage + "/agent.bin") + "; rmdir " + shellQuote(stage)) } }
         try upload(script, to: stage + "/manager.sh")
         return try work(stage, identity, boot)
     }
@@ -108,7 +108,8 @@ final class AgentInstallationManager {
         try require(fresh.sha256 == candidate.sha256 && fresh.bytes == candidate.bytes, "Выбранный файл изменился. Выберите его заново")
         let data = try Data(contentsOf: candidate.url)
         try require(digest(data) == candidate.sha256, "Файл изменился во время чтения")
-        return try staged { stage, identity, boot in
+        var cleanupSafe = true
+        return try staged(cleanupAllowed: { cleanupSafe }) { stage, identity, boot in
             let before = try status(stage)
             try require(!before.recoveryPending, "Сначала восстановите предыдущий агент")
             try require(before.hash != "absent" && before.startupReady, "Сначала выполните автоматическую подготовку модема с паролем веб-интерфейса")
@@ -117,19 +118,84 @@ final class AgentInstallationManager {
             engine.update("Передаю выбранный агент; затем будет создана резервная копия текущего…", 0.3)
             try upload(data, to: stage + "/agent.bin")
             try sameDevice(identity, boot)
-            _ = try engine.remote("sh " + shellQuote(stage + "/manager.sh") + " install " + shellQuote(stage + "/agent.bin") + " " + shellQuote(candidate.sha256), timeout: 90)
+            cleanupSafe = false
+            let result = try engine.transport.run("sh " + shellQuote(stage + "/manager.sh") + " install " + shellQuote(stage + "/agent.bin") + " " + shellQuote(candidate.sha256), input: nil, timeout: 90)
+            cleanupSafe = result.status >= 0 && result.status < 255
+            try require(result.status == 0, "Замена агента не подтверждена (exit " + String(result.status) + "). Обновите состояние. При потере связи средства восстановления сохранены.")
             let after = try status(stage)
             try require(after.hash == candidate.sha256 && after.running && after.backupHash == before.hash && !after.recoveryPending, "Не удалось подтвердить замену агента; проверьте состояние и восстановление")
             engine.update("Агент заменён и процесс запущен. Предыдущий файл сохранён на модеме.", 1)
             return after
         }
     }
+    /// Bundled installation also refreshes the matching web UI. Custom binaries
+    /// keep their existing dashboard because API compatibility is not established.
+    func installBundled(_ candidate: AgentCandidate) throws -> AgentInstallationStatus {
+        try require(candidate.sha256 == BundledAgent.sha256, "Повреждён встроенный агент")
+        let payload = try AgentDashboardPayload.load(engine.resources)
+        return try installDashboard(payload) { try install(candidate) }
+    }
+    private func installDashboard(_ payload: AgentDashboardPayload, installAgent: () throws -> AgentInstallationStatus) throws -> AgentInstallationStatus {
+        try require(engine.lockFD >= 0, "Установка панели требует блокировки приложения")
+        let (identity, boot) = try engine.identity()
+        try engine.acquireRemoteLock()
+        let stage = "/tmp/zte-dashboard-stage-" + UUID().uuidString.lowercased()
+        // The helper receipt identifies its actual staging directory.
+        let receiptID = String(stage.dropFirst("/tmp/zte-dashboard-stage-".count))
+        _ = try engine.remote("umask 077; mkdir " + shellQuote(stage))
+        let cleanup = "rm -f " + AgentDashboardPayload.names.map { shellQuote(stage + "/" + $0) }.joined(separator: " ") + "; rmdir " + shellQuote(stage)
+        var cleanupSafe = true
+        defer { if cleanupSafe { _ = try? engine.remote(cleanup, timeout: 15) } }
+        for name in AgentDashboardPayload.names { try upload(payload.files[name]!, to: stage + "/" + name) }
+        try sameDevice(identity, boot)
+        let command = "sh " + [stage + "/dashboard.sh", stage, identity.cid, BundledAgent.sha256].map(shellQuote).joined(separator: " ")
+        engine.update("Проверяю условия установки веб-панели до замены агента", 0.15)
+        let preflight = try engine.transport.run(command + " preflight", input: nil, timeout: 45)
+        try require(preflight.status == 0 && String(decoding: preflight.stdout, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) == "DASHBOARD_PREFLIGHT " + receiptID,
+                    "Проверка веб-панели не пройдена. Замена агента не запускалась. Код: " + Self.dashboardCode(preflight))
+        let installed = try installAgent()
+        var dashboardOutcome = "DASHBOARD_PRE_APPLY_FAILED"
+        do {
+            try sameDevice(identity, boot)
+            engine.update("Устанавливаю веб-панель с eSIM без изменения VPN", 0.95)
+            // An interrupted SSH process may leave the remote rollback running.
+            // Preserve its staging tools until a remote exit is known.
+            cleanupSafe = false
+            dashboardOutcome = "DASHBOARD_REMOTE_OUTCOME_UNKNOWN"
+            let result = try engine.transport.run(command, input: nil, timeout: 120)
+            cleanupSafe = result.status >= 0 && result.status < 255
+            dashboardOutcome = Self.dashboardCode(result)
+            try require(result.status == 0, "Код: " + Self.dashboardCode(result))
+            let response = String(decoding: result.stdout, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            dashboardOutcome = "DASHBOARD_RECEIPT_INVALID"
+            try require(response == "DASHBOARD_INSTALLED " + receiptID, "Код: DASHBOARD_RECEIPT_INVALID")
+            dashboardOutcome = "DASHBOARD_TARGET_CHANGED"
+            try sameDevice(identity, boot)
+            engine.update("Агент с eSIM и веб-панель установлены", 1)
+            return installed
+        } catch {
+            // The agent phase completed. Preserve that distinction in the UI;
+            // the audited transport journal retains individual fixed failures.
+            throw IMEIError.message("Агент проверен и запущен, но установка веб-панели не подтверждена. " + dashboardOutcome + ". Подробности — в журнале; обновите состояние перед повтором.")
+        }
+    }
+    private static func dashboardCode(_ result: CommandResult) -> String {
+        if result.status < 0 || result.status == 255 { return "SSH_CONNECTION_LOST" }
+        // Never copy arbitrary stderr into this UI summary.
+        let known = ["DASHBOARD_UNSAFE_PARENT", "DASHBOARD_LEGACY_LISTENER_UNVERIFIED", "DASHBOARD_BUSY", "DASHBOARD_RECOVERY_REQUIRED", "DASHBOARD_PREFLIGHT_FAILED", "DASHBOARD_AGENT_MISMATCH"]
+        let fields = String(decoding: result.stderr, as: UTF8.self).split(whereSeparator: \.isWhitespace).map(String.init)
+        return known.first(where: fields.contains) ?? "DASHBOARD_EXIT_\(result.status)"
+    }
     func restore() throws -> AgentInstallationStatus {
-        try staged { stage, identity, boot in
+        var cleanupSafe = true
+        return try staged(cleanupAllowed: { cleanupSafe }) { stage, identity, boot in
             let before = try status(stage)
             guard let expected = before.backupHash else { throw IMEIError.message("Проверенная копия предыдущего агента отсутствует") }
             try sameDevice(identity, boot)
-            _ = try engine.remote("sh " + shellQuote(stage + "/manager.sh") + " restore", timeout: 90)
+            cleanupSafe = false
+            let result = try engine.transport.run("sh " + shellQuote(stage + "/manager.sh") + " restore", input: nil, timeout: 90)
+            cleanupSafe = result.status >= 0 && result.status < 255
+            try require(result.status == 0, "Восстановление агента не подтверждено (exit " + String(result.status) + "). Обновите состояние. При потере связи средства восстановления сохранены.")
             let after = try status(stage)
             try require(after.hash == expected && after.running && !after.recoveryPending, "Восстановление агента не подтверждено")
             return after

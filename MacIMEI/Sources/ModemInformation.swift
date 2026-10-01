@@ -160,7 +160,7 @@ final class ModemInformationManager {
         let battery = value("BATTERY").split(separator: "\n").map(String.init)
         let capacity = battery.first.flatMap(Int.init).flatMap { (0...100).contains($0) ? $0 : nil }
         let agentSHA = value("AGENT").split(separator: " ").first.map(String.init) ?? ""
-        let agentVersion = agentSHA == "c50ba6b7ac6f77c581c2b657ba769f976d8d20aca0c6b7d08c9254ef2de9d346" ? "2.8.0 · VPN, дисплей, RU/EN и TTL" : agentSHA == "b5c27d398e85db8a87d454d729cb36f22e54a2d832fb1117b27aa055e5032537" ? "2.4.1 · RU/EN и TTL" : agentSHA == "5deb5e93ee7d37403b0a931f0e127c64e4d9b4825855653e5b890572b02848aa" ? "2.4.0" : agentSHA.isEmpty ? "Не установлен" : "Другая сборка"
+        let agentVersion = BundledAgent.description(for: agentSHA)
         guard let uptimeField = value("UPTIME").split(whereSeparator: \.isWhitespace).first,
               let uptime = Double(uptimeField), uptime.isFinite && uptime >= 0 && uptime <= 100 * 366 * 24 * 3600,
               let cpuCount = Int(value("CPU")), (1...4096).contains(cpuCount) else { throw IMEIError.message("Некорректные сведения о времени работы или процессоре") }

@@ -58,3 +58,21 @@ Windows_x64/Resources/Applications/ssclash-linux-arm64
 !Catalog/catalog-public-key.pem
 !MacIMEI/Resources/Catalog/catalog-public-key.pem
 !Windows_x64/Resources/Catalog/catalog-public-key.pem
+
+# Generated eSIM payloads are pinned in Build-dependencies; source lives in Git.
+MacIMEI/Resources/Esim/zte-agent-esim
+MacIMEI/Resources/Esim/eSIM-sources.tar.gz
+Windows_x64/Resources/Esim/zte-agent-esim
+Windows_x64/Resources/Esim/eSIM-sources.tar.gz
+ModemAgent/agent/resources/esim/bridge
+ModemAgent/agent/resources/esim/lpac
+MacIMEI/Resources/AgentDashboardInstall/dashboard.tar.gz
+MacIMEI/Resources/AgentDashboardInstall/dashboard-uhttpd
+Windows_x64/Resources/AgentDashboardInstall/dashboard.tar.gz
+Windows_x64/Resources/AgentDashboardInstall/dashboard-uhttpd
+# Public certificates only; private keys remain excluded.
+!tools/removable-euicc/certs/gsma-rsp-roots.pem
+!ModemAgent/agent/resources/esim/gsma-rsp-roots.pem
+!MacIMEI/Resources/Esim/gsma-rsp-roots.pem
+!Windows_x64/Resources/Esim/gsma-rsp-roots.pem
+ModemAgent/web-app/.npm-cache/

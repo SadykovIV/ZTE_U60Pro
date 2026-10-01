@@ -18,6 +18,11 @@ struct ModemDisplayInspection: Sendable {
     var layoutIsDefault: Bool = true
     var layoutIsSafe: Bool = true
     var canApplyLayout: Bool { state == .ready && layoutIsSafe }
+    var pages: ModemLauncherPages? = .defaultPages
+    var pagesWarning: String?
+    var pagesIsDefault: Bool = true
+    var pagesIsSafe: Bool = true
+    var canApplyPages: Bool { state == .ready && pagesIsSafe && pages != nil }
 
     var title: String {
         switch state {
@@ -36,6 +41,7 @@ struct ModemDisplayInspection: Sendable {
 final class ModemDisplayManager {
     static let root = "/data/zte-launcher"
     static let layoutPath = root + "/info-layout.conf"
+    static let pagesPath = root + "/page-layout.conf"
     static let payloadNames = ["launcher.so", "launcher-run.sh", "launcher-watch.sh", "launcher-service.sh", "launcher-start.sh"]
     static let fileNames = payloadNames + ["launcher.sha256", "install-launcher.sh"]
     static let uiHashes: Set<String> = [
@@ -48,10 +54,12 @@ final class ModemDisplayManager {
     ]
     let engine: ModemEngine
     private let updateVPNIntegration: (() throws -> Bool)?
+    private let prepareEsimAgent: (() throws -> Void)?
 
-    init(engine: ModemEngine, updateVPNIntegration: (() throws -> Bool)? = nil) {
+    init(engine: ModemEngine, updateVPNIntegration: (() throws -> Bool)? = nil, prepareEsimAgent: (() throws -> Void)? = nil) {
         self.engine = engine
         self.updateVPNIntegration = updateVPNIntegration
+        self.prepareEsimAgent = prepareEsimAgent
     }
 
     private struct Assets {
@@ -150,6 +158,34 @@ final class ModemDisplayManager {
     dd if="$file" bs=513 count=1 2>/dev/null | base64
     """#
 
+    static let pagesReadCommand = layoutReadCommand
+        .replacingOccurrences(of: "MODEM_DISPLAY_LAYOUT", with: "MODEM_DISPLAY_PAGES")
+        .replacingOccurrences(of: "info-layout.conf", with: "page-layout.conf")
+        .replacingOccurrences(of: "512", with: "128")
+        .replacingOccurrences(of: "513", with: "129")
+
+    private func readPages(into result: inout ModemDisplayInspection) throws {
+        let data = try engine.remote(Self.pagesReadCommand)
+        try require(data.count <= 512, "Получен слишком большой список страниц")
+        let lines = String(decoding: data, as: UTF8.self).split(separator: "\n", omittingEmptySubsequences: false)
+        switch lines.first {
+        case "MODEM_DISPLAY_PAGES missing":
+            result.pages = .defaultPages; result.pagesIsDefault = true
+        case "MODEM_DISPLAY_PAGES unsafe", "MODEM_DISPLAY_PAGES oversized":
+            result.pages = nil; result.pagesIsDefault = false; result.pagesIsSafe = false
+            result.pagesWarning = "Файл страниц не прошёл проверку типа, владельца, прав или размера. Запись заблокирована."
+        case "MODEM_DISPLAY_PAGES data":
+            result.pagesIsDefault = false
+            guard let bytes = Data(base64Encoded: lines.dropFirst().joined()) else { throw IMEIError.message("Повреждён ответ со списком страниц") }
+            do { result.pages = try ModemLauncherPages.decode(bytes) }
+            catch {
+                result.pages = nil; result.pagesIsSafe = false
+                result.pagesWarning = "Сохранённый список страниц повреждён. Установка и запись остановлены; требуется проверка файла на модеме."
+            }
+        default: throw IMEIError.message("Неизвестный ответ со списком страниц")
+        }
+    }
+
     private func readLayout(into result: inout ModemDisplayInspection) throws {
         let data = try engine.remote(Self.layoutReadCommand)
         try require(data.count <= 1024, "Получена слишком большая настройка дисплея")
@@ -197,9 +233,9 @@ final class ModemDisplayManager {
     private func inspect(assets: Assets) throws -> ModemDisplayInspection {
         let (identity, boot) = try engine.diagnosticIdentity()
         let fields = try Self.parse(engine.text(Self.probeCommand))
-        var result = ModemDisplayInspection(state: .absent, detail: "На экране будут доступны VPN и информация о модеме.", identity: identity, bootID: boot,
+        var result = ModemDisplayInspection(state: .absent, detail: "На экране будут доступны информация о модеме, VPN и eSIM.", identity: identity, bootID: boot,
                                            installedHash: fields["installed"] == "missing" ? nil : fields["installed"], expectedHash: assets.hashes["launcher.so"]!)
-        if fields["root"] == "1" { try readLayout(into: &result) }
+        if fields["root"] == "1" { try readLayout(into: &result); try readPages(into: &result) }
         let after = try engine.diagnosticIdentity()
         try require(after.0 == identity && after.1 == boot, "Во время проверки дисплея модем изменился или перезагрузился")
         guard identity.firmwareHash == ModemEngine.firmwareHash && fields["uid"] == "0" && fields["arch"] == "aarch64" &&
@@ -227,32 +263,101 @@ final class ModemDisplayManager {
             result.state = .ready; result.canInstall = true; result.running = fields["running"] == "1"
             result.detail = result.running ? "Файлы, автозапуск и работа расширения в экранном интерфейсе подтверждены." : "Файлы и автозапуск подтверждены. Работа плиток на экране ещё не подтверждена; повторите проверку через несколько секунд."
         }
-        if !result.layoutIsSafe { result.canInstall = false }
+        if !result.layoutIsSafe || !result.pagesIsSafe { result.canInstall = false }
         return result
     }
 
     func inspect() throws -> ModemDisplayInspection { try inspect(assets: assets()) }
 
-    func install(layout: ModemDisplayLayout? = nil) throws -> ModemDisplayInspection {
-        try layout?.validate()
+    /// Install the eSIM-capable bundle without applying a local editor draft.
+    /// Existing VPN installations need their pinned controller upgraded together
+    /// with the agent; an absent VPN is never installed by this action.
+    func installEsimPage() throws -> ModemDisplayInspection {
+        try require(engine.lockFD >= 0 && !engine.connection.skipFirmwareCheck, "Страница eSIM требует SSH и включённой проверки прошивки")
+        try engine.connection.validate()
+        for name in ["pending.json", "setup-pending.json"] {
+            try require(!FileManager.default.fileExists(atPath: engine.root.appendingPathComponent(name).path), "Сначала завершите настройку или смену IMEI")
+        }
+        let bundle = try assets(), before = try inspect(assets: bundle)
+        try require(before.canInstall && before.layoutIsSafe && before.layout != nil, before.pagesWarning ?? before.layoutWarning ?? before.detail)
+        try engine.acquireRemoteLock()
+        let locked = try inspect(assets: bundle)
+        try require(locked.identity == before.identity && locked.bootID == before.bootID && locked.layout == before.layout && locked.layoutIsDefault == before.layoutIsDefault && locked.pages == before.pages && locked.pagesIsDefault == before.pagesIsDefault,
+                    "Перед установкой страницы eSIM модем или его раскладка изменились")
+        try require(locked.canInstall && locked.layoutIsSafe, locked.pagesWarning ?? locked.layoutWarning ?? locked.detail)
+        try preflightEsimLauncher(assets: bundle, expected: locked)
+        // The existing VPN path includes agent, controller, dashboard and launcher
+        // once, and preserves profile configuration. Avoid a second launcher apply.
+        let integrated = try updateVPNIntegration?() ?? VPNSettingsManager(engine: engine).updateDisplayIntegrationIfNeeded()
+        let installed: ModemDisplayInspection
+        if integrated {
+            installed = try confirmInstall(assets: bundle, expected: locked)
+        } else {
+            if let prepareEsimAgent { try prepareEsimAgent() }
+            else {
+                engine.update("Проверяю и устанавливаю агент для страницы eSIM", 0.25)
+                let candidate = try AgentCandidate.inspect(engine.resources.appendingPathComponent("Onboarding/zte-agent"))
+                try require(candidate.sha256 == BundledAgent.sha256, "Повреждён встроенный агент")
+                _ = try AgentInstallationManager(engine: engine).installBundled(candidate)
+            }
+            let checked = try inspect(assets: bundle)
+            try require(checked.identity == locked.identity && checked.bootID == locked.bootID && checked.layout == locked.layout && checked.layoutIsDefault == locked.layoutIsDefault && checked.pages == locked.pages && checked.pagesIsDefault == locked.pagesIsDefault,
+                        "Во время обновления агента модем или его раскладка изменились")
+            installed = try ModemDisplayManager(engine: engine, updateVPNIntegration: { false }).install()
+        }
+        try require(installed.identity == before.identity && installed.bootID == before.bootID && installed.layout == before.layout && installed.layoutIsDefault == before.layoutIsDefault && installed.pages == before.pages && installed.pagesIsDefault == before.pagesIsDefault,
+                    "Страница eSIM установлена, но сохранение раскладки не подтверждено. Обновите состояние Launcher.")
+        guard let pages = installed.pages else { throw IMEIError.message("Не удалось прочитать порядок страниц") }
+        return try applyPagesLocked(pages.includingEsim(), assets: bundle, expected: installed)
+    }
+
+    private func preflightEsimLauncher(assets: Assets, expected: ModemDisplayInspection) throws {
+        let stage = "/tmp/zte-vpn-agent-" + UUID().uuidString.lowercased()
+        _ = try engine.remote("umask 077; mkdir " + shellQuote(stage))
+        defer { _ = try? engine.remote("rm -f " + Self.fileNames.map { shellQuote(stage + "/" + $0) }.joined(separator: " ") + "; rmdir " + shellQuote(stage), timeout: 15) }
+        for name in Self.fileNames {
+            let path = stage + "/" + name
+            let proof = try engine.remote("umask 077; cat > " + shellQuote(path) + " && chmod 700 " + shellQuote(path) + " && sha256sum " + shellQuote(path), input: assets.files[name]!, timeout: 120)
+            let fields = String(decoding: proof, as: UTF8.self).split(whereSeparator: \.isWhitespace)
+            try require(fields.count == 2 && fields[0] == Substring(assets.hashes[name]!) && fields[1] == Substring(path), "При передаче повреждён компонент дисплея: " + name)
+        }
+        guard let token = engine.remoteLockToken else { throw IMEIError.message("Потеряна блокировка дисплея") }
+        let command = "set -eu; test \"$(cat /tmp/zte-imei-app.lock/owner)\" = " + shellQuote(token) +
+            "; test \"$(cat /sys/block/mmcblk0/device/cid)\" = " + shellQuote(expected.identity.cid) +
+            "; test \"$(cat /proc/sys/kernel/random/boot_id)\" = " + shellQuote(expected.bootID) +
+            "; sh " + shellQuote(stage + "/install-launcher.sh") + " " + shellQuote(stage) + " preflight"
+        engine.update("Проверяю компоненты страницы eSIM до обновления агента", 0.15)
+        let reply = try engine.remote(command, timeout: 45)
+        try require(String(decoding: reply, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) == "LAUNCHER_PREFLIGHT_OK",
+                    "Предварительная проверка Launcher не подтверждена. Компоненты не обновлялись.")
+    }
+
+    func install(layout: ModemDisplayLayout? = nil, pages: ModemLauncherPages? = nil) throws -> ModemDisplayInspection {
+        try layout?.validate(); try pages?.validate()
+        // The dedicated path prepares the agent and coupled VPN controller once.
+        // Its inner generic install has no pages argument, so this cannot recurse.
+        if pages?.pages.contains(.esim) == true {
+            let installed = try installEsimPage()
+            return try applyPreferences(layout: layout, pages: pages, assets: assets(), expected: installed)
+        }
         try require(engine.lockFD >= 0, "Операция дисплея требует общей блокировки приложения")
         try engine.connection.validate()
         for name in ["pending.json", "setup-pending.json"] {
             try require(!FileManager.default.fileExists(atPath: engine.root.appendingPathComponent(name).path), "Сначала завершите настройку или смену IMEI")
         }
         let bundle = try assets(), before = try inspect(assets: bundle)
-        try require(before.canInstall, before.layoutWarning ?? before.detail)
+        try require(before.canInstall, before.pagesWarning ?? before.layoutWarning ?? before.detail)
         try engine.acquireRemoteLock()
         let locked = try inspect(assets: bundle)
         try require(locked.identity == before.identity && locked.bootID == before.bootID, "Перед установкой дисплея модем изменился или перезагрузился")
-        try require(locked.canInstall, locked.layoutWarning ?? locked.detail)
+        try require(locked.canInstall, locked.pagesWarning ?? locked.layoutWarning ?? locked.detail)
         if locked.state == .ready && locked.running {
-            return try layout.map { try applyLocked($0, assets: bundle, expected: locked) } ?? locked
+            return try applyPreferences(layout: layout, pages: pages, assets: bundle, expected: locked)
         }
         let integrated = try updateVPNIntegration?() ?? VPNSettingsManager(engine: engine).updateDisplayIntegrationIfNeeded()
         if integrated {
             let installed = try confirmInstall(assets: bundle, expected: before)
-            return try layout.map { try applyLocked($0, assets: bundle, expected: installed) } ?? installed
+            return try applyPreferences(layout: layout, pages: pages, assets: bundle, expected: installed)
         }
         let stage = "/tmp/zte-vpn-agent-" + UUID().uuidString.lowercased()
         _ = try engine.remote("umask 077; mkdir " + shellQuote(stage))
@@ -278,7 +383,7 @@ final class ModemDisplayManager {
         let reply = try engine.remote(command, timeout: 120)
         try require(String(decoding: reply, as: UTF8.self).split(whereSeparator: \.isNewline).last == "LAUNCHER_INSTALLED", "Установщик дисплея не подтвердил завершение. Проверьте состояние.")
         let installed = try confirmInstall(assets: bundle, expected: before)
-        return try layout.map { try applyLocked($0, assets: bundle, expected: installed) } ?? installed
+        return try applyPreferences(layout: layout, pages: pages, assets: bundle, expected: installed)
     }
 
     /// Writes only the small screen preference file. No service restart, firmware
@@ -299,7 +404,25 @@ final class ModemDisplayManager {
         return try applyLocked(layout, assets: bundle, expected: locked)
     }
 
-    private func layoutGuard(expected: ModemDisplayInspection, assets: Assets) throws -> String {
+    /// Writes only the small screen preference file. No service restart, firmware
+    /// operation or VPN update occurs here; the running launcher reloads it.
+    func applyPages(_ pages: ModemLauncherPages) throws -> ModemDisplayInspection {
+        try pages.validate()
+        try require(engine.lockFD >= 0, "Операция дисплея требует общей блокировки приложения")
+        try engine.connection.validate()
+        for name in ["pending.json", "setup-pending.json"] {
+            try require(!FileManager.default.fileExists(atPath: engine.root.appendingPathComponent(name).path), "Сначала завершите настройку или смену IMEI")
+        }
+        let bundle = try assets(), before = try inspect(assets: bundle)
+        try require(before.canApplyPages, before.pagesWarning ?? "Сначала установите или обновите плитки дисплея. " + before.detail)
+        try engine.acquireRemoteLock()
+        let locked = try inspect(assets: bundle)
+        try require(locked.identity == before.identity && locked.bootID == before.bootID, "Перед настройкой дисплея модем изменился или перезагрузился")
+        try require(locked.canApplyPages, locked.pagesWarning ?? "Дисплей не готов к изменению настройки")
+        return try applyPagesLocked(pages, assets: bundle, expected: locked)
+    }
+
+    private func layoutGuard(expected: ModemDisplayInspection, assets: Assets, fileName: String = "info-layout.conf") throws -> String {
         guard let token = engine.remoteLockToken else { throw IMEIError.message("Потеряна блокировка дисплея") }
         return "set -eu\n" +
             "test -d /tmp/zte-imei-app.lock && test ! -L /tmp/zte-imei-app.lock && test \"$(stat -c %u:%a /tmp/zte-imei-app.lock)\" = 0:700 || exit 73\n" +
@@ -307,7 +430,7 @@ final class ModemDisplayManager {
             "test \"$(cat /tmp/zte-imei-app.lock/owner)\" = " + shellQuote(token) + "\n" +
             "test \"$(cat /sys/block/mmcblk0/device/cid)\" = " + shellQuote(expected.identity.cid) + "\n" +
             "test \"$(cat /proc/sys/kernel/random/boot_id)\" = " + shellQuote(expected.bootID) + "\n" +
-            "root=/data/zte-launcher; file=\"$root/info-layout.conf\"\n" +
+            "root=/data/zte-launcher; file=\"$root/" + fileName + "\"\n" +
             "test -d \"$root\" && test ! -L \"$root\" && test \"$(stat -c %u:%a \"$root\")\" = 0:700 || exit 73\n" +
             "test \"$(cat \"$root/owner\")\" = zte-native-launcher-v1 && test \"$(cat \"$root/cid\")\" = " + shellQuote(expected.identity.cid) + " || exit 73\n" +
             "test -f \"$root/launcher.so\" && test ! -L \"$root/launcher.so\" && test \"$(sha256sum \"$root/launcher.so\" | awk '{print $1}')\" = " + shellQuote(assets.hashes["launcher.so"]!) + " || exit 73\n" +
@@ -351,6 +474,57 @@ final class ModemDisplayManager {
         try require(result.identity == expected.identity && result.bootID == expected.bootID, "После сохранения настройки дисплея модем изменился или перезагрузился")
         try require(result.canApplyLayout && result.layout == layout && !result.layoutIsDefault, "Проверка сохранённой настройки дисплея не пройдена")
         result.detail = "Показатели и порядок сохранены на модеме. Плитка применит настройку при открытии страницы или очередном обновлении экрана."
+        return result
+    }
+
+    private func applyPreferences(layout: ModemDisplayLayout?, pages: ModemLauncherPages?, assets: Assets, expected: ModemDisplayInspection) throws -> ModemDisplayInspection {
+        let afterLayout = try layout.map { try applyLocked($0, assets: assets, expected: expected) } ?? expected
+        return try pages.map { try applyPagesLocked($0, assets: assets, expected: afterLayout) } ?? afterLayout
+    }
+
+    private func applyPagesLocked(_ pages: ModemLauncherPages, assets: Assets, expected: ModemDisplayInspection) throws -> ModemDisplayInspection {
+        let bytes = try pages.encoded()
+        try require(expected.canApplyPages, expected.pagesWarning ?? "Дисплей не готов к изменению настройки")
+        if expected.pages == pages { return expected }
+        let stage = Self.root + "/.page-layout-" + UUID().uuidString.lowercased(), path = stage + "/layout"
+        let guardCommand = try layoutGuard(expected: expected, assets: assets, fileName: "page-layout.conf")
+        let stageCommand = "# MODEM_DISPLAY_PAGES_STAGE\n" + guardCommand +
+            "umask 077; mkdir -m 700 " + shellQuote(stage) + "\n" +
+            "cat > " + shellQuote(path) + "\nchmod 600 " + shellQuote(path) + "\nsha256sum " + shellQuote(path)
+        defer {
+            _ = try? engine.remote("# MODEM_DISPLAY_PAGES_CLEANUP\n" + guardCommand +
+                "test -d " + shellQuote(stage) + " && test ! -L " + shellQuote(stage) +
+                " && test \"$(stat -c %u:%a " + shellQuote(stage) + ")\" = 0:700 || exit 73\n" +
+                "rm -f " + shellQuote(path) + "; rmdir " + shellQuote(stage), timeout: 15)
+        }
+        let proof = try engine.remote(stageCommand, input: bytes, timeout: 30)
+        let proofFields = String(decoding: proof, as: UTF8.self).split(whereSeparator: \.isWhitespace)
+        try require(proofFields.count == 2 && proofFields[0] == Substring(digest(bytes)) && proofFields[1] == Substring(path), "При передаче повреждена настройка дисплея; прежняя настройка сохранена")
+        let checked = try inspect(assets: assets)
+        try require(checked.identity == expected.identity && checked.bootID == expected.bootID, "Перед сохранением настройки дисплея модем изменился или перезагрузился")
+        try require(checked.canApplyPages, checked.pagesWarning ?? "Дисплей изменился перед сохранением настройки")
+        try require(checked.pages == expected.pages && checked.pagesIsDefault == expected.pagesIsDefault, "Порядок страниц изменился во время сохранения. Прочитайте его заново.")
+        let previousGuard: String
+        if expected.pagesIsDefault {
+            previousGuard = "test ! -e \"$file\" && test ! -L \"$file\" || exit 73\n"
+        } else {
+            guard let oldPages = expected.pages else { throw IMEIError.message("Не удалось прочитать порядок страниц") }
+            previousGuard = "test \"$(sha256sum \"$file\" | awk '{print $1}')\" = " + shellQuote(digest(try oldPages.encoded())) + " || exit 73\n"
+        }
+        let commit = "# MODEM_DISPLAY_PAGES_COMMIT\n" + guardCommand + previousGuard +
+            "test -d " + shellQuote(stage) + " && test ! -L " + shellQuote(stage) + " && test \"$(stat -c %u:%a " + shellQuote(stage) + ")\" = 0:700 || exit 73\n" +
+            "test -f " + shellQuote(path) + " && test ! -L " + shellQuote(path) + " && test \"$(stat -c %u:%a:%h " + shellQuote(path) + ")\" = 0:600:1 || exit 73\n" +
+            "test \"$(stat -c %s " + shellQuote(path) + ")\" = " + String(bytes.count) + "\n" +
+            "test \"$(sha256sum " + shellQuote(path) + " | awk '{print $1}')\" = " + shellQuote(digest(bytes)) + "\n" +
+            "sync\nmv -f " + shellQuote(path) + " \"$file\"\nsync\nsha256sum \"$file\""
+        engine.update("Сохраняю выбранные страницы и их порядок", 0.95)
+        let reply = try engine.remote(commit, timeout: 30)
+        let replyFields = String(decoding: reply, as: UTF8.self).split(whereSeparator: \.isWhitespace)
+        try require(replyFields.count == 2 && replyFields[0] == Substring(digest(bytes)) && replyFields[1] == Substring(Self.pagesPath), "Модем не подтвердил запись настройки дисплея. Повторите проверку.")
+        var result = try inspect(assets: assets)
+        try require(result.identity == expected.identity && result.bootID == expected.bootID, "После сохранения настройки дисплея модем изменился или перезагрузился")
+        try require(result.canApplyPages && result.pages == pages && !result.pagesIsDefault, "Проверка сохранённой настройки дисплея не пройдена")
+        result.detail = "Выбор и порядок страниц сохранены на модеме. Лаунчер применит их без перезапуска экрана."
         return result
     }
 

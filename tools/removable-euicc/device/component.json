@@ -1,0 +1,48 @@
+{
+  "component": "QMI/ES10 transport",
+  "license_status": "license_unspecified",
+  "notice": "COMPONENT-NOTICE.txt",
+  "scope": "Current adapted source identities; no license grant or claim of sole authorship.",
+  "files": [
+    {
+      "path": "tools/removable-euicc/device/src/qmi/mod.rs",
+      "sha256": "8e26620f5aee699435a6c7dbd10f8291582d11637c023edfcf6b29420a260de1",
+      "size": 107
+    },
+    {
+      "path": "tools/removable-euicc/device/src/qmi/qrtr.rs",
+      "sha256": "efe64b5a3e1b922bd5c12744fc50c8645c186abca91cc98fb759e8d0ecce589d",
+      "size": 11444
+    },
+    {
+      "path": "tools/removable-euicc/device/src/qmi/tlv.rs",
+      "sha256": "d4a4f4431fb8f94ce0ba773197429847ad48e862e9eb6161569eda502f406351",
+      "size": 5791
+    },
+    {
+      "path": "tools/removable-euicc/device/src/qmi/uim.rs",
+      "sha256": "63ab27d583a08de9660ad2e23c3d4d0b208f3903c17170ddb738f564faccd552",
+      "size": 15300
+    },
+    {
+      "path": "tools/removable-euicc/device/src/euicc/bertlv.rs",
+      "sha256": "e55401c24d2b24abbfc9ded72096fac02c0df7f1b06014c6261fcb6f078ab8e4",
+      "size": 6432
+    },
+    {
+      "path": "tools/removable-euicc/device/src/euicc/es10.rs",
+      "sha256": "68bcfbaf6548c1a91a0c85cb260e7bca0ac830b733e8f51228b72c4e36a71f63",
+      "size": 12967
+    },
+    {
+      "path": "ModemAgent/agent/src/esim/radio_qmi/qrtr.rs",
+      "sha256": "597847fd7e3a19afa36d61e468367d10b51e3e708ea8fd394b6ca9d7279ca712",
+      "size": 16230
+    },
+    {
+      "path": "ModemAgent/agent/src/esim/radio_qmi/tlv.rs",
+      "sha256": "fac9705068d167995ed64123ea3337acbf70087e95d0180d90a821a4055eabb8",
+      "size": 6016
+    }
+  ]
+}

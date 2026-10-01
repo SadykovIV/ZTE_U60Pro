@@ -4,6 +4,8 @@
 set -eu
 umask 077
 stage=${1:?}
+mode=${2:-apply}
+case "$mode" in apply|preflight) ;; *) exit 64;; esac
 root=/data/zte-launcher
 case "$stage" in /tmp/zte-vpn-agent-*) ;; *) exit 64;; esac
 [ -d /tmp/zte-imei-app.lock ] && [ -f /tmp/zte-imei-app.lock/owner ] || exit 65
@@ -18,12 +20,12 @@ case "$(sha256sum /etc/init.d/zte_topsw_devui | cut -d' ' -f1)" in
  *) exit 69;;
 esac
 # PAYLOAD_PINS_BEGIN
-[ "$(sha256sum "$stage/launcher.so" | cut -d' ' -f1)" = 9af1b9f4455f2443be2da38be10412a1597f043e54d00d2a52da62c92bcc21ab ] || exit 70
+[ "$(sha256sum "$stage/launcher.so" | cut -d' ' -f1)" = fc550f785beca647b46a2fda06aa36731de4975986dd4765c2733f8b6a9c6762 ] || exit 70
 [ "$(sha256sum "$stage/launcher-run.sh" | cut -d' ' -f1)" = d873533e471a4e86b20adb89ee77e6f72f1532972269e05f3616111b88b6e06e ] || exit 70
-[ "$(sha256sum "$stage/launcher-watch.sh" | cut -d' ' -f1)" = b9eb493a7d76baf896445d8e714c3edd23d8a93044fd588b81dd52de20d4ca99 ] || exit 70
+[ "$(sha256sum "$stage/launcher-watch.sh" | cut -d' ' -f1)" = 13dbaa1520f0a503270109bbd07eea331317396824566d389bba37bdc91a16e2 ] || exit 70
 [ "$(sha256sum "$stage/launcher-service.sh" | cut -d' ' -f1)" = e0d5c80f061af69a8a7329476e33e6b4766a80b37a9a38e3d3217712551b4e90 ] || exit 70
 [ "$(sha256sum "$stage/launcher-start.sh" | cut -d' ' -f1)" = 8aed90c6fe28ad488b78caeadbc61117dfcfda795793894325e39baf0ac03633 ] || exit 70
-[ "$(sha256sum "$stage/launcher.sha256" | cut -d' ' -f1)" = bdd536a2c83eb8167c278481f057108da038693b7de674b112105110c27a20ca ] || exit 70
+[ "$(sha256sum "$stage/launcher.sha256" | cut -d' ' -f1)" = 54fd5c73d48f83e57fb7a3ddeeb43adbab5c3c4a71a909ac73bfdfde7a11c8f2 ] || exit 70
 # PAYLOAD_PINS_END
 for file in launcher.so launcher-run.sh launcher-watch.sh launcher-service.sh launcher-start.sh launcher.sha256; do
  [ -f "$stage/$file" ] && [ ! -L "$stage/$file" ] || exit 70
@@ -32,16 +34,35 @@ done
 [ -f /etc/rc.local ] && [ ! -L /etc/rc.local ] || exit 72
 [ "$(stat -c %u /etc/rc.local)" = 0 ] || exit 72
 transaction=/data/zte-launcher-update
+page_layout_valid() {
+ [ -f "$1" ] && [ ! -L "$1" ] && [ "$(stat -c %u:%a:%h "$1")" = 0:600:1 ] || return 1
+ bytes=$(wc -c < "$1")
+ [ "$bytes" -gt 0 ] && [ "$bytes" -le 128 ] || return 1
+ # Comparing the reconstructed byte count also rejects a missing final LF.
+ # LC_ALL=C makes byte length independent of the caller's locale.
+ expected=$(LC_ALL=C awk '
+  NR==1 {if($0!="ZTE_LAUNCHER_PAGES_V1")exit 1;total=length($0)+1;next}
+  {if(($0!="info"&&$0!="vpn"&&$0!="esim")||seen[$0]++||NR>4)exit 1;total+=length($0)+1}
+  END {if(NR<1)exit 1;print total}
+ ' "$1") || return 1
+ [ "$bytes" -eq "$expected" ]
+}
+page_layout_optional() {
+ if [ -e "$1" ] || [ -L "$1" ]; then page_layout_valid "$1";else return 0;fi
+}
 owned_root() {
  [ -d "$1" ] && [ ! -L "$1" ] && [ "$(stat -c %u:%a "$1")" = 0:700 ] &&
  [ "$(cat "$1/owner" 2>/dev/null)" = zte-native-launcher-v1 ] &&
- [ "$(cat "$1/cid" 2>/dev/null)" = "$(cat /sys/block/mmcblk0/device/cid)" ]
+ [ "$(cat "$1/cid" 2>/dev/null)" = "$(cat /sys/block/mmcblk0/device/cid)" ] &&
+ page_layout_optional "$1/page-layout.conf"
 }
 recover() {
  [ -e "$transaction" ] || return 0
  [ -d "$transaction" ] && [ ! -L "$transaction" ] && [ "$(stat -c %u:%a "$transaction")" = 0:700 ] || return 1
  [ "$(cat "$transaction/owner" 2>/dev/null)" = zte-launcher-update-v1 ] || return 1
  [ "$(cat "$transaction/cid")" = "$(cat /sys/block/mmcblk0/device/cid)" ] || return 1
+ # Never restore a directory whose separately stored page selection is unsafe.
+ if [ -e "$transaction/old" ] || [ -L "$transaction/old" ]; then owned_root "$transaction/old" || return 1;fi
  if [ -e "$transaction/commit" ]; then rm -rf "$transaction";return 0;fi
  if [ ! -e "$transaction/started" ] && [ ! -d "$transaction/old" ]; then rm -rf "$transaction";return 0;fi
  (cd "$transaction" && sha256sum -c backup.sha256 >/dev/null) || return 1
@@ -57,7 +78,16 @@ recover() {
  fi
  rm -rf "$transaction"
 }
-recover || exit 74
+# Optional user data is not part of the binary payload manifest. Validate it
+# before even recovery can change installed state; absence preserves old data.
+page_layout_optional "$stage/page-layout.conf" || exit 73
+if [ -e "$root" ] || [ -L "$root" ]; then owned_root "$root" || exit 73;fi
+if [ "$mode" = preflight ]; then
+ # Inspection must never recover, remove or stop a previous installation.
+ [ ! -e "$transaction" ] && [ ! -L "$transaction" ] || exit 74
+else
+ recover || exit 74
+fi
 if [ -e "$root" ] || [ -L "$root" ]; then
  owned_root "$root" || exit 73
  (cd "$root" && sha256sum -c launcher.sha256 >/dev/null) || exit 73
@@ -71,6 +101,10 @@ layout="$root/info-layout.conf"
 if [ -e "$layout" ] || [ -L "$layout" ]; then
  [ -f "$layout" ] && [ ! -L "$layout" ] && [ "$(stat -c %u:%a:%h "$layout")" = 0:600:1 ] || exit 73
  [ "$(wc -c < "$layout")" -le 512 ] || exit 73
+fi
+if [ "$mode" = preflight ]; then
+ printf '%s\n' LAUNCHER_PREFLIGHT_OK
+ exit 0
 fi
 mkdir -m 700 "$transaction"
 printf '%s\n' zte-launcher-update-v1 > "$transaction/owner"
@@ -87,6 +121,13 @@ chmod 600 "$transaction/new/rc.local.backup"
 if [ -f "$layout" ]; then
  cp -p "$layout" "$transaction/new/info-layout.conf"
  cmp -s "$layout" "$transaction/new/info-layout.conf" || exit 73
+fi
+pages="$root/page-layout.conf"
+if [ -e "$stage/page-layout.conf" ]; then pages="$stage/page-layout.conf";fi
+if [ -e "$pages" ]; then
+ page_layout_valid "$pages" || exit 73
+ cp -p "$pages" "$transaction/new/page-layout.conf"
+ page_layout_valid "$transaction/new/page-layout.conf" && cmp -s "$pages" "$transaction/new/page-layout.conf" || exit 73
 fi
 for file in launcher.so launcher-run.sh launcher-watch.sh launcher-service.sh launcher-start.sh launcher.sha256; do
  cp "$stage/$file" "$transaction/new/$file";chmod 700 "$transaction/new/$file"

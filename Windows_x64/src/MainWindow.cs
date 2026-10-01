@@ -11,7 +11,7 @@ using ZteImeiStudio.Windows.Core;
 
 namespace ZteImeiStudio.Windows;
 
-public sealed class MainWindow : Window
+public sealed partial class MainWindow : Window
 {
     private sealed record Page(string Title, string Subtitle, string Icon, string[] Sections);
     private sealed record DisplayMetric(string Id, string Title, string Detail, string TileTitle, string Example);
@@ -44,6 +44,7 @@ public sealed class MainWindow : Window
         new("Приложения", "Установленные пакеты и каталог", "▦", ["Установлено", "Каталог", "Terminal"]),
         new("Администрирование", "Доступы, бэкапы и журнал", "⚙", ["Доступы", "Бэкапы", "Журнал действий"]),
         new("О модеме", "Устройство, память и диагностика", "ⓘ", ["Об устройстве", "Память", "Диагностика"]),
+        new("eSIM", "Профили физической eUICC", "▣", ["Профили"]),
     ];
 
     private static readonly IBrush Canvas = Brush("#081528");
@@ -204,7 +205,7 @@ public sealed class MainWindow : Window
         RenderPage();
         UpdateConnectionLabels();
         VerifiedCatalogStore.Shared.Changed += CatalogChanged;
-        Opened += async (_, _) => await RefreshAsync();
+        Opened += async (_, _) => { _researchReport = await _service.GetFirmwareResearchAsync(_lifetime.Token); await RefreshAsync(); };
         Closed += async (_, _) => await ShutdownAsync();
     }
 
@@ -254,7 +255,8 @@ public sealed class MainWindow : Window
             "M12 2 A10 10 0 1 0 12 22 A10 10 0 1 0 12 2 M2 12 H22 M12 2 C6 7 6 17 12 22 M12 2 C18 7 18 17 12 22",
             "M3 3 H9 V9 H3 Z M15 3 H21 V9 H15 Z M3 15 H9 V21 H3 Z M15 15 H21 V21 H15 Z",
             "M9 4 A4 4 0 1 0 9 12 A4 4 0 1 0 9 4 M2 21 C2 12 16 12 16 21 M20 13 A3 3 0 1 0 20 19 M18 19 V23 M18 21 H21",
-            "M3 10 H21 V20 H3 Z M7 15 H8 M11 15 H12 M17 10 V5 M12 2 C16 0 20 2 22 5 M13 5 C15 4 17 5 18 7"
+            "M3 10 H21 V20 H3 Z M7 15 H8 M11 15 H12 M17 10 V5 M12 2 C16 0 20 2 22 5 M13 5 C15 4 17 5 18 7",
+            "M6 2 H14 L19 7 V22 H6 Z M9 10 H16 V18 H9 Z M12 10 V18 M9 14 H16"
         ];
         var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
         row.Children.Add(new Avalonia.Controls.Shapes.Path { Data = Geometry.Parse(paths[index]), Width = 18, Height = 18,
@@ -322,6 +324,7 @@ public sealed class MainWindow : Window
             case 5: BuildApplications(); break;
             case 6: BuildAdministration(); break;
             case 7: BuildModem(); break;
+            case 8: BuildEsim(); break;
         }
     }
 
@@ -334,8 +337,7 @@ public sealed class MainWindow : Window
                 {
                     panel.Children.Add(FieldPair(Field("Адрес модема", "host", "192.168.0.1"), Field("Пользователь SSH", "username", "root")));
                     panel.Children.Add(FieldPair(Field("Пароль веб-интерфейса", "web_password", "Введите пароль", secret: true), Field("Пароль агента / SSH", "agent_password", "Введите пароль", secret: true)));
-                    panel.Children.Add(Field("Backup-key suffix", "backup_key_suffix", "Суффикс ключа резервной копии вашей прошивки", secret: true));
-                    panel.Children.Add(Muted("Суффикс нужен только для предварительной подготовки через Web; он не включён в публичную сборку и не сохраняется."));
+                    panel.Children.Add(Field("Backup-key suffix вашей прошивки", "backup_key_suffix", "Только для предварительной подготовки", secret: true));
                     panel.Children.Add(Muted("Режим подключения"));
                     var modes = new ComboBox
                     {
@@ -370,15 +372,18 @@ public sealed class MainWindow : Window
                     preparation.Children.Add(OperationInfoButton(OperationHelpContent.Preparation));
                     panel.Children.Add(preparation);
                 });
+                BuildFirmwareResearch();
                 AddSnapshotCard();
                 break;
             case 1:
-                AddCard("Агент модема", "Проверка, установка и откат штатного агента.", panel =>
+                AddCard("Агент модема", "Постоянная установка агента eSIM и веб-панели.", panel =>
                 {
                     panel.Children.Add(Actions(
                         ("Проверить агент", ModemOperation.RefreshAgent, null),
                         ("Установить / обновить", ModemOperation.InstallAgent, null),
                         ("Восстановить предыдущий", ModemOperation.RestoreAgent, null)));
+                    panel.Children.Add(Muted("Версия в комплекте: " + AgentPackage.Version));
+                    panel.Children.Add(Muted("После перезагрузки агент и веб-панель остаются на модеме. Восстановление предыдущего агента меняет только его исполняемый файл; ручной откат панели не поддерживается."));
                     panel.Children.Add(ValueLine("Состояние", _snapshot?.Agent));
                 });
                 break;
@@ -396,13 +401,11 @@ public sealed class MainWindow : Window
 
     private void BuildLauncher()
     {
-        AddCard("Плитки на экране модема", "Две дополнительные страницы штатного лаунчера: информация о модеме и управление VPN.", panel =>
+        AddCard("Плитки на экране модема", "Выбор и порядок дополнительных страниц: информация, VPN и eSIM.", panel =>
         {
             panel.Children.Add(ValueLine("Состояние", _snapshot?.Launcher));
-            panel.Children.Add(Actions(
-                ("Проверить лаунчер", ModemOperation.RefreshLauncher, null),
-                ("Установить / обновить", ModemOperation.InstallLauncher, null)));
-            panel.Children.Add(Muted("Установка может перезапустить экран модема. Состав и порядок информационных показателей сохраняются отдельно."));
+            panel.Children.Add(Actions(("Проверить лаунчер", ModemOperation.RefreshLauncher, null)));
+            BuildLauncherPageEditor(panel);
         });
         if (_sections[1] == 0)
         {
@@ -1040,7 +1043,7 @@ public sealed class MainWindow : Window
                 }
                 if (!isStock && app.StatusKnown)
                 {
-                var appAction = ActionButton(app.Installed ? "Удалить" : isSsclash ? "Скачать и установить" : "Установить", async () =>
+                var appAction = ActionButton(app.Installed ? "Удалить" : "Установить", async () =>
                 {
                     if (app.Installed && !await ConfirmAsync("Удалить приложение?", app.Name)) return;
                     if (isSsclash && !app.Installed)
@@ -1648,7 +1651,16 @@ public sealed class MainWindow : Window
 
     private async Task ReloadSnapshotAsync()
     {
+        var prior = _snapshot;
         _snapshot = await _service.GetDeviceSnapshotAsync(_lifetime.Token);
+        if (!_snapshot.IsConnected || _snapshot.Serial != prior?.Serial || _snapshot.IpAddress != prior?.IpAddress || _snapshot.ConnectionMode != prior?.ConnectionMode) { _esimAuthorized = false; _esimSnapshot = null; _esimSelected = null; }
+        if (_snapshot.Serial != prior?.Serial || _snapshot.IpAddress != prior?.IpAddress) _launcherPagesDirty = false;
+        if (!_launcherPagesDirty && _snapshot.LauncherPages is { } pages)
+        {
+            _form["pages"] = pages;
+            var selected = pages.Split(',', StringSplitOptions.RemoveEmptyEntries);
+            _form["page_order"] = string.Join(',', selected.Concat(new[] { "info", "vpn", "esim" }.Except(selected)));
+        }
         if (_snapshot.LauncherStyle is { } style) _form["style"] = style;
         if (_snapshot.LauncherMetrics is { } metrics) _form["metrics"] = metrics;
         if (_snapshot.LauncherMetricOrder is { } order) _form["metric_order"] = order;
@@ -1718,10 +1730,12 @@ public sealed class MainWindow : Window
             _preparationButton.IsEnabled = !busy && !(_snapshot?.IsConnected == true && _snapshot.ConnectionMode == "SSH");
         if (!busy && _page == 5 && _sections[5] == 2 && !_terminalAutoAttempted)
             _ = LoadPageDataAsync();
+        UpdateEsimAvailability();
     }
 
     private void ClearSecrets()
     {
+        ClearEsimSecrets();
         foreach (var input in _secretFields.Values) input.Text = "";
         _secretFields.Clear();
     }
@@ -1782,6 +1796,7 @@ public sealed class MainWindow : Window
 
     private async Task ShutdownAsync()
     {
+        ClearEsimSecrets();
         VerifiedCatalogStore.Shared.Changed -= CatalogChanged;
         _lifetime.Cancel();
         try { await CloseTerminalAsync(); }

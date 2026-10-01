@@ -1,0 +1,46 @@
+diff --git a/driver/apdu/stdio.c b/driver/apdu/stdio.c
+index 1d751c1..35c74ef 100644
+--- a/driver/apdu/stdio.c
++++ b/driver/apdu/stdio.c
+@@ -144,11 +144,11 @@ static int json_response(int *ecode, uint8_t **data, uint32_t *data_len) {
+ 
+ err:
+     fret = -1;
+-    free(*data);
+-    if (data) {
++    if (data != NULL) {
++        free(*data);
+         *data = NULL;
+     }
+-    if (data_len) {
++    if (data_len != NULL) {
+         *data_len = 0;
+     }
+     *ecode = -1;
+@@ -160,7 +160,7 @@ exit:
+ static int apdu_interface_connect(struct euicc_ctx *ctx) {
+     int ecode;
+ 
+-    if (json_request("connect", NULL, 0)) {
++    if (!json_request("connect", NULL, 0)) {
+         return -1;
+     }
+ 
+@@ -183,7 +183,7 @@ static void apdu_interface_disconnect(struct euicc_ctx *ctx) {
+ static int apdu_interface_logic_channel_open(struct euicc_ctx *ctx, const uint8_t *aid, uint8_t aid_len) {
+     int ecode;
+ 
+-    if (json_request("logic_channel_open", aid, aid_len)) {
++    if (!json_request("logic_channel_open", aid, aid_len)) {
+         return -1;
+     }
+ 
+@@ -209,7 +209,7 @@ static int apdu_interface_transmit(struct euicc_ctx *ctx, uint8_t **rx, uint32_t
+                                    uint32_t tx_len) {
+     int ecode;
+ 
+-    if (json_request("transmit", tx, tx_len)) {
++    if (!json_request("transmit", tx, tx_len)) {
+         return -1;
+     }
+ 

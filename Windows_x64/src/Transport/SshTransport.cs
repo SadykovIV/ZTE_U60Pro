@@ -34,7 +34,7 @@ public interface IRemoteShell
 /// public key must already be present in an OpenSSH known_hosts file; this class
 /// never learns or replaces a key over the network.
 /// </summary>
-public sealed class SshTransport : IRemoteShell
+public sealed partial class SshTransport : IRemoteShell
 {
     private const int MaximumCommandBytes = 128 * 1024;
     // SSClash recovery archives are bounded to 256 MiB by the device helper.

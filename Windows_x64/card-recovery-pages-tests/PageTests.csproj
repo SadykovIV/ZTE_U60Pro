@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+<PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><RuntimeIdentifier>osx-arm64</RuntimeIdentifier><SelfContained>false</SelfContained><EnableDefaultCompileItems>false</EnableDefaultCompileItems><DefaultItemExcludes>$(DefaultItemExcludes);candidates/**</DefaultItemExcludes><UsedAvaloniaProducts></UsedAvaloniaProducts></PropertyGroup>
+<ItemGroup><Compile Include="Program.cs"/><Compile Include="PageInstallerTests.cs"/><Reference Include="ZTE U60Pro Manager"><HintPath>../src/bin/Debug/net10.0/osx-arm64/ZTE U60Pro Manager.dll</HintPath></Reference>
+<Content Include="../Resources/Branding/*"><Link>Resources/Branding/%(Filename)%(Extension)</Link><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory></Content>
+<PackageReference Include="Avalonia.Headless" Version="11.3.12" /><PackageReference Include="Avalonia.Skia" Version="11.3.12" /><PackageReference Include="Avalonia.Themes.Simple" Version="11.3.12" /><PackageReference Include="SSH.NET" Version="2025.0.0" /><PackageReference Include="ZXing.Net" Version="0.16.11" /></ItemGroup>
+</Project>

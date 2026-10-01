@@ -1,11 +1,12 @@
 {
-  "LICENSE": "db4bbb26836ac3df8760d74659fca92811bb7c6b1068cfd9827259505009d300",
-  "README.md": "c16be649dd058542faf765ef437873d4f2f77a684dbc73b5c97bcee5ac850f26",
-  "assets/index-BSGr5Nc2.js": "093654bfc5776b0716058cc87cdf3296dfb8abab9b671e2273e9a9877b3e4793",
-  "assets/index-Byinhe16.css": "e5ecf1ebf96795919dd8abc8fdf65dd45be71ee9fe8f60e0855037485ed63ce7",
-  "assets/vendor-DqfTwBWb.js": "46e994a0f20c347833eb23674ca66ead56d8d7ab9eace7f2a17f45b9aa13e88a",
+  "LICENSE-jsQR-Apache-2.0.txt": "c6596eb7be8581c18be736c846fb9173b69eccf6ef94c5135893ec56bd92ba08",
+  "THIRD-PARTY.md": "0e9d5a39ad836e23797e56ccde6e308203e6a080227bf1d4bca3ad583aeed3fe",
+  "assets/index-B0Mgfq7U.js": "690ea746e69cb8ce003f8c8438cf332dd28ec58197668f4f1a189bcf85384375",
+  "assets/index-xct2ZJS1.css": "d644fcf549e614d088905912457ea8c52e0186e6efa84ec84583dd6549a08384",
+  "assets/rolldown-runtime-CbXtAM7H.js": "bbf7c5086ae414dc3f33777e3eebf16ea8631325b8bb4690d25091c03567f31a",
+  "assets/vendor-3dEbG5sa.js": "3e86eb2ae0bdc008331acb27a63cfec369a32337c7571753b05d7574901e7ae0",
   "favicon.svg": "d38060314bf5283ae64b03208aaea410939c23492f06a227bf4392d5e8ba609a",
-  "index.html": "ef84080162bb31508515bfe6fb2aebd8f6bb7fa7df9eeadef78e7ef54125e800",
+  "index.html": "4dca88160448846cef4def4b182f72f6e26ba0a6ba18402471df21424d6ca8fe",
   "manifest.json": "a829510c8c11a61651a7d60b0b7b92826f08b1d72a46ce28b0e940d68a62c740",
-  "release.json": "b7089cdeaa6b3cb32cacb8f24f466edce2ca72f6715fdf6c8bb432b1dde7605f"
+  "release.json": "77fabb028b31fa24277bb6ea37334752a2050f7098ea33e7ced54dea4fdf1dff"
 }

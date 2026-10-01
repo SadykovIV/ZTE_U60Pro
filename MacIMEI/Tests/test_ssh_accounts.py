@@ -8,8 +8,7 @@ ROOT=pathlib.Path(__file__).resolve().parents[1]
 SOURCE=(ROOT/'Resources/SSHAccounts/create-ssh-user.sh').read_text()
 TOKEN='11111111-1111-4111-8111-111111111111'
 CID='0123456789abcdef0123456789abcdef'
-OPENSSL=pathlib.Path(os.environ.get('ZTE_OPENSSL') or shutil.which('openssl') or '/nonexistent/openssl')
-if not OPENSSL.is_file(): raise SystemExit('Install OpenSSL 3 or set ZTE_OPENSSL to its executable')
+OPENSSL=pathlib.Path('/opt/homebrew/opt/openssl@3/bin/openssl')
 
 class Fixture:
     def __init__(self):

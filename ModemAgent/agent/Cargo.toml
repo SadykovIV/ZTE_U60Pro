@@ -1,8 +1,21 @@
 [package]
 name = "zte-agent"
-version = "2.8.0"
+version = "2.7.0-vpn.1"
 edition = "2021"
-license = "MIT"
+license-file = "../../LICENSE-SCOPE.md"
+
+[features]
+default = []
+esim = []
+
+[[bin]]
+name = "zte-agent"
+path = "src/main.rs"
+
+[[bin]]
+name = "zte-agent-esim"
+path = "src/esim_main.rs"
+required-features = ["esim"]
 
 [dependencies]
 process-runner = { path = "../process-runner" }

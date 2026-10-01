@@ -19,6 +19,7 @@ enum StudioPage: String, CaseIterable, Identifiable {
     case preparation = "Подготовка модема"
     case display = "Launcher"
     case imei = "IMEI"
+    case esim = "eSIM"
     case ttl = "TTL"
     case vpn = "VPN"
     case applications = "Приложения (beta)"
@@ -31,6 +32,7 @@ enum StudioPage: String, CaseIterable, Identifiable {
         case .preparation: return "wrench.and.screwdriver"
         case .display: return "display"
         case .imei: return "simcard"
+        case .esim: return "simcard.2"
         case .ttl: return "slider.horizontal.3"
         case .applications: return "square.grid.2x2"
         case .vpn: return "network"
@@ -41,8 +43,9 @@ enum StudioPage: String, CaseIterable, Identifiable {
         switch self {
         case .modem: return "Устройство, система, память и диагностика"
         case .preparation: return "Подключение, ADB, агент и русский интерфейс"
-        case .display: return "Плитки, показатели модема и управление VPN на экране"
+        case .display: return "Показатели модема, VPN и профили eSIM на экране"
         case .imei: return "Чтение, смена и резервные копии IMEI"
+        case .esim: return "Профили физической eUICC: QR, активация и удаление"
         case .ttl: return "Фиксация исходящего TTL и прибавка к входящему"
         case .applications: return "Установленные приложения и каталог"
         case .vpn: return "Проверка и установка компонентов VPN"
@@ -83,8 +86,8 @@ enum ApplicationSection: String, CaseIterable, Identifiable {
 @MainActor
 struct ContentView: View {
     @ObservedObject var model: AppModel
-    @ObservedObject var verifiedCatalog = VerifiedCatalogStore.shared
-    @StudioState var page: StudioPage = .preparation
+    @ObservedObject var verifiedCatalog = CommandLine.arguments.contains("--esim-ui-fixture") ? VerifiedCatalogStore(cacheURL: FileManager.default.temporaryDirectory.appendingPathComponent("zte-esim-catalog-" + UUID().uuidString)) : VerifiedCatalogStore.shared
+    @StudioState var page: StudioPage = CommandLine.arguments.contains("--esim-ui-fixture") ? .esim : .preparation
     @StudioState var modemSection: ModemSection = .overview
     @StudioState var preparationSection: PreparationSection = .connection
     @StudioState var launcherSection: LauncherSection = .information
@@ -127,6 +130,7 @@ struct ContentView: View {
                         case .preparation: preparationPage
                         case .display: displayPage
                         case .imei: imeiPage
+                        case .esim: EsimPanel(model: model)
                         case .ttl: ttlPage
                         case .applications: applicationsPage
                         case .vpn: vpnPage
@@ -333,6 +337,7 @@ struct ContentView: View {
             }
         case .administration: sections = administrationSection == .access && model.accessState == nil ? [.access] : []
         case .imei: sections = []
+        case .esim: sections = []
         }
         return sections.compactMap { section in model.sectionRefreshErrors[section].map { (section.title, $0) } }
     }
@@ -421,6 +426,7 @@ struct ContentView: View {
                 }
             }
             connectionRoutingCard
+            firmwareResearchCard
         }.onAppear {
             if !model.connectionsChecked && !model.busy { model.discoverConnectionsPassively() }
         }
@@ -868,7 +874,7 @@ struct ContentView: View {
                     }
                 }
                 Spacer(minLength: 12)
-                if model.busy {
+                if model.busy && !model.esimOperationActive {
                     VStack(alignment: .trailing, spacing: 5) {
                         Text(L10n.text("\(Int(min(max(model.progress, 0), 1) * 100))%"))
                             .font(.system(size: 10, design: .monospaced))

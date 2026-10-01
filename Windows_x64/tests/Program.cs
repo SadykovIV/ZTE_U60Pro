@@ -44,20 +44,20 @@ var inner = BackupGzip.Compress(Tar(("etc/config/test", Encoding.UTF8.GetBytes("
 var md5 = Encoding.ASCII.GetBytes(Convert.ToHexString(MD5.HashData(inner)).ToLowerInvariant() + "\n");
 var outer = BackupGzip.Compress(Tar(("tmp/back_parameter_r1.tgz", inner),
     ("tmp/back_parameter_r.md5", md5)));
+const string testSuffix = "test-only-backup-key-suffix";
 var imei = "353490068701222";
-const string syntheticSuffix = "synthetic-backup-key-suffix";
-var encrypted = BackupCipher.Encrypt(outer, imei + syntheticSuffix);
-var patched = BackupPatch.Prepare(encrypted, imei, syntheticSuffix);
+var encrypted = BackupCipher.Encrypt(outer, imei + testSuffix);
+var patched = BackupPatch.Prepare(encrypted, imei, testSuffix);
 Check(!patched.AlreadyEnabled && !encrypted.AsSpan().SequenceEqual(patched.PatchedEncrypted),
     "B31 backup patched");
 var after = BackupPatch.Inspect(BackupCipher.Decrypt(patched.PatchedEncrypted,
-    imei + syntheticSuffix));
+    imei + testSuffix));
 Check(Encoding.UTF8.GetString(after.Inner.Members.Single(m => m.Path == BackupPatch.RcPath).Bytes)
     .StartsWith("#!/bin/sh\n" + BackupPatch.EnableLine, StringComparison.Ordinal), "Only expected rc.local line inserted");
-var repeated = BackupPatch.Prepare(patched.PatchedEncrypted, imei, syntheticSuffix);
+var repeated = BackupPatch.Prepare(patched.PatchedEncrypted, imei, testSuffix);
 Check(repeated.AlreadyEnabled && repeated.PatchedEncrypted.AsSpan().SequenceEqual(patched.PatchedEncrypted),
     "B31 backup patch idempotent");
-Reject(() => BackupPatch.Prepare(encrypted, "353490068701223", syntheticSuffix), "Invalid IMEI rejected");
+Reject(() => BackupPatch.Prepare(encrypted, "353490068701223", testSuffix), "Invalid IMEI rejected");
 Reject(() => BackupPatch.Prepare(encrypted, imei, "wrong"), "Wrong suffix rejected");
 Reject(() => new BackupTar(Tar(("../etc/rc.local", rc))), "Tar path traversal rejected");
 Reject(() => BackupGzip.Decompress(inner.Concat(inner).ToArray()), "Concatenated gzip rejected");
@@ -148,3 +148,8 @@ try
 }
 finally { Directory.Delete(tempRoot, recursive: true); }
 Console.WriteLine("ALL SYNTHETIC CHECKS PASSED");
+
+Check(AgentPackage.VersionForHash(AgentPackage.LegacyPublicSha256) == "2.8.0" && AgentPackage.SupportsVpn(AgentPackage.LegacyPublicSha256), "Previous public agent 2.8.0 remains recognized");
+Reject(() => BackupPatch.Prepare(encrypted, imei, ""), "Missing public backup suffix refused");
+
+Check(AgentPackage.SupportedUpgradeHashes.Contains(AgentPackage.LegacyPublicSha256) && !AgentPackage.SupportedUpgradeHashes.Contains(new string('f',64)), "Public legacy agent accepted; unknown upgrade hash rejected");

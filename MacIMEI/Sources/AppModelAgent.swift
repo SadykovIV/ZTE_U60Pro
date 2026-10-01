@@ -30,11 +30,16 @@ import AppKit
                 try require(candidate.sha256 == VPNSettingsManager.agentHash, "Повреждён встроенный агент")
             }
         } catch { append("Установка агента: " + error.localizedDescription); return }
+        agentInstallationStatus = nil; vpnInspection = nil; modemInformation = nil
+        clearEsim()
         runManaged(custom ? "Устанавливаю выбранный агент…" : "Устанавливаю агент из комплекта приложения…", work: { engine in
-            try engine.locked { try AgentInstallationManager(engine: engine).install(candidate) }
+            try engine.locked {
+                let manager = AgentInstallationManager(engine: engine)
+                return try custom ? manager.install(candidate) : manager.installBundled(candidate)
+            }
         }, finish: { [weak self] value in
             self?.agentInstallationStatus = value; self?.vpnInspection = nil; self?.modemInformation = nil
-            self?.append("Выбранный агент установлен и запущен")
+            self?.append(custom ? "Выбранный агент установлен и запущен" : "Агент с eSIM и веб-панель установлены")
         })
     }
     func restoreAgent() {

@@ -3,11 +3,12 @@ import { ruFeatures } from './locales/ru-features'
 import { ruTtl } from './locales/ru-ttl'
 import { ruApi } from './locales/ru-api'
 import { ruVpn } from './locales/ru-vpn'
+import { ruEsim } from './locales/ru-esim'
 
 export type Locale = 'ru' | 'en'
 export type Values = Record<string, string | number>
 export const LOCALE_KEY = 'u60.locale'
-export const ru: Record<string, string> = { ...ruCore, ...ruFeatures, ...ruTtl, ...ruApi, ...ruVpn }
+export const ru: Record<string, string> = { ...ruCore, ...ruFeatures, ...ruTtl, ...ruApi, ...ruVpn, ...ruEsim }
 
 export function resolveLocale(saved: string | null, language: string): Locale {
   if (saved === 'ru' || saved === 'en') return saved
