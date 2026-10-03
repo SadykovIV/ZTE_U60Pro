@@ -14,7 +14,7 @@ namespace ZteImeiStudio.Windows.Core;
 public sealed record AdbAccessResult(string Serial, DeviceIdentity Identity, WebIdentity WebIdentity, bool AlreadyAvailable);
 
 public sealed record OnboardingResult(string Cid, string FirmwareHash, string? Imei,
-    string KeyPath, string KnownHostsPath, bool AlreadyConfigured, string? Profile = null);
+    string KeyPath, string KnownHostsPath, bool AlreadyConfigured, string? Profile = null, bool AccessOnly = false, string? ReusedAgentVersion = null);
 
 internal sealed class OnboardingPending
 {
@@ -112,6 +112,8 @@ public sealed class OnboardingEngine
     private bool _diagnosticAccess;
     private bool _genericAccess;
     internal Func<ModemWebClient>? WebFactory { get; init; }
+    internal Func<IRemoteShell>? ExistingSshFactory { get; init; }
+    private AccessAgentReusePolicy.ProcessProof? _reusedAgent;
     private string BackupFolder => _diagnosticAccess ? "ADBAccessBackups" : "SetupBackups";
     private string PendingPath => Path.Combine(_storage, _diagnosticAccess ? "adb-access-pending.json" : "setup-pending.json");
     private string KeyPath => Path.Combine(_storage, "SSH", "id_ed25519");
@@ -146,6 +148,7 @@ public sealed class OnboardingEngine
             throw new InvalidOperationException("Сначала завершите незавершённую операцию с модемом.");
 
         var hashes = await VerifyAssetsAsync(ct).ConfigureAwait(false);
+        var savedPending = await LoadPendingAsync(ct).ConfigureAwait(false);
         _progress?.Invoke("Проверка Web и уже доступного root shell.");
         using var web = WebFactory?.Invoke() ?? new ModemWebClient(_host);
         WebIdentity? webIdentity = null;
@@ -157,13 +160,26 @@ public sealed class OnboardingEngine
             // absent vendor identity fields. Each later read repeats USB proof.
             match = await FindMatchingAdbAsync(null, ct).ConfigureAwait(false);
             if (match is null) throw new InvalidOperationException("Для установки без Web нужен единственный root USB ADB. Сначала проверьте устройство.");
+            if (savedPending is null) existing = await ProbeExistingSshAsync(null, match.Value.Identity, agentPassword, ct).ConfigureAwait(false);
         }
         else
         {
             await web.LoginAsync(webPassword, ct).ConfigureAwait(false);
             webIdentity = await web.GetIdentityAsync(skipFirmwareCheck: true, ct: ct).ConfigureAwait(false);
-            existing = await ProbeExistingSshAsync(webIdentity, ct).ConfigureAwait(false);
+            if (savedPending is null) existing = await ProbeExistingSshAsync(webIdentity, null, agentPassword, ct).ConfigureAwait(false);
             match = existing is null ? await FindMatchingAdbAsync(webIdentity, ct).ConfigureAwait(false) : null;
+        }
+        if (existing is not null && savedPending is null)
+        {
+            if (webIdentity is not null && await web.GetIdentityAsync(skipFirmwareCheck: true, ct: ct).ConfigureAwait(false) != webIdentity)
+                throw new InvalidDataException("Устройство изменилось во время подтверждения доступа.");
+            if (webIdentity is null && await ReadAdbIdentityAsync(match!.Value.Serial, null, ct).ConfigureAwait(false) != existing)
+                throw new InvalidDataException("USB и SSH больше не подтверждают одно устройство.");
+            var reusedProfile = ExistingAccessProfile(webIdentity, existing);
+            var reusedVersion = _reusedAgent is not null && AccessAgentReusePolicy.IsPrevious(_reusedAgent.Sha256) ? "2.7.0-esim.8" : AgentPackage.Version;
+            _progress?.Invoke("Доступ SSH подтверждён. Существующий агент сохранён; функции модема отдельно не проверялись.");
+            return new OnboardingResult(existing.Cid, existing.FirmwareHash, webIdentity?.Imei,
+                KeyPath, KnownHostsPath, true, reusedProfile, AccessOnly: true, ReusedAgentVersion: reusedVersion);
         }
         var rootAlreadyAvailable = existing is not null || match is not null;
         // Unknown firmware is accepted only through an already working, matched
@@ -209,16 +225,6 @@ public sealed class OnboardingEngine
                 pending.BackupDirectory = backupDirectory;
                 await SavePendingAsync(pending, ct).ConfigureAwait(false);
             }
-        }
-
-        // An already pinned, verified SSH/agent installation is preserved.
-        if (existing is not null)
-        {
-            if (pending.InstallRequested && pending.Phase != "complete")
-                await CommitIfReadyAsync(pending, existing, agentPassword, ct).ConfigureAwait(false);
-            await FinishAsync(pending, ct).ConfigureAwait(false);
-            return new OnboardingResult(existing.Cid, existing.FirmwareHash, webIdentity?.Imei,
-                KeyPath, KnownHostsPath, true, InstallerProfile(webIdentity, existing));
         }
 
         _progress?.Invoke("Проверка уже работающего USB ADB: транспорт, root и идентичность модема.");
@@ -584,31 +590,37 @@ public sealed class OnboardingEngine
         if (Sha(bytes) != expected) throw new InvalidDataException("Повреждён встроенный инструмент: " + Path.GetFileName(path));
     }
 
-    private async Task<DeviceIdentity?> ProbeExistingSshAsync(WebIdentity web, CancellationToken ct)
+    private string ExistingAccessProfile(WebIdentity? web, DeviceIdentity device) =>
+        web is null && device.FirmwareHash == ImeiEngine.FirmwareHash && device.RouterHash == ImeiEngine.RouterHash
+            ? "b31" : InstallerProfile(web, device);
+
+    private async Task<DeviceIdentity?> ProbeExistingSshAsync(WebIdentity? web, DeviceIdentity? usbIdentity,
+        string agentPassword, CancellationToken ct)
     {
         if (!File.Exists(KeyPath) || !File.Exists(KnownHostsPath)) return null;
-        SshTransport ssh;
-        try { ssh = new SshTransport(_host, 2222, KeyPath, KnownHostsPath); }
-        catch (InvalidDataException) { throw; }
+        var ssh = ExistingSshFactory?.Invoke() ?? new SshTransport(_host, 2222, KeyPath, KnownHostsPath);
+        var identityCommand = web is null ? AccessIdentity.Command : IdentityCommand();
         RemoteResult reply;
-        try { reply = await ssh.RunAsync(IdentityCommand(), timeout: TimeSpan.FromSeconds(15), ct: ct)
-                .ConfigureAwait(false); }
+        try { reply = await ssh.RunAsync(identityCommand, timeout: TimeSpan.FromSeconds(15), ct: ct).ConfigureAwait(false); }
         catch (SshTrustException) { throw; }
-        catch (Exception error) when (error is SocketException or IOException or TimeoutException or Renci.SshNet.Common.SshAuthenticationException)
-        { return null; }
+        catch (Exception error) when (error is SocketException or IOException or TimeoutException) { return null; }
         if (reply.ExitCode is 255 or -1) return null;
         if (!reply.Success) throw new InvalidDataException("SSH отвечает, но не подтвердил root и идентификацию.");
-        var proof = ParseIdentity(reply.Stdout, web, requireInstallerRouter: false);
-        var profile = InstallerProfile(web, proof);
-        if (profile == "b31")
-        {
-            var state = await new ImeiEngine(ssh, _storage, _resources, _skipFirmwareCheck)
-                .InspectAsync(ct).ConfigureAwait(false);
-            if (state.Identity.Cid != proof.Cid || state.Imeis[0] != web!.Imei)
-                throw new InvalidDataException("SSH-модем отличается от веб-устройства.");
-        }
-        await VerifyAgentReadyAsync(ssh, ct).ConfigureAwait(false);
-        if(profile == "linux-arm64-access") await VerifyDiscoveryAgentAsync(ssh, ct).ConfigureAwait(false);
+        var proof = web is null ? AccessIdentity.Parse(reply.Stdout) : ParseIdentity(reply.Stdout, web, requireInstallerRouter: false);
+        if (usbIdentity is not null && usbIdentity != proof)
+            throw new InvalidDataException("USB и SSH относятся к разным устройствам.");
+        var profile = ExistingAccessProfile(web, proof);
+        var allowPrevious = AccessAgentReusePolicy.AllowsPrevious(proof, profile, freshExistingReuse: true);
+        var process = await AccessAgentReusePolicy.ReadAsync(ssh, allowPrevious, ct).ConfigureAwait(false);
+        if (profile == "linux-arm64-access") await VerifyDiscoveryAgentAsync(ssh, ct).ConfigureAwait(false);
+        await AuthenticateAgentAsync(ssh, agentPassword, ct).ConfigureAwait(false);
+        if (await AccessAgentReusePolicy.ReadAsync(ssh, allowPrevious, ct).ConfigureAwait(false) != process)
+            throw new InvalidDataException("Работающий агент изменился во время входа; повторная установка не выполняется.");
+        if (profile == "linux-arm64-access") await VerifyDiscoveryAgentAsync(ssh, ct).ConfigureAwait(false);
+        var after = await ssh.RunAsync(identityCommand, timeout: TimeSpan.FromSeconds(20), ct: ct).ConfigureAwait(false);
+        if (!after.Success || (web is null ? AccessIdentity.Parse(after.Stdout) : ParseIdentity(after.Stdout, web, requireInstallerRouter: false)) != proof)
+            throw new InvalidDataException("Идентичность SSH-модема изменилась во время входа.");
+        _reusedAgent = process;
         return proof;
     }
 
@@ -930,7 +942,7 @@ public sealed class OnboardingEngine
         """.Replace("EXPECTED_AGENT",Quote(AgentPackage.Sha256),StringComparison.Ordinal)
             .Replace("EXPECTED_BIND",Quote("ZTE_AGENT_BIND="+_host+":9090"),StringComparison.Ordinal);
 
-    private async Task VerifyDiscoveryAgentAsync(SshTransport ssh,CancellationToken ct)
+    private async Task VerifyDiscoveryAgentAsync(IRemoteShell ssh,CancellationToken ct)
     {
         // Health is authenticated. Prove the running process mode without an
         // unauthenticated request; the separate login still verifies readiness.
@@ -939,13 +951,10 @@ public sealed class OnboardingEngine
             throw new InvalidDataException("Пассивный режим агента не подтверждён; автоматическое продолжение запрещено.");
     }
 
-    private static async Task VerifyAgentReadyAsync(SshTransport ssh, CancellationToken ct)
+    private static async Task VerifyAgentReadyAsync(IRemoteShell ssh, CancellationToken ct)
     {
-        var reply = await ssh.RunAsync(
-            "set -e; found=0; for p in $(pidof zte-agent); do if test \"$(readlink /proc/$p/exe)\" = /data/zte-agent; then found=1; fi; done; test \"$found\" = 1; printf AGENT_READY",
-            timeout: TimeSpan.FromSeconds(15), ct: ct).ConfigureAwait(false);
-        if (!reply.Success || StrictUtf8.GetString(reply.Stdout) != "AGENT_READY")
-            throw new InvalidDataException("Агент установлен, но не запущен.");
+        // Newly installed or resumed setups never inherit historical-build reuse.
+        await AccessAgentReusePolicy.ReadAsync(ssh, allowPrevious: false, ct).ConfigureAwait(false);
     }
 
     private async Task CommitIfReadyAsync(OnboardingPending pending, DeviceIdentity device,
@@ -976,7 +985,7 @@ public sealed class OnboardingEngine
         await SavePendingAsync(pending, ct).ConfigureAwait(false);
     }
 
-    private async Task AuthenticateAgentAsync(SshTransport ssh, string password, CancellationToken ct)
+    private async Task AuthenticateAgentAsync(IRemoteShell ssh, string password, CancellationToken ct)
     {
         var body = JsonSerializer.SerializeToUtf8Bytes(new { password });
         var request = "/usr/bin/curl --noproxy '*' --fail --silent --show-error --connect-timeout 5 --max-time 15 " +

@@ -30,6 +30,8 @@ public sealed partial class WindowsModemService
             ["access_only"] = setup.Profile == "linux-arm64-access" ? "true" : "false",
         };
         var message = await ConnectAsync(connection,ct);
+        if (setup.AlreadyConfigured)
+            return "Доступ SSH подтверждён. Существующий агент " + setup.ReusedAgentVersion + " сохранён; установка не выполнялась. " + message;
         if (setup.Profile != "linux-arm64-access" && setup.FirmwareHash == DeviceFeatureService.FirmwareHash)
         {
             try

@@ -3,6 +3,8 @@ using System.Text;
 using System.Text.Json;
 using ZteImeiStudio.Windows.Core;
 
+if (args.Contains("--access-reuse-only")) { await AccessAgentReuseTests.RunAsync(); return; }
+
 if (args.Contains("--adb-stream-only")) { await AdbStreamingTests.RunAsync(); return; }
 
 if (args.Contains("--discovery-only")) { await UniversalDiscoveryTests.RunAsync(); return; }

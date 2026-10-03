@@ -249,6 +249,8 @@ private final class UnavailableSSH: RemoteTransport {
     var accessProofReads = 0, changeAccessBoot = false, accessCID = testCID, accessRouter = ModemEngine.routerHash
     var accessFailure: CommandResult?
     var expectedAgentPassword = testPassword
+    var agentDiskHash = digest(Data("SYNTHETIC-zte-agent".utf8)), agentMappedHash: String?
+    var processProofCalls = 0, changeProcessAfterAuth = false, agentProcessValid = true
     private func output(_ value: String, status: Int32 = 0) -> CommandResult {CommandResult(status:status,stdout:Data(value.utf8),stderr:Data())}
     func run(_ command: String, input: Data?, timeout: TimeInterval) throws -> CommandResult {
         calls.append(command)
@@ -283,6 +285,12 @@ private final class UnavailableSSH: RemoteTransport {
             return output("APP_NV index=0 data="+first.hex+"\nAPP_NV index=1 data="+second.hex+"\n")
         }
         if command.hasPrefix("ubus call zwrt_zte_mdm.api get_imei") {return output("{\"imei\":\""+(command.hasSuffix("get_imei2") ? "353490068701230" : testIMEI)+"\"}")}
+        if command.contains("AGENT_ACCESS_READY") {
+            processProofCalls += 1
+            if !agentProcessValid { return output("", status: 72) }
+            let pid = changeProcessAfterAuth && authenticationCalls > 0 ? "124" : "123"
+            return output("AGENT_ACCESS_READY " + pid + " 5678 " + agentDiskHash + " " + (agentMappedHash ?? agentDiskHash) + "\n")
+        }
         if command.contains("printf AGENT_READY") {return output("AGENT_READY")}
         if command.contains("/present/data_zte-agent") {return output("NEW")}
         if command.hasPrefix("/usr/bin/curl ") {
@@ -839,6 +847,66 @@ private struct Fixture {
             try check(result.state == nil && result.identity.cid == testCID,"Existing pair verified via NV and API")
             try check(f.web.uploadedData == nil && f.web.restoreCount == 0 && f.host.calls.allSatisfy { $0 == ["devices", "-l"] || $0 == ["-d", "get-serialno"] },"No ADB/bootstrap mutations on existing access")
             try check(f.ssh.authenticationCalls == 1 && f.ssh.commitCalls == 0,"Existing credentials verified without reinstallation")
+        }
+        run("Actual run reuses released previous agent only with current B31 identity and login") {
+            for previous in [AccessAgentReusePolicy.previousSHA256, AccessAgentReusePolicy.publishedPreviousSHA256] {
+            let f = try Fixture(); defer { f.remove() }
+            f.host.identityMode = true; f.host.deviceList = "List of devices attached\nABC device usb:1\n"; f.ssh.ready = true
+            f.ssh.agentDiskHash = previous
+            try savePrivate(Data("synthetic-key".utf8), URL(fileURLWithPath: f.engine.currentConnection.keyPath))
+            try savePrivate(Data("synthetic-hosts".utf8), URL(fileURLWithPath: f.engine.currentConnection.knownHostsPath))
+            let result = try f.engine.run(webPassword: "", agentPassword: testPassword)
+            try check(result.state == nil && result.connection.keyPath == f.engine.currentConnection.keyPath, "Reuse returned wrong connection or NV state")
+            try check(f.ssh.authenticationCalls == 1 && f.ssh.processProofCalls == 2 && f.host.installerCalls == 0 && f.host.pushCount == 0 && f.host.stage.isEmpty && f.web.requests.isEmpty, "Reuse installed, skipped login, or used web")
+            try check(!FileManager.default.fileExists(atPath: f.engine.pending.path) && !f.ssh.calls.contains { $0.contains("--snapshot") || $0.contains("zte_nv") || $0.contains("--commit") }, "Reuse created installation or NV work")
+            }
+        }
+        run("Actual run refuses unknown or mismatched mapped agent before auth and installation") {
+            for mappedMismatch in [false, true] {
+                let f = try Fixture(); defer { f.remove() }
+                f.host.identityMode = true; f.host.deviceList = "List of devices attached\nABC device usb:1\n"; f.ssh.ready = true
+                f.ssh.agentDiskHash = mappedMismatch ? AccessAgentReusePolicy.previousSHA256 : String(repeating: "a", count: 64)
+                if mappedMismatch { f.ssh.agentMappedHash = String(repeating: "b", count: 64) }
+                try savePrivate(Data("key".utf8), URL(fileURLWithPath: f.engine.currentConnection.keyPath))
+                try savePrivate(Data("hosts".utf8), URL(fileURLWithPath: f.engine.currentConnection.knownHostsPath))
+                try rejects("сборка") { _ = try f.engine.run(webPassword: "", agentPassword: testPassword) }
+                try check(f.ssh.authenticationCalls == 0 && f.host.installerCalls == 0 && f.host.pushCount == 0 && f.host.stage.isEmpty, "Unknown binary permitted auth/install")
+            }
+        }
+        run("Actual run refuses old agent on generic and B02 access without applying") {
+            for generic in [true, false] {
+                let f = try Fixture(); defer { f.remove() }
+                f.host.identityMode = true; f.host.deviceList = "List of devices attached\nABC device usb:1\n"; f.ssh.ready = true
+                let firmware = generic ? String(repeating: "c", count: 64) : OnboardingEngine.b02FirmwareHash
+                f.host.identityFirmware = firmware; f.ssh.firmware = firmware; f.ssh.agentDiskHash = AccessAgentReusePolicy.previousSHA256
+                try savePrivate(Data("key".utf8), URL(fileURLWithPath: f.engine.currentConnection.keyPath))
+                try savePrivate(Data("hosts".utf8), URL(fileURLWithPath: f.engine.currentConnection.knownHostsPath))
+                var connection = f.engine.currentConnection; connection.skipFirmwareCheck = !generic
+                let manager = try OnboardingEngine(root: f.root, resources: f.resources, connection: connection, runner: f.host, sshFactory: { _ in f.ssh }, researchRunner: MockResearch())
+                try rejects("сборка") { _ = try manager.run(webPassword: "", agentPassword: testPassword) }
+                try check(f.ssh.authenticationCalls == 0 && f.host.installerCalls == 0 && f.host.pushCount == 0, "Scoped historical policy widened")
+            }
+        }
+        run("Actual run failed login process change and reboot never fall through to install") {
+            for kind in 0..<3 {
+                let f = try Fixture(); defer { f.remove() }
+                f.host.identityMode = true; f.host.deviceList = "List of devices attached\nABC device usb:1\n"; f.ssh.ready = true
+                f.ssh.agentDiskHash = AccessAgentReusePolicy.previousSHA256
+                f.ssh.authenticationAccepted = kind != 0; f.ssh.changeProcessAfterAuth = kind == 1; f.ssh.changeBootAfterAuthentication = kind == 2
+                try savePrivate(Data("key".utf8), URL(fileURLWithPath: f.engine.currentConnection.keyPath))
+                try savePrivate(Data("hosts".utf8), URL(fileURLWithPath: f.engine.currentConnection.knownHostsPath))
+                try rejects { _ = try f.engine.run(webPassword: "", agentPassword: testPassword) }
+                try check(f.ssh.authenticationCalls == 1 && f.host.installerCalls == 0 && f.host.pushCount == 0 && f.host.stage.isEmpty, "Failure reached installer or retried login")
+            }
+        }
+        run("Actual run new-install verification never accepts previous binary") {
+            let f = try Fixture(); defer { f.remove() }
+            f.host.identityMode = true; f.host.fullInstaller = true; f.host.deviceList = "List of devices attached\nABC device usb:1\n"
+            f.ssh.agentDiskHash = AccessAgentReusePolicy.previousSHA256
+            f.host.onInstall = { [weak host = f.host, weak ssh = f.ssh] in ssh?.ready = true; ssh?.installedJournal = host?.remoteJournal ?? "" }
+            try rejects("сборка") { _ = try f.engine.run(webPassword: "", agentPassword: testPassword) }
+            try check(f.host.installerCalls == 1 && f.ssh.authenticationCalls == 0 && f.ssh.commitCalls == 0, "Old binary was accepted after new installation")
+            try check(try readJSON(AccessSetupJournal.self, f.engine.pending).installRequested, "Unknown installation journal lost")
         }
         run("Successful initial preparation installs SSH and agent without VPN or launcher components") {
             let f = try Fixture(); defer { f.remove() }

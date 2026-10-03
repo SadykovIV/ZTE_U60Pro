@@ -14,6 +14,7 @@
     <Compile Include="../src/Core/BackupPatch*.cs" Link="Core/%(Filename)%(Extension)" />
     <Compile Include="../src/Core/ImeiCodec.cs" Link="Core/ImeiCodec.cs" />
     <Compile Include="../src/Core/AccessIdentity.cs" Link="Core/AccessIdentity.cs" />
+    <Compile Include="../src/Core/AccessAgentReusePolicy.cs" Link="Core/AccessAgentReusePolicy.cs" />
     <Compile Include="../src/Core/ImeiEngine.cs" Link="Core/ImeiEngine.cs" />
     <Compile Include="../src/Core/AgentPackage.cs" Link="Core/AgentPackage.cs" />
     <Compile Include="../src/Core/OnboardingEngine.cs" Link="Core/OnboardingEngine.cs" />

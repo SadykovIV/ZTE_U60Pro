@@ -112,8 +112,11 @@ extension OnboardingEngine {
                 try require(response.status == 0, "Существующий SSH ответил без полной идентификации")
                 let fresh = try AccessIdentity.parse(response.stdout)
                 try require(fresh.identity == proof.identity && fresh.routerHash == proof.routerHash && fresh.bootID == proof.bootID, "SSH и USB относятся к разным устройствам")
-                try verifyAccessAgent(ssh, proof: proof, profile: profile, expectedHash: hashes["zte-agent"]!, password: agentPassword)
+                let reusedHash = try verifyAccessAgent(ssh, proof: proof, profile: profile, expectedHash: hashes["zte-agent"]!, password: agentPassword, reuseExisting: true)
                 try verify()
+                if reusedHash != hashes["zte-agent"]! {
+                    update("Существующий SSH и агент проверены. Установлена предыдущая версия агента; обновление доступно отдельно.", 1)
+                }
                 return SetupResult(connection: connection, state: nil, identity: proof.identity, firmware: proof.webIdentity?.firmware ?? "unknown", suffix: "")
             }
         }
@@ -200,16 +203,23 @@ extension OnboardingEngine {
         update("SSH и агент проверены. Операции с NV, картой и прошивкой проверяются отдельно.", 1)
         return SetupResult(connection: connection, state: nil, identity: proof.identity, firmware: proof.webIdentity?.firmware ?? "unknown", suffix: "")
     }
-    func verifyAccessAgent(_ ssh: RemoteTransport, proof: DiagnosticDeviceProof, profile: String, expectedHash: String, password: String) throws {
-        let discoveryCheck = profile == "linux-arm64-access" ? "tr '\\000' '\\n' < /proc/$p/environ | grep -qx \"ZTE_AGENT_MODE=discovery\" || exit 72; " : ""
-        let bindCheck = profile == "linux-arm64-access" ? "tr '\\000' '\\n' < /proc/$p/environ | grep -Fqx " + shellQuote("ZTE_AGENT_BIND=" + host + ":9090") + " || exit 72; " : ""
-        let process = try ssh.run("set -e; test \"$(sha256sum /data/zte-agent | cut -d ' ' -f 1)\" = " + shellQuote(expectedHash) + "; found=0; for p in $(pidof zte-agent); do if test \"$(readlink /proc/$p/exe)\" = /data/zte-agent; then " + discoveryCheck + bindCheck + "found=1; fi; done; test \"$found\" = 1; printf AGENT_READY", input: nil, timeout: 15)
-        try require(process.status == 0 && process.stdout == Data("AGENT_READY".utf8), "Не подтверждён процесс установленного агента или режим discovery")
+    @discardableResult
+    func verifyAccessAgent(_ ssh: RemoteTransport, proof: DiagnosticDeviceProof, profile: String, expectedHash: String, password: String, reuseExisting: Bool = false) throws -> String {
+        let allowed = AccessAgentReusePolicy.allowedHashes(latest: expectedHash, proof: proof, profile: profile, reuseExisting: reuseExisting)
+        let command = AccessAgentProcessProof.command(discovery: profile == "linux-arm64-access", host: host)
+        func processProof() throws -> AccessAgentProcessProof {
+            let result = try ssh.run(command, input: nil, timeout: 15)
+            try require(result.status == 0, "Не подтверждён процесс установленного агента или режим discovery")
+            return try AccessAgentProcessProof.parse(result.stdout, allowedHashes: allowed)
+        }
+        let before = try processProof()
         try authenticateAgent(transport: ssh, password: password)
         let response = try ssh.run(AccessIdentity.command, input: nil, timeout: 20)
         try require(response.status == 0, "Проверка SSH после входа не завершена")
         let after = try AccessIdentity.parse(response.stdout)
         try require(after.identity == proof.identity && after.routerHash == proof.routerHash && after.bootID == proof.bootID, "Во время проверки доступа изменился модем, загрузка или компоненты")
+        try require(try processProof() == before, "Процесс или файл агента изменился во время проверки входа; подготовка остановлена")
+        return before.diskHash
     }
 
 }
