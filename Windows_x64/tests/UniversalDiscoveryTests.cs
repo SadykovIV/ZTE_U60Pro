@@ -71,16 +71,16 @@ internal static class UniversalDiscoveryTests
         try
         {
             var noWeb=new NoWeb();var preflightCalls=0;var unexpectedCommands=0;
-            var bootstrapAdb=new AdbTransport((arguments,_,_)=>
+            var bootstrapAdb=new AdbTransport((arguments,stream,_,_)=>
             {
                 if(arguments[0]=="devices")return Task.FromResult(new RemoteResult(0,"one device usb:1\n"u8.ToArray(),[]));
                 if(arguments[0]=="-d")return Task.FromResult(new RemoteResult(0,"one\n"u8.ToArray(),[]));
                 if(arguments[0]!="-s" || arguments[2]!="shell") {unexpectedCommands++;throw new Exception("Unexpected bootstrap write");}
-                var command=arguments[^1];var marker=Regex.Match(command,@"__ZTE_RESULT_[A-F0-9]{32}__").Value;
-                if(command.Contains("'--preflight'")) {preflightCalls++;return Task.FromResult(new RemoteResult(0,Encoding.UTF8.GetBytes("\n"+marker+"71\n"),[]));}
+                var command=stream?.OriginalCommand??arguments[^1];var marker=stream?.Result??Regex.Match(command,@"__ZTE_RESULT_[A-F0-9]{32}__").Value;
+                if(command.Contains("'--preflight'")) {preflightCalls++;return Task.FromResult(new RemoteResult(0,Encoding.UTF8.GetBytes((stream is null?"":"\n"+stream.Ready+"\n\n"+stream.Begin+"\n")+"\n"+marker+"71\n"),[]));}
                 if(!command.Contains("observed_hash()")) {unexpectedCommands++;throw new Exception("Unexpected bootstrap command");}
                 return Task.FromResult(new RemoteResult(0,Encoding.UTF8.GetBytes(measuredText.Replace(new string('c',64),ImeiEngine.FirmwareHash).Replace(new string('d',64),ImeiEngine.RouterHash)+"\n"+marker+"0\n"),[]));
-            });
+            },Path.GetFullPath("Windows_x64/Resources/Onboarding/adb-stream.sh"));
             var bootstrap=new OnboardingEngine("192.168.0.1",bootstrapStorage,Path.GetFullPath("Windows_x64/Resources"),bootstrapAdb) {WebFactory=()=>new ModemWebClient("192.168.0.1",noWeb)};
             try {await bootstrap.PrepareAsync("","synthetic-agent-password","");Check(false,"no-Web bootstrap fixture stops at preflight");}
             catch(IOException) {Check(preflightCalls==1 && noWeb.Calls==0 && unexpectedCommands==0,"known B31 root USB reaches generic preflight with no Web calls or uploads");}

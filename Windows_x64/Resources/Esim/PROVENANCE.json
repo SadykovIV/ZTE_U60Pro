@@ -62,8 +62,8 @@
     "source_ref": "da091fb7e6af804b81d51b913c20eb848303982e",
     "sha256": "29c00a9cc4bd76f5190141be668230acf00ad008871fad72a200e17f40d4883b"
   },
-  "source_archive_files": 435,
-  "source_archive_sha256": "f8d73b17b4e24d252a0a76536f94b18eed10a99f6e183244eb1d096af2e52099",
+  "source_archive_files": 436,
+  "source_archive_sha256": "6153ae226746ac2c4f33e73ff1ae59be42f0d00681a3f147d1c62d8d2bee6e65",
   "gsma_pem_sha256": "7364a2ac4d2b5f77c1b83ee7e1c535e8fc806c67ee42e73ad97c35464d203477",
   "gsma_roots": [
     {

@@ -15,7 +15,8 @@
     "dropbear-libtommath-LICENSE.txt": "2fa64b163659f41965c9815882a8296d3d03ff546b76153e11445f9bdecf955a",
     "setup-agent.sh": "7172804a89bf6851433692bbb75330dd88db9dc37af3b00b6d0f49a6a4f13460",
     "start_zte_imei_studio.sh": "ece54a83e192824b9651ee4a4749fc009ec735e72b7913ec173fe07a2f37816c",
-    "zte-agent": "110f1144e7c0bd044b81cc37a1f5925cdae721043139bb46459a40f1db649deb"
+    "zte-agent": "110f1144e7c0bd044b81cc37a1f5925cdae721043139bb46459a40f1db649deb",
+    "adb-stream.sh": "0692a6b053b7cadae5d4a754684e94062ecaa94067f8f103913c1191e9dc6a1c"
   },
   "local_agent_version": "2.9.0-esim.1",
   "local_agent_release": "ModemAgent/releases/2.9.0-esim.1",

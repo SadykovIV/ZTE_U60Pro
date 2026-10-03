@@ -1,4 +1,8 @@
-# ZTE U60Pro Manager 1.24.0 для macOS ARM64
+# ZTE U60Pro Manager 1.24.1 для macOS ARM64
+
+## Изменения в 1.24.1
+
+Исправлена передача длинных команд подготовки на старом ADB. [Изменения и проверки](../docs/RELEASE-1.24.1.md).
 
 [Описание программы](../docs/APPLICATION.md) · [Требования к модему](../README.md#требования-к-модему) · [Сборка](../docs/BUILD.md)
 
@@ -87,7 +91,7 @@ TTL, терминал, диагностика и резервные копии. 
 
 Выполняйте общий [процесс сборки](../docs/BUILD.md), чтобы сначала пересобрать
 модемные компоненты, ресурсы и их pins. Затем `cd MacIMEI && ./build.sh` создаёт
-`dist/ZTE U60Pro Manager.app`, ZIP `dist/ZTE-U60Pro-Manager-1.24.0-arm64.zip`
+`dist/ZTE U60Pro Manager.app`, ZIP `dist/ZTE-U60Pro-Manager-1.24.1-arm64.zip`
 и `dist/build-manifest.json`. Приложение подписывается ad-hoc; это не notarization.
 
 Тесты в `Tests/` используют синтетические данные. `tools/check_diagnostics.py`

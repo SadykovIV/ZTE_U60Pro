@@ -1,4 +1,8 @@
-# ZTE U60Pro Manager 1.24.0 для Windows x64
+# ZTE U60Pro Manager 1.24.1 для Windows x64
+
+## Изменения в 1.24.1
+
+Исправлена передача длинных команд подготовки на старом ADB. [Изменения и проверки](../docs/RELEASE-1.24.1.md).
 
 Приложение на Avalonia/.NET 10 для ZTE MU5250 B31: обычное подключение SSH,
 подготовка доступа, Launcher, VPN, TTL, каталог приложений, Terminal,

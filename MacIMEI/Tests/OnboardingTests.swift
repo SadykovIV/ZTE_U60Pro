@@ -123,6 +123,13 @@ private final class MockWeb: WebTransport {
 
 /// Never invokes Process. The marker is taken from the actual generated wrapper.
 private final class MockResearch: ResearchProcessRunning {
+    func run(_ executable: URL, arguments: [String], timeout: TimeInterval, maxBytes: Int, cancellation: ResearchCancellation, input: ADBStreamInput?) throws -> ResearchCommandResult {
+        guard let input else { return try run(executable, arguments: arguments, timeout: timeout, maxBytes: maxBytes, cancellation: cancellation) }
+        var args = arguments; args[3] = "(" + input.auditOriginal + "); zte_code=$?; printf '\n" + input.result + "%s\n' \"$zte_code\""
+        var value = try run(executable, arguments: args, timeout: timeout, maxBytes: maxBytes, cancellation: cancellation)
+        value.stdout = Data((input.begin + "\n").utf8) + value.stdout
+        return value
+    }
     var calls = 0
     func run(_ executable: URL, arguments: [String], timeout: TimeInterval, maxBytes: Int, cancellation: ResearchCancellation) throws -> ResearchCommandResult {
         calls += 1
@@ -136,6 +143,12 @@ private final class MockResearch: ResearchProcessRunning {
     }
 }
 private final class MockHost: HostCommandRunner {
+    func run(_ executable: URL, _ arguments: [String], timeout: TimeInterval, input: ADBStreamInput?) throws -> CommandResult {
+        guard let input else { return try run(executable, arguments, timeout: timeout) }
+        var args = arguments; args[3] = "(" + input.auditOriginal + "); zte_code=$?; printf '\n" + input.result + "%s\n' \"$zte_code\""
+        let value = try run(executable, args, timeout: timeout)
+        return .init(status: value.status, stdout: Data((input.begin + "\n").utf8) + value.stdout, stderr: value.stderr)
+    }
     var calls = [[String]]()
     var status: Int32 = 0, shellCode = "0", includeMarker = true, shellText = "synthetic output"
     var shellLineEnding: String?
@@ -296,6 +309,8 @@ private struct Fixture {
         for name in ["adb","zte-agent","dropbear","setup-agent.sh","start_zte_imei_studio.sh"] {
             let content = Data(("SYNTHETIC-"+name).utf8); try savePrivate(content,assets.appendingPathComponent(name)); hashes[name]=digest(content)
         }
+        let stream = try Data(contentsOf: URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("Resources/Onboarding/adb-stream.sh"))
+        try savePrivate(stream, assets.appendingPathComponent("adb-stream.sh")); hashes["adb-stream.sh"] = digest(stream)
         try saveJSON(hashes,assets.appendingPathComponent("SHA256.json"))
         try FileManager.default.copyItem(at: URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("Resources/FirmwareResearch"), to: resources.appendingPathComponent("FirmwareResearch"))
         let helper=Data("SYNTHETIC-zte_nv".utf8);try savePrivate(helper,resources.appendingPathComponent("zte_nv"));try saveJSON(["zte_nv":digest(helper)],resources.appendingPathComponent("helpers.json"))

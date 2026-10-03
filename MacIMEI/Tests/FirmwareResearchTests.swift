@@ -14,6 +14,15 @@ private func specification() -> ResearchSpecification {
         features: [.init(id: "imei", title: title, profiles: ["b31"], platforms: nil, requirements: [.init(probe: "identity", fact: "root", equals: "1", label: title)], limitations: title)])
 }
 private final class FakeRunner: ResearchProcessRunning {
+    var streamed = 0
+    func run(_ executable: URL, arguments: [String], timeout: TimeInterval, maxBytes: Int, cancellation: ResearchCancellation, input: ADBStreamInput?) throws -> ResearchCommandResult {
+        guard let input else { return try run(executable, arguments: arguments, timeout: timeout, maxBytes: maxBytes, cancellation: cancellation) }
+        streamed += 1
+        var args = arguments; args[3] = "(" + input.auditOriginal + "); zte_code=$?; printf '\n" + input.result + "%s\n' \"$zte_code\""
+        var value = try run(executable, arguments: args, timeout: timeout, maxBytes: maxBytes, cancellation: cancellation)
+        value.stdout = Data((input.begin + "\n").utf8) + value.stdout
+        return value
+    }
     var calls: [[String]] = []; var sshFailure = "Connection refused"; var sshOutcome = "failed"; var devices = ["USB-SECRET"]
     var nonroot = false; var mismatch = false; var missingIdentity = false; var changeAfter = false; var probeCalls = 0
     var physicalMismatch = false; var losePhysicalAfterProbe = false
@@ -52,6 +61,7 @@ private final class FakeRunner: ResearchProcessRunning {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("firmware-tests-" + UUID().uuidString)
         try secureDirectory(root); defer { try? FileManager.default.removeItem(at: root) }
         let assets = root.appendingPathComponent("Resources"); try secureDirectory(assets.appendingPathComponent("Onboarding"))
+        try FileManager.default.copyItem(at: URL(fileURLWithPath: "Resources/Onboarding/adb-stream.sh"), to: assets.appendingPathComponent("Onboarding/adb-stream.sh"))
         let adb = assets.appendingPathComponent("Onboarding/adb"); try savePrivate(Data("FAKE-ADB".utf8), adb)
         try saveJSON(["adb": digest(Data("FAKE-ADB".utf8))], assets.appendingPathComponent("Onboarding/SHA256.json"))
         let key = root.appendingPathComponent("key"), hosts = root.appendingPathComponent("known_hosts")
@@ -69,6 +79,11 @@ private final class FakeRunner: ResearchProcessRunning {
             try check(collect(failed, mode: .adb).probes.allSatisfy { $0.outcome == "failed" && $0.localExitCode == 0 && $0.remoteExitCode == 1 }, "Research line ending failure became success")
         }
         print("PASS research LF/CRLF/CRCRLF bootstrap, facts, remote failures and report text")
+        let longSpec = ResearchSpecification(schemaVersion: 1, revision: 1, profiles: [],
+            probes: [.init(id: "long", title: title, category: "identity", command: "#" + String(repeating: "x", count: 4096) + "\nid -u", timeoutSeconds: 1, maxBytes: 1024)], features: [])
+        let longRunner = FakeRunner()
+        let longReport = FirmwareResearchCollector(specification: longSpec, connection: config, mode: .adb, resources: assets, cancellation: ResearchCancellation(), expectedCID: nil, secrets: [], runner: longRunner).collect(context: [:]) { _, _ in }
+        try check(longRunner.streamed == 1 && longReport.outcome == "complete" && longReport.probes.first?.remoteExitCode == 0, "Long research command bypassed stream/remote proof")
         let normal = FakeRunner(), report = collect(normal)
         try check(report.transport == "adb" && report.outcome == "complete", "Unprepared unknown firmware should collect")
         try check(report.features[0].state == "unknown", "Unknown firmware must never certify writes")

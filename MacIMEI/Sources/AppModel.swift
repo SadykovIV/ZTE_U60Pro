@@ -191,7 +191,7 @@ import AppKit
         resources = Bundle.main.resourceURL ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("MacIMEI/Resources")
         keyPath = storage.appendingPathComponent("SSH/id_ed25519").path
         knownHostsPath = storage.appendingPathComponent("SSH/known_hosts").path
-        if let c = try? readJSON(Connection.self, storage.appendingPathComponent("connection.json")) { host = c.host; port = c.port; keyPath = c.keyPath; knownHostsPath = c.knownHostsPath.hasSuffix("/Contents/Resources/trusted_known_hosts") ? storage.appendingPathComponent("SSH/known_hosts").path : c.knownHostsPath }
+        if let c = try? readJSON(Connection.self, storage.appendingPathComponent("connection.json")) { host = c.host; port = c.port; keyPath = c.keyPath; knownHostsPath = Connection.restoredKnownHostsPath(c.knownHostsPath, fallback: storage.appendingPathComponent("SSH/known_hosts").path) }
         if let saved = try? readJSON(ConnectionMode.self, storage.appendingPathComponent("connection-mode.json")) { connectionMode = saved == .web || saved == .agent ? .automatic : saved }
         refreshBackups()
         refreshSystemBackups()

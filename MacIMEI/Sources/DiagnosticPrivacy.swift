@@ -34,9 +34,10 @@ extension ActivityJournal {
             // The pinned inline preflight contains startup-file names even
             // though it never reads their contents. Keep only its fixed error
             // protocol; arbitrary output from credential commands stays hidden.
-            var markers: [String] = []
+            let lines = CommandText.decode(Data(data.prefix(64 * 1024))).split(whereSeparator: \.isNewline).map(String.init)
+            var markers = lines.filter { $0 == "error: shell command too long" }
             if command.contains("--preflight") || command.contains("setup-agent.sh") {
-                markers = CommandText.decode(Data(data.prefix(64 * 1024))).split(whereSeparator: \.isNewline).map(String.init).filter {
+                markers += lines.filter {
                     $0.range(of: #"^INSTALL_ERROR [A-Z][A-Z0-9_]{0,95}$"#, options: .regularExpression) != nil ||
                     $0.range(of: #"^INSTALL_INCOMPLETE /data/local/tmp/zte-imei-installations/[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}$"#, options: .regularExpression) != nil
                 }
@@ -79,6 +80,7 @@ extension ActivityJournal {
 struct CommandFailure: LocalizedError {
     let message: String
     let partial: CommandResult
+    var transportOutcome: String? = nil
     var errorDescription: String? { message }
 }
 
@@ -86,17 +88,26 @@ final class AuditedHostRunner: HostCommandRunner {
     let base: HostCommandRunner, journal: ActivityJournal, operationID: String
     init(base: HostCommandRunner, journal: ActivityJournal, operationID: String) { self.base = base; self.journal = journal; self.operationID = operationID }
     func run(_ executable: URL, _ arguments: [String], timeout: TimeInterval) throws -> CommandResult {
+        try run(executable, arguments, timeout: timeout, input: nil)
+    }
+    func run(_ executable: URL, _ arguments: [String], timeout: TimeInterval, input: ADBStreamInput?) throws -> CommandResult {
         let id = UUID().uuidString.lowercased(), started = ProcessInfo.processInfo.systemUptime
-        let command = ([executable.path] + arguments).map(shellQuote).joined(separator: " ")
+        let command = input?.auditOriginal ?? ([executable.path] + arguments).map(shellQuote).joined(separator: " ")
         let adbShell = executable.lastPathComponent == "adb" && arguments.count == 4 && arguments[0] == "-s" && arguments[2] == "shell"
         let title = adbShell ? "ADB: удалённая команда" : "Локальный инструмент: " + executable.lastPathComponent
         var details = ["requestID": id, "endpoint": "Mac / USB / " + executable.lastPathComponent,
                        "commandSHA256": digest(Data(command.utf8)), "timeoutSeconds": String(timeout),
-                       "command": ActivityJournal.boundedText(command, limit: 16384),
+                       "command": input == nil ? ActivityJournal.boundedText(command, limit: 16384) : "[Тело команды передано через stdin и исключено из журнала]",
+                       "transferMode": input == nil ? "argv" : "stdin-octal-v1",
                        "statusScope": adbShell ? "local-process-and-remote-command" : "local-process"]
+        if let input {
+            details["inputBytes"] = String(input.data.count)
+            details["inputSHA256"] = digest(input.data)
+            details["bodyBytes"] = String(input.auditOriginal.utf8.count)
+        }
         try journal.record(operationID: operationID, category: "transport", title: title, result: "started", details: details)
         do {
-            let response = try base.run(executable, arguments, timeout: timeout)
+            let response = try base.run(executable, arguments, timeout: timeout, input: input)
             details["durationMilliseconds"] = String(Int(max(0, ProcessInfo.processInfo.systemUptime - started) * 1000))
             details["exitCode"] = String(response.status) // Legacy field is the local process status.
             details["localExitCode"] = String(response.status)
@@ -104,13 +115,14 @@ final class AuditedHostRunner: HostCommandRunner {
             details["stdoutSHA256"] = digest(response.stdout); details["stderrSHA256"] = digest(response.stderr)
             var completed = response.status == 0
             if adbShell {
-                if response.status == 0, let marker = ADBClient.shellMarker(in: arguments[3]) {
+                if response.status == 0, let marker = input?.result ?? ADBClient.shellMarker(in: arguments[3]) {
                     do {
-                        let remote = try ADBClient.decodeShellResult(response, marker: marker, command: arguments[3])
+                        let framed = try input.map { try ADBShellPlan.payload(response, input: $0) } ?? response
+                        let remote = try ADBClient.decodeShellResult(framed, marker: marker, command: command)
                         details["remoteExitCode"] = String(remote.status)
                         completed = remote.status == 0
                         if !completed {
-                            details["remoteError"] = ADBClient.errorExcerpt(remote.stdout + remote.stderr, command: arguments[3])
+                            details["remoteError"] = ADBClient.errorExcerpt(remote.stdout + remote.stderr, command: command)
                         }
                     } catch {
                         completed = false; details["remoteStatus"] = "unconfirmed"
@@ -132,7 +144,7 @@ final class AuditedHostRunner: HostCommandRunner {
             if let failure = error as? CommandFailure {
                 details["localExitCode"] = String(failure.partial.status)
                 details["remoteStatus"] = "unconfirmed"
-                details["timedOut"] = "true"
+                if let outcome = failure.transportOutcome { details["transportOutcome"] = outcome; details["timedOut"] = String(outcome == "timeout") }
                 journal.trace(requestID: id, operationID: operationID, details: details, response: failure.partial, command: command)
             } else { journal.trace(requestID: id, operationID: operationID, details: details, response: nil, command: command) }
             try? journal.record(operationID: operationID, category: "transport", title: title, result: "failed", details: details)

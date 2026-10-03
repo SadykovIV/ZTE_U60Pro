@@ -50,9 +50,20 @@ struct ResearchCommandResult: Sendable {
 }
 protocol ResearchProcessRunning {
     func run(_ executable: URL, arguments: [String], timeout: TimeInterval, maxBytes: Int, cancellation: ResearchCancellation) throws -> ResearchCommandResult
+    func run(_ executable: URL, arguments: [String], timeout: TimeInterval, maxBytes: Int, cancellation: ResearchCancellation, input: ADBStreamInput?) throws -> ResearchCommandResult
+}
+extension ResearchProcessRunning {
+    func run(_ executable: URL, arguments: [String], timeout: TimeInterval, maxBytes: Int, cancellation: ResearchCancellation, input: ADBStreamInput?) throws -> ResearchCommandResult {
+        try require(input == nil, "Research transport cannot stream ADB input")
+        return try run(executable, arguments: arguments, timeout: timeout, maxBytes: maxBytes, cancellation: cancellation)
+    }
 }
 /// Drains both pipes continuously while retaining a shared bounded prefix. No unbounded temp files.
 final class ResearchBoundedRunner: ResearchProcessRunning {
+    func run(_ executable: URL, arguments: [String], timeout: TimeInterval, maxBytes: Int, cancellation: ResearchCancellation, input: ADBStreamInput?) throws -> ResearchCommandResult {
+        guard let input else { return try run(executable, arguments: arguments, timeout: timeout, maxBytes: maxBytes, cancellation: cancellation) }
+        return try ADBStreamProcess.run(executable, arguments: arguments, input: input, timeout: timeout, maxBytes: maxBytes, cancellation: cancellation)
+    }
     private final class Capture: @unchecked Sendable {
         let lock = NSLock(); var stdout = Data(); var stderr = Data(); var clipped = false; let limit: Int
         init(_ limit: Int) { self.limit = limit }
@@ -177,12 +188,11 @@ final class FirmwareResearchCollector {
         let physicalSerial = CommandText.decode(physical.stdout).trimmingCharacters(in: .whitespacesAndNewlines)
         try require(physical.outcome == "success" && physical.status == 0 && physicalSerial == serial,
                     "Physical USB identity is unavailable or changed; collection stopped without selecting another transport.")
-        let marker = "__ZTE_RESULT_" + UUID().uuidString.replacingOccurrences(of: "-", with: "") + "__"
-        let wrapped = "(" + command + "); zte_code=$?; printf '\\n" + marker + "%s\\n' \"$zte_code\""
-        var result = try runner.run(resources.appendingPathComponent("Onboarding/adb"), arguments: ["-s", serial, "shell", wrapped], timeout: try remaining(), maxBytes: limit, cancellation: cancellation)
+        let plan = try ADBShellPlan.make(command, templateURL: resources.appendingPathComponent("Onboarding/adb-stream.sh"))
+        var result = try runner.run(resources.appendingPathComponent("Onboarding/adb"), arguments: ["-s", serial, "shell", plan.command], timeout: try remaining(), maxBytes: limit, cancellation: cancellation, input: plan.input)
         result.localExitCode = result.localExitCode ?? (result.status >= 0 ? result.status : nil)
         if result.outcome == "success" {
-            do { let decoded = try ADBClient.decodeShellResult(CommandResult(status: result.status, stdout: result.stdout, stderr: result.stderr), marker: marker); result.status = decoded.status; result.remoteExitCode = decoded.status; result.stdout = decoded.stdout; result.outcome = decoded.status == 0 ? "success" : "failed" }
+            do { let decoded = try plan.decode(CommandResult(status: result.status, stdout: result.stdout, stderr: result.stderr), original: command); result.status = decoded.status; result.remoteExitCode = decoded.status; result.stdout = decoded.stdout; result.outcome = decoded.status == 0 ? "success" : "failed" }
             catch { result.outcome = "failed"; result.stderr.append(Data(("\n" + error.localizedDescription).utf8)) }
         }
         return result

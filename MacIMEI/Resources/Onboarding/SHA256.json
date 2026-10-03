@@ -7,8 +7,9 @@
   "dropbear-LICENSE.txt": "a99ce657d790b761c132ee7e0de18edb437ae6361e536d991c6a12f36e770445",
   "dropbear-libtomcrypt-LICENSE.txt": "8f196cb13afd271f5e267fd29543fc454596382ad580e7592709492843996ac8",
   "dropbear-libtommath-LICENSE.txt": "2fa64b163659f41965c9815882a8296d3d03ff546b76153e11445f9bdecf955a",
-  "provenance.json": "b373404b7817bdbb6927ffcac2ee027f163cc23fea4d432256540141dbc24455",
+  "provenance.json": "29292ae51cdb932fc94ebf549853fae5108a6afdf1c69bd1fc113500a8ec7a56",
   "setup-agent.sh": "fb8f7a3cd1e3ea36949e37fb6f30da16fc752825ad10c3a0d356d9b89da26480",
   "start_zte_imei_studio.sh": "ece54a83e192824b9651ee4a4749fc009ec735e72b7913ec173fe07a2f37816c",
-  "zte-agent": "110f1144e7c0bd044b81cc37a1f5925cdae721043139bb46459a40f1db649deb"
+  "zte-agent": "110f1144e7c0bd044b81cc37a1f5925cdae721043139bb46459a40f1db649deb",
+  "adb-stream.sh": "0692a6b053b7cadae5d4a754684e94062ecaa94067f8f103913c1191e9dc6a1c"
 }

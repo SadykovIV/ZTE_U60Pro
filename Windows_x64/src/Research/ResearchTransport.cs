@@ -71,7 +71,7 @@ public sealed class ResearchCapture(int maxBytes)
     }
 }
 
-public sealed class ResearchAdbShell(string executable, string? serial) : IResearchShell
+public sealed class ResearchAdbShell(string executable, string? serial, string? streamTemplatePath=null) : IResearchShell
 {
     public string Channel => "ADB";
     public Task<ResearchCommandResult> ExecuteAsync(string command,int seconds,int maxBytes,CancellationToken ct)
@@ -81,7 +81,31 @@ public sealed class ResearchAdbShell(string executable, string? serial) : IResea
             throw new InvalidDataException("Research requires a bound USB ADB serial.");
         var marker="__FR_RESULT_"+Guid.NewGuid().ToString("N")+"__";
         var wrapped="("+command+"); fr_code=$?; printf '\\n"+marker+"%s\\n' \"$fr_code\"";
+        AdbStreamProtocol.Validate(command);
+        if(Encoding.UTF8.GetByteCount(wrapped)>AdbStreamProtocol.InlineLimit)
+            return StreamAsync(command,seconds,maxBytes,ct);
         return RunAsync(executable,["-s",serial,"shell",wrapped],seconds,maxBytes,marker,ct);
+    }
+    private async Task<ResearchCommandResult> StreamAsync(string command,int seconds,int maxBytes,CancellationToken ct)
+    {
+        // Original command stays in the research report. Neither the encoded
+        // stdin nor the echoed input is substituted for its audit context.
+        var request=AdbStreamProtocol.Build(command,streamTemplatePath??AdbStreamProtocol.TemplatePath(executable));
+        try
+        {
+            var result=await AdbStreamProcess.RunAsync(executable,["-s",serial!,"shell",request.Wrapper],request,TimeSpan.FromSeconds(seconds),maxBytes,ct).ConfigureAwait(false);
+            int? code=null;
+            if(result.LocalExitCode==0 && result.ResultOccurrences==1 && AdbShellOutput.TryDecodeCompletion(result.Tail,request.Result,out var completed,out _))code=completed;
+            var data=result.Stdout;
+            if(code is not null && AdbShellOutput.TryDecodeCompletion(data,request.Result,out _,out var length))data=data[..length];
+            var status=code is null?"failed":result.Truncated?"truncated":code==0?"success":"failed";
+            var error=AdbShellOutput.NormalizeText(Encoding.UTF8.GetString(result.Stderr));
+            if(code is null)error+="\nADB remote exit status is missing.";
+            return new(status,code,AdbShellOutput.NormalizeText(Encoding.UTF8.GetString(data)),error,result.Truncated,result.LocalExitCode);
+        }
+        catch(OperationCanceledException) {return new("cancelled",null,"","ADB streaming cancelled; remote execution unconfirmed.");}
+        catch(TimeoutException) {return new("timeout",null,"","ADB streaming timed out; remote execution unconfirmed.");}
+        catch(IOException error) {return new("failed",null,"",error.Message);}
     }
     public static async Task<ResearchCommandResult> RunAsync(string executable,string[] arguments,int seconds,int maxBytes,string? marker,CancellationToken ct)
     {

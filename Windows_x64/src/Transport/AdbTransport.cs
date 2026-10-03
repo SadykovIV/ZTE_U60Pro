@@ -35,9 +35,14 @@ public sealed class AdbTransport
 
     public string ExecutablePath { get; }
     private readonly Func<IReadOnlyList<string>, TimeSpan?, CancellationToken, Task<RemoteResult>>? _runner;
+    private readonly Func<IReadOnlyList<string>, AdbStreamRequest?, TimeSpan?, CancellationToken, Task<RemoteResult>>? _inputRunner;
+    private readonly string? _streamTemplatePath;
 
     internal AdbTransport(Func<IReadOnlyList<string>, TimeSpan?, CancellationToken, Task<RemoteResult>> runner)
         : this() => _runner = runner;
+
+    internal AdbTransport(Func<IReadOnlyList<string>, AdbStreamRequest?, TimeSpan?, CancellationToken, Task<RemoteResult>> runner, string templatePath)
+        : this() { _inputRunner=runner; _streamTemplatePath=templatePath; }
 
     public AdbTransport(string? executablePath = null)
     {
@@ -54,6 +59,7 @@ public sealed class AdbTransport
         if (arguments.Count is < 1 or > 64 || arguments.Any(a => a is null || a.IndexOf('\0') >= 0 || a.Length > 128 * 1024))
             throw new ArgumentException("Недопустимые аргументы ADB.", nameof(arguments));
         if (_runner is not null) return await _runner(arguments, timeout, ct).ConfigureAwait(false);
+        if (_inputRunner is not null) return await _inputRunner(arguments, null, timeout, ct).ConfigureAwait(false);
         if (!File.Exists(ExecutablePath))
             throw new FileNotFoundException("В комплекте отсутствует Windows adb.exe.", ExecutablePath);
 
@@ -157,12 +163,29 @@ public sealed class AdbTransport
         TimeSpan? timeout = null, CancellationToken ct = default)
     {
         ValidateSerial(serial);
-        if (string.IsNullOrEmpty(command) || command.IndexOf('\0') >= 0 ||
-            Encoding.UTF8.GetByteCount(command) > 128 * 1024)
-            throw new ArgumentException("Недопустимая команда ADB shell.", nameof(command));
+        AdbStreamProtocol.Validate(command);
         var marker = "__ZTE_RESULT_" + Guid.NewGuid().ToString("N").ToUpperInvariant() + "__";
         var remote = "(" + command + "); zte_code=$?; printf '\\n" + marker +
             "%s\\n' \"$zte_code\"";
+        if(Encoding.UTF8.GetByteCount(remote)>AdbStreamProtocol.InlineLimit)
+        {
+            var request=AdbStreamProtocol.Build(command,_streamTemplatePath??AdbStreamProtocol.TemplatePath(ExecutablePath));
+            var arguments=new[]{"-s",serial,"shell",request.Wrapper};
+            AdbStreamResult streamed;
+            if(_inputRunner is not null)
+            {
+                var raw=await _inputRunner(arguments,request,timeout,ct).ConfigureAwait(false);
+                var capture=new AdbStreamCapture(request,MaximumOutputBytes);
+                capture.Stdout(raw.Stdout);capture.Stderr(raw.Stderr);capture.EndStdout();streamed=capture.Finish(raw.ExitCode);
+            }
+            else
+            {
+                if(_runner is not null)throw new InvalidOperationException("The injected ADB runner does not support stdin.");
+                streamed=await AdbStreamProcess.RunAsync(ExecutablePath,arguments,request,EffectiveTimeout(timeout),MaximumOutputBytes,ct).ConfigureAwait(false);
+            }
+            if(streamed.Truncated || streamed.ResultOccurrences!=1)throw new InvalidDataException("Результат потоковой команды ADB неполон или неоднозначен.");
+            return DecodeShellResult(new(streamed.LocalExitCode,streamed.Stdout,streamed.Stderr),request.Result);
+        }
         var local = await RunAsync(["-s", serial, "shell", remote], timeout, ct).ConfigureAwait(false);
         return DecodeShellResult(local, marker);
     }
@@ -181,7 +204,7 @@ public sealed class AdbTransport
 
     public static RemoteResult DecodeShellResult(RemoteResult local, string marker)
     {
-        if (!local.Success) throw new IOException("Локальный ADB завершился с ошибкой.");
+        if (!local.Success) throw new IOException("Локальный ADB завершился с ошибкой."+AdbStreamProtocol.KnownLocalError(local.Stderr));
         if (!ResultMarkerPattern.IsMatch(marker))
             throw new ArgumentException("Неверный маркер результата ADB.", nameof(marker));
         if (!AdbShellOutput.TryDecodeCompletion(local.Stdout, marker, out var code, out var outputLength))

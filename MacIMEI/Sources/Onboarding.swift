@@ -35,8 +35,22 @@ struct SetupResult: Sendable {
 }
 protocol HostCommandRunner {
     func run(_ executable: URL, _ arguments: [String], timeout: TimeInterval) throws -> CommandResult
+    func run(_ executable: URL, _ arguments: [String], timeout: TimeInterval, input: ADBStreamInput?) throws -> CommandResult
+}
+extension HostCommandRunner {
+    func run(_ executable: URL, _ arguments: [String], timeout: TimeInterval, input: ADBStreamInput?) throws -> CommandResult {
+        try require(input == nil, "Этот транспорт не поддерживает потоковую передачу ADB")
+        return try run(executable, arguments, timeout: timeout)
+    }
 }
 final class HostProcessRunner: HostCommandRunner {
+    func run(_ executable: URL, _ arguments: [String], timeout: TimeInterval, input: ADBStreamInput?) throws -> CommandResult {
+        guard let input else { return try run(executable, arguments, timeout: timeout) }
+        let value = try ADBStreamProcess.run(executable, arguments: arguments, input: input, timeout: timeout, maxBytes: 8 * 1024 * 1024, cancellation: ResearchCancellation())
+        let result = CommandResult(status: value.status, stdout: value.stdout, stderr: value.stderr)
+        guard value.outcome == "success" else { throw CommandFailure(message: "Потоковая передача ADB не подтверждена (" + value.outcome + "); повтор автоматически не выполняется", partial: result, transportOutcome: value.outcome) }
+        return result
+    }
     func run(_ executable: URL, _ arguments: [String], timeout: TimeInterval = 40) throws -> CommandResult {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("zte-setup-" + UUID().uuidString)
         try secureDirectory(directory); defer { try? FileManager.default.removeItem(at: directory) }
@@ -52,7 +66,7 @@ final class HostProcessRunner: HostCommandRunner {
             process.terminate(); let grace = Date().addingTimeInterval(3)
             while process.isRunning && Date() < grace { Thread.sleep(forTimeInterval: 0.05) }
             if process.isRunning { kill(process.processIdentifier, SIGKILL) }; process.waitUntilExit()
-            throw CommandFailure(message: "Инструмент настройки не завершился вовремя. Состояние сохранено; подключите модем и продолжите настройку.", partial: CommandResult(status: -1, stdout: (try? Data(contentsOf: out)) ?? Data(), stderr: (try? Data(contentsOf: err)) ?? Data()))
+            throw CommandFailure(message: "Инструмент настройки не завершился вовремя. Состояние сохранено; подключите модем и продолжите настройку.", partial: CommandResult(status: -1, stdout: (try? Data(contentsOf: out)) ?? Data(), stderr: (try? Data(contentsOf: err)) ?? Data()), transportOutcome: "timeout")
         }
         process.waitUntilExit()
         return CommandResult(status: process.terminationStatus, stdout: try Data(contentsOf: out), stderr: try Data(contentsOf: err))
@@ -115,9 +129,9 @@ final class ADBClient {
     }
     func shellResult(_ serial: String, _ text: String, timeout: TimeInterval = 40) throws -> CommandResult {
         try require(!serial.isEmpty && serial.utf8.count <= 256 && serial.utf8.allSatisfy { (33...126).contains($0) }, "Неверный серийный номер ADB")
-        let marker = "__ZTE_RESULT_" + UUID().uuidString.replacingOccurrences(of: "-", with: "") + "__"
-        let commandText = "(" + text + "); zte_code=$?; printf '\\n" + marker + "%s\\n' \"$zte_code\""
-        return try Self.decodeShellResult(runner.run(binary, ["-s", serial, "shell", commandText], timeout: timeout), marker: marker, command: text)
+        let plan = try ADBShellPlan.make(text, templateURL: binary.deletingLastPathComponent().appendingPathComponent("adb-stream.sh"))
+        let value = try runner.run(binary, ["-s", serial, "shell", plan.command], timeout: timeout, input: plan.input)
+        return try plan.decode(value, original: text)
     }
     func identity(_ serial: String, expected: WebIdentity, skipFirmwareCheck: Bool = false) throws -> Identity {
         try identityDetails(serial, expected: expected, skipFirmwareCheck: skipFirmwareCheck).identity

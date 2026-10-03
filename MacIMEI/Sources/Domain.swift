@@ -89,6 +89,14 @@ struct Connection: Codable, Sendable {
     // Explicit session-only consent: never restored from settings or transaction JSON.
     var skipFirmwareCheck = false
     enum CodingKeys: String, CodingKey { case host, port, keyPath, knownHostsPath }
+    /// Preserve a user's still-readable legacy trust file. Never populate a new
+    /// known_hosts file or replace its contents while restoring preferences.
+    static func restoredKnownHostsPath(_ saved: String, fallback: String) -> String {
+        guard saved.hasSuffix("/Contents/Resources/trusted_known_hosts") else { return saved }
+        var directory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: saved, isDirectory: &directory) && !directory.boolValue &&
+            FileManager.default.isReadableFile(atPath: saved) ? saved : fallback
+    }
     func validate() throws {
         let parts = host.split(separator: ".", omittingEmptySubsequences: false)
         try require(parts.count == 4 && parts.allSatisfy { !$0.isEmpty && $0.utf8.allSatisfy { (48...57).contains($0) } && (Int($0) ?? 256) <= 255 }, "Введите IPv4-адрес модема")
