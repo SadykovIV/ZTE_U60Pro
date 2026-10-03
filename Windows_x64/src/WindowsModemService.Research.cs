@@ -1,5 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
+using ZteImeiStudio.Windows.Core;
 using ZteImeiStudio.Windows.Research;
 
 namespace ZteImeiStudio.Windows;
@@ -26,6 +28,7 @@ public sealed partial class WindowsModemService
             var engine=new FirmwareResearchEngine(spec,factory,new ResearchRedactor(secrets));
             using var deadline=CancellationTokenSource.CreateLinkedTokenSource(ct);deadline.CancelAfter(TimeSpan.FromMinutes(8));
             var boundCid=_adbCid??(host==_host?_snapshot.Serial:null);
+            boundCid=ReadPendingResearchCid(boundCid);
             var cidHash=boundCid is {Length:32} && boundCid.All(Uri.IsHexDigit)?FirmwareResearchEngine.HashSavedCid(boundCid):null;
             var report=await engine.CollectAsync(mode,cidHash,progress,deadline.Token).ConfigureAwait(false);
             if(deadline.IsCancellationRequested && !ct.IsCancellationRequested)report=report with { Outcome="time_limit",Omissions=report.Omissions.Append("Collection stopped at the eight-minute time limit; partial evidence is retained.").ToArray() };
@@ -35,6 +38,24 @@ public sealed partial class WindowsModemService
         }
         finally { _operation.Release(); }
     }
+    private string? ReadPendingResearchCid(string? connectedCid)
+    {
+        foreach (var name in new[] { "setup-pending.json", "adb-access-pending.json" })
+        {
+            var path=Path.Combine(_storage,name);
+            if (!File.Exists(path)) continue;
+            var pending=JsonSerializer.Deserialize<OnboardingPending>(File.ReadAllBytes(path))
+                ?? throw new InvalidDataException("Не удалось прочитать идентичность незавершённой операции.");
+            if (pending.Intent != (name == "adb-access-pending.json" ? "diagnostic-adb" : "preparation"))
+                throw new InvalidDataException("Назначение журнала не совпало с незавершённой операцией.");
+            if (pending.Cid is not { } cid) continue;
+            if (cid.Length != 32 || !cid.All(Uri.IsHexDigit) || connectedCid is not null && !cid.Equals(connectedCid,StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("Сохранённая идентичность относится к другому модему.");
+            connectedCid=cid.ToLowerInvariant();
+        }
+        return connectedCid;
+    }
+
     public Task ExportFirmwareResearchAsync(ResearchReport report,string destination,CancellationToken ct=default)
     {
         ct.ThrowIfCancellationRequested();ResearchReportFiles.Export(report,destination);return Task.CompletedTask;

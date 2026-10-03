@@ -152,7 +152,7 @@ final class ExperimentalOpkgManager {
     func execute(_ arguments: [String]) throws -> ExperimentalOpkgResult { try Self.validate(arguments); return try perform("execute", arguments) }
     private func perform(_ action: String, _ arguments: [String] = [], payload: Data? = nil) throws -> ExperimentalOpkgResult {
         try require(engine.lockFD >= 0, "Операция opkg требует блокировки")
-        for name in ["pending.json", "setup-pending.json"] { try require(!engine.fm.fileExists(atPath: engine.root.appendingPathComponent(name).path), "Сначала завершите настройку или смену IMEI") }
+        for name in ["pending.json", "setup-pending.json", "adb-access-pending.json"] { try require(!engine.fm.fileExists(atPath: engine.root.appendingPathComponent(name).path), "Сначала завершите настройку или смену IMEI") }
         try require(!SystemBackups.hasPendingRestore(root: engine.root), "Сначала завершите полное восстановление")
         let identity = try engine.identity()
         try require(identity.0.firmwareHash == ModemEngine.firmwareHash, "Экспериментальный opkg предназначен только для проверенной MU5250 B31")

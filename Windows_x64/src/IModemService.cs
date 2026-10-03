@@ -6,6 +6,7 @@ public enum ModemOperation
 {
     DiscoverConnections,
     PrepareSsh,
+    EnableDiagnosticAdb,
     Connect,
     RefreshDevice,
     RefreshAgent,
@@ -85,7 +86,9 @@ public sealed record DeviceSnapshot(
     string? VpnPasswordMode = null,
     string? LauncherMetricOrder = null,
     VpnPageSnapshot? VpnPage = null,
-    string? LauncherPages = null);
+    string? LauncherPages = null,
+    bool AdbActivationPending = false,
+    bool PreparationPending = false);
 
 public sealed record VpnPageSnapshot(
     bool Installed,

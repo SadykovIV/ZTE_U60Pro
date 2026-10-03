@@ -29,6 +29,8 @@ public sealed partial class ImeiEngine
     public async Task<ImeiState> ResumeAsync(CancellationToken ct = default)
     {
         if (!File.Exists(Pending)) throw new InvalidOperationException("Незавершённая операция IMEI не найдена.");
+        if (File.Exists(Path.Combine(storageRoot, "adb-access-pending.json")))
+            throw new InvalidOperationException("Сначала завершите включение диагностического ADB.");
         var identity = await IdentityForWriteAsync(ct);
         return await Locked(identity, token => ResumeCoreAsync(identity, token), ct);
     }
@@ -37,7 +39,7 @@ public sealed partial class ImeiEngine
 
     private async Task<ImeiState> BeginAsync(string[]? targets, string? restoreId, CancellationToken ct)
     {
-        if (File.Exists(Path.Combine(storageRoot, "setup-pending.json")))
+        if (File.Exists(Path.Combine(storageRoot, "setup-pending.json")) || File.Exists(Path.Combine(storageRoot, "adb-access-pending.json")))
             throw new InvalidOperationException("Сначала завершите первоначальную настройку модема.");
         if (File.Exists(Pending))
             throw new InvalidOperationException("Сначала продолжите незавершённую операцию IMEI.");

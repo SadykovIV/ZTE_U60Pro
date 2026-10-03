@@ -14,7 +14,8 @@ try
     await InterruptedConfig(Path.Combine(temporary, "config"));
     await InterruptedConfigRestore(Path.Combine(temporary, "config-restore"));
     await FirmwareGate(Path.Combine(temporary, "firmware"));
-    Console.WriteLine("IMEI transaction fixtures: 5 passed");
+    await PendingDiagnosticAdb(Path.Combine(temporary, "diagnostic-adb"));
+    Console.WriteLine("IMEI transaction fixtures: 6 passed");
 }
 finally { Directory.Delete(temporary, recursive: true); }
 
@@ -123,6 +124,19 @@ static async Task InterruptedConfigRestore(string root)
     _ = await engine.ResumeAsync();
     Assert(modem.RestoreCalls == 1, "verified original config was not restored twice");
     Console.WriteLine("PASS ambiguous config restore + cooling barrier");
+}
+
+static async Task PendingDiagnosticAdb(string root)
+{
+    var (engine,modem,storage)=Make(root);
+    File.WriteAllText(Path.Combine(storage,"adb-access-pending.json"),"{}");
+    await Throws<InvalidOperationException>(()=>engine.ApplyAsync(Imei(200),Imei(201)));
+    Assert(modem.EnableCalls==0 && modem.WriteCalls==0 && modem.RestoreCalls==0,
+        "pending diagnostic ADB prevents a new IMEI transaction");
+    File.WriteAllText(Path.Combine(storage,"imei-pending.json"),"{}");
+    await Throws<InvalidOperationException>(()=>engine.ResumeAsync());
+    Assert(modem.EnableCalls==0 && modem.WriteCalls==0 && modem.RestoreCalls==0,
+        "pending diagnostic ADB prevents IMEI resume before any write");
 }
 
 static void Age(string storage, Func<ImeiPending, ImeiPending> edit)

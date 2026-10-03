@@ -9,7 +9,7 @@ public sealed partial class WindowsModemService
 {
     private partial async Task<string> PrepareSshAsync(IReadOnlyDictionary<string,string>? parameters,CancellationToken ct)
     {
-        if (_ssh is not null) throw new InvalidOperationException("SSH уже подключён; предварительная подготовка не требуется.");
+        if (_ssh is not null && !File.Exists(Path.Combine(_storage,"setup-pending.json"))) throw new InvalidOperationException("SSH уже подключён; предварительная подготовка не требуется.");
         var host = Param(parameters,"host",_host);
         var webPassword = parameters?.GetValueOrDefault("web_password") ?? "";
         var agentPassword = parameters?.GetValueOrDefault("agent_password") ?? "";
@@ -17,7 +17,8 @@ public sealed partial class WindowsModemService
         var skipFirmware = Param(parameters,"skip_firmware_check") == "true";
         if (string.IsNullOrEmpty(webPassword) || string.IsNullOrEmpty(agentPassword))
             throw new ArgumentException("Для подготовки нужны пароль веб-интерфейса и пароль агента.");
-        var onboarding = new OnboardingEngine(host,_storage,_resources,_adb,skipFirmware);
+        var onboarding = new OnboardingEngine(host,_storage,_resources,_adb,skipFirmware,
+            progress: message => Log("info","Подготовка: " + message));
         var setup = await onboarding.PrepareAsync(webPassword,agentPassword,backupKeySuffix,ct);
         _host = host;
         _keyPath = setup.KeyPath;
@@ -42,6 +43,56 @@ public sealed partial class WindowsModemService
             }
         }
         return "Предварительная подготовка завершена. " + message;
+    }
+
+    private async Task<string> EnableDiagnosticAdbAsync(IReadOnlyDictionary<string,string>? parameters, CancellationToken ct)
+    {
+        var host = Param(parameters, "host", _host);
+        var password = parameters?.GetValueOrDefault("web_password") ?? "";
+        var backupKeySuffix = parameters?.GetValueOrDefault("backup_key_suffix") ?? "";
+        var resuming = File.Exists(Path.Combine(_storage,"adb-access-pending.json"));
+        if (string.IsNullOrEmpty(password) && !resuming) throw new ArgumentException("Для включения диагностического ADB введите пароль Web. Пароль агента не нужен.");
+        if (_ssh is not null && host != _host)
+            throw new InvalidOperationException("Адрес отличается от подключённого SSH-модема. Сначала подключитесь к нужному модему.");
+        Core.DeviceIdentity? expected = null;
+        string? expectedImei = null;
+        var previousCid = _snapshot.Serial;
+        if (_ssh is not null && !resuming)
+        {
+            expected = await _imei!.IdentityAsync(ct);
+            var reply = await _ssh.RunAsync("ubus call zwrt_web device_info '{}'", timeout:TimeSpan.FromSeconds(15), ct:ct);
+            if (!reply.Success) throw new IOException("SSH не подтвердил IMEI для сопоставления с Web.");
+            using var document = JsonDocument.Parse(reply.Stdout);
+            expectedImei = document.RootElement.GetProperty("imei").GetString();
+            if (!ImeiCodec.IsValid(expectedImei)) throw new InvalidDataException("SSH не подтвердил IMEI для сопоставления с Web.");
+        }
+        var onboarding = new OnboardingEngine(host, _storage, _resources, _adb,
+            Param(parameters,"skip_firmware_check") == "true", message => Log("info", "Подготовка: " + message));
+        try
+        {
+            var result = await onboarding.EnableDiagnosticAdbAsync(password, backupKeySuffix, expected, expectedImei, ct);
+            return result.AlreadyAvailable ? "Диагностический ADB уже доступен; модем не изменялся." : "Диагностический ADB включён и проверен. Для обычной работы используется SSH.";
+        }
+        finally
+        {
+            // Activation may reboot the modem. Never retain a stale connected
+            // indicator merely because an SSH transport object still exists.
+            if (_ssh is not null)
+            {
+                try
+                {
+                    var current = await _imei!.IdentityAsync(CancellationToken.None);
+                    if (current.Cid != (expected?.Cid ?? previousCid) || expected is not null && current.FirmwareHash != expected.FirmwareHash)
+                        throw new InvalidDataException("SSH-модем изменился.");
+                    _snapshot = _snapshot with { IsConnected = true, ConnectionMode = "SSH", Status = "Подключено по SSH" };
+                }
+                catch
+                {
+                    _ssh = null; _imei = null; _features = null; _serial = null; _adbCid = null;
+                    _snapshot = new DeviceSnapshot(false, "После включения ADB SSH не подтверждён. Подключитесь снова.", IpAddress: host);
+                }
+            }
+        }
     }
 
     private partial async Task<string> RunOtherExtendedAsync(OperationRequest request,CancellationToken ct)
@@ -154,11 +205,14 @@ public sealed partial class WindowsModemService
                 return await ExportLocalDiagnosticsAsync(ct);
             case ModemOperation.RebootDevice:
             {
-                foreach (var name in new[] { "imei-pending.json", "pending.json", "setup-pending.json", "system-restore-pending.json" })
+                foreach (var name in new[] { "imei-pending.json", "pending.json", "setup-pending.json", "adb-access-pending.json", "system-restore-pending.json" })
                     if (File.Exists(Path.Combine(_storage,name)))
                         throw new InvalidOperationException("Сначала завершите незавершённую операцию; перезагрузка сейчас запрещена.");
                 using var local = new FileStream(Path.Combine(_storage,"operation.lock"),FileMode.OpenOrCreate,
                     FileAccess.ReadWrite,FileShare.None);
+                foreach (var name in new[] { "imei-pending.json", "pending.json", "setup-pending.json", "adb-access-pending.json", "system-restore-pending.json" })
+                    if (File.Exists(Path.Combine(_storage,name)))
+                        throw new InvalidOperationException("Сначала завершите незавершённую операцию; перезагрузка сейчас запрещена.");
                 var token = Guid.NewGuid().ToString("D");
                 var owner = "/tmp/zte-imei-app.lock/owner";
                 var acquire = await _ssh!.RunAsync("set -eu; umask 077; mkdir /tmp/zte-imei-app.lock; printf '%s' " +

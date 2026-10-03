@@ -16,6 +16,8 @@ extension ContentView {
             }.padding(.vertical, 4)
 
             Divider().overlay(StudioStyle.line)
+            Text(L10n.text("Web → ADB → агент и SSH → подключение по SSH"))
+                .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary)
             HStack(spacing: 10) {
                 Button(L10n.text("Выполнить предварительную подготовку модема"), action: model.preparePreferredSSH)
                     .buttonStyle(StudioButtonStyle(prominent: true)).disabled(!model.canPrepareModem)
@@ -32,6 +34,20 @@ extension ContentView {
                     .font(.system(size: 12)).foregroundStyle(StudioStyle.warning).fixedSize(horizontal: false, vertical: true)
             }
 
+            Divider().overlay(StudioStyle.line)
+            Text(L10n.text("Для диагностики")).font(.system(size: 12, weight: .semibold))
+            HStack(spacing: 10) {
+                Button(L10n.text(model.diagnosticADBPending ? "Продолжить включение ADB" : "Принудительно включить ADB"), action: model.enableDiagnosticADB)
+                    .buttonStyle(StudioButtonStyle()).disabled(!model.canEnableDiagnosticADB)
+                OperationInfoButton(topic: .diagnosticADB)
+                Spacer(minLength: 0)
+            }
+            Text(L10n.text("Доступно и при работающем SSH. Возможна перезагрузка модема; агент и настройки SSH не меняются."))
+                .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
+            if !model.diagnosticADBMessage.isEmpty {
+                Text(L10n.text(model.diagnosticADBMessage)).font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
+                    .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            }
             Divider().overlay(StudioStyle.line)
             Button(L10n.text("Подключиться к модему"), action: model.connect)
                 .buttonStyle(StudioButtonStyle(prominent: true))
@@ -60,7 +76,7 @@ extension ContentView {
             Image(systemName: symbol)
                 .foregroundStyle(color).frame(width: 16)
             VStack(alignment: .leading, spacing: 3) {
-                Text(L10n.text(mode == .web ? "Штатный Web" : mode.title)).font(.system(size: 12, weight: .medium))
+                Text(L10n.text(mode == .web ? "Штатный Web" : mode == .adb ? "ADB · диагностика" : mode.title)).font(.system(size: 12, weight: .medium))
                 Text(L10n.text(state.title)).font(.system(size: 10)).foregroundStyle(color)
             }.frame(width: 110, alignment: .leading)
             Text(L10n.text(status?.message ?? "Нажмите «Проверить подключения»."))

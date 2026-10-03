@@ -13,7 +13,7 @@ import UniformTypeIdentifiers
     }
     func startFirmwareResearch() {
         guard canResearchFirmware else { return }
-        let root = storage, assets = resources, config = connection, mode = connectionMode
+        let root = storage, assets = resources, config = connection, mode = ConnectionMode.automatic
         let expectedCID = modemInformation?.identity.cid ?? connectedIdentity?.cid
         let secrets = [webPassword, agentPassword, backupSuffix, sshPassword, currentIMEI1, currentIMEI2, imei1, imei2, connectedIMEI ?? ""]
         let context = ["appVersion": appVersion, "platform": "macos", "hostOS": ProcessInfo.processInfo.operatingSystemVersionString,

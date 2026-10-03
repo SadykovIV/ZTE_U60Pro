@@ -215,7 +215,7 @@ final class DeviceBackups {
     func create(_ kind: DeviceBackupKind, cancelled: @escaping @Sendable () -> Bool = { false }) throws -> DeviceBackupItem {
         try require(engine.lockFD >= 0, "Создание копии требует блокировки операции")
         try Self.checkCancelled(cancelled); try engine.connection.validate()
-        for name in ["pending.json", "setup-pending.json"] { try require(!engine.fm.fileExists(atPath: engine.root.appendingPathComponent(name).path), "Сначала завершите незавершённую операцию модема") }
+        for name in ["pending.json", "setup-pending.json", "adb-access-pending.json"] { try require(!engine.fm.fileExists(atPath: engine.root.appendingPathComponent(name).path), "Сначала завершите незавершённую операцию модема") }
         try Self.directory(engine.root)
         let store = Self.rootURL(engine.root); try Self.directory(store, create: true)
         let identity = try engine.identity(); try engine.acquireRemoteLock()

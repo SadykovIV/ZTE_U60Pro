@@ -3,7 +3,7 @@ import Foundation
 /// One ID for all engine, onboarding and UI events in this application process.
 enum DiagnosticsContext {
     static let sessionID = UUID().uuidString.lowercased()
-    static let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.21.0"
+    static let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.23.3"
 }
 
 extension ActivityJournal {

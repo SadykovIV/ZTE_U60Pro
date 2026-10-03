@@ -59,7 +59,7 @@ public sealed partial class WindowsModemService : IModemService
             if (_logs.Count > 2000) _logs.RemoveRange(0,_logs.Count-2000);
         }
     }
-    public Task<DeviceSnapshot> GetDeviceSnapshotAsync(CancellationToken cancellationToken = default) => Task.FromResult(_snapshot);
+    public Task<DeviceSnapshot> GetDeviceSnapshotAsync(CancellationToken cancellationToken = default) => Task.FromResult(_snapshot with { AdbActivationPending = File.Exists(Path.Combine(_storage, "adb-access-pending.json")), PreparationPending = File.Exists(Path.Combine(_storage, "setup-pending.json")) });
     public Task<IReadOnlyList<LogEntry>> GetLogsAsync(CancellationToken cancellationToken = default)
     {
         lock (_logs) return Task.FromResult<IReadOnlyList<LogEntry>>(_logs.ToArray());
@@ -116,6 +116,7 @@ public sealed partial class WindowsModemService : IModemService
                 case ModemOperation.DiscoverConnections: result = await DiscoverAsync(p,cancellationToken); break;
                 case ModemOperation.Connect: result = await ConnectAsync(p,cancellationToken); break;
                 case ModemOperation.PrepareSsh: result = await PrepareSshAsync(p,cancellationToken); break;
+                case ModemOperation.EnableDiagnosticAdb: result = await EnableDiagnosticAdbAsync(p,cancellationToken); break;
                 case ModemOperation.RefreshDevice: result = await RefreshDeviceAsync(cancellationToken); break;
                 case ModemOperation.ReadImei:
                     if (_imei is not null)
@@ -279,14 +280,15 @@ public sealed partial class WindowsModemService : IModemService
         }
         try
         {
-            var devices = await _adb.GetUsbDevicesAsync(ct);
+            var inventory = await _adb.InspectUsbAsync(ct);
+            var devices = inventory.ReadyDevices;
             if (devices.Count == 1)
             {
                 var probe = await _adb.ShellAsync(devices[0].Serial,"id -u",TimeSpan.FromSeconds(10),ct);
                 status.Add(probe.Success && Encoding.UTF8.GetString(probe.Stdout).Trim() == "0"
                     ? "ADB: доступен, root подтверждён" : "ADB: доступен, root не подтверждён");
             }
-            else status.Add(devices.Count == 0 ? "ADB: недоступен" : "ADB: несколько устройств");
+            else status.Add(devices.Count == 0 ? "ADB: " + inventory.UnavailableReason : "ADB: несколько USB-устройств");
         }
         catch (Exception e) { status.Add("ADB: " + e.Message); }
         try
@@ -358,38 +360,21 @@ public sealed partial class WindowsModemService : IModemService
         if (!string.IsNullOrWhiteSpace(Param(values,"key_path"))) _keyPath = Param(values,"key_path");
         if (!string.IsNullOrWhiteSpace(Param(values,"known_hosts_path"))) _knownHostsPath = Param(values,"known_hosts_path");
         _skipFirmwareCheck = Param(values,"skip_firmware_check").Equals("true",StringComparison.OrdinalIgnoreCase);
-        var selected = Param(values,"mode","Автоматически");
-        if (selected != "ADB")
-        {
-            try
-            {
-                var ssh = new SshTransport(host,_port,KeyPath,KnownHostsPath);
-                var imei = new ImeiEngine(ssh,_storage,_resources,_skipFirmwareCheck);
-                var identity = await imei.IdentityAsync(ct);
-                _ssh = ssh; _imei = imei; _features = new DeviceFeatureService(ssh,_resources,_storage); _serial = null; _adbCid = null;
-                var supported = identity.FirmwareHash == ImeiEngine.FirmwareHash;
-                _snapshot = new DeviceSnapshot(true,supported ? "Подключено по SSH" : "Подключено по SSH · экспериментальный режим прошивки",
-                    IpAddress:host,ConnectionMode:"SSH",Serial:identity.Cid);
-                await HydrateConnectedAsync(supported,ct);
-                await File.WriteAllTextAsync(Path.Combine(_storage,"connection.json"),JsonSerializer.Serialize(new { host, port = _port, key_path = _keyPath, known_hosts_path = _knownHostsPath }),ct);
-                return supported ? "SSH подключён; CID и прошивка проверены." :
-                    "SSH подключён в экспериментальном режиме. Запись IMEI и B31-компонентов заблокирована.";
-            }
-            catch (SshTrustException) { throw; }
-            catch (InvalidDataException) { throw; }
-            catch when (selected is "Автоматически" or "automatic") { }
-        }
-        if (selected is "SSH" or "ssh") throw new IOException("SSH недоступен. Проверьте ключ, host key и подготовку.");
-        var serial = await _adb.SelectSingleUsbSerialAsync(ct);
-        var reply = await _adb.ShellAsync(serial,"id; cat /sys/block/mmcblk0/device/cid",TimeSpan.FromSeconds(15),ct);
-        var proof = Encoding.UTF8.GetString(reply.Stdout).Split('\n',StringSplitOptions.TrimEntries|StringSplitOptions.RemoveEmptyEntries);
-        var cid = proof.LastOrDefault();
-        if (!reply.Success || !proof.Any(x => x.Contains("uid=0(root)",StringComparison.Ordinal)) ||
-            cid is null || cid.Length != 32 || cid.Any(x => !Uri.IsHexDigit(x)))
-            throw new IOException("ADB доступен, но root и CID не подтверждены.");
-        _serial = serial; _adbCid = cid.ToLowerInvariant(); _ssh = null; _features = null; _imei = null;
-        _snapshot = new DeviceSnapshot(true,"Подключено по ADB · ограниченный режим",IpAddress:host,ConnectionMode:"ADB",Serial:_adbCid);
-        return _snapshot.Status;
+        // The application's working channel is SSH. USB ADB remains available
+        // independently for preparation and read-only firmware research.
+        _ssh = null; _imei = null; _features = null; _serial = null; _adbCid = null;
+        _snapshot = new DeviceSnapshot(false, "SSH не подключён; проверьте доступ или выполните предварительную подготовку.", IpAddress: host);
+        var ssh = new SshTransport(host,_port,KeyPath,KnownHostsPath);
+        var imei = new ImeiEngine(ssh,_storage,_resources,_skipFirmwareCheck);
+        var identity = await imei.IdentityAsync(ct);
+        _ssh = ssh; _imei = imei; _features = new DeviceFeatureService(ssh,_resources,_storage); _serial = null; _adbCid = null;
+        var supported = identity.FirmwareHash == ImeiEngine.FirmwareHash;
+        _snapshot = new DeviceSnapshot(true,supported ? "Подключено по SSH" : "Подключено по SSH · экспериментальный режим прошивки",
+            IpAddress:host,ConnectionMode:"SSH",Serial:identity.Cid);
+        await HydrateConnectedAsync(supported,ct);
+        await File.WriteAllTextAsync(Path.Combine(_storage,"connection.json"),JsonSerializer.Serialize(new { host, port = _port, key_path = _keyPath, known_hosts_path = _knownHostsPath }),ct);
+        return supported ? "SSH подключён; CID и прошивка проверены." :
+            "SSH подключён в экспериментальном режиме. Запись IMEI и B31-компонентов заблокирована.";
     }
     private async Task<string> RefreshDeviceAsync(CancellationToken ct)
     {

@@ -35,7 +35,7 @@ public sealed partial class DeviceFeatureService
 
     private void CheckLocalPending()
     {
-        foreach (var name in new[] { "imei-pending.json", "pending.json", "setup-pending.json", "system-restore-pending.json" })
+        foreach (var name in new[] { "imei-pending.json", "pending.json", "setup-pending.json", "adb-access-pending.json", "system-restore-pending.json" })
         {
             var path = Path.Combine(_storageRoot, name);
             Check(!File.Exists(path) && !Directory.Exists(path),
@@ -92,8 +92,11 @@ public sealed partial class DeviceFeatureService
     {
         await OperationGate.WaitAsync(ct);
         string? token = null;
+        FileStream? localOperation = null;
         try
         {
+            Directory.CreateDirectory(_storageRoot);
+            localOperation = new FileStream(Path.Combine(_storageRoot,"operation.lock"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None);
             CheckLocalPending();
             var identity = await ReadIdentityAsync(requireSupportedFirmware: true, ct);
             token = Guid.NewGuid().ToString("D");
@@ -113,6 +116,7 @@ public sealed partial class DeviceFeatureService
                 }
                 catch { /* A changed lock must remain for recovery inspection. */ }
             }
+            localOperation?.Dispose();
             OperationGate.Release();
         }
     }

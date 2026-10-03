@@ -43,6 +43,20 @@ private func sampleRecords() -> [Data] {
     return [first, second]
 }
 
+private func syntheticConfig() -> Data {
+    var data = Data(repeating: 0, count: 15073)
+    data.put32(0, 0x78563412); data.put32(4, 249); data.put32(8, UInt32(data.count))
+    var offset = 16
+    for index in 0..<249 {
+        let length = index < 4 ? 93 : index == 4 ? 95 : index == 5 ? 17 : index == 248 ? 15069 - offset : 16
+        data.put32(offset, index == 5 ? 102 : UInt32(1000 + index))
+        data.put32(offset + 4, UInt32(length)); data.put32(offset + 8, 0x18080820)
+        offset += length
+    }
+    data.put32(data.count - 4, 0x21436587); data.put32(12, ConfigFile.crc(data))
+    return data
+}
+
 private let testCID = "0123456789abcdef0123456789abcdef"
 private let testBoot = "ee9f32b1-71f3-42df-b8fc-645f058b08b1"
 
@@ -251,12 +265,11 @@ private final class EngineFixture {
 @main
 struct AppTests {
     static func main() throws {
-        guard CommandLine.arguments.count == 2 else {
-            print("Usage: AppTests /path/to/config.original.bin")
-            exit(2)
-        }
-        // The existing private config is read from outside the application/test source tree.
-        let config = try Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[1]))
+        // No modem backup is needed: generate the default fixture in memory.
+        // An explicitly supplied local fixture remains available for private verification.
+        let config: Data
+        if CommandLine.arguments.count == 2 { config = try Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[1])) }
+        else { config = syntheticConfig() }
         let tests = TestSuite()
 
         tests.run("Firmware override: session-only, absent from saved settings and journals") {
@@ -341,8 +354,11 @@ struct AppTests {
             try rejects { _ = try IMEI.decode(bad) }
             try rejects { _ = try IMEI.encode("353490068701223", preserving: sampleRecords()[0]) }
         }
-        tests.run("Config: real B31 fixture and known SHA256") {
-            try check(digest(config) == "758b9b34e553409492f86dea6cb0e28e1e7fae6d6529a763711c7496e9130cc8", "Not the independently recorded original fixture")
+        tests.run("Config: fixture matches independent golden SHA256") {
+            // Synthetic goldens computed independently with Python struct/hashlib
+            // and a bitwise CRC implementation; private fixture pin is opt-in.
+            let expected = CommandLine.arguments.count == 2 ? "758b9b34e553409492f86dea6cb0e28e1e7fae6d6529a763711c7496e9130cc8" : "b8e2bc69cbef2881369d582b69b5b0676a2448ca505f17d1b7f6e8109beb6f59"
+            try check(digest(config) == expected, "Fixture differs from the independent golden")
             try check(try ConfigFile.validate(config) == 0, "Original config flag is not zero")
         }
         tests.run("Config: candidate changes only flag and four CRC bytes") {
@@ -350,7 +366,8 @@ struct AppTests {
             try check(try ConfigFile.validate(candidate) == 1, "Candidate flag not enabled")
             let changed = Set(config.indices.filter { config[$0] != candidate[$0] })
             try check(changed == Set([12, 13, 14, 15, 499]), "Unexpected config byte changes")
-            try check(digest(candidate) == "785d188ced651895797daeeff3babc999c35780931d7d3fb32750e0d79130b72", "Candidate differs from independently verified device transaction")
+            let expected = CommandLine.arguments.count == 2 ? "785d188ced651895797daeeff3babc999c35780931d7d3fb32750e0d79130b72" : "afcd0ff768b51e41252d60e7806fea58498c281ecd564f52639caee01a988e4f"
+            try check(digest(candidate) == expected, "Candidate differs from the independent golden")
             try rejects { _ = try ConfigFile.candidate(candidate) }
         }
         tests.run("Config: truncated and corrupt CRC reject") {
@@ -375,6 +392,20 @@ struct AppTests {
             try rejects("конец config") { _ = try ConfigFile.validate(bad) }
         }
 
+        tests.run("Engine: pending diagnostic ADB blocks writes before any remote command") {
+            let fixture = try EngineFixture(config: config)
+            let pending = fixture.engine.root.appendingPathComponent("adb-access-pending.json")
+            try savePrivate(Data("{\"intent\":\"diagnostic-adb\"}".utf8), pending)
+            try rejects("включение ADB") {
+                try fixture.engine.locked { try fixture.engine.acquireRemoteLock() }
+            }
+            try rejects("включение ADB") {
+                _ = try fixture.engine.locked { try fixture.engine.begin(targets: ["353490068701230", "353490068701248"]) }
+            }
+            try check(fixture.remote.commands.isEmpty, "Pending ADB allowed a remote command")
+            try check(FileManager.default.fileExists(atPath: pending.path), "Pending ADB journal was discarded")
+            try check(!FileManager.default.fileExists(atPath: fixture.engine.tokenURL.path), "Pending ADB acquired a device lock")
+        }
         tests.run("Engine: unknown firmware refuses before helpers or writes") {
             let fixture = try EngineFixture(config: config)
             fixture.remote.firmwareHash = String(repeating: "0", count: 64)

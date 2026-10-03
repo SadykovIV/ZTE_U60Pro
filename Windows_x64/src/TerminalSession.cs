@@ -7,24 +7,30 @@ namespace ZteImeiStudio.Windows;
 /// <summary>Interactive SSH PTY. Bytes stay in memory; they are never written to the app journal.</summary>
 internal sealed class TerminalSession : ITerminalSession
 {
-    private readonly SshClient _client;
-    private readonly ShellStream _stream;
+    private readonly Func<bool> _connected;
+    private readonly Action _disconnect;
+    private readonly FileStream _operationLock;
+    private readonly Stream _stream;
     private readonly CancellationTokenSource _closed = new();
     private readonly SemaphoreSlim _write = new(1,1);
     private readonly Task _reader;
     private EventHandler<TerminalDataEventArgs>? _output;
     private readonly StringBuilder _pending = new();
     private bool _disposed;
+    private volatile bool _readerEnded;
     private const int BufferLimit = 2 * 1024 * 1024;
-    public bool IsConnected => !_disposed && _client.IsConnected;
+    public bool IsConnected => !_disposed && !_readerEnded && _connected();
     public event EventHandler<TerminalDataEventArgs>? OutputReceived
     {
         add { lock (_pending) { _output += value; if (_pending.Length > 0) { value?.Invoke(this,new TerminalDataEventArgs(_pending.ToString())); _pending.Clear(); } } }
         remove { lock (_pending) _output -= value; }
     }
-    internal TerminalSession(SshClient client,ShellStream stream,string firstOutput)
+    internal TerminalSession(SshClient client,ShellStream stream,string firstOutput,FileStream operationLock)
+        : this(stream, () => client.IsConnected, () => { client.Disconnect(); client.Dispose(); }, firstOutput, operationLock) { }
+
+    internal TerminalSession(Stream stream,Func<bool> connected,Action disconnect,string firstOutput,FileStream operationLock)
     {
-        _client=client; _stream=stream;
+        _connected=connected; _disconnect=disconnect; _stream=stream; _operationLock=operationLock;
         if (!string.IsNullOrEmpty(firstOutput)) _pending.Append(firstOutput);
         _reader=Task.Run(ReadLoop);
     }
@@ -45,6 +51,7 @@ internal sealed class TerminalSession : ITerminalSession
         catch (OperationCanceledException) { }
         catch (ObjectDisposedException) { }
         catch (Exception error) { Publish("\nSSH: " + error.Message + "\n"); }
+        finally { _readerEnded=true; _operationLock.Dispose(); }
     }
     private void Publish(string value)
     {
@@ -67,9 +74,10 @@ internal sealed class TerminalSession : ITerminalSession
     {
         if (_disposed) return;
         _disposed=true; _closed.Cancel();
-        try { _stream.Dispose(); _client.Disconnect(); _client.Dispose(); } catch { }
+        try { _stream.Dispose(); } catch { }
+        try { _disconnect(); } catch { }
         try { await _reader.WaitAsync(TimeSpan.FromSeconds(2)); } catch { }
-        _write.Dispose(); _closed.Dispose();
+        _write.Dispose(); _closed.Dispose(); _operationLock.Dispose();
     }
 }
 
@@ -78,6 +86,11 @@ public sealed partial class WindowsModemService
     private partial async Task<ITerminalSession> OpenTerminalCoreAsync(CancellationToken ct)
     {
         RequireSsh();
+        var operationLock=new FileStream(Path.Combine(_storage,"operation.lock"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None);
+        try
+        {
+        foreach (var name in new[] { "setup-pending.json", "adb-access-pending.json", "imei-pending.json", "pending.json", "system-restore-pending.json" })
+            if (File.Exists(Path.Combine(_storage,name))) throw new InvalidOperationException("Сначала завершите незавершённую операцию модема; терминал пока недоступен.");
         var identity=await _imei!.IdentityAsync(ct);
         var (client,stream)=await _ssh!.OpenShellAsync(ct);
         try
@@ -101,8 +114,10 @@ public sealed partial class WindowsModemService
             }
             await stream.WriteAsync(Encoding.ASCII.GetBytes("unset ENV; HISTFILE=/dev/null; opkg() { /data/zte-imei-apps/opkg-private/opkg \"$@\"; }; stty echo\r"),ct);
             var current=received.ToString();var offset=current.IndexOf(marker,StringComparison.Ordinal)+marker.Length;
-            return new TerminalSession(client,stream,current[offset..]);
+            return new TerminalSession(client,stream,current[offset..],operationLock);
         }
         catch { stream.Dispose();client.Dispose();throw; }
+        }
+        catch { operationLock.Dispose(); throw; }
     }
 }

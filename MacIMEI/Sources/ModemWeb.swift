@@ -146,6 +146,21 @@ final class ModemWebClient {
         session = id; authenticated = true
     }
     func identity(skipFirmwareCheck: Bool = false) throws -> WebIdentity { try WebIdentity(call("zwrt_web", "device_info"), skipFirmwareCheck: skipFirmwareCheck) }
+    func advertisesDirectADB() throws -> Bool {
+        let payload: [[String: Any]] = [["jsonrpc": "2.0", "id": 1, "method": "list", "params": ["zwrt_bsp.usb"]]]
+        let reply = try transport.request(path: "/ubus/", data: JSONSerialization.data(withJSONObject: payload), contentType: "application/json", cookie: cookie)
+        guard let array = (try? JSONSerialization.jsonObject(with: reply.data)) as? [[String: Any]], array.count == 1,
+              let objects = array[0]["result"] as? [String: Any] else { throw ModemWebError.malformedResponse("не получен список возможностей USB") }
+        guard let object = objects["zwrt_bsp.usb"] as? [String: Any], let set = object["set"] as? [String: Any] else { return false }
+        return set["mode"] as? String == "String" || set["mode"] as? String == "string"
+    }
+    func enableDirectADB() throws {
+        let response = try call("zwrt_bsp.usb", "set", ["mode": "debug"])
+        if let value = response["result"] ?? response["status"] {
+            guard let code = statusCode(value) else { throw ModemWebError.malformedResponse("неверный статус включения USB debug") }
+            guard code == 0 else { throw ModemWebError.rpcRejected(method: "zwrt_bsp.usb.set", code: code) }
+        }
+    }
     func freshBackup() throws -> Data {
         _ = try call("zwrt_mc.device.manager", "device_backup_proc", ["procType": "web"])
         Thread.sleep(forTimeInterval: 2)
@@ -160,5 +175,6 @@ final class ModemWebClient {
         let reply = try transport.request(path: "/cgi-bin/cgi-upload", data: body, contentType: "multipart/form-data; boundary=" + boundary, cookie: cookie)
         guard let object = try JSONSerialization.jsonObject(with: reply.data) as? [String: Any], object["sha256sum"] as? String == digest(data) else { throw IMEIError.message("SHA256 загруженного бэкапа не совпал. Восстановление не запущено.") }
     }
+    func rebootForADB() throws { _ = try call("zwrt_mc.device.manager", "device_reboot", ["moduleName": "web"]) }
     func restore() throws { _ = try call("zwrt_mc.device.manager", "device_restore_proc", ["procType": "web"]) }
 }

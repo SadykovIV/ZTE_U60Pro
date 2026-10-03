@@ -148,7 +148,7 @@ final class SystemBackups {
         try require(engine.lockFD >= 0, "Полная копия требует блокировки операции")
         try engine.connection.validate()
         try DeviceBackups.directory(engine.root)
-        for name in ["pending.json", "setup-pending.json"] {
+        for name in ["pending.json", "setup-pending.json", "adb-access-pending.json"] {
             try require(!engine.fm.fileExists(atPath: engine.root.appendingPathComponent(name).path), "Сначала завершите незавершённую операцию модема")
         }
         // A recovery runtime may expose a different SSH address. Keep the same

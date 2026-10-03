@@ -175,7 +175,7 @@ final class ScreenLocalization {
 
     func perform(_ action: ScreenLocalizationAction) throws -> ScreenLocalizationStatus {
         try engine.connection.validate()
-        for name in ["pending.json", "setup-pending.json"] {
+        for name in ["pending.json", "setup-pending.json", "adb-access-pending.json"] {
             try require(!FileManager.default.fileExists(atPath: engine.root.appendingPathComponent(name).path), "Сначала завершите настройку или смену IMEI")
         }
         let bundle = try assets()

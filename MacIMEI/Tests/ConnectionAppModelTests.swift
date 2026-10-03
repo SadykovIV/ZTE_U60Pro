@@ -59,14 +59,14 @@ private func snapshot() -> ConnectionOverviewSnapshot {
             try check(m.canManage && m.canReadModem && m.canCollectDiagnostics, "SSH controls remain disabled")
             try check(m.connectedIdentity == identity && m.connectedIMEI == imei && m.currentIMEI1 == imei, "Connected identity not retained")
         }
-        try test("ADB acceptance exposes diagnostics and blocks every tested mutation") {
+        try test("ADB availability exposes diagnostics without becoming a working connection") {
             let m = try model(); m.connectionMode = .adb; m.acceptChannelSelection(selection(.adb, requested: .adb))
-            try check(m.connected && !m.accessReady && m.connectionLabel.contains("ADB") && m.canCollectDiagnostics, "ADB connection not visible")
+            try check(!m.connected && !m.accessReady && m.activeChannel == nil && m.canCollectDiagnostics, "ADB connection not visible")
             try check(!m.canManage && !m.canReadModem && !m.canUseSystemBackupConnection && !m.canApplyTTL, "ADB gained SSH capabilities")
             m.installDisplay(); m.applyDisplayLayout(); m.installVPN(); m.installAgent(custom: false); m.restoreAgent()
             m.enableScreenLocalization(); m.applyTTLSettings(); m.createDeviceBackup(); m.createSystemBackup()
             try check(m.operationTask == nil && !m.busy, "ADB mutation scheduled background work")
-            try check(m.connectionCapabilityText.contains("ограниченный") && m.connectionCapabilityText.contains("SSH"), "ADB restriction not explained")
+            try check(m.connectionCapabilityText.contains("диагностики") && m.connectionCapabilityText.contains("SSH"), "ADB restriction not explained")
         }
         try test("Web and agent discovery do not masquerade as active modem connection") {
             for mode in [ConnectionMode.web, .agent] {
@@ -108,7 +108,7 @@ private func snapshot() -> ConnectionOverviewSnapshot {
                 try check(m.canPrepareModem && m.preparationUnavailableReason == nil, "Known HTTP failure hides interrupted setup recovery")
             }
         }
-        try test("Existing SSH disables preparation unless firmware override is explicit") {
+        try test("Existing SSH disables new preparation even with firmware override") {
             let m = try model()
             m.connectionsChecked = true
             m.channelStatuses = [ConnectionChannelStatus(mode: .ssh, state: .available, message: "verified SSH"),
@@ -117,7 +117,7 @@ private func snapshot() -> ConnectionOverviewSnapshot {
             m.preparePreferredSSH()
             try check(m.operationTask == nil && !m.busy, "Disabled preparation still started")
             m.setFirmwareCheckSkipped(true)
-            try check(m.canPrepareModem && m.connectionsChecked && m.channelStatuses.count == 2, "Explicit override lost discovery or did not permit repeated preparation")
+            try check(!m.canPrepareModem && m.canEnableDiagnosticADB && m.connectionsChecked && m.channelStatuses.count == 2, "Override bypassed prepared SSH or disabled diagnostic ADB")
             m.busy = true; try check(!m.canPrepareModem, "Override bypassed busy guard"); m.busy = false
             m.pendingOperation = true; try check(!m.canPrepareModem, "Override bypassed IMEI recovery"); m.pendingOperation = false
             m.systemRestorePending = true; try check(!m.canPrepareModem, "Override bypassed restore recovery"); m.systemRestorePending = false
@@ -131,6 +131,18 @@ private func snapshot() -> ConnectionOverviewSnapshot {
             m.setupPending = true
             try check(m.canPrepareModem, "Verified SSH prevented completing interrupted preparation")
         }
+        try test("Diagnostic ADB is independent of agent password and SSH readiness but respects operation guards") {
+            let m = try model(); m.webPassword = "fixture-web"; m.agentPassword = ""
+            m.acceptChannelSelection(selection(.ssh)); m.channelStatuses.append(ConnectionChannelStatus(mode: .web, state: .notChecked, message: "password changed"))
+            try check(m.canEnableDiagnosticADB && !m.canPrepareModem, "Diagnostic button requires unavailable SSH or agent credentials")
+            m.terminalActive = true; try check(!m.canEnableDiagnosticADB, "Open terminal did not block automatic USB change"); m.terminalActive = false
+            m.busy = true; try check(!m.canEnableDiagnosticADB, "Busy guard bypassed"); m.busy = false
+            m.setupPending = true; try check(!m.canEnableDiagnosticADB, "Setup pending bypassed"); m.setupPending = false
+            m.pendingOperation = true; try check(!m.canEnableDiagnosticADB, "IMEI pending bypassed"); m.pendingOperation = false
+            m.systemRestorePending = true; try check(!m.canEnableDiagnosticADB, "System restore pending bypassed"); m.systemRestorePending = false
+            m.webPassword = ""; m.channelStatuses = []; m.diagnosticADBPending = true
+            try check(m.canEnableDiagnosticADB && !m.canPrepareModem, "Diagnostic resume requires Web password or permits competing setup")
+        }
         try test("Editing one password invalidates only its HTTP check and preserves connected sections") {
             let m = try model(); let chosen = selection(.ssh)
             m.acceptChannelSelection(chosen); m.acceptConnectionOverview(snapshot())
@@ -142,7 +154,7 @@ private func snapshot() -> ConnectionOverviewSnapshot {
             try check(m.channelStatuses.first(where: { $0.mode == .web })?.state == .notChecked, "Web password edit retained obsolete rejection")
             try check(m.channelStatuses.first(where: { $0.mode == .web })?.message.contains("Пароль изменён") == true, "Web password edit missing recheck hint")
             try check(m.channelStatuses.first(where: { $0.mode == .agent })?.state == .available, "Web password edit invalidated agent")
-            try check(!m.canPrepareModem && m.preparationUnavailableReason?.contains("не проверен") == true, "New unchecked password enabled preparation")
+            try check(!m.canPrepareModem && m.preparationUnavailableReason?.contains("SSH уже доступен") == true, "New unchecked password enabled preparation")
             m.agentPassword = "corrected-agent-secret"
             try check(m.channelStatuses.first(where: { $0.mode == .agent })?.state == .notChecked, "Agent password edit retained obsolete success")
             try check(m.connected && m.canManage && m.channelSession === chosen.session && m.activeChannel == .ssh, "Password edit disconnected verified SSH")
@@ -269,7 +281,9 @@ private func snapshot() -> ConnectionOverviewSnapshot {
                 return CommandResult(status: 1, stdout: Data(), stderr: Data("fixture information unavailable".utf8))
             })
             let session = ReadOnlyChannelSession(mode: .adb, summary: summary, diagnosticSession: shell, readSummary: { summary })
-            m.acceptChannelSelection(ChannelSelection(requestedMode: .automatic, actualMode: .adb, statuses: [], session: session, reason: "fixture"))
+            // Exercise the internal scoped reader with an injected diagnostic session.
+            // Normal connection acceptance of ADB is rejected in its own test.
+            m.channelSession = session; m.activeChannel = .adb; m.connected = true
             // Sentinels prove that the actual button callback does not apply an
             // entire overview. The mocked ADB shell is the only usable transport.
             m.acceptConnectionOverview(snapshot()); m.ttlOutboundValue = "117"
@@ -282,7 +296,7 @@ private func snapshot() -> ConnectionOverviewSnapshot {
             try check(!m.busy && m.operationTask == nil && m.connected && m.channelSession === session, "Scoped refresh lost connection or operation lifecycle")
             try check(m.modemInformation == nil && m.sectionRefreshErrors[.information]?.contains("fixture information unavailable") == true, "Information callback did not use the pinned mocked shell")
             try check(m.displayInspection != nil && m.vpnInspection != nil && m.applicationInventory != nil && m.accessState != nil && m.ttlOutboundValue == "117", "Information button still refreshed every block")
-            count += 1; print("PASS Actual information refresh callback is scoped, fixed to ADB, busy-guarded and isolated from real transports")
+            count += 1; print("PASS Actual information refresh callback is scoped, fixed to an injected diagnostic session, busy-guarded and isolated from real transports")
         }
         try test("Partial overview errors retain connection, good sections and user's launcher draft") {
             let m = try model(); m.acceptChannelSelection(selection(.ssh)); m.moveDisplayMetric(.uptime, before: .cpu)
@@ -304,7 +318,7 @@ private func snapshot() -> ConnectionOverviewSnapshot {
             let m = try model(); m.acceptChannelSelection(selection(.ssh)); m.acceptConnectionOverview(snapshot())
             m.moveDisplayMetric(.uptime, before: .cpu); m.packagePreview = "stale preview"; m.packagePreviewName = "package"
             m.currentIMEI2 = "123456789012347"; m.sshRecoveryPending = true; m.sshRecoveryKind = .delete
-            m.systemRestoreConfirmation = "stale confirmation"; m.preparationError = "old error"; m.connectionsChecked = true
+            m.systemRestoreConfirmation = "stale confirmation"; m.preparationError = "old error"; m.diagnosticADBMessage = "old modem ADB ready"; m.connectionsChecked = true
             m.invalidateChannelConnection()
             try check(!m.connected && !m.accessReady && m.channelSession == nil && m.channelSummary == nil && m.activeChannel == nil, "Transport retained after invalidation")
             try check(m.connectedIdentity == nil && m.connectedIMEI == nil && m.connectedWebIdentity == nil && m.currentIMEI1.isEmpty && m.currentIMEI2.isEmpty && m.firmware.isEmpty, "Old identity retained")
@@ -312,7 +326,7 @@ private func snapshot() -> ConnectionOverviewSnapshot {
             try check(m.displaySavedLayout == nil && m.displayLayout == .defaultLayout && !m.displayDraftEdited && m.displayError.isEmpty && m.vpnError.isEmpty, "Old launcher editor retained")
             try check(m.sshAccounts.isEmpty && !m.sshAccountsLoaded && !m.sshListenerReady && !m.sshRecoveryPending && m.sshRecoveryKind == .none, "Old SSH controls retained")
             try check(!m.ttlOutboundEnabled && m.ttlOutboundValue == "64" && !m.ttlInboundIncrementEnabled && m.ttlInboundIncrementValue == "1", "Old TTL form retained")
-            try check(m.packagePreview.isEmpty && m.packagePreviewName.isEmpty && m.systemRestoreConfirmation.isEmpty && m.preparationError.isEmpty && !m.connectionsChecked && m.channelStatuses.isEmpty && m.sectionsUpdatedAt == nil && m.sectionRefreshErrors.isEmpty, "Stale metadata retained")
+            try check(m.packagePreview.isEmpty && m.packagePreviewName.isEmpty && m.systemRestoreConfirmation.isEmpty && m.preparationError.isEmpty && m.diagnosticADBMessage.isEmpty && !m.connectionsChecked && m.channelStatuses.isEmpty && m.sectionsUpdatedAt == nil && m.sectionRefreshErrors.isEmpty, "Stale metadata retained")
         }
         try test("Connection loss clears device data while preserving local launcher draft") {
             let m = try model(); m.acceptChannelSelection(selection(.ssh)); m.acceptConnectionOverview(snapshot())

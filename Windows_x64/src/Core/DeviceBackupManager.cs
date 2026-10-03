@@ -35,7 +35,7 @@ public sealed class DeviceBackupManager(SshTransport shell, DeviceFeatureService
 
     public async Task<string> CreateAsync(CancellationToken ct = default)
     {
-        foreach (var pending in new[] { "imei-pending.json", "setup-pending.json" })
+        foreach (var pending in new[] { "imei-pending.json", "setup-pending.json", "adb-access-pending.json" })
             if (File.Exists(Path.Combine(storageRoot,pending)))
                 throw new InvalidOperationException("Сначала завершите незавершённую операцию с модемом.");
         Directory.CreateDirectory(Root);

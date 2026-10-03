@@ -15,7 +15,7 @@ import Foundation
         return "Нет подключения"
     }
     var connectionCapabilityText: String {
-        guard connected else { return "Подключение: SSH, затем USB ADB. Если оба недоступны, сначала выполните подготовку модема." }
+        guard connected else { return "Рабочее подключение — SSH. Если оно недоступно, выполните предварительную подготовку. USB ADB используется для диагностики." }
         return activeChannel == .ssh
             ? "SSH: сведения, диагностика и управление. Совместимость каждой операции проверяется отдельно."
             : "ADB по USB: ограниченный доступ — сведения и диагностика. Для установки плиток и управления выполните подготовку SSH."
@@ -27,12 +27,15 @@ import Foundation
         (connected && activeChannel == .ssh && accessReady) || channelStatuses.contains { $0.mode == .ssh && $0.state == .available }
     }
     var canPrepareModem: Bool {
-        !busy && !terminalActive && !pendingOperation && !systemRestorePending && (isStockWebAvailable || setupPending)
-            && (setupPending || !hasSSHForPreparation || skipFirmwareCheck)
+        !busy && !terminalActive && !pendingOperation && !systemRestorePending && !diagnosticADBPending && (isStockWebAvailable || setupPending)
+            && (setupPending || !hasSSHForPreparation)
+    }
+    var canEnableDiagnosticADB: Bool {
+        !busy && !terminalActive && !pendingOperation && !systemRestorePending && !setupPending && (isStockWebAvailable || diagnosticADBPending || (!host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !webPassword.isEmpty))
     }
     var preparationUnavailableReason: String? {
-        if hasSSHForPreparation && !skipFirmwareCheck && !setupPending && isStockWebAvailable {
-            return "SSH уже доступен: предварительная подготовка не требуется. Для повторного запуска включите «Не проверять прошивку»."
+        if hasSSHForPreparation && !setupPending {
+            return "SSH уже доступен: предварительная подготовка не требуется. ADB можно включить отдельно для диагностики."
         }
         guard connectionsChecked, !isStockWebAvailable, !setupPending else { return nil }
         switch channelStatuses.first(where: { $0.mode == .web })?.state {
@@ -97,7 +100,7 @@ import Foundation
     func invalidateChannelConnection(clearIdentity: Bool = true) {
         guard !busy else { return }
         markConnectionUnavailable("")
-        channelStatuses = []; connectionsChecked = false; preparationError = ""
+        channelStatuses = []; connectionsChecked = false; preparationError = ""; diagnosticADBMessage = ""
         clearDisplayLayout()
         diagnosticReport = nil; diagnosticText = ""; selectedDiagnostic = "system.log"
         if clearIdentity { connectedIdentity = nil; connectedWebIdentity = nil; connectedIMEI = nil }
@@ -132,7 +135,7 @@ import Foundation
         mergeChannelStatuses(result.statuses)
         connectionReason = result.reason
         guard let session = result.session, let mode = result.actualMode,
-              ConnectionMode.connectionPriority.contains(mode), session.mode == mode, session.diagnosticSession != nil else {
+              mode == .ssh, session.mode == mode, session.diagnosticSession != nil else {
             markConnectionUnavailable(result.reason)
             return
         }
@@ -244,7 +247,7 @@ import Foundation
 
     func connectPreferredChannel() {
         guard !busy else { return }
-        let config = connection, root = storage, assets = resources, mode = connectionMode
+        let config = connection, root = storage, assets = resources, mode = ConnectionMode.ssh
         let expected = connectedIdentity ?? modemInformation?.identity
         let expectedWeb = connectedWebIdentity ?? channelSummary?.webIdentity
         let expectedIMEI = connectedIMEI ?? channelSummary?.primaryIMEI
@@ -252,7 +255,7 @@ import Foundation
         catch { append("Не удалось сохранить подключение: " + error.localizedDescription); return }
         markConnectionUnavailable(""); preparationError = ""
         busy = true; progress = 0
-        append("Подключаюсь к модему по SSH или USB ADB…")
+        append("Подключаюсь к модему по SSH…")
         operationTask = Task { [weak self] in
             guard let self else { return }
             do {
@@ -369,11 +372,59 @@ import Foundation
             }
         }
     }
+    func enableDiagnosticADB() {
+        guard canEnableDiagnosticADB else { return }
+        let config = connection, root = storage, assets = resources
+        let expected = connectedIdentity ?? modemInformation?.identity
+        let expectedWeb = connectedWebIdentity ?? channelSummary?.webIdentity
+        let expectedIMEI = connectedIMEI ?? channelSummary?.primaryIMEI
+        let suffix = backupSuffix
+        let webSecret = webPassword, reconnectSSH = connected && activeChannel == .ssh
+        diagnosticADBMessage = ""
+        markConnectionUnavailable("")
+        busy = true; progress = 0
+        append("Включаю USB ADB для диагностики. Подготовка агента и SSH не запускается…")
+        operationTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let result = try await Task.detached(priority: .userInitiated) { [weak self] in
+                    let engine = try OnboardingEngine(root: root, resources: assets, connection: config, backupSuffix: suffix, update: { [weak self] message, value in
+                        Task { @MainActor [weak self] in self?.append(message, progress: value) }
+                    })
+                    return try engine.enableDiagnosticADB(webPassword: webSecret, expectedIdentity: expected, expectedIMEI: expectedIMEI)
+                }.value
+                connectedIdentity = result.identity; connectedWebIdentity = result.webIdentity; connectedIMEI = result.webIdentity.imei
+                diagnosticADBMessage = "ADB готов для диагностики. Агент и параметры SSH не изменялись."
+                mergeChannelStatuses([ConnectionChannelStatus(mode: .adb, state: .available, message: diagnosticADBMessage)])
+                append(diagnosticADBMessage, progress: 1)
+            } catch {
+                diagnosticADBMessage = error.localizedDescription
+                mergeChannelStatuses([ConnectionChannelStatus(mode: .adb, state: .unavailable, message: diagnosticADBMessage)])
+                append("Диагностика ADB: " + diagnosticADBMessage)
+            }
+            // A restore may reboot the modem. Never reuse the pre-operation
+            // green connection state; establish a new pinned SSH proof instead.
+            if reconnectSSH {
+                do {
+                    let result = try await Task.detached(priority: .userInitiated) {
+                        let engine = try ModemEngine(root: root, resources: assets, connection: config)
+                        return try engine.locked {
+                            try ConnectionRouter(engine: engine, expectedIdentity: expected, expectedWebIdentity: expectedWeb, expectedIMEI: expectedIMEI).connect(mode: .ssh)
+                        }
+                    }.value
+                    acceptChannelSelection(result)
+                    if let session = channelSession { try await loadConnectedSections(session, config: config) }
+                } catch { markConnectionUnavailable(error.localizedDescription); append("Проверка SSH после ADB: " + error.localizedDescription) }
+            }
+            busy = false; refreshBackups(); refreshActivity(); operationTask = nil
+            startConnectionMonitor()
+        }
+    }
     func preparePreferredSSH() {
         guard canPrepareModem else { return }
         preparationError = ""
-        guard !webPassword.isEmpty, !agentPassword.isEmpty, !backupSuffix.isEmpty else {
-            preparationError = "Введите пароли штатного Web и агента, а также ключ расшифровки бэкапа."
+        guard !webPassword.isEmpty, !agentPassword.isEmpty else {
+            preparationError = "Введите пароли штатного Web и агента в настройках подключения."
             append(preparationError); return
         }
         let config = connection, root = storage, assets = resources

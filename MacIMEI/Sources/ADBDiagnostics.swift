@@ -18,7 +18,7 @@ struct DiagnosticDeviceExpectation {
         if let identity { result.cids.insert(identity.cid) }
         if let web { result.imeis.insert(web.imei) }
         if let imei { result.imeis.insert(imei) }
-        for name in ["setup-pending.json", "pending.json"] {
+        for name in ["setup-pending.json", "adb-access-pending.json", "pending.json"] {
             guard exists(root.appendingPathComponent(name)) else { continue }
             let (data, truncated) = try DiagnosticArchive.readRegular(root: root, relative: name, limit: 1_048_576)
             try require(!truncated, "Сохранённая идентификация устройства слишком велика")
@@ -95,17 +95,7 @@ enum DiagnosticTransportSelector {
         return lower.contains("host key verification failed") || lower.contains("remote host identification has changed") || lower.contains("offending") && lower.contains("key")
     }
     static func usbSerials(_ data: Data) throws -> [String] {
-        try require(data.count <= 65536, "Слишком большой список ADB")
-        var serials = [String]()
-        for line in String(decoding: data, as: UTF8.self).split(separator: "\n") {
-            let fields = line.split(whereSeparator: \.isWhitespace)
-            guard fields.count >= 2 && fields[1] == "device" && fields.contains(where: { $0.hasPrefix("usb:") }) else { continue }
-            let serial = String(fields[0])
-            try require(!serial.isEmpty && serial.count <= 256 && serial.utf8.allSatisfy { (33...126).contains($0) }, "Некорректный серийный номер USB ADB")
-            serials.append(serial)
-        }
-        try require(Set(serials).count == serials.count, "ADB сообщает повторяющиеся серийные номера; однозначный выбор невозможен")
-        return serials
+        try ADBDiscovery.parse(data).readyUSBSerials
     }
     static func bundledADB(_ engine: ModemEngine) throws -> ADBClient {
         let directory = engine.resources.appendingPathComponent("Onboarding")
@@ -148,8 +138,8 @@ enum DiagnosticTransportSelector {
             sshFailure = "SSH недоступен (код \(first.status)): " + ActivityJournal.sanitize(detail)
         }
         let adb = try supplied ?? bundledADB(engine)
-        let serials = try usbSerials(adb.command(["devices", "-l"]))
-        try require(!serials.isEmpty, "SSH недоступен; нет уже подключённого и разрешённого USB ADB. ADB автоматически не включается. " + String(sshFailure.prefix(600)))
+        let discovery = try adb.discovery(), serials = discovery.readyUSBSerials
+        try require(!serials.isEmpty, "SSH недоступен. " + discovery.explanation + " ADB автоматически не включается. " + String(sshFailure.prefix(600)))
         try require(serials.count == 1 || !expected.cids.isEmpty || !expected.imeis.isEmpty, "Подключено несколько USB ADB устройств, а ожидаемый модем неизвестен; выбор первого запрещён")
         var matches: [(String, DiagnosticDeviceProof)] = []
         for serial in serials {
@@ -163,7 +153,7 @@ enum DiagnosticTransportSelector {
         try require(matches.count == 1, matches.isEmpty ? "USB ADB не подтвердил ожидаемый модем и его идентификацию" : "Несколько USB ADB устройств совпали с ожидаемым модемом; выбор неоднозначен")
         let (serial, proof) = matches[0]
         let read: () throws -> DiagnosticDeviceProof = {
-            let serials = try usbSerials(adb.command(["devices", "-l"]))
+            let serials = try adb.discovery().readyUSBSerials
             try require(serials.contains(serial), "Выбранное USB ADB устройство отключено")
             let result = try adb.shellResult(serial, command, timeout: 20)
             try require(result.status == 0, "Не удалось повторно прочитать идентификацию USB ADB")

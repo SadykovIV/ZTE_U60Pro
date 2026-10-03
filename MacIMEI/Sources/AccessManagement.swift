@@ -37,7 +37,7 @@ final class AccessManager: @unchecked Sendable {
         return data
     }
     private func checkPending() throws {
-        for name in ["pending.json", "setup-pending.json"] {
+        for name in ["pending.json", "setup-pending.json", "adb-access-pending.json"] {
             try require(!FileManager.default.fileExists(atPath: engine.root.appendingPathComponent(name).path), "Сначала завершите текущую операцию с модемом")
         }
     }

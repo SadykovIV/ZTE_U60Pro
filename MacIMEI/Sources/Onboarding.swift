@@ -15,6 +15,16 @@ struct SetupJournal: Codable {
     var installerProfile: String?
     var firmwareHash: String?
     var routerHash: String?
+    var directADBRequested: Bool?
+    var directADBOutcome: String?
+    var intent: String?
+    var diagnosticRebootRequested: Bool?
+}
+struct ADBAccessResult: Codable, Sendable {
+    var identity: Identity
+    var webIdentity: WebIdentity
+    var serial: String
+    var routerHash: String
 }
 struct SetupResult: Sendable {
     var connection: Connection
@@ -53,20 +63,12 @@ final class ADBClient {
     init(binary: URL, runner: HostCommandRunner) { self.binary = binary; self.runner = runner }
     func command(_ args: [String], timeout: TimeInterval = 30) throws -> Data {
         let result = try runner.run(binary, args, timeout: timeout)
-        try require(result.status == 0, "ADB не выполнил команду. Проверьте USB-кабель и подключение модема.")
+        guard result.status == 0 else { throw CommandFailure(message: "ADB не выполнил команду (локальный код \(result.status)). " + Self.errorExcerpt(result.stderr + result.stdout), partial: result) }
         return result.stdout
     }
     func devices(usbOnly: Bool = false) throws -> [String] {
-        let output = String(decoding: try command(["devices", "-l"]), as: UTF8.self)
-        return output.split(separator: "\n").compactMap { line in
-            let fields = line.split(whereSeparator: \.isWhitespace)
-            guard fields.count >= 2 && fields[1] == "device" else { return nil }
-            if usbOnly {
-                let descriptors = fields.filter { $0.hasPrefix("usb:") }
-                guard descriptors.count == 1, String(descriptors[0]).range(of: #"^usb:[A-Za-z0-9._-]{1,128}$"#, options: .regularExpression) != nil else { return nil }
-            }
-            let serial = String(fields[0]); guard serial.utf8.allSatisfy({ (33...126).contains($0) }) else { return nil }; return serial
-        }
+        if usbOnly { return try discovery().readyUSBSerials }
+        return try ADBDiscovery.parse(command(["devices", "-l"])).records.filter { $0.state == "device" }.map(\.serial)
     }
     func shell(_ serial: String, _ text: String, timeout: TimeInterval = 40) throws -> String {
         let result = try shellResult(serial, text, timeout: timeout)
@@ -110,6 +112,9 @@ final class ADBClient {
         return try Self.decodeShellResult(runner.run(binary, ["-s", serial, "shell", commandText], timeout: timeout), marker: marker, command: text)
     }
     func identity(_ serial: String, expected: WebIdentity, skipFirmwareCheck: Bool = false) throws -> Identity {
+        try identityDetails(serial, expected: expected, skipFirmwareCheck: skipFirmwareCheck).identity
+    }
+    func identityDetails(_ serial: String, expected: WebIdentity, skipFirmwareCheck: Bool = false) throws -> (identity: Identity, routerHash: String) {
         let output = try shell(serial, "set -e; test \"$(id -u)\" = 0; test \"$(uname -m)\" = aarch64; sha256sum /firmware/image/modem.b16 /usr/bin/diag-router; cat /sys/block/mmcblk0/device/cid; ubus call zwrt_web device_info '{}'")
         let lines = output.split(separator: "\n").map(String.init)
         try require(lines.count >= 4, "Неполные сведения ADB-устройства")
@@ -121,7 +126,7 @@ final class ADBClient {
         let data = Data(lines.dropFirst(3).joined(separator: "\n").utf8)
         guard let info = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw IMEIError.message("Неверный ответ идентификации ADB") }
         try require(try WebIdentity(info, skipFirmwareCheck: skipFirmwareCheck) == expected, "USB-модем и устройство веб-интерфейса различаются")
-        return Identity(cid: cid, firmwareHash: firmware)
+        return (Identity(cid: cid, firmwareHash: firmware), router)
     }
     func push(_ serial: String, source: URL, destination: String) throws {
         _ = try command(["-s", serial, "push", source.path, destination], timeout: 90)
@@ -139,6 +144,12 @@ final class OnboardingEngine: @unchecked Sendable {
         throw IMEIError.message("Установщик поддерживает B31 и отдельный экспериментальный профиль B02 с проверкой точных хэшей. Эта прошивка не разрешена для установки.")
     }
     static func isB31(_ identity: WebIdentity) -> Bool { identity.firmware == "CN_ZTE_MU5250V1.0.0B31" && identity.inner == "BD_CNMU5250V1.0.0B31" }
+    static func hasHistoricalDirectADB(_ identity: WebIdentity) -> Bool {
+        let prefix = "CN_ZTE_MU5250V1.0.0B", innerPrefix = "BD_CNMU5250V1.0.0B"
+        guard identity.firmware.hasPrefix(prefix), identity.inner.hasPrefix(innerPrefix) else { return false }
+        let version = String(identity.firmware.dropFirst(prefix.count))
+        return version.count == 2 && version.allSatisfy(\.isNumber) && identity.inner == innerPrefix + version && (1...27).contains(Int(version) ?? 0)
+    }
     let backupSuffix: String
     let root: URL, resources: URL, host: String
     let currentConnection: Connection
@@ -146,12 +157,16 @@ final class OnboardingEngine: @unchecked Sendable {
     let runner: HostCommandRunner
     let sshFactory: ((Connection) -> RemoteTransport)?
     let update: @Sendable (String, Double) -> Void
+    let adbWaitAttempts: Int, directADBWaitAttempts: Int, adbPollDelay: TimeInterval
+    private var lastADBFailure = ""
     let fm = FileManager.default
     var assets: URL { resources.appendingPathComponent("Onboarding") }
     var pending: URL { root.appendingPathComponent("setup-pending.json") }
-    init(root: URL, resources: URL, connection: Connection, backupSuffix: String = "", web: ModemWebClient? = nil, runner: HostCommandRunner = HostProcessRunner(), sshFactory: ((Connection) -> RemoteTransport)? = nil, update: @escaping @Sendable (String,Double)->Void = {_,_ in}) throws {
+    var diagnosticPending: URL { root.appendingPathComponent("adb-access-pending.json") }
+    init(root: URL, resources: URL, connection: Connection, backupSuffix: String = "", web: ModemWebClient? = nil, runner: HostCommandRunner = HostProcessRunner(), sshFactory: ((Connection) -> RemoteTransport)? = nil, adbWaitAttempts: Int = 80, directADBWaitAttempts: Int = 30, adbPollDelay: TimeInterval = 3, update: @escaping @Sendable (String,Double)->Void = {_,_ in}) throws {
         self.backupSuffix = backupSuffix
         self.root = root; self.resources = resources; self.host = connection.host; self.currentConnection = connection
+        self.adbWaitAttempts = max(1, adbWaitAttempts); self.directADBWaitAttempts = max(1, directADBWaitAttempts); self.adbPollDelay = max(0, adbPollDelay)
         let journal = try ActivityJournal(root: root), operationID = "setup-" + UUID().uuidString.lowercased()
         self.web = try web ?? ModemWebClient(host: connection.host, transport: AuditedWebTransport(base: HTTPWebTransport(host: connection.host), journal: journal, operationID: operationID, endpoint: connection.host))
         self.runner = AuditedHostRunner(base: runner, journal: journal, operationID: operationID)
@@ -181,6 +196,7 @@ final class OnboardingEngine: @unchecked Sendable {
     /// helper, or interpreting SSH reachability as agent/NV readiness.
     func prepareSSH(expectedIdentity: Identity? = nil, expectedIMEI: String? = nil) throws -> SetupResult? {
         try locked {
+            try require(!fm.fileExists(atPath: diagnosticPending.path), "Сначала завершите включение ADB для диагностики")
             try require(!fm.fileExists(atPath: pending.path), "Сначала продолжите незавершённую настройку с паролями веб-интерфейса и агента. Журнал установки сохранён.")
             update("Проверяю существующий SSH-доступ…", 0.1)
             let expected = try DiagnosticDeviceExpectation.load(root: root, identity: expectedIdentity, web: nil, imei: expectedIMEI)
@@ -292,44 +308,222 @@ final class OnboardingEngine: @unchecked Sendable {
         try savePrivate(r.stdout, pub); try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: key.path)
         return key
     }
-    func waitADB(_ adb: ADBClient, expected: WebIdentity) throws -> (String, Identity) {
-        let deadline = Date().addingTimeInterval(240); var announcement = Date.distantPast
-        while Date() < deadline {
-            if Date().timeIntervalSince(announcement) > 15 { update("Ожидаю ADB. Подключите модем к Mac USB-кабелем с передачей данных…", 0.48); announcement = Date() }
-            let serials = (try? adb.devices(usbOnly: !Self.isB31(expected))) ?? []
-            var matches: [(String,Identity)] = []
-            for serial in serials { if let identity = try? adb.identity(serial, expected: expected, skipFirmwareCheck: currentConnection.skipFirmwareCheck) { matches.append((serial,identity)) } }
-            try require(matches.count <= 1, "Найдено несколько одинаковых модемов. Оставьте подключённым только нужный")
-            if let match = matches.first { return match }
-            Thread.sleep(forTimeInterval: 3)
+    private func findADB(_ adb: ADBClient, expected: WebIdentity, tolerateInventoryFailure: Bool = false, enforceInstallerPolicy: Bool = true) throws -> (String, Identity)? {
+        let discovery: ADBDiscovery
+        do { discovery = try adb.discovery() }
+        catch {
+            lastADBFailure = ActivityJournal.sanitize(error.localizedDescription)
+            if !tolerateInventoryFailure { throw IMEIError.message("Не удалось проверить USB ADB на компьютере. " + lastADBFailure + " Включение ADB и восстановление не запускались.") }
+            return nil
         }
-        throw IMEIError.message("ADB модема не появился. Подключите USB-кабель с передачей данных и повторите настройку с паролем. Повторное восстановление бэкапа автоматически не запускается.")
+        lastADBFailure = discovery.explanation
+        var matches: [(String, Identity)] = [], failures = [String]()
+        for serial in discovery.readyUSBSerials {
+            let proof: (identity: Identity, routerHash: String)
+            do { proof = try adb.identityDetails(serial, expected: expected, skipFirmwareCheck: true) }
+            catch { failures.append(ActivityJournal.sanitize(error.localizedDescription)); continue }
+            // Usable root ADB on the correct modem must not trigger another
+            // activation attempt just because installation policy rejects it.
+            if enforceInstallerPolicy {
+                try require(proof.routerHash == ModemEngine.routerHash, "ADB уже работает и модем подтверждён, но версия diag-router не поддерживается установщиком. Повторное включение ADB и восстановление не запускались.")
+                try require(currentConnection.skipFirmwareCheck || proof.identity.firmwareHash == ModemEngine.firmwareHash, "ADB уже работает и модем подтверждён, но хэш прошивки отличается от проверенной B31. Повторное включение ADB и восстановление не запускались.")
+            }
+            matches.append((serial, proof.identity))
+        }
+        try require(matches.count <= 1, "Найдено несколько одинаковых модемов. Оставьте подключённым только нужный")
+        if matches.isEmpty && !failures.isEmpty { lastADBFailure = "USB ADB обнаружен, но проверка root и идентичности не пройдена: " + failures.prefix(3).joined(separator: "; ") }
+        return matches.first
+    }
+    private func pollADB(_ adb: ADBClient, expected: WebIdentity, attempts: Int, enforceInstallerPolicy: Bool = true) throws -> (String, Identity)? {
+        let deadline = Date().addingTimeInterval(Double(attempts) * adbPollDelay)
+        for attempt in 0..<attempts {
+            if attempt > 0 && adbPollDelay > 0 && Date() >= deadline { break }
+            if let match = try findADB(adb, expected: expected, tolerateInventoryFailure: true, enforceInstallerPolicy: enforceInstallerPolicy) { update("USB ADB подтверждён: root, ARM64 и идентичность модема проверены.", 0.5); return match }
+            if attempt % 5 == 0 { update("Ожидаю USB ADB. " + lastADBFailure, 0.48) }
+            if attempt + 1 < attempts { Thread.sleep(forTimeInterval: adbPollDelay == 0 ? 0 : max(0, min(adbPollDelay, deadline.timeIntervalSinceNow))) }
+        }
+        return nil
+    }
+    func waitADB(_ adb: ADBClient, expected: WebIdentity, enforceInstallerPolicy: Bool = true) throws -> (String, Identity) {
+        if let match = try pollADB(adb, expected: expected, attempts: adbWaitAttempts, enforceInstallerPolicy: enforceInstallerPolicy) { return match }
+        throw IMEIError.message("Работающий ADB модема не подтверждён. " + lastADBFailure + " Повторное восстановление бэкапа автоматически не запускается.")
     }
     static func agentStartup(password: String) throws -> Data {
         try require(!password.isEmpty && !password.contains("\0"), "Неверный пароль")
         return Data(("#!/bin/sh\nexport ZTE_AGENT_PASSWORD=" + shellQuote(password) + "\nunset ZTE_AGENT_PIN\ntrap '' HUP\nnohup sh -c '/data/zte-agent 2>&1 | logger -t zte-agent' >/dev/null 2>&1 </dev/null &\n").utf8)
     }
     func prepare(password: String, expectedIMEI: String? = nil) throws -> (WebIdentity, BackupPatch.Result, URL) {
-        try require(!backupSuffix.isEmpty && backupSuffix.utf8.count <= 128 && !backupSuffix.contains("\0"), "Введите ключ расшифровки бэкапа (backup-key suffix)")
+        let (identity, encrypted, directory) = try prepareRawBackup(password: password, expectedIMEI: expectedIMEI)
+        let result = try BackupPatch.prepare(encrypted: encrypted, imei: identity.imei, suffix: backupSuffix)
+        try savePatchManifest(result, directory: directory)
+        return (identity, result, directory)
+    }
+    private func savePatchManifest(_ result: BackupPatch.Result, directory: URL) throws {
+        try saveJSON(["encryptedSHA256":result.originalHash, "patchedSHA256":result.patchedHash, "suffixVerified":"true", "adbAlreadyEnabled":String(result.alreadyEnabled)], directory.appendingPathComponent("manifest.json"))
+        update("Ключ расшифровки бэкапа проверен.", 0.25)
+    }
+    private func prepareRawBackup(password: String, expectedIMEI: String?) throws -> (WebIdentity, Data, URL) {
         update("Вхожу в веб-интерфейс…", 0.05); try web.login(password: password)
         let identity = try web.identity(skipFirmwareCheck: currentConnection.skipFirmwareCheck)
         try require(expectedIMEI == nil || identity.imei == expectedIMEI, "Веб-интерфейс относится к другому модему; подготовка остановлена до резервного копирования")
+        let (encrypted, directory) = try captureRawBackup(identity: identity)
+        return (identity, encrypted, directory)
+    }
+    private func captureRawBackup(identity: WebIdentity, folder: String = "SetupBackups") throws -> (Data, URL) {
         update("Сохраняю свежий бэкап настроек…", 0.12)
         let encrypted = try web.freshBackup()
         try require(try web.identity(skipFirmwareCheck: currentConnection.skipFirmwareCheck) == identity, "Устройство изменилось во время подготовки бэкапа")
-        let id = UUID().uuidString.lowercased(), directory = root.appendingPathComponent("SetupBackups/" + id); try secureDirectory(directory)
+        let id = UUID().uuidString.lowercased(), directory = root.appendingPathComponent(folder + "/" + id); try secureDirectory(directory)
         try savePrivate(encrypted, directory.appendingPathComponent("back_parameter.original"))
         try saveJSON(identity, directory.appendingPathComponent("identity.json"))
-        let result = try BackupPatch.prepare(encrypted: encrypted, imei: identity.imei, suffix: backupSuffix)
-        try saveJSON(["encryptedSHA256":result.originalHash, "patchedSHA256":result.patchedHash, "suffixVerified":"true", "adbAlreadyEnabled":String(result.alreadyEnabled)], directory.appendingPathComponent("manifest.json"))
-        update("Ключ расшифровки проверен по бэкапу.", 0.25)
-        return (identity, result, directory)
+        try saveJSON(["encryptedSHA256": digest(encrypted), "suffixVerified": "false"], directory.appendingPathComponent("manifest.json"))
+        return (encrypted, directory)
+    }
+    private func ensureADB(_ adb: ADBClient, identity: WebIdentity, initialMatch: (String, Identity)?, expected: DiagnosticDeviceExpectation,
+                           journal: inout SetupJournal, journalURL: URL, encryptedBackup: Data?, webPassword: String,
+                           backupFolder: String = "SetupBackups", enforceInstallerPolicy: Bool = true, directPollCompleted: Bool = false) throws -> (String, Identity) {
+        var match = initialMatch
+        if match == nil && !journal.restoreRequested && !journal.installRequested && journal.diagnosticRebootRequested != true {
+            guard let encryptedBackup else { throw IMEIError.message("Не сохранён свежий бэкап перед включением ADB") }
+            var fallbackBackup = encryptedBackup
+            try require(expected.cids.isEmpty || !expected.imeis.isEmpty, "Веб-интерфейс не сообщает CID. Для включения ADB сначала подтвердите связь ожидаемого CID и IMEI либо подключите уже работающий USB ADB.")
+            if journal.directADBRequested != true {
+                var advertised: Bool?
+                do { advertised = try web.advertisesDirectADB() }
+                catch { update("Список USB-возможностей недоступен: " + ActivityJournal.sanitize(error.localizedDescription), 0.27) }
+                if advertised == true || (advertised == nil && Self.hasHistoricalDirectADB(identity)) {
+                    try require(try web.identity(skipFirmwareCheck: currentConnection.skipFirmwareCheck) == identity, "Устройство изменилось перед включением ADB")
+                    journal.directADBRequested = true; journal.directADBOutcome = "requested"; journal.phase = "direct-adb-requested"; try saveJSON(journal, journalURL)
+                    update("Пробую штатный USB debug через zwrt_bsp.usb.set; затем проверю root ADB…", 0.3)
+                    do { try web.enableDirectADB(); journal.directADBOutcome = "accepted" }
+                    catch let error as ModemWebError {
+                        if case .rpcRejected = error { journal.directADBOutcome = "rejected" }
+                        else { journal.directADBOutcome = "uncertain" }
+                        update("Результат штатного включения ADB: " + ActivityJournal.sanitize(error.localizedDescription), 0.32)
+                    } catch { journal.directADBOutcome = "uncertain"; update("Ответ USB debug не получен; проверяю ADB без повторной отправки команды.", 0.32) }
+                    try saveJSON(journal, journalURL)
+                } else { update("Штатный USB debug не объявлен этой прошивкой. Проверяю следующий способ.", 0.3) }
+            }
+            if journal.directADBRequested == true {
+                update("Проверяю ADB после штатного USB debug (" + (journal.directADBOutcome ?? "uncertain") + "). Команда повторно не отправляется.", 0.34)
+                if !directPollCompleted { match = try pollADB(adb, expected: identity, attempts: directADBWaitAttempts, enforceInstallerPolicy: enforceInstallerPolicy) }
+                if match == nil {
+                    // A USB switch can drop HTTP. Never upload/restore into an
+                    // unknown or still rebooting target after an uncertain reply.
+                    try web.login(password: webPassword)
+                    try require(try web.identity(skipFirmwareCheck: currentConnection.skipFirmwareCheck) == identity, "Устройство не подтверждено после USB debug; восстановление не запускалось")
+                    let (freshBackup, freshDirectory) = try captureRawBackup(identity: identity, folder: backupFolder)
+                    fallbackBackup = freshBackup; journal.directory = freshDirectory.path; try saveJSON(journal, journalURL)
+                }
+            }
+            if match == nil {
+                try require(Self.isB31(identity), "Работающий root ADB по USB не подтверждён. " + lastADBFailure + " Включение через восстановление бэкапа разрешено только на проверенной B31; для экспериментальной настройки B02 нужен уже работающий root ADB по USB.")
+                try require(!backupSuffix.isEmpty, "Введите ключ расшифровки бэкапа (backup-key suffix) для способа B31")
+                let patch = try BackupPatch.prepare(encrypted: fallbackBackup, imei: identity.imei, suffix: backupSuffix)
+                try savePatchManifest(patch, directory: URL(fileURLWithPath: journal.directory))
+                if !patch.alreadyEnabled {
+                    try require(try web.identity(skipFirmwareCheck: currentConnection.skipFirmwareCheck) == identity, "Устройство изменилось перед включением ADB")
+                    try savePrivate(patch.patchedEncrypted, URL(fileURLWithPath: journal.directory).appendingPathComponent("back_parameter.adb-only"))
+                    update("Включаю ADB через проверенный бэкап B31. Модем перезагрузится…", 0.35)
+                    try web.upload(patch.patchedEncrypted)
+                    try require(try web.identity(skipFirmwareCheck: currentConnection.skipFirmwareCheck) == identity, "Устройство изменилось перед восстановлением")
+                    journal.restoreRequested = true; journal.phase = "restore-requested"; try saveJSON(journal, journalURL)
+                    do { try web.restore() } catch { update("Связь при восстановлении прервалась; проверяю появление ADB без повторной отправки…", 0.4) }
+                } else if journal.intent == "diagnostic-adb" {
+                    try require(try web.identity(skipFirmwareCheck: currentConnection.skipFirmwareCheck) == identity, "Устройство изменилось перед включением ADB")
+                    journal.diagnosticRebootRequested = true; journal.phase = "diagnostic-reboot-requested"; try saveJSON(journal, journalURL)
+                    update("ADB уже прописан в загрузке B31. Перезагружаю модем один раз для применения USB ADB…", 0.4)
+                    do { try web.rebootForADB() }
+                    catch { update("Ответ перезагрузки не получен; проверяю USB ADB без повторной отправки…", 0.42) }
+                } else { update("В бэкапе ADB уже включён, но runtime-доступ не подтверждён. " + lastADBFailure, 0.4) }
+            }
+        }
+        if match == nil { match = try waitADB(adb, expected: identity, enforceInstallerPolicy: enforceInstallerPolicy) }
+        return match!
+    }
+    /// This operation only establishes a verified USB diagnostic channel. It
+    /// deliberately never consults SSH readiness or invokes the installer.
+    func enableDiagnosticADB(webPassword: String, expectedIdentity: Identity? = nil, expectedIMEI: String? = nil) throws -> ADBAccessResult {
+        try locked {
+            try require(!fm.fileExists(atPath: pending.path), "Сначала завершите предварительную подготовку модема")
+            let expected = try DiagnosticDeviceExpectation.load(root: root, identity: expectedIdentity, web: nil, imei: expectedIMEI)
+            let hashes = try readJSON([String: String].self, assets.appendingPathComponent("SHA256.json"))
+            try require(hashes["adb"] == digest(Data(contentsOf: assets.appendingPathComponent("adb"))), "Повреждён встроенный компонент настройки: adb")
+            let adb = ADBClient(binary: assets.appendingPathComponent("adb"), runner: runner)
+            var journal: SetupJournal?
+            if fm.fileExists(atPath: diagnosticPending.path) {
+                let saved = try readJSON(SetupJournal.self, diagnosticPending)
+                let directory = URL(fileURLWithPath: saved.directory).standardizedFileURL
+                try require(saved.intent == "diagnostic-adb" && !saved.installRequested && UUID(uuidString: saved.id) != nil &&
+                            directory.deletingLastPathComponent() == root.appendingPathComponent("ADBAccessBackups").standardizedFileURL && UUID(uuidString: directory.lastPathComponent) != nil,
+                            "Некорректный журнал включения ADB для диагностики")
+                journal = saved
+            }
+            let identity: WebIdentity
+            if let journal { identity = journal.identity }
+            else {
+                try require(!webPassword.isEmpty && !webPassword.contains("\0"), "Введите пароль веб-интерфейса")
+                update("Диагностика ADB: проверяю устройство через штатный Web…", 0.05)
+                try web.login(password: webPassword)
+                identity = try web.identity(skipFirmwareCheck: true)
+            }
+            try require(expected.imeis.isEmpty || expected.imeis.contains(identity.imei), "Веб-интерфейс относится к другому модему; включение ADB остановлено")
+            func validate(_ device: Identity) throws {
+                try require(expected.cids.isEmpty || expected.cids.contains(device.cid), "CID отличается от ожидаемого модема или незавершённой установки")
+                if let expectedIdentity { try require(device == expectedIdentity, "Прошивка ожидаемого модема изменилась; включение ADB остановлено") }
+                if let cid = journal?.cid { try require(device.cid == cid, "CID отличается от незавершённого включения ADB") }
+            }
+            var match = try findADB(adb, expected: identity, enforceInstallerPolicy: false)
+            let resumeDirect = journal?.directADBRequested == true && journal?.restoreRequested != true && journal?.diagnosticRebootRequested != true
+            if match == nil && resumeDirect {
+                update("Проверяю ADB после штатного USB debug (" + (journal?.directADBOutcome ?? "uncertain") + "). Команда повторно не отправляется.", 0.34)
+                match = try pollADB(adb, expected: identity, attempts: directADBWaitAttempts, enforceInstallerPolicy: false)
+            }
+            if let match { try validate(match.1) }
+            if match == nil {
+                var encrypted: Data?
+                if journal?.restoreRequested != true && journal?.diagnosticRebootRequested != true {
+                    try require(currentConnection.skipFirmwareCheck || Self.isB31(identity), "Для включения ADB на этой прошивке требуется отключить проверку прошивки")
+                    try require(!webPassword.isEmpty && !webPassword.contains("\0"), "Введите пароль веб-интерфейса")
+                    try web.login(password: webPassword)
+                    try require(try web.identity(skipFirmwareCheck: currentConnection.skipFirmwareCheck) == identity, "Устройство изменилось перед включением ADB")
+                    try require(expected.cids.isEmpty || !expected.imeis.isEmpty, "Веб-интерфейс не сообщает CID. Для включения ADB сначала подтвердите связь ожидаемого CID и IMEI либо подключите уже работающий USB ADB.")
+                    let (backup, directory) = try captureRawBackup(identity: identity, folder: "ADBAccessBackups")
+                    encrypted = backup
+                    if journal == nil {
+                        journal = SetupJournal(id: UUID().uuidString.lowercased(), identity: identity, phase: "prepared", directory: directory.path, cid: expected.cids.first, intent: "diagnostic-adb")
+                    } else { journal!.directory = directory.path }
+                    try saveJSON(journal!, diagnosticPending)
+                }
+                var current = journal!
+                defer { journal = current }
+                match = try ensureADB(adb, identity: identity, initialMatch: nil, expected: expected, journal: &current,
+                                      journalURL: diagnosticPending, encryptedBackup: encrypted, webPassword: webPassword,
+                                      backupFolder: "ADBAccessBackups", enforceInstallerPolicy: false, directPollCompleted: resumeDirect)
+            }
+            let (serial, device) = match!
+            try validate(device)
+            let first = try adb.identityDetails(serial, expected: identity, skipFirmwareCheck: true)
+            let second = try adb.identityDetails(serial, expected: identity, skipFirmwareCheck: true)
+            try require(first.identity == device && second.identity == device && first.routerHash == second.routerHash,
+                        "Устройство или прошивка изменились во время проверки ADB")
+            let result = ADBAccessResult(identity: device, webIdentity: identity, serial: serial, routerHash: first.routerHash)
+            if var journal {
+                journal.phase = "complete"; journal.cid = device.cid; journal.adbSerial = serial; journal.firmwareHash = device.firmwareHash; journal.routerHash = first.routerHash
+                try saveJSON(result, URL(fileURLWithPath: journal.directory).appendingPathComponent("adb-access-result.json"))
+                try saveJSON(journal, URL(fileURLWithPath: journal.directory).appendingPathComponent("adb-access-journal.json"))
+                try fm.removeItem(at: diagnosticPending)
+            }
+            update("ADB готов для диагностики. Агент и параметры SSH не изменялись.", 1)
+            return result
+        }
     }
     /// Compatibility entry point whose caller explicitly supplies one password
     /// for both services. New UI flows pass the two credentials separately.
     func run(password: String) throws -> SetupResult { try run(webPassword: password, agentPassword: password) }
     func run(webPassword: String, agentPassword: String, expectedIdentity: Identity? = nil, expectedIMEI: String? = nil) throws -> SetupResult {
         try locked {
+            try require(!fm.fileExists(atPath: diagnosticPending.path), "Сначала завершите включение ADB для диагностики")
             try require(!webPassword.isEmpty && !webPassword.contains("\0"), "Введите пароль веб-интерфейса")
             try require(!agentPassword.isEmpty && !agentPassword.contains("\0"), "Введите отдельный пароль агента")
             let expected = try DiagnosticDeviceExpectation.load(root: root, identity: expectedIdentity, web: nil, imei: expectedIMEI)
@@ -338,7 +532,7 @@ final class OnboardingEngine: @unchecked Sendable {
                 if let expectedIdentity { try require(device == expectedIdentity, "Прошивка ожидаемого модема изменилась; подготовка остановлена") }
             }
             let hashes = try verifyAssets()
-            let (identity, patch, directory) = try prepare(password: webPassword, expectedIMEI: expected.imeis.first)
+            let (identity, encryptedBackup, directory) = try prepareRawBackup(password: webPassword, expectedIMEI: expected.imeis.first)
             var journal: SetupJournal
             if fm.fileExists(atPath: pending.path) {
                 journal = try readJSON(SetupJournal.self, pending)
@@ -375,28 +569,14 @@ final class OnboardingEngine: @unchecked Sendable {
                 }
             }
             let adb = ADBClient(binary: assets.appendingPathComponent("adb"), runner: runner)
-            var match: (String,Identity)?
-            for serial in (try? adb.devices(usbOnly: !Self.isB31(identity))) ?? [] {
-                if let id = try? adb.identity(serial, expected: identity, skipFirmwareCheck: currentConnection.skipFirmwareCheck) {
-                    try validateExpectedDevice(id)
-                    try require(match == nil, "Подключено несколько одинаковых модемов"); match = (serial,id)
-                }
-            }
-            try require(match != nil || Self.isB31(identity), "Для экспериментальной настройки B02 нужен уже работающий root ADB по USB. Включение ADB через восстановление бэкапа на этой прошивке не поддерживается.")
-            if match == nil && !patch.alreadyEnabled && !journal.restoreRequested && !journal.installRequested {
-                try require(expected.cids.isEmpty || !expected.imeis.isEmpty, "Веб-интерфейс не сообщает CID. Для включения ADB сначала подтвердите связь ожидаемого CID и IMEI либо подключите уже работающий USB ADB.")
-                try require(try web.identity(skipFirmwareCheck: currentConnection.skipFirmwareCheck) == identity, "Устройство изменилось перед включением ADB")
-                try savePrivate(patch.patchedEncrypted, URL(fileURLWithPath: journal.directory).appendingPathComponent("back_parameter.adb-only"))
-                update("Включаю ADB через проверенный бэкап. Модем перезагрузится…", 0.35)
-                try web.upload(patch.patchedEncrypted)
-                try require(try web.identity(skipFirmwareCheck: currentConnection.skipFirmwareCheck) == identity, "Устройство изменилось перед восстановлением")
-                journal.restoreRequested = true; journal.phase = "restore-requested"; try saveJSON(journal, pending)
-                do { try web.restore() } catch { update("Связь при восстановлении прервалась; проверяю появление ADB без повторной отправки…", 0.4) }
-            }
-            if match == nil { match = try waitADB(adb, expected: identity) }
-            let (serial, deviceID) = match!
+            let initialMatch = try findADB(adb, expected: identity)
+            if let initialMatch { try validateExpectedDevice(initialMatch.1) }
+            let (serial, deviceID) = try ensureADB(adb, identity: identity, initialMatch: initialMatch, expected: expected,
+                                                 journal: &journal, journalURL: pending, encryptedBackup: encryptedBackup, webPassword: webPassword)
             try validateExpectedDevice(deviceID)
-            let profile = try Self.installerProfile(web: identity, device: deviceID, experimental: currentConnection.skipFirmwareCheck)
+            let profile: String
+            do { profile = try Self.installerProfile(web: identity, device: deviceID, experimental: currentConnection.skipFirmwareCheck) }
+            catch { throw IMEIError.message("Root ADB модема подтверждён. " + error.localizedDescription) }
             if let cid = journal.cid { try require(cid == deviceID.cid, "CID отличается от незавершённой установки") }
             if let previous = journal.installerProfile { try require(previous == profile && journal.firmwareHash == deviceID.firmwareHash && journal.routerHash == ModemEngine.routerHash, "Профиль прошивки изменился после начала установки") }
             journal.cid = deviceID.cid; journal.adbSerial = serial

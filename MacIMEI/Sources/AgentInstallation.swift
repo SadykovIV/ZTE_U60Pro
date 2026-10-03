@@ -77,6 +77,7 @@ final class AgentInstallationManager {
     init(engine: ModemEngine) { self.engine = engine }
     private func staged<T>(cleanupAllowed: () -> Bool = { true }, _ work: (String, Identity, String) throws -> T) throws -> T {
         try require(engine.lockFD >= 0, "Установка агента требует блокировки приложения")
+        try require(!engine.fm.fileExists(atPath: engine.root.appendingPathComponent("adb-access-pending.json").path), "Сначала завершите включение ADB для диагностики")
         try require(!engine.fm.fileExists(atPath: engine.pendingURL.path) && !engine.fm.fileExists(atPath: engine.root.appendingPathComponent("setup-pending.json").path), "Сначала завершите текущую подготовку или смену IMEI")
         let script = try Data(contentsOf: engine.resources.appendingPathComponent("AgentInstallation/manager.sh"))
         try require(digest(script) == Self.scriptHash, "Повреждён установщик агента")

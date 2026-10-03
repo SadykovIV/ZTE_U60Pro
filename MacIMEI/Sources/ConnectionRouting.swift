@@ -362,24 +362,11 @@ final class ConnectionRouter {
         return ReadOnlyChannelSession(mode: .ssh, summary: initial, diagnosticSession: session) { try shellSummary(session) }
     }
     private static func physicalSerials(_ adb: ADBClient) throws -> [String] {
-        let raw = try adb.command(["devices", "-l"])
-        try require(raw.count <= 65536, "Слишком большой список USB ADB")
-        var result: [String] = []
-        for line in String(decoding: raw, as: UTF8.self).split(whereSeparator: \.isNewline) {
-            let parts = line.split(whereSeparator: \.isWhitespace)
-            guard parts.count >= 2 && parts[1] == "device" else { continue }
-            let usb = parts.filter { $0.hasPrefix("usb:") }
-            guard usb.count == 1 && String(usb[0]).range(of: #"^usb:[A-Za-z0-9._-]{1,128}$"#, options: .regularExpression) != nil else { continue }
-            let serial = String(parts[0])
-            try require(serial.utf8.count <= 256 && serial.utf8.allSatisfy { (33...126).contains($0) }, "Неверный USB-серийный номер")
-            result.append(serial)
-        }
-        try require(Set(result).count == result.count, "ADB сообщил повторяющиеся USB-серийные номера")
-        return result
+        try adb.discovery().readyUSBSerials
     }
     private static func adbSession(_ adb: ADBClient, expected: DiagnosticDeviceExpectation) throws -> ReadOnlyChannelSession {
-        let serials = try physicalSerials(adb)
-        guard !serials.isEmpty else { throw ConnectionProbeFailure(state: .unavailable, message: "Нет разрешённого USB ADB. Проверка не включает ADB автоматически.") }
+        let discovery = try adb.discovery(), serials = discovery.readyUSBSerials
+        guard !serials.isEmpty else { throw ConnectionProbeFailure(state: .unavailable, message: discovery.explanation + " Проверка не включает ADB автоматически.") }
         guard serials.count == 1 || !expected.cids.isEmpty || !expected.imeis.isEmpty else { throw ConnectionProbeFailure(state: .ambiguous, message: "Подключено несколько USB ADB устройств, ожидаемый модем неизвестен") }
         let command = DiagnosticTransportSelector.identityCommand(requireWeb: true)
         var matches: [(String, DiagnosticDeviceProof)] = []

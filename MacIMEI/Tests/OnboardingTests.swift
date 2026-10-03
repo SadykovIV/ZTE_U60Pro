@@ -57,8 +57,12 @@ private final class MockWeb: WebTransport {
     var info = deviceObject(), identityChangeAfter: Int?, identityCalls = 0
     var backupData: Data
     var uploadedData: Data?, badUploadHash = false
-    var restoreCount = 0, backupCount = 0, outerError: Int?, challenge = "salt-0123"
+    var restoreCount = 0, backupCount = 0, rebootCount = 0, outerError: Int?, challenge = "salt-0123"
     var loginResult: Any?, rawReply: Data?, transportFailure: Error?
+    var directAdvertised = false, directCount = 0, directCode = 0
+    var listUnavailable = false
+    var directFailure: Error?, onDirect: (() -> Void)?
+    var rebootFailure: Error?, onReboot: (() -> Void)?
     init(_ data: Data) { backupData = data }
     func request(path: String, data: Data?, contentType: String?, cookie: String?) throws -> WebReply {
         requests.append(Request(path:path,data:data,cookie:cookie))
@@ -77,6 +81,13 @@ private final class MockWeb: WebTransport {
         try check(path == "/ubus/" && contentType == "application/json", "Unknown web request")
         let payload = try JSONSerialization.jsonObject(with:data!) as! [[String:Any]]
         try check(payload.count == 1, "Batch size")
+        if payload[0]["method"] as? String == "list" {
+            try check(payload[0]["params"] as? [String] == ["zwrt_bsp.usb"] && cookie == "test-cookie", "USB capability query must be authenticated and use object-only params")
+            methods.append("list:zwrt_bsp.usb")
+            if listUnavailable { throw ModemWebError.rpcRejected(method: "list", code: 6) }
+            let result: [String: Any] = directAdvertised ? ["zwrt_bsp.usb": ["set": ["mode": "String"]]] : [:]
+            return WebReply(data: try JSONSerialization.data(withJSONObject: [["jsonrpc": "2.0", "id": 1, "result": result]]), headers: [:])
+        }
         let params = payload[0]["params"] as! [Any], method = params[2] as! String
         methods.append(method)
         var result = [String:Any](), headers = [String:String]()
@@ -94,6 +105,16 @@ private final class MockWeb: WebTransport {
             if let n = identityChangeAfter, identityCalls >= n { result["imei"] = "353490068701230" }
         case "device_backup_proc": backupCount += 1
         case "device_restore_proc": restoreCount += 1
+        case "device_reboot":
+            try check(params[1] as? String == "zwrt_mc.device.manager" && params[3] as? [String: String] == ["moduleName": "web"], "Only stock Web reboot is allowed")
+            rebootCount += 1; onReboot?()
+            if let rebootFailure { throw rebootFailure }
+
+        case "set":
+            try check(params[1] as? String == "zwrt_bsp.usb" && params[3] as? [String: String] == ["mode": "debug"], "Only documented direct USB operation is allowed")
+            directCount += 1; onDirect?()
+            if let directFailure { throw directFailure }
+            result = ["status": directCode]
         default: throw TestFailure.check("Unexpected RPC: \(method)")
         }
         return WebReply(data:try JSONSerialization.data(withJSONObject:[["jsonrpc":"2.0","id":1,"result":[outerError ?? 0,result]]]),headers:headers)
@@ -107,11 +128,12 @@ private final class MockHost: HostCommandRunner {
     var deviceList = "List of devices attached\n", identityCID = testCID, identityIMEI = testIMEI
     var deviceListSequence = [String](), identityCIDSequence = [String]()
     var identityHashesValid = true, identityMode = false
-    var identityFirmware = ModemEngine.firmwareHash, identityInfo = deviceObject()
+    var identityFirmware = ModemEngine.firmwareHash, identityRouter = ModemEngine.routerHash, identityInfo = deviceObject()
     var fullInstaller = false, installed = false, loseInstallAcknowledgement = false
     var failPushAt: Int?, pushCount = 0, preflightError = false
     var installerCalls = 0, stage = "", remoteJournal = "", uploads = [String:Data]()
     var onInstall: (() -> Void)?
+    var lastDeviceList = "", usbSerialOverride: String?
     private func quoted(_ text: String) throws -> [String] {
         let text = text.components(separatedBy: "); zte_code=").first ?? text
         let expression=try NSRegularExpression(pattern:"'([^']*)'")
@@ -129,7 +151,13 @@ private final class MockHost: HostCommandRunner {
         }
         try check(executable.lastPathComponent == "adb", "Unexpected host executable: \(executable.lastPathComponent)")
         var value: String
-        if arguments == ["devices","-l"] { value = deviceListSequence.isEmpty ? deviceList : deviceListSequence.removeFirst() }
+        if arguments == ["devices","-l"] { value = deviceListSequence.isEmpty ? deviceList : deviceListSequence.removeFirst(); lastDeviceList = value }
+        else if arguments == ["-d", "get-serialno"] {
+            let records = try ADBDiscovery.parse(Data(lastDeviceList.utf8)).records.filter { $0.state == "device" }
+            if let usbSerialOverride { value = usbSerialOverride }
+            else if records.count == 1 { value = records[0].serial }
+            else { return CommandResult(status: 1, stdout: Data(), stderr: Data("error: more than one device/emulator".utf8)) }
+        }
         else if fullInstaller && arguments.count == 5 && arguments[2] == "push" {
             pushCount += 1
             if pushCount == failPushAt { throw IMEIError.message("synthetic interrupted upload") }
@@ -145,7 +173,7 @@ private final class MockHost: HostCommandRunner {
                 var object = identityInfo; object["imei"] = identityIMEI
                 let info = String(data:try JSONSerialization.data(withJSONObject:object,options:.sortedKeys),encoding:.utf8)!
                 let cid = identityCIDSequence.isEmpty ? identityCID : identityCIDSequence.removeFirst()
-                value = (identityHashesValid ? identityFirmware : String(repeating:"0",count:64)) + "  /firmware/image/modem.b16\n" + ModemEngine.routerHash + "  /usr/bin/diag-router\n" + cid + "\n" + info
+                value = (identityHashesValid ? identityFirmware : String(repeating:"0",count:64)) + "  /firmware/image/modem.b16\n" + identityRouter + "  /usr/bin/diag-router\n" + cid + "\n" + info
             } else if command.hasPrefix("(sh -c ") && command.contains("'--preflight'") {
                 value = preflightError ? "INSTALL_ERROR PREFLIGHT_TOOL" : "INSTALL_PREFLIGHT " + (command.contains("'b02-experimental'") ? "b02-experimental" : "b31") + " imei_config=unknown"
                 if preflightError { shellCode = "1" }
@@ -258,7 +286,7 @@ private struct Fixture {
         let connection = Connection(host:"192.0.2.1",port:"2222",keyPath:root.appendingPathComponent("absent-key").path,knownHostsPath:root.appendingPathComponent("absent-hosts").path)
         let client = try ModemWebClient(host:connection.host,transport:web)
         let injectedSSH = ssh
-        engine = try OnboardingEngine(root:root,resources:resources,connection:connection,backupSuffix:testBackupSuffix,web:client,runner:host,sshFactory:{_ in injectedSSH})
+        engine = try OnboardingEngine(root:root,resources:resources,connection:connection,backupSuffix:testBackupSuffix,web:client,runner:host,sshFactory:{_ in injectedSSH}, adbWaitAttempts: 2, directADBWaitAttempts: 1, adbPollDelay: 0)
     }
     func remove() { try? FileManager.default.removeItem(at:base) }
 }
@@ -270,6 +298,126 @@ private struct Fixture {
         func run(_ name: String, _ body: () throws -> Void) {
             do { try body(); passed += 1; print("PASS \(name)");results.append(["name":name,"result":"PASS"]) }
             catch { failed += 1; print("FAIL \(name): \(error)");results.append(["name":name,"result":"FAIL","error":String(describing:error)]) }
+        }
+        run("Diagnostic ADB activates despite existing SSH and never installs components") {
+            let f = try Fixture(); defer { f.remove() }
+            f.ssh.ready = true; f.host.identityMode = true; f.web.directAdvertised = true
+            f.web.onDirect = { f.host.deviceList = "List of devices attached\nABC device usb:1\n" }
+            let result = try f.engine.enableDiagnosticADB(webPassword: testPassword)
+            try check(result.identity.cid == testCID && f.web.directCount == 1 && f.web.restoreCount == 0, "Diagnostic enable was skipped or restored unnecessarily")
+            try check(f.ssh.calls.isEmpty && f.host.pushCount == 0 && f.host.installerCalls == 0 && !FileManager.default.fileExists(atPath: f.root.appendingPathComponent("SSH").path), "Diagnostic enable touched SSH or installer")
+            try check(!FileManager.default.fileExists(atPath: f.engine.pending.path) && !FileManager.default.fileExists(atPath: f.engine.diagnosticPending.path), "Diagnostic completion left or used setup journal")
+        }
+        run("Already working diagnostic ADB accepts unknown hashes and needs only adb asset") {
+            let f = try Fixture(data: Data("invalid archive".utf8)); defer { f.remove() }
+            f.host.identityMode = true; f.host.deviceList = "List of devices attached\nABC device usb:1\n"
+            f.host.identityFirmware = String(repeating: "b", count: 64); f.host.identityRouter = String(repeating: "c", count: 64)
+            for name in ["zte-agent", "dropbear", "setup-agent.sh", "start_zte_imei_studio.sh"] { try FileManager.default.removeItem(at: f.engine.assets.appendingPathComponent(name)) }
+            let result = try f.engine.enableDiagnosticADB(webPassword: testPassword)
+            try check(result.identity.firmwareHash == f.host.identityFirmware && result.routerHash == f.host.identityRouter, "Diagnostic proof was incorrectly gated on installer profile")
+            try check(f.web.backupCount == 0 && f.web.directCount == 0 && f.web.restoreCount == 0 && f.ssh.calls.isEmpty, "Working ADB triggered mutation or SSH shortcut")
+        }
+        run("Diagnostic restore pending resumes without Web and never repeats restore") {
+            let f = try Fixture(); defer { f.remove() }
+            f.host.identityMode = true
+            try rejects("не подтверждён") { _ = try f.engine.enableDiagnosticADB(webPassword: testPassword, expectedIdentity: Identity(cid: testCID, firmwareHash: ModemEngine.firmwareHash), expectedIMEI: testIMEI) }
+            let saved = try readJSON(SetupJournal.self, f.engine.diagnosticPending)
+            try check(saved.cid == testCID && saved.restoreRequested && !saved.installRequested && saved.intent == "diagnostic-adb" && f.web.restoreCount == 1, "Diagnostic restore intent was not durable")
+            let calls = f.web.requests.count; f.web.transportFailure = IMEIError.message("Web unavailable during reboot")
+            try rejects("не подтверждён") { _ = try f.engine.enableDiagnosticADB(webPassword: "") }
+            try check(f.web.requests.count == calls && f.web.restoreCount == 1, "Pending restore was repeated or required Web")
+            f.host.deviceList = "List of devices attached\nABC device usb:1\n"
+            _ = try f.engine.enableDiagnosticADB(webPassword: "")
+            try check(f.web.requests.count == calls && f.web.restoreCount == 1 && f.ssh.calls.isEmpty && !FileManager.default.fileExists(atPath: f.engine.diagnosticPending.path), "Read-only resume did not complete")
+        }
+        run("Diagnostic direct request is not replayed after uncertain outcome") {
+            let f = try Fixture(); defer { f.remove() }
+            f.host.identityMode = true; f.web.directAdvertised = true
+            f.web.directFailure = IMEIError.message("reply lost")
+            f.web.onDirect = { f.web.transportFailure = IMEIError.message("Web dropped") }
+            try rejects { _ = try f.engine.enableDiagnosticADB(webPassword: testPassword) }
+            let saved = try readJSON(SetupJournal.self, f.engine.diagnosticPending)
+            try check(saved.directADBRequested == true && saved.directADBOutcome == "uncertain" && f.web.directCount == 1 && f.web.restoreCount == 0, "Uncertain direct result was lost")
+            let webRequests = f.web.requests.count
+            f.host.deviceListSequence = ["List of devices attached\n", "List of devices attached\nABC device usb:1\n"]
+            _ = try f.engine.enableDiagnosticADB(webPassword: "")
+            try check(f.web.requests.count == webRequests && f.web.directCount == 1 && f.web.restoreCount == 0 && f.ssh.calls.isEmpty, "Direct resume required Web or repeated the command")
+        }
+        run("Diagnostic ADB rejects setup recovery before any transport") {
+            let f = try Fixture(); defer { f.remove() }
+            try savePrivate(Data("{}".utf8), f.engine.pending)
+            try rejects("предварительную подготовку") { _ = try f.engine.enableDiagnosticADB(webPassword: testPassword) }
+            try check(f.web.requests.isEmpty && f.host.calls.isEmpty && f.ssh.calls.isEmpty, "Competing setup touched a transport")
+        }
+        run("Setup rejects diagnostic recovery before any transport") {
+            let f = try Fixture(); defer { f.remove() }
+            try savePrivate(Data("{}".utf8), f.engine.diagnosticPending)
+            try rejects("включение ADB") { _ = try f.engine.run(password: testPassword) }
+            try rejects("включение ADB") { _ = try f.engine.prepareSSH() }
+            try check(f.web.requests.isEmpty && f.host.calls.isEmpty && f.ssh.calls.isEmpty, "Setup bypassed diagnostic pending guard")
+        }
+        run("Diagnostic journal intent and identity are bound on resume") {
+            let f = try Fixture(); defer { f.remove() }
+            let directory = f.root.appendingPathComponent("ADBAccessBackups/" + UUID().uuidString); try secureDirectory(directory)
+            let web = try WebIdentity(deviceObject())
+            var journal = SetupJournal(id: UUID().uuidString, identity: web, phase: "restore-requested", directory: directory.path, restoreRequested: true, intent: "setup")
+            try saveJSON(journal, f.engine.diagnosticPending)
+            try rejects("Некорректный журнал") { _ = try f.engine.enableDiagnosticADB(webPassword: testPassword) }
+            journal.intent = "diagnostic-adb"; try saveJSON(journal, f.engine.diagnosticPending)
+            try rejects { _ = try f.engine.enableDiagnosticADB(webPassword: testPassword, expectedIMEI: "353490068701230") }
+            try check(f.web.requests.isEmpty && f.host.calls.isEmpty && f.ssh.calls.isEmpty, "Invalid or mismatched recovery touched a transport")
+        }
+        run("Diagnostic already-enabled B31 reboots once and resumes a lost acknowledgement without Web") {
+            let prepared = try BackupPatch.prepare(encrypted: backup(), imei: testIMEI, suffix: testBackupSuffix)
+            let f = try Fixture(data: prepared.patchedEncrypted); defer { f.remove() }
+            f.host.identityMode = true; f.web.rebootFailure = IMEIError.message("reboot reply lost")
+            try rejects("не подтверждён") { _ = try f.engine.enableDiagnosticADB(webPassword: testPassword) }
+            let saved = try readJSON(SetupJournal.self, f.engine.diagnosticPending)
+            try check(saved.diagnosticRebootRequested == true && !saved.restoreRequested && !saved.installRequested && f.web.rebootCount == 1 && f.web.uploadedData == nil, "Existing config was restored or reboot intent not saved")
+            let calls = f.web.requests.count; f.web.transportFailure = IMEIError.message("Web down")
+            try rejects("не подтверждён") { _ = try f.engine.enableDiagnosticADB(webPassword: "") }
+            try check(f.web.requests.count == calls && f.web.rebootCount == 1, "Reboot was repeated during resume")
+            f.host.deviceList = "List of devices attached\nABC device usb:1\n"
+            _ = try f.engine.enableDiagnosticADB(webPassword: "")
+            try check(f.web.requests.count == calls && f.web.restoreCount == 0 && f.web.rebootCount == 1 && f.ssh.calls.isEmpty && f.host.installerCalls == 0, "Diagnostic reboot crossed installation boundary")
+        }
+        run("Already working ADB never reboots even when B31 boot line is present") {
+            let prepared = try BackupPatch.prepare(encrypted: backup(), imei: testIMEI, suffix: testBackupSuffix)
+            let f = try Fixture(data: prepared.patchedEncrypted); defer { f.remove() }
+            f.host.identityMode = true; f.host.deviceList = "List of devices attached\nABC device usb:1\n"
+            _ = try f.engine.enableDiagnosticADB(webPassword: testPassword)
+            try check(f.web.rebootCount == 0 && f.web.backupCount == 0 && f.web.restoreCount == 0 && f.web.directCount == 0, "Working root ADB rebooted")
+        }
+        run("Normal preparation never uses diagnostic already-enabled reboot") {
+            let prepared = try BackupPatch.prepare(encrypted: backup(), imei: testIMEI, suffix: testBackupSuffix)
+            let f = try Fixture(data: prepared.patchedEncrypted); defer { f.remove() }
+            f.host.identityMode = true
+            try rejects("не подтверждён") { _ = try f.engine.run(password: testPassword) }
+            try check(f.web.rebootCount == 0 && f.web.restoreCount == 0, "Normal setup inherited diagnostic reboot")
+        }
+        run("Changed Web identity blocks diagnostic reboot before sending") {
+            let prepared = try BackupPatch.prepare(encrypted: backup(), imei: testIMEI, suffix: testBackupSuffix)
+            let f = try Fixture(data: prepared.patchedEncrypted); defer { f.remove() }
+            f.host.identityMode = true; f.web.identityChangeAfter = 4
+            try rejects("Устройство изменилось") { _ = try f.engine.enableDiagnosticADB(webPassword: testPassword) }
+            try check(f.web.rebootCount == 0 && f.web.restoreCount == 0 && f.web.directCount == 0, "Changed device received reboot")
+        }
+        run("Public diagnostic ADB needs no backup key when USB already works or direct activation succeeds") {
+            for alreadyReady in [true, false] {
+                let f = try Fixture(); defer { f.remove() }
+                f.host.identityMode = true; f.web.directAdvertised = true
+                if alreadyReady { f.host.deviceList = "List of devices attached\nABC device usb:1\n" }
+                f.web.onDirect = { f.host.deviceList = "List of devices attached\nABC device usb:1\n" }
+                let manager = try OnboardingEngine(root: f.root, resources: f.resources, connection: f.engine.currentConnection, web: f.engine.web, runner: f.host, adbWaitAttempts: 1, directADBWaitAttempts: 1, adbPollDelay: 0)
+                _ = try manager.enableDiagnosticADB(webPassword: testPassword)
+                try check(f.web.directCount == (alreadyReady ? 0 : 1) && f.web.restoreCount == 0, "Absent key blocked a path that never decrypts backups")
+            }
+        }
+        run("Public B31 restore requires user backup key before upload restore or reboot") {
+            let f = try Fixture(); defer { f.remove() }
+            let manager = try OnboardingEngine(root: f.root, resources: f.resources, connection: f.engine.currentConnection, web: f.engine.web, runner: f.host, adbWaitAttempts: 1, directADBWaitAttempts: 1, adbPollDelay: 0)
+            try rejects("Введите ключ расшифровки") { _ = try manager.enableDiagnosticADB(webPassword: testPassword) }
+            try check(f.web.uploadedData == nil && f.web.restoreCount == 0 && f.web.rebootCount == 0, "Missing public key allowed backup restore")
         }
         run("Existing SSH preparation needs no HTTP credentials backup agent or NV mutation") {
             let f = try Fixture(data: Data("invalid archive must not be read".utf8)); defer { f.remove() }
@@ -475,7 +623,7 @@ private struct Fixture {
         run("Incorrect suffix cannot pass archive verification or upload") {
             let f=try Fixture(data:backup(suffix:"synthetic-wrong-suffix")); defer {f.remove()}
             try rejects {_ = try f.engine.run(password:testPassword)}
-            try check(f.web.uploadedData == nil && f.web.restoreCount == 0 && f.host.calls.isEmpty, "Unverified suffix blocks mutation")
+            try check(f.web.uploadedData == nil && f.web.restoreCount == 0 && f.host.calls == [["devices", "-l"]], "Unverified suffix blocks restore after read-only ADB discovery")
         }
         run("Identity change while obtaining backup blocks patch upload") {
             let f=try Fixture(); defer {f.remove()}; f.web.identityChangeAfter=2
@@ -553,6 +701,104 @@ private struct Fixture {
             let directory=try FileManager.default.contentsOfDirectory(at:f.root.appendingPathComponent("SetupBackups"),includingPropertiesForKeys:nil).first!
             let journal=try readJSON(SetupJournal.self,directory.appendingPathComponent("setup-result.json"))
             try check(journal.phase == "complete" && journal.restoreRequested && journal.installRequested,"Durable complete record")
+        }
+        run("Working physical ADB skips suffix decryption and USB activation") {
+            let f = try Fixture(data: backup(suffix: "unknown-but-not-needed")); defer { f.remove() }
+            f.host.fullInstaller = true; f.host.identityMode = true; f.host.deviceList = "List of devices attached\nABC device transport_id:1\n"
+            f.host.onInstall = { [weak host = f.host, weak ssh = f.ssh] in ssh?.ready = true; ssh?.installedJournal = host?.remoteJournal ?? "" }
+            let result = try f.engine.run(password: testPassword)
+            try check(result.identity.cid == testCID && f.host.calls.contains(["-d", "get-serialno"]), "USB selector fallback not used")
+            try check(f.web.directCount == 0 && f.web.restoreCount == 0 && !f.web.methods.contains("list:zwrt_bsp.usb"), "Working ADB triggered activation")
+        }
+        run("Working root ADB with unsupported hashes cannot trigger USB activation or restore") {
+            for unknownRouter in [false, true] {
+                let f = try Fixture(); defer { f.remove() }
+                f.host.identityMode = true; f.host.deviceList = "List of devices attached\nABC device usb:1\n"; f.web.directAdvertised = true
+                if unknownRouter { f.host.identityRouter = String(repeating: "0", count: 64) }
+                else { f.host.identityFirmware = String(repeating: "0", count: 64) }
+                try rejects("ADB уже работает") { _ = try f.engine.run(password: testPassword) }
+                try check(f.web.directCount == 0 && f.web.restoreCount == 0 && f.web.uploadedData == nil && f.host.installerCalls == 0, "Unsupported but working ADB caused mutating fallback")
+            }
+        }
+        run("Initial ADB inventory failure and duplicate serials block activation before any USB or restore request") {
+            for duplicate in [false, true] {
+                let f = try Fixture(); defer { f.remove() }
+                f.web.directAdvertised = true
+                if duplicate { f.host.deviceList = "List of devices attached\nABC device usb:1\nABC device usb:2\n" }
+                else { f.host.status = 1 }
+                try rejects("Не удалось проверить USB ADB") { _ = try f.engine.run(password: testPassword) }
+                try check(f.web.directCount == 0 && f.web.restoreCount == 0 && f.web.uploadedData == nil && f.host.installerCalls == 0 && !f.web.methods.contains("list:zwrt_bsp.usb"), "Broken host inventory was mistaken for absent ADB and changed the modem")
+            }
+        }
+        run("Advertised direct USB debug verifies real ADB and skips backup restore") {
+            let f = try Fixture(); defer { f.remove() }
+            f.host.fullInstaller = true; f.host.identityMode = true; f.web.directAdvertised = true
+            f.web.onDirect = { [weak host = f.host] in host?.deviceList = "List of devices attached\nABC device usb:1\n" }
+            f.host.onInstall = { [weak host = f.host, weak ssh = f.ssh] in ssh?.ready = true; ssh?.installedJournal = host?.remoteJournal ?? "" }
+            _ = try f.engine.run(password: testPassword)
+            try check(f.web.directCount == 1 && f.web.restoreCount == 0 && f.web.uploadedData == nil && f.host.installerCalls == 1, "Direct success failed to stop activation chain")
+        }
+        run("Direct acknowledgement alone cannot start installation and falls back once on B31") {
+            let f = try Fixture(); defer { f.remove() }
+            f.web.directAdvertised = true
+            try rejects("Работающий ADB") { _ = try f.engine.run(password: testPassword) }
+            let pending = try readJSON(SetupJournal.self, f.engine.pending)
+            try check(f.web.directCount == 1 && f.web.restoreCount == 1 && f.host.installerCalls == 0 && pending.restoreRequested && pending.directADBOutcome == "accepted", "Web success was mistaken for usable ADB")
+            try rejects("Работающий ADB") { _ = try f.engine.run(password: testPassword) }
+            try check(f.web.directCount == 1 && f.web.restoreCount == 1 && f.host.installerCalls == 0, "Retry replayed a mutating request")
+        }
+        run("Lost direct response with usable ADB proceeds without repeating the operation") {
+            let f = try Fixture(); defer { f.remove() }
+            f.web.directAdvertised = true; f.web.directFailure = URLError(.networkConnectionLost)
+            f.host.fullInstaller = true; f.host.identityMode = true
+            f.web.onDirect = { [weak host = f.host] in host?.deviceList = "List of devices attached\nABC device usb:1\n" }
+            f.host.onInstall = { [weak host = f.host, weak ssh = f.ssh] in ssh?.ready = true; ssh?.installedJournal = host?.remoteJournal ?? "" }
+            _ = try f.engine.run(password: testPassword)
+            try check(f.web.directCount == 1 && f.web.restoreCount == 0 && f.host.installerCalls == 1, "Uncertain direct response was replayed or hid working ADB")
+        }
+        run("Changed web target after direct USB blocks fallback restore") {
+            let f = try Fixture(); defer { f.remove() }
+            f.web.directAdvertised = true
+            f.web.onDirect = { [weak web = f.web] in web?.identityChangeAfter = 4 }
+            try rejects("после USB debug") { _ = try f.engine.run(password: testPassword) }
+            try check(f.web.directCount == 1 && f.web.uploadedData == nil && f.web.restoreCount == 0 && f.host.installerCalls == 0, "Uncertain target reached restore")
+        }
+        run("Direct fallback restores only a fresh backup taken after USB switch") {
+            let f = try Fixture(); defer { f.remove() }
+            let fresh = try backup(); f.web.directAdvertised = true; f.web.directCode = 1
+            f.web.onDirect = { [weak web = f.web] in web?.backupData = fresh }
+            try rejects("Работающий ADB") { _ = try f.engine.run(password: testPassword) }
+            let pending = try readJSON(SetupJournal.self, f.engine.pending)
+            try check(f.web.backupCount == 2 && f.web.directCount == 1 && f.web.restoreCount == 1 && pending.directADBOutcome == "rejected", "Rejected direct method skipped controlled fallback")
+            try check(try Data(contentsOf: URL(fileURLWithPath: pending.directory).appendingPathComponent("back_parameter.original")) == fresh, "Fallback paired patch with a stale original")
+            let manifest = try readJSON([String: String].self, URL(fileURLWithPath: pending.directory).appendingPathComponent("manifest.json"))
+            try check(manifest["encryptedSHA256"] == digest(fresh), "Fallback patched an earlier backup")
+        }
+        run("Legacy direct fallback needs unavailable introspection and a known CN version") {
+            for choice in 0..<3 {
+                let f = try Fixture(); defer { f.remove() }
+                let version = choice == 2 ? "28" : "27"
+                f.web.info["integrate_version"] = "CN_ZTE_MU5250V1.0.0B" + version
+                f.web.info["wa_inner_version"] = "BD_CNMU5250V1.0.0B" + version
+                f.web.listUnavailable = choice != 0
+                var connection = f.engine.currentConnection; connection.skipFirmwareCheck = true
+                let manager = try OnboardingEngine(root: f.root, resources: f.resources, connection: connection, backupSuffix: testBackupSuffix, web: f.engine.web, runner: f.host, sshFactory: { _ in f.ssh }, adbWaitAttempts: 1, directADBWaitAttempts: 1, adbPollDelay: 0)
+                try rejects("B31") { _ = try manager.run(password: testPassword) }
+                try check(f.web.directCount == (choice == 1 ? 1 : 0) && f.web.restoreCount == 0 && f.web.uploadedData == nil, "Legacy fallback ignored capability or firmware gate")
+            }
+        }
+        run("Offline and unauthorized ADB are explained without claiming access") {
+            let f = try Fixture(); defer { f.remove() }
+            f.host.deviceList = "List of devices attached\nABC unauthorized usb:1\nDEF offline usb:2\n"
+            try rejects("unauthorized") { _ = try f.engine.waitADB(ADBClient(binary: URL(fileURLWithPath: "/fixture/adb"), runner: f.host), expected: WebIdentity(deviceObject())) }
+            try check(f.host.calls.allSatisfy { $0 == ["devices", "-l"] }, "Non-ready transport received a shell command")
+        }
+        run("USB selector must name a listed ready endpoint and cannot accept network endpoints") {
+            let host = MockHost(), adb = ADBClient(binary: URL(fileURLWithPath: "/fixture/adb"), runner: host)
+            host.deviceList = "List of devices attached\nABC device transport_id:1\n"; host.usbSerialOverride = "DIFFERENT"
+            try check(try adb.devices(usbOnly: true).isEmpty, "USB selector accepted an unlisted endpoint")
+            host.deviceList = "List of devices attached\n192.0.2.5:5555 device transport_id:1\n"; host.calls = []
+            try check(try adb.devices(usbOnly: true).isEmpty && host.calls == [["devices", "-l"]], "Network endpoint entered USB fallback")
         }
         run("Existing SSH agent fast path does not upload restore or install") {
             let f=try Fixture();defer {f.remove()};f.ssh.ready=true

@@ -107,7 +107,7 @@ final class DiagnosticToolsManager {
     }
     private func guardOperation(mutation: Bool) throws -> (Identity, String) {
         try require(engine.lockFD >= 0, "Проверка приложений требует блокировки операции")
-        for name in ["pending.json", "setup-pending.json"] {
+        for name in ["pending.json", "setup-pending.json", "adb-access-pending.json"] {
             try require(!engine.fm.fileExists(atPath: engine.root.appendingPathComponent(name).path), "Сначала завершите настройку или смену IMEI")
         }
         try require(!SystemBackups.hasPendingRestore(root: engine.root), "Сначала завершите восстановление модема")

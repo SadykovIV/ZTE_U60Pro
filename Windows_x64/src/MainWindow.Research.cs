@@ -28,6 +28,10 @@ public sealed partial class MainWindow
         AddCard("Исследование прошивки","Проверка условий для функций программы, включая eSIM. Это не общий вердикт совместимости прошивки: отсутствие данных отличается от конкретного препятствия, например прав каталога. Доступна через работающий USB ADB или SSH без ключа бэкапа и отключения проверки прошивки.",panel=>
         {
             panel.Children.Add(Muted("Только чтение. Исследование не включает ADB, не устанавливает компоненты и не подтверждает безопасность изменяющих операций. В ручном режиме используется только выбранный канал."));
+            var mode = new ComboBox { ItemsSource = new[] { "Автоматически", "SSH", "ADB" }.Select(Localization.Translate).ToArray(),
+                SelectedIndex = Get("mode") switch { "SSH" => 1, "ADB" => 2, _ => 0 }, MinWidth = 220, HorizontalAlignment = HorizontalAlignment.Left };
+            mode.SelectionChanged += (_, _) => _form["mode"] = mode.SelectedIndex switch { 1 => "SSH", 2 => "ADB", _ => "Автоматически" };
+            panel.Children.Add(Muted("Канал исследования")); panel.Children.Add(mode);
             var row=new WrapPanel {Orientation=Orientation.Horizontal};
             var collect=ActionButton("Исследовать прошивку",CollectFirmwareResearchAsync,true);
             collect.Name="CollectFirmwareResearch";collect.IsEnabled=!_busy && _terminal?.IsConnected!=true && !_terminalOpening;

@@ -52,11 +52,13 @@ private final class SSH: RemoteTransport {
 }
 private final class ADB: HostCommandRunner {
     var serials = ["USB-A"], usb = true, cids = ["USB-A": cid], calls = [[String]]()
+    var physicalSerial: String?, deviceState = "device"
     func run(_ executable: URL, _ arguments: [String], timeout: TimeInterval) throws -> CommandResult {
         calls.append(arguments)
         if arguments == ["devices", "-l"] {
-            return CommandResult(status: 0, stdout: Data(("List of devices attached\n" + serials.map { $0 + " device " + (usb ? "usb:1-2 " : "") + "transport_id:1\n" }.joined()).utf8), stderr: Data())
+            return CommandResult(status: 0, stdout: Data(("List of devices attached\n" + serials.map { $0 + " " + deviceState + " " + (usb ? "usb:1-2 " : "") + "transport_id:1\n" }.joined()).utf8), stderr: Data())
         }
+        if arguments == ["-d", "get-serialno"] { return CommandResult(status: physicalSerial == nil ? 1 : 0, stdout: Data((physicalSerial ?? "").utf8), stderr: Data()) }
         try check(arguments.count == 4 && arguments[0] == "-s" && arguments[2] == "shell", "ADB probe mutated device")
         guard let marker = ADBClient.shellMarker(in: arguments[3]) else { throw Failure.assertion("Missing ADB footer") }
         let result = arguments[3].contains(DiagnosticTransportSelector.identityCommand) ? try rawProof(cids[arguments[1]] ?? otherCID) : Data()
@@ -220,7 +222,7 @@ private final class Fixture {
             for mode in [ConnectionMode.agent, .web] {
                 let selected = session(mode), sections = try selected.readDiagnosticSections()
                 try check(selected.diagnosticSession == nil && sections.count == 1 && sections[0].source == mode.rawValue && sections[0].name == "device-info.json", "False shell capability")
-                try rejects("Выполнить подготовку") { _ = try selected.requireSSH() }
+                try rejects("требуется SSH") { _ = try selected.requireSSH() }
             }
             let large = ConnectionDeviceSummary(imei: imei, fields: ["model": String(repeating: "x", count: 1025)])
             let result = try ConnectionRouter(probes: [.agent: { _ in session(.agent, large) }]).select(mode: .agent)
@@ -275,7 +277,7 @@ private final class Fixture {
             try check(f.ssh.calls.isEmpty && f.web.calls.isEmpty && f.agent.calls.isEmpty && f.adb.calls.allSatisfy { $0 == ["devices", "-l"] || $0[2] == "shell" }, "USB probe mutations or fallback")
         }
         try test("network ADB is excluded and multiple unknown USB devices refuse before shell") {
-            let tcp = try Fixture(); tcp.adb.usb = false
+            let tcp = try Fixture(); tcp.adb.usb = false; tcp.adb.serials = ["192.0.2.10:5555"]
             let result = try tcp.router().select(mode: .adb)
             try check(result.session == nil && result.reason.contains("USB") && tcp.adb.calls == [["devices", "-l"]], "TCP ADB treated as USB")
             let multi = try Fixture(); multi.adb.serials.append("USB-B")
@@ -464,6 +466,19 @@ private final class Fixture {
                 let router = ConnectionRouter(expected: DiagnosticDeviceExpectation(cids: ["invalid"], imeis: []), probes: [.ssh: { _ in calls += 1; return session(.ssh) }])
                 try rejects { if discovery { _ = try router.discover() } else { _ = try router.connect(mode: .automatic) } }
                 try check(calls == 0, "Invalid expected modem contacted a device")
+            }
+        }
+        try test("Connect accepts a verified USB selector when devices output omits usb") {
+            let f = try Fixture(); f.adb.usb = false; f.adb.physicalSerial = "USB-A"
+            let result = try f.router().connect(mode: .adb)
+            try check(result.actualMode == .adb && result.session?.summary.identity?.cid == cid && f.adb.calls.contains(["-d", "get-serialno"]), "Physical USB missing descriptor was hidden")
+        }
+        try test("Connect reports unauthorized and offline rather than missing ADB") {
+            for deviceState in ["unauthorized", "offline"] {
+                let f = try Fixture(); f.adb.deviceState = deviceState
+                let result = try f.router().connect(mode: .adb)
+                try check(result.session == nil && result.statuses.first { $0.mode == .adb }?.message.contains(deviceState) == true, "ADB transport state was hidden")
+                try check(f.adb.calls == [["devices", "-l"]] && f.web.calls.isEmpty && f.agent.calls.isEmpty, "Unavailable manual ADB fell back or ran shell")
             }
         }
         print("Connection routing: \(passed) passed; 0 failed")

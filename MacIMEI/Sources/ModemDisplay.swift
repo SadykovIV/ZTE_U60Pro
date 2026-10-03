@@ -275,7 +275,7 @@ final class ModemDisplayManager {
     func installEsimPage() throws -> ModemDisplayInspection {
         try require(engine.lockFD >= 0 && !engine.connection.skipFirmwareCheck, "Страница eSIM требует SSH и включённой проверки прошивки")
         try engine.connection.validate()
-        for name in ["pending.json", "setup-pending.json"] {
+        for name in ["pending.json", "setup-pending.json", "adb-access-pending.json"] {
             try require(!FileManager.default.fileExists(atPath: engine.root.appendingPathComponent(name).path), "Сначала завершите настройку или смену IMEI")
         }
         let bundle = try assets(), before = try inspect(assets: bundle)
@@ -342,7 +342,7 @@ final class ModemDisplayManager {
         }
         try require(engine.lockFD >= 0, "Операция дисплея требует общей блокировки приложения")
         try engine.connection.validate()
-        for name in ["pending.json", "setup-pending.json"] {
+        for name in ["pending.json", "setup-pending.json", "adb-access-pending.json"] {
             try require(!FileManager.default.fileExists(atPath: engine.root.appendingPathComponent(name).path), "Сначала завершите настройку или смену IMEI")
         }
         let bundle = try assets(), before = try inspect(assets: bundle)
@@ -392,7 +392,7 @@ final class ModemDisplayManager {
         try layout.validate()
         try require(engine.lockFD >= 0, "Операция дисплея требует общей блокировки приложения")
         try engine.connection.validate()
-        for name in ["pending.json", "setup-pending.json"] {
+        for name in ["pending.json", "setup-pending.json", "adb-access-pending.json"] {
             try require(!FileManager.default.fileExists(atPath: engine.root.appendingPathComponent(name).path), "Сначала завершите настройку или смену IMEI")
         }
         let bundle = try assets(), before = try inspect(assets: bundle)
@@ -410,7 +410,7 @@ final class ModemDisplayManager {
         try pages.validate()
         try require(engine.lockFD >= 0, "Операция дисплея требует общей блокировки приложения")
         try engine.connection.validate()
-        for name in ["pending.json", "setup-pending.json"] {
+        for name in ["pending.json", "setup-pending.json", "adb-access-pending.json"] {
             try require(!FileManager.default.fileExists(atPath: engine.root.appendingPathComponent(name).path), "Сначала завершите настройку или смену IMEI")
         }
         let bundle = try assets(), before = try inspect(assets: bundle)

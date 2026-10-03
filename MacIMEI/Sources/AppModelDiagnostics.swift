@@ -3,7 +3,8 @@ import UniformTypeIdentifiers
 
 @MainActor extension AppModel {
     var canReadModem: Bool { !busy && !terminalActive && connected && activeChannel == .ssh && permitsSSHOperations && !host.isEmpty && !keyPath.isEmpty && !knownHostsPath.isEmpty }
-    var canCollectDiagnostics: Bool { !busy && connected && (activeChannel == .ssh || activeChannel == .adb) && !host.isEmpty }
+    var diagnosticConnectionMode: ConnectionMode { connected && activeChannel == .ssh ? .ssh : .automatic }
+    var canCollectDiagnostics: Bool { !busy && !host.isEmpty && ((connected && activeChannel == .ssh) || channelStatuses.contains { $0.mode == .adb && $0.state == .available }) }
     func recordNavigation(_ title: String) {
         do { try ActivityJournal(root: storage).record(operationID: sessionID, category: "navigation", title: title, result: "message") }
         catch { journalWarning = "Не удалось сохранить переход в журнал: " + error.localizedDescription }
@@ -18,7 +19,7 @@ import UniformTypeIdentifiers
         guard panel.runModal() == .OK, let destination = panel.url else { return }
         let config = connection, root = storage, assets = resources
         let expectedIdentity = modemInformation?.identity ?? connectedIdentity
-        let mode = activeChannel ?? connectionMode, session = channelSession, expectedWeb = connectedWebIdentity ?? channelSummary?.webIdentity
+        let mode = diagnosticConnectionMode, session = channelSession, expectedWeb = connectedWebIdentity ?? channelSummary?.webIdentity
         let expectedIMEI = connectedIMEI ?? channelSummary?.primaryIMEI
         let webSecret = webPassword, agentSecret = agentPassword
         let context = ["appVersion": appVersion, "macOS": ProcessInfo.processInfo.operatingSystemVersionString,

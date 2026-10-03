@@ -267,6 +267,60 @@ public sealed class ModemWebClient : IDisposable
         finally { _gate.Release(); }
     }
 
+    /// <summary>Reads uhttpd method introspection; this does not change USB mode.</summary>
+    public async Task<bool?> AdvertisesUsbDebugAsync(CancellationToken ct = default)
+    {
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (_session == ZeroSession) throw new InvalidOperationException("Сначала войдите в веб-интерфейс.");
+            // uhttpd's JSON-RPC list params are object names, not session + names.
+            var payload = JsonSerializer.SerializeToUtf8Bytes(new[] { new
+            {
+                jsonrpc = "2.0", id = 1, method = "list", @params = new[] { "zwrt_bsp.usb" },
+            } });
+            var reply = await _transport.RequestAsync("/ubus/", payload, "application/json", _cookie, ct).ConfigureAwait(false);
+            return ReadUsbDebugCapability(reply.Data);
+        }
+        finally { _gate.Release(); }
+    }
+
+    internal static bool AdvertisesUsbDebug(byte[] data)
+        => ReadUsbDebugCapability(data) == true;
+
+    internal static bool? ReadUsbDebugCapability(byte[] data)
+    {
+        using var document = ParseJson(data);
+        var root = document.RootElement;
+        if (!(root.ValueKind == JsonValueKind.Array && root.GetArrayLength() == 1 &&
+            root[0].ValueKind == JsonValueKind.Object && !root[0].TryGetProperty("error", out _) &&
+            root[0].TryGetProperty("result", out var result) && result.ValueKind == JsonValueKind.Object)) return null;
+        return result.TryGetProperty("zwrt_bsp.usb", out var usb) && usb.ValueKind == JsonValueKind.Object &&
+            usb.TryGetProperty("set", out var set) && set.ValueKind == JsonValueKind.Object &&
+            set.TryGetProperty("mode", out var mode) && mode.ValueKind == JsonValueKind.String &&
+            mode.GetString() is "String" or "string";
+    }
+
+    /// <summary>One fixed legacy operation. Success acknowledges RPC only; verify ADB separately.</summary>
+    public async Task RequestUsbDebugAsync(CancellationToken ct = default)
+    {
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (_session == ZeroSession) throw new InvalidOperationException("Сначала войдите в веб-интерфейс.");
+            var result = await CallCoreAsync("zwrt_bsp.usb", "set",
+                new Dictionary<string, object?> { ["mode"] = "debug" }, ct).ConfigureAwait(false);
+            foreach (var field in new[] { "result", "status" })
+            {
+                if (!result.TryGetProperty(field, out var status)) continue;
+                if (!TryStatusCode(status, out var code)) throw Malformed("неверный код переключения USB в debug");
+                if (code != 0)
+                    throw new ModemWebException(WebFailureKind.RpcRejected, "Модем отклонил переключение USB в debug (код " + code + ").", code);
+            }
+        }
+        finally { _gate.Release(); }
+    }
+
     public async Task UploadBackupAsync(byte[] encrypted, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(encrypted);
@@ -305,6 +359,18 @@ public sealed class ModemWebClient : IDisposable
         {
             await CallCoreAsync("zwrt_mc.device.manager", "device_restore_proc",
                 new Dictionary<string, object?> { ["procType"] = "web" }, ct).ConfigureAwait(false);
+        }
+        finally { _gate.Release(); }
+    }
+
+    /// <summary>Caller persists the diagnostic reboot intent before sending this once.</summary>
+    public async Task RebootDeviceAsync(CancellationToken ct = default)
+    {
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await CallCoreAsync("zwrt_mc.device.manager", "device_reboot",
+                new Dictionary<string,object?> { ["moduleName"] = "web" }, ct).ConfigureAwait(false);
         }
         finally { _gate.Release(); }
     }

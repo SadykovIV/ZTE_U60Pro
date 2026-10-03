@@ -17,6 +17,8 @@ import AppKit
     @Published var connectionReason = ""
     @Published var connectionsChecked = false
     @Published var preparationError = ""
+    @Published var diagnosticADBMessage = ""
+    @Published var diagnosticADBPending = false
     @Published var sectionRefreshErrors: [ConnectionOverviewSection: String] = [:]
     @Published var sectionsUpdatedAt: Date?
     var channelSession: ReadOnlyChannelSession?
@@ -146,7 +148,7 @@ import AppKit
         if imei1 == currentIMEI1 && imei2 == currentIMEI2 { return "Эта пара уже записана на модеме" }
         return "Оба IMEI корректны по формату и контрольной сумме"
     }
-    var canApply: Bool { permitsSSHOperations && (connected || (!webPassword.isEmpty && !agentPassword.isEmpty)) && !busy && !terminalActive && !pendingOperation && !setupPending && !systemRestorePending && IMEI.valid(imei1) && IMEI.valid(imei2) && imei1 != imei2 && (imei1 != currentIMEI1 || imei2 != currentIMEI2) }
+    var canApply: Bool { permitsSSHOperations && (connected || (!webPassword.isEmpty && !agentPassword.isEmpty)) && !busy && !terminalActive && !pendingOperation && !setupPending && !diagnosticADBPending && !systemRestorePending && IMEI.valid(imei1) && IMEI.valid(imei2) && imei1 != imei2 && (imei1 != currentIMEI1 || imei2 != currentIMEI2) }
     var canManage: Bool { connected && activeChannel == .ssh && accessReady && permitsSSHOperations && !busy && !terminalActive && !pendingOperation && !setupPending && !systemRestorePending }
     var ttlValidationMessage: String {
         do {
@@ -276,10 +278,10 @@ import AppKit
     }
     func connect() {
         guard !busy else { return }
-        // The connection button always negotiates SSH, then USB ADB. Switching
+        // The main connection always uses SSH. Switching
         // a stored legacy preference must not discard a local launcher draft.
-        if connectionMode != .automatic {
-            connectionMode = .automatic
+        if connectionMode != .ssh {
+            connectionMode = .ssh
             do { try secureDirectory(storage); try saveJSON(connectionMode, storage.appendingPathComponent("connection-mode.json")) }
             catch { append("Не удалось сохранить способ подключения: " + error.localizedDescription); return }
         }
@@ -316,7 +318,6 @@ import AppKit
         guard !busy && !terminalActive && !systemRestorePending && permitsSSHOperations else { return }
         guard !webPassword.isEmpty else { append("Введите пароль веб-интерфейса для первоначальной настройки"); return }
         guard !agentPassword.isEmpty else { append("Введите отдельный пароль агента для подготовки SSH"); return }
-        guard !backupSuffix.isEmpty else { append("Введите ключ расшифровки бэкапа (backup-key suffix)"); return }
         let password = webPassword, agentSecret = agentPassword, suffix = backupSuffix; webPassword = ""; agentPassword = ""; backupSuffix = ""
         let config = connection, root = storage, assets = resources
         let expectedIdentity = connectedIdentity, expectedIMEI = connectedIMEI ?? channelSummary?.primaryIMEI
@@ -551,6 +552,7 @@ import AppKit
         imeiCheckResult = lines.joined(separator: "\n")
     }
     func refreshBackups() {
+        diagnosticADBPending = FileManager.default.fileExists(atPath: storage.appendingPathComponent("adb-access-pending.json").path)
         setupPending = FileManager.default.fileExists(atPath: storage.appendingPathComponent("setup-pending.json").path)
         pendingOperation = FileManager.default.fileExists(atPath: storage.appendingPathComponent("pending.json").path)
         let dir = storage.appendingPathComponent("Backups")

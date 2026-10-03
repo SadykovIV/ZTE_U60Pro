@@ -6,6 +6,20 @@ using System.Text.RegularExpressions;
 namespace ZteImeiStudio.Transport;
 
 public sealed record AdbDevice(string Serial, string UsbDescriptor);
+public sealed record AdbDeviceState(string Serial, string State, string? UsbDescriptor);
+public sealed record AdbUsbInventory(IReadOnlyList<AdbDevice> ReadyDevices,
+    IReadOnlyList<AdbDeviceState> ObservedDevices)
+{
+    public string UnavailableReason => ObservedDevices.Any(d => d.State == "unauthorized")
+        ? "ADB видит устройство, но доступ не разрешён (unauthorized). Подтвердите отладку на модеме, если он показывает запрос."
+        : ObservedDevices.Any(d => d.State == "offline")
+        ? "ADB видит устройство в состоянии offline. Переподключите USB-кабель и повторите проверку."
+        : ObservedDevices.Any(d => d.State == "no permissions")
+        ? "ADB видит USB-устройство, но у компьютера нет разрешения на доступ."
+        : ObservedDevices.Any(d => d.State == "device")
+        ? "ADB видит устройство, но не подтвердил единственное USB-подключение. Оставьте подключённым только нужный модем."
+        : "USB ADB не обнаружен. Проверьте кабель данных и драйвер Android ADB в диспетчере устройств Windows.";
+}
 
 /// <summary>
 /// Runs the bundled Windows adb.exe with ArgumentList, a bounded response,
@@ -20,6 +34,10 @@ public sealed class AdbTransport
         @"^__ZTE_RESULT_[A-F0-9]{32}__$", RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
     public string ExecutablePath { get; }
+    private readonly Func<IReadOnlyList<string>, TimeSpan?, CancellationToken, Task<RemoteResult>>? _runner;
+
+    internal AdbTransport(Func<IReadOnlyList<string>, TimeSpan?, CancellationToken, Task<RemoteResult>> runner)
+        : this() => _runner = runner;
 
     public AdbTransport(string? executablePath = null)
     {
@@ -33,10 +51,11 @@ public sealed class AdbTransport
         TimeSpan? timeout = null, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(arguments);
-        if (!File.Exists(ExecutablePath))
-            throw new FileNotFoundException("В комплекте отсутствует Windows adb.exe.", ExecutablePath);
         if (arguments.Count is < 1 or > 64 || arguments.Any(a => a is null || a.IndexOf('\0') >= 0 || a.Length > 128 * 1024))
             throw new ArgumentException("Недопустимые аргументы ADB.", nameof(arguments));
+        if (_runner is not null) return await _runner(arguments, timeout, ct).ConfigureAwait(false);
+        if (!File.Exists(ExecutablePath))
+            throw new FileNotFoundException("В комплекте отсутствует Windows adb.exe.", ExecutablePath);
 
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(ct);
         lifetime.CancelAfter(EffectiveTimeout(timeout));
@@ -73,32 +92,63 @@ public sealed class AdbTransport
     }
 
     public async Task<IReadOnlyList<AdbDevice>> GetUsbDevicesAsync(CancellationToken ct = default)
+        => (await InspectUsbAsync(ct).ConfigureAwait(false)).ReadyDevices;
+
+    public async Task<AdbUsbInventory> InspectUsbAsync(CancellationToken ct = default)
     {
         var result = await RunAsync(["devices", "-l"], TimeSpan.FromSeconds(15), ct).ConfigureAwait(false);
         if (!result.Success) throw new IOException("ADB не смог получить список USB-устройств.");
         if (result.Stdout.Length > 64 * 1024) throw new InvalidDataException("Список ADB слишком велик.");
-        var devices = new List<AdbDevice>();
+        var observed = ParseDeviceList(Encoding.UTF8.GetString(result.Stdout));
+        var devices = observed.Where(d => d.State == "device" && d.UsbDescriptor is not null)
+            .Select(d => new AdbDevice(d.Serial, d.UsbDescriptor!)).ToList();
+        // Windows adb devices -l commonly omits usb:. A successful -d proof
+        // establishes the transport without accepting a TCP device or emulator.
+        if (observed.Any(d => d.State == "device" && d.UsbDescriptor is null))
+        {
+            var proof = await RunAsync(["-d", "get-serialno"], TimeSpan.FromSeconds(10), ct).ConfigureAwait(false);
+            if (proof.Success && proof.Stdout.Length <= 1024)
+            {
+                var serial = Encoding.UTF8.GetString(proof.Stdout).Trim();
+                var candidate = observed.SingleOrDefault(d => d.Serial == serial && d.State == "device");
+                if (candidate is not null && devices.All(d => d.Serial != serial))
+                    devices.Add(new AdbDevice(serial, "usb:confirmed-by-adb-d"));
+            }
+        }
+        return new AdbUsbInventory(devices, observed);
+    }
+
+    public static IReadOnlyList<AdbDeviceState> ParseDeviceList(string text)
+    {
+        if (Encoding.UTF8.GetByteCount(text) > 64 * 1024) throw new InvalidDataException("Список ADB слишком велик.");
+        var devices = new List<AdbDeviceState>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var line in Encoding.UTF8.GetString(result.Stdout).Split('\n'))
+        foreach (var line in text.Split('\n'))
         {
             var fields = line.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-            if (fields.Length < 2 || fields[1] != "device") continue;
-            ValidateSerial(fields[0]);
+            if (fields.Length < 2) continue;
+            var state = fields[1] == "no" && fields.Length > 2 && fields[2] == "permissions" ? "no permissions" : fields[1];
+            if (state is not ("device" or "offline" or "unauthorized" or "no permissions")) continue;
+            if (!Regex.IsMatch(fields[0], @"^[A-Za-z0-9._-]{1,256}$", RegexOptions.CultureInvariant) ||
+                fields[0].StartsWith("emulator-", StringComparison.Ordinal) ||
+                fields[0].Contains("_adb-", StringComparison.Ordinal) || fields[0].Contains("_tcp", StringComparison.Ordinal)) continue;
             if (!seen.Add(fields[0])) throw new InvalidDataException("ADB вернул повторяющийся serial.");
             var descriptors = fields.Where(f => f.StartsWith("usb:", StringComparison.Ordinal)).ToArray();
-            if (descriptors.Length != 1 || !UsbDescriptorPattern.IsMatch(descriptors[0])) continue;
-            devices.Add(new AdbDevice(fields[0], descriptors[0]));
+            if (descriptors.Length > 1 || descriptors.Any(d => !UsbDescriptorPattern.IsMatch(d)))
+                throw new InvalidDataException("ADB вернул неоднозначное описание USB.");
+            devices.Add(new AdbDeviceState(fields[0], state, descriptors.SingleOrDefault()));
         }
         return devices;
     }
 
     public async Task<string> SelectSingleUsbSerialAsync(CancellationToken ct = default)
     {
-        var devices = await GetUsbDevicesAsync(ct).ConfigureAwait(false);
+        var inventory = await InspectUsbAsync(ct).ConfigureAwait(false);
+        var devices = inventory.ReadyDevices;
         return devices.Count switch
         {
             1 => devices[0].Serial,
-            0 => throw new InvalidOperationException("Нет подключённого и разрешённого USB ADB-модема."),
+            0 => throw new InvalidOperationException(inventory.UnavailableReason),
             _ => throw new InvalidOperationException("Подключено несколько USB ADB-устройств: укажите serial после сверки модема."),
         };
     }

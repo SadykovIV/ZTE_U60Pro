@@ -27,6 +27,7 @@ private final class SSH: RemoteTransport {
 }
 private final class ADB: HostCommandRunner {
     var devices = ["USB-A"], cids = ["USB-A": cid], usb = true
+    var physicalSerial: String?
     var calls: [[String]] = [], queryCount = 0, identityReads = 0
     var changeAfterQuery = false, failQueries = false, producerStatus = 0
     var secretOutput = "usb result\npassword=TOP-SECRET\n"
@@ -35,6 +36,7 @@ private final class ADB: HostCommandRunner {
         if arguments == ["devices", "-l"] {
             return CommandResult(status: 0, stdout: Data(("List of devices attached\n" + devices.map { $0 + " device " + (usb ? "usb:1 " : "") + "transport_id:1\n" }.joined()).utf8), stderr: Data())
         }
+        if arguments == ["-d", "get-serialno"] { return CommandResult(status: physicalSerial == nil ? 1 : 0, stdout: Data((physicalSerial ?? "").utf8), stderr: Data()) }
         try check(arguments.count == 4 && arguments[0] == "-s" && arguments[2] == "shell", "Non-read-only ADB action")
         let command = arguments[3], serial = arguments[1]
         guard let marker = ADBClient.shellMarker(in: command) else { throw Failure.assertion("Missing footer nonce") }
@@ -87,6 +89,11 @@ private final class Fixture {
             let f = try Fixture(); f.ssh.thrown = true
             try check(try f.collect().transport == "adb", "Missing SSH files blocked ADB")
         }
+        try test("ADB USB selector resolves a real USB backend without a usb descriptor") {
+            let f = try Fixture(); f.adb.usb = false; f.adb.physicalSerial = "USB-A"
+            let report = try f.collect()
+            try check(report.transport == "adb" && report.identityVerified == true && f.adb.calls.contains(["-d", "get-serialno"]), "Confirmed physical USB was ignored")
+        }
         try test("host key mismatch never silently changes target or transport") {
             let f = try Fixture(); f.ssh.message = "WARNING REMOTE HOST IDENTIFICATION HAS CHANGED! Host key verification failed."
             let report = try f.collect()
@@ -117,6 +124,13 @@ private final class Fixture {
             let f = try Fixture()
             let saved: [String: Any] = ["cid": cid, "identity": try JSONSerialization.jsonObject(with: Data(webInfo.utf8))]
             try savePrivate(JSONSerialization.data(withJSONObject: saved), f.root.appendingPathComponent("setup-pending.json"))
+            let report = try f.collect()
+            try check(report.transport == "adb" && report.selectionReason?.contains("сохранённой идентификации") == true, "Pending identity ignored")
+        }
+        try test("saved diagnostic activation binds USB identity across restart") {
+            let f = try Fixture()
+            let saved: [String: Any] = ["cid": cid, "identity": try JSONSerialization.jsonObject(with: Data(webInfo.utf8))]
+            try savePrivate(JSONSerialization.data(withJSONObject: saved), f.root.appendingPathComponent("adb-access-pending.json"))
             let report = try f.collect()
             try check(report.transport == "adb" && report.selectionReason?.contains("сохранённой идентификации") == true, "Pending identity ignored")
         }

@@ -69,6 +69,8 @@ public sealed partial class ImeiEngine(IRemoteShell shell, string storageRoot, s
         var handle = new FileStream(LocalLock, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
         try
         {
+            if (File.Exists(Path.Combine(storageRoot,"adb-access-pending.json")))
+                throw new InvalidOperationException("Сначала завершите включение диагностического ADB.");
             LockOwnership owner;
             if (File.Exists(LockJournal))
             {

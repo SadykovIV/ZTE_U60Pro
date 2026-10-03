@@ -38,7 +38,7 @@ final class SSHAccountManager: @unchecked Sendable {
                     "Пароль SSH: 8–128 печатных латинских символов, цифр или знаков без перевода строки.")
     }
     private func checkPending() throws {
-        for name in ["pending.json", "setup-pending.json"] {
+        for name in ["pending.json", "setup-pending.json", "adb-access-pending.json"] {
             try require(!FileManager.default.fileExists(atPath: root.appendingPathComponent(name).path),
                         "Сначала завершите текущую настройку или смену IMEI")
         }

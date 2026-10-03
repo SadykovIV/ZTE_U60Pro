@@ -11,16 +11,22 @@ using ZteImeiStudio.Transport;
 
 namespace ZteImeiStudio.Windows.Core;
 
+public sealed record AdbAccessResult(string Serial, DeviceIdentity Identity, WebIdentity WebIdentity, bool AlreadyAvailable);
+
 public sealed record OnboardingResult(string Cid, string FirmwareHash, string Imei,
     string KeyPath, string KnownHostsPath, bool AlreadyConfigured);
 
 internal sealed class OnboardingPending
 {
+    public string Intent { get; set; } = "preparation";
     public string Id { get; set; } = "";
     public WebIdentity WebIdentity { get; set; } = new("", "", "");
     public string BackupDirectory { get; set; } = "";
     public string Phase { get; set; } = "prepared";
     public bool RestoreRequested { get; set; }
+    public bool DiagnosticRebootRequested { get; set; }
+    public bool DirectAdbRequested { get; set; }
+    public string? DirectAdbOutcome { get; set; }
     public bool InstallRequested { get; set; }
     public string? AdbSerial { get; set; }
     public string? Cid { get; set; }
@@ -31,14 +37,41 @@ internal sealed class OnboardingPending
     public bool? NewAgent { get; set; }
 
     public bool CanRequestRestore(bool adbMatched, bool backupAlreadyEnablesAdb) =>
-        !adbMatched && !backupAlreadyEnablesAdb && !RestoreRequested && !InstallRequested;
+        !adbMatched && !backupAlreadyEnablesAdb && !RestoreRequested && !InstallRequested && !DiagnosticRebootRequested;
 
     public bool CanStartInstallation => !InstallRequested;
+    public bool CanRequestDirectAdb => !DirectAdbRequested && !RestoreRequested && !InstallRequested && !DiagnosticRebootRequested;
+
+    public async Task RequestDirectAdbOnceAsync(Func<OnboardingPending, Task> persist, Func<Task> send)
+    {
+        if (!CanRequestDirectAdb) throw new InvalidOperationException("Запрос включения ADB уже отправлялся; повтор запрещён.");
+        DirectAdbRequested = true;
+        DirectAdbOutcome = "requested";
+        await persist(this).ConfigureAwait(false);
+        try { await send().ConfigureAwait(false); DirectAdbOutcome = "accepted"; }
+        catch (ModemWebException error) when (error.Kind == WebFailureKind.RpcRejected)
+        { DirectAdbOutcome = "rejected"; }
+        catch (Exception error) when (error is HttpRequestException or TimeoutException || error is IOException)
+        { DirectAdbOutcome = "uncertain"; }
+        await persist(this).ConfigureAwait(false);
+    }
+
+    public async Task RequestDiagnosticRebootOnceAsync(Func<OnboardingPending,Task> persist, Func<Task> send)
+    {
+        if (Intent != "diagnostic-adb" || DiagnosticRebootRequested || RestoreRequested || InstallRequested)
+            throw new InvalidOperationException("Диагностическая перезагрузка уже запрошена или несовместима с текущей операцией.");
+        DiagnosticRebootRequested = true;
+        Phase = "diagnostic-reboot-requested";
+        await persist(this).ConfigureAwait(false);
+        try { await send().ConfigureAwait(false); }
+        catch (Exception error) when (error is HttpRequestException or TimeoutException || error is IOException and not ModemWebException)
+        { /* A lost acknowledgement cannot authorize another reboot. */ }
+    }
 
     public async Task RequestRestoreOnceAsync(Func<OnboardingPending, Task> persist,
         Func<Task> send)
     {
-        if (RestoreRequested || InstallRequested)
+        if (RestoreRequested || InstallRequested || DiagnosticRebootRequested)
             throw new InvalidOperationException("Восстановление уже запрошено; повторная отправка запрещена.");
         RestoreRequested = true;
         Phase = "restore-requested";
@@ -72,12 +105,17 @@ public sealed class OnboardingEngine
     private readonly string _resources;
     private readonly AdbTransport _adb;
     private readonly bool _skipFirmwareCheck;
-    private string PendingPath => Path.Combine(_storage, "setup-pending.json");
+    private readonly Action<string>? _progress;
+    private string _lastAdbDiagnostic = "USB ADB не обнаружен.";
+    private bool _diagnosticAccess;
+    internal Func<ModemWebClient>? WebFactory { get; init; }
+    private string BackupFolder => _diagnosticAccess ? "ADBAccessBackups" : "SetupBackups";
+    private string PendingPath => Path.Combine(_storage, _diagnosticAccess ? "adb-access-pending.json" : "setup-pending.json");
     private string KeyPath => Path.Combine(_storage, "SSH", "id_ed25519");
     private string KnownHostsPath => Path.Combine(_storage, "SSH", "known_hosts");
 
     public OnboardingEngine(string host, string storageRoot, string resourcesRoot,
-        AdbTransport adb, bool skipFirmwareCheck = false)
+        AdbTransport adb, bool skipFirmwareCheck = false, Action<string>? progress = null)
     {
         WebTransport.ValidateIpv4(host);
         _host = host;
@@ -85,6 +123,7 @@ public sealed class OnboardingEngine
         _resources = Path.GetFullPath(resourcesRoot);
         _adb = adb;
         _skipFirmwareCheck = skipFirmwareCheck;
+        _progress = progress;
     }
 
     public async Task<OnboardingResult> PrepareAsync(string webPassword,
@@ -94,18 +133,18 @@ public sealed class OnboardingEngine
             throw new ArgumentException("Введите пароль штатного веб-интерфейса.", nameof(webPassword));
         if (string.IsNullOrEmpty(agentPassword) || agentPassword.Contains('\0'))
             throw new ArgumentException("Введите отдельный пароль агента.", nameof(agentPassword));
-        if (string.IsNullOrEmpty(backupKeySuffix) || Encoding.UTF8.GetByteCount(backupKeySuffix) > 128 || backupKeySuffix.Contains('\0'))
-            throw new ArgumentException("Введите Backup-key suffix для вашей прошивки.", nameof(backupKeySuffix));
         Directory.CreateDirectory(_storage);
         using var localLock = new FileStream(Path.Combine(_storage, "operation.lock"),
             FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
         if (File.Exists(Path.Combine(_storage, "imei-pending.json")) ||
             File.Exists(Path.Combine(_storage, "pending.json")) ||
-            File.Exists(Path.Combine(_storage, "system-restore-pending.json")))
+            File.Exists(Path.Combine(_storage, "system-restore-pending.json")) ||
+            File.Exists(Path.Combine(_storage, "adb-access-pending.json")))
             throw new InvalidOperationException("Сначала завершите незавершённую операцию с модемом.");
 
         var hashes = await VerifyAssetsAsync(ct).ConfigureAwait(false);
-        using var web = new ModemWebClient(_host);
+        _progress?.Invoke("Вход в Web и сохранение исходного бэкапа настроек.");
+        using var web = WebFactory?.Invoke() ?? new ModemWebClient(_host);
         await web.LoginAsync(webPassword, ct).ConfigureAwait(false);
         var webIdentity = await web.GetIdentityAsync(_skipFirmwareCheck, ct).ConfigureAwait(false);
         var encrypted = await web.DownloadFreshBackupAsync(ct).ConfigureAwait(false);
@@ -116,13 +155,10 @@ public sealed class OnboardingEngine
         await WritePrivateAsync(Path.Combine(backupDirectory, "back_parameter.original"), encrypted, ct)
             .ConfigureAwait(false);
         await WriteJsonAsync(Path.Combine(backupDirectory, "identity.json"), webIdentity, ct).ConfigureAwait(false);
-        var patch = BackupPatch.Prepare(encrypted, webIdentity.Imei, backupKeySuffix);
         await WriteJsonAsync(Path.Combine(backupDirectory, "manifest.json"), new
         {
-            encryptedSHA256 = patch.OriginalHash,
-            patchedSHA256 = patch.PatchedHash,
-            suffixVerified = true,
-            adbAlreadyEnabled = patch.AlreadyEnabled,
+            encryptedSHA256 = Sha(encrypted), suffixVerified = false,
+            sourceBackupFile = "back_parameter.original",
         }, ct).ConfigureAwait(false);
 
         var pending = await LoadPendingAsync(ct).ConfigureAwait(false);
@@ -139,7 +175,7 @@ public sealed class OnboardingEngine
         {
             if (pending.WebIdentity != webIdentity || !Guid.TryParse(pending.Id, out _))
                 throw new InvalidDataException("Незавершённая настройка относится к другому устройству.");
-            if (!pending.RestoreRequested && !pending.InstallRequested)
+            if (!pending.RestoreRequested && !pending.InstallRequested && !pending.DiagnosticRebootRequested)
             {
                 pending.BackupDirectory = backupDirectory;
                 await SavePendingAsync(pending, ct).ConfigureAwait(false);
@@ -157,32 +193,11 @@ public sealed class OnboardingEngine
                 KeyPath, KnownHostsPath, true);
         }
 
+        _progress?.Invoke("Проверка уже работающего USB ADB: транспорт, root и идентичность модема.");
         var match = await FindMatchingAdbAsync(webIdentity, ct).ConfigureAwait(false);
-        if (match is null && !IsB31(webIdentity))
-            throw new InvalidOperationException("Для экспериментальной B02 нужен уже работающий root USB ADB.");
-        if (pending.CanRequestRestore(match is not null, patch.AlreadyEnabled))
-        {
-            if (await web.GetIdentityAsync(_skipFirmwareCheck, ct).ConfigureAwait(false) != webIdentity)
-                throw new InvalidDataException("Устройство изменилось перед включением ADB.");
-            await WritePrivateAsync(Path.Combine(pending.BackupDirectory, "back_parameter.adb-only"),
-                patch.PatchedEncrypted, ct).ConfigureAwait(false);
-            await web.UploadBackupAsync(patch.PatchedEncrypted, ct).ConfigureAwait(false);
-            if (await web.GetIdentityAsync(_skipFirmwareCheck, ct).ConfigureAwait(false) != webIdentity)
-                throw new InvalidDataException("Устройство изменилось перед восстановлением веб-бэкапа.");
-            try
-            {
-                await pending.RequestRestoreOnceAsync(
-                    value => SavePendingAsync(value, ct),
-                    () => web.RestoreBackupAsync(ct)).ConfigureAwait(false);
-            }
-            catch (RestoreDeliveryUncertainException)
-            {
-                // A disconnected HTTP request may already have started restore.
-                // Wait for ADB; do not submit the same restore again.
-            }
-        }
-        match ??= await WaitForAdbAsync(webIdentity, ct).ConfigureAwait(false);
+        match = await EnsureAdbAsync(web, webIdentity, encrypted, pending, match, webPassword, backupKeySuffix, ct).ConfigureAwait(false);
         var (serial, identity) = match.Value;
+        _progress?.Invoke("USB ADB подтверждён: root, ARM64 и идентичность модема совпали. Проверяется профиль установщика.");
         var profile = InstallerProfile(webIdentity, identity);
         if (pending.Cid is not null && pending.Cid != identity.Cid ||
             pending.FirmwareHash is not null && pending.FirmwareHash != identity.FirmwareHash ||
@@ -262,8 +277,233 @@ public sealed class OnboardingEngine
             KeyPath, KnownHostsPath, false);
     }
 
+    public Task<AdbAccessResult> EnableDiagnosticAdbAsync(string webPassword, string backupKeySuffix = "",
+        DeviceIdentity? expectedIdentity = null, string? expectedImei = null, CancellationToken ct = default)
+    {
+        var diagnostic = new OnboardingEngine(_host, _storage, _resources, _adb, skipFirmwareCheck: _skipFirmwareCheck, progress: _progress)
+        { _diagnosticAccess = true, WebFactory = WebFactory };
+        return diagnostic.EnableDiagnosticAdbCoreAsync(webPassword, backupKeySuffix, expectedIdentity, expectedImei, ct);
+    }
+
+    private async Task<AdbAccessResult> EnableDiagnosticAdbCoreAsync(string webPassword, string backupKeySuffix,
+        DeviceIdentity? expectedIdentity, string? expectedImei, CancellationToken ct)
+    {
+        if ((string.IsNullOrEmpty(webPassword) && !File.Exists(PendingPath)) || webPassword.Contains('\0'))
+            throw new ArgumentException("Введите пароль штатного веб-интерфейса.", nameof(webPassword));
+        Directory.CreateDirectory(_storage);
+        using var localLock = new FileStream(Path.Combine(_storage, "operation.lock"),
+            FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+        using var imeiLock = new FileStream(Path.Combine(_storage,"imei-operation.lock"),
+            FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None);
+        foreach (var competing in new[] { "setup-pending.json", "imei-pending.json", "pending.json", "system-restore-pending.json" })
+            if (File.Exists(Path.Combine(_storage, competing)))
+                throw new InvalidOperationException("Сначала завершите незавершённую подготовку или восстановление модема.");
+        await VerifyToolHashAsync(Path.Combine(_resources, "Tools", "adb.exe"),
+            "b4a6b455702684652cccf7b46258b29e653538904359a58fd4931cf3ef286b3f", ct).ConfigureAwait(false);
+        var pending = await LoadPendingAsync(ct).ConfigureAwait(false);
+        using var web = WebFactory?.Invoke() ?? new ModemWebClient(_host);
+        WebIdentity webIdentity;
+        if (pending?.RestoreRequested == true || pending?.DirectAdbRequested == true || pending?.DiagnosticRebootRequested == true)
+        {
+            // Restore is already committed locally. Resume observation only, even
+            // if rebooting firmware has not brought the Web service back yet.
+            webIdentity = pending.WebIdentity;
+            _progress?.Invoke("Продолжение проверки ADB после восстановления: повторная отправка не выполняется.");
+        }
+        else
+        {
+            _progress?.Invoke("Диагностический ADB: вход в Web и сверка модема.");
+            await web.LoginAsync(webPassword, ct).ConfigureAwait(false);
+            webIdentity = await web.GetIdentityAsync(skipFirmwareCheck: true, ct).ConfigureAwait(false);
+        }
+        if (expectedImei is not null && expectedImei != webIdentity.Imei || pending is not null && pending.WebIdentity != webIdentity)
+            throw new InvalidDataException("Web относится к другому модему; включение ADB остановлено.");
+        void CheckIdentity(DeviceIdentity identity)
+        {
+            if (expectedIdentity is not null && (identity.Cid != expectedIdentity.Cid || identity.FirmwareHash != expectedIdentity.FirmwareHash) ||
+                pending?.Cid is not null && identity.Cid != pending.Cid ||
+                pending?.FirmwareHash is not null && identity.FirmwareHash != pending.FirmwareHash)
+                throw new InvalidDataException("CID или прошивка диагностического ADB не совпали с ожидаемым модемом.");
+        }
+        async Task ConfirmAsync((string Serial, DeviceIdentity Identity) found)
+        {
+            CheckIdentity(found.Identity);
+            var confirmed = await FindMatchingAdbAsync(webIdentity, ct).ConfigureAwait(false);
+            if (confirmed is null || confirmed.Value != found)
+                throw new InvalidDataException("USB, CID или boot ID изменились при окончательной проверке ADB.");
+            CheckIdentity(confirmed.Value.Identity);
+            if (pending is not null)
+            {
+                pending.Cid = found.Identity.Cid;
+                pending.FirmwareHash = found.Identity.FirmwareHash;
+                pending.AdbSerial = found.Serial;
+                pending.Phase = "adb-ready";
+                await FinishAsync(pending, ct).ConfigureAwait(false);
+            }
+        }
+        var match = await FindMatchingAdbAsync(webIdentity, ct).ConfigureAwait(false);
+        if (match is not null)
+        {
+            await ConfirmAsync(match.Value).ConfigureAwait(false);
+            _progress?.Invoke("Диагностический root ADB уже доступен. Изменения модема не требуются.");
+            return new AdbAccessResult(match.Value.Serial, match.Value.Identity, webIdentity, true);
+        }
+        if (pending?.RestoreRequested == true || pending?.DiagnosticRebootRequested == true)
+        {
+            match = await WaitForAdbAsync(webIdentity, ct).ConfigureAwait(false);
+            await ConfirmAsync(match.Value).ConfigureAwait(false);
+            return new AdbAccessResult(match.Value.Serial, match.Value.Identity, webIdentity, false);
+        }
+        var directAlreadyWaited = false;
+        if (pending?.DirectAdbRequested == true)
+        {
+            match = await TryWaitForAdbAsync(webIdentity, TimeSpan.FromSeconds(90), ct).ConfigureAwait(false);
+            if (match is not null)
+            {
+                await ConfirmAsync(match.Value).ConfigureAwait(false);
+                return new AdbAccessResult(match.Value.Serial, match.Value.Identity, webIdentity, false);
+            }
+            directAlreadyWaited = true;
+            await web.LoginAsync(webPassword, ct).ConfigureAwait(false);
+            if (await web.GetIdentityAsync(true, ct).ConfigureAwait(false) != webIdentity)
+                throw new InvalidDataException("Устройство изменилось после переключения USB.");
+        }
+        if (!_skipFirmwareCheck && !IsB31(webIdentity))
+            throw new InvalidOperationException("Для включения ADB на этой прошивке включите «Пропустить проверку прошивки». Это не разрешает восстановление бэкапа B31 на другой прошивке.");
+        if (expectedIdentity is not null && expectedImei is null)
+            throw new InvalidDataException("Для включения ADB сначала подтвердите связь ожидаемого CID и IMEI через SSH.");
+        if (pending is null)
+        {
+            var directory = Path.Combine(_storage, BackupFolder, Guid.NewGuid().ToString("D"));
+            Directory.CreateDirectory(directory);
+            pending = new OnboardingPending { Intent = "diagnostic-adb", Id = Guid.NewGuid().ToString("D"),
+                WebIdentity = webIdentity, BackupDirectory = directory, Cid = expectedIdentity?.Cid, FirmwareHash = expectedIdentity?.FirmwareHash };
+        }
+        _progress?.Invoke("Диагностический ADB: сохраняется свежий бэкап перед включением доступа.");
+        var encrypted = await web.DownloadFreshBackupAsync(ct).ConfigureAwait(false);
+        if (await web.GetIdentityAsync(skipFirmwareCheck: true, ct).ConfigureAwait(false) != webIdentity)
+            throw new InvalidDataException("Устройство изменилось во время подготовки бэкапа.");
+        // A resumed request retains its original evidence; only verification is resumed.
+        if (!pending.DirectAdbRequested && !pending.RestoreRequested)
+        {
+            await WritePrivateAsync(Path.Combine(pending.BackupDirectory, "back_parameter.original"), encrypted, ct).ConfigureAwait(false);
+            await WriteJsonAsync(Path.Combine(pending.BackupDirectory, "identity.json"), webIdentity, ct).ConfigureAwait(false);
+            await WriteJsonAsync(Path.Combine(pending.BackupDirectory, "manifest.json"), new
+            { encryptedSHA256 = Sha(encrypted), suffixVerified = false, sourceBackupFile = "back_parameter.original" }, ct).ConfigureAwait(false);
+        }
+        await SavePendingAsync(pending, ct).ConfigureAwait(false);
+        // Legacy methods still require their advertised capability; backup restore remains B31-only.
+        match = await EnsureAdbAsync(web, webIdentity, encrypted, pending, match, webPassword, backupKeySuffix, ct, directAlreadyWaited).ConfigureAwait(false);
+        await ConfirmAsync(match.Value).ConfigureAwait(false);
+        _progress?.Invoke("Диагностический root ADB подтверждён. Агент и SSH не изменялись.");
+        return new AdbAccessResult(match.Value.Serial, match.Value.Identity, webIdentity, false);
+    }
+
+    private async Task<(string Serial, DeviceIdentity Identity)> EnsureAdbAsync(
+        ModemWebClient web, WebIdentity webIdentity, byte[] encrypted, OnboardingPending pending,
+        (string Serial, DeviceIdentity Identity)? match, string webPassword, string backupKeySuffix, CancellationToken ct, bool directAlreadyWaited = false)
+    {
+        if (match is null && pending.CanRequestDirectAdb)
+        {
+            bool? advertised = null;
+            try { advertised = await web.AdvertisesUsbDebugAsync(ct).ConfigureAwait(false); }
+            catch (Exception error) when (error is HttpRequestException or IOException or TimeoutException)
+            { _progress?.Invoke("Список штатных USB-команд недоступен; проверяется известный профиль прошивки."); }
+            if (advertised == true || advertised is null && IsLegacyUsbDebugFirmware(webIdentity))
+            {
+                _progress?.Invoke("Способ 1: штатное переключение USB в debug; запрос отправляется один раз.");
+                if (await web.GetIdentityAsync(_diagnosticAccess || _skipFirmwareCheck, ct).ConfigureAwait(false) != webIdentity)
+                    throw new InvalidDataException("Устройство изменилось перед переключением USB.");
+                await pending.RequestDirectAdbOnceAsync(value => SavePendingAsync(value, ct),
+                    () => web.RequestUsbDebugAsync(ct)).ConfigureAwait(false);
+                _progress?.Invoke(pending.DirectAdbOutcome switch
+                {
+                    "accepted" => "USB debug: запрос принят. Проверяется появление root ADB.",
+                    "rejected" => "USB debug: модем отклонил запрос. Проверяется фактическое состояние ADB.",
+                    _ => "USB debug: ответ не подтверждён. Запрос не повторяется; проверяется состояние ADB.",
+                });
+            }
+            else _progress?.Invoke("Способ 1 пропущен: прошивка не объявляет штатное переключение USB в debug.");
+        }
+        if (match is null && !directAlreadyWaited && pending.DirectAdbRequested && !pending.RestoreRequested && !pending.InstallRequested && !pending.DiagnosticRebootRequested)
+            match = await TryWaitForAdbAsync(webIdentity, TimeSpan.FromSeconds(90), ct).ConfigureAwait(false);
+        // Decryption is needed only for the B31 restore method. An existing ADB
+        // channel or a successful legacy debug switch does not depend on its key.
+        if (match is null && IsB31(webIdentity) && !pending.RestoreRequested && !pending.InstallRequested && !pending.DiagnosticRebootRequested)
+        {
+            _progress?.Invoke("Способ 2: проверка бэкапа B31 для включения USB ADB через rc.local.");
+            // A debug request can temporarily disconnect USB networking. Only a
+            // fresh authenticated identity and backup authorize the next method.
+            if (pending.DirectAdbRequested)
+            {
+                await web.LoginAsync(webPassword, ct).ConfigureAwait(false);
+                if (await web.GetIdentityAsync(_skipFirmwareCheck, ct).ConfigureAwait(false) != webIdentity)
+                    throw new InvalidDataException("Устройство изменилось после переключения USB.");
+                encrypted = await web.DownloadFreshBackupAsync(ct).ConfigureAwait(false);
+                if (await web.GetIdentityAsync(_skipFirmwareCheck, ct).ConfigureAwait(false) != webIdentity)
+                    throw new InvalidDataException("Устройство изменилось при обновлении бэкапа.");
+                await WritePrivateAsync(Path.Combine(pending.BackupDirectory, "back_parameter.after-direct.original"), encrypted, ct).ConfigureAwait(false);
+                await WriteJsonAsync(Path.Combine(pending.BackupDirectory, "manifest.json"), new
+                {
+                    encryptedSHA256 = Sha(encrypted), suffixVerified = false,
+                    sourceBackupFile = "back_parameter.after-direct.original",
+                }, ct).ConfigureAwait(false);
+            }
+            if (string.IsNullOrEmpty(backupKeySuffix) || Encoding.UTF8.GetByteCount(backupKeySuffix) > 128 || backupKeySuffix.Contains('\0'))
+                throw new ArgumentException("Для проверки бэкапа B31 введите Backup-key suffix вашей прошивки. В публичную сборку он не включён.", nameof(backupKeySuffix));
+            var patch = BackupPatch.Prepare(encrypted, webIdentity.Imei, backupKeySuffix);
+            await WriteJsonAsync(Path.Combine(pending.BackupDirectory, "manifest.json"), new
+            {
+                encryptedSHA256 = patch.OriginalHash, patchedSHA256 = patch.PatchedHash,
+                suffixVerified = true, adbAlreadyEnabled = patch.AlreadyEnabled,
+                sourceBackupFile = pending.DirectAdbRequested ? "back_parameter.after-direct.original" : "back_parameter.original",
+            }, ct).ConfigureAwait(false);
+            if (pending.CanRequestRestore(false, patch.AlreadyEnabled))
+            {
+                if (await web.GetIdentityAsync(_skipFirmwareCheck, ct).ConfigureAwait(false) != webIdentity)
+                    throw new InvalidDataException("Устройство изменилось перед включением ADB.");
+                await WritePrivateAsync(Path.Combine(pending.BackupDirectory, "back_parameter.adb-only"),
+                    patch.PatchedEncrypted, ct).ConfigureAwait(false);
+                await web.UploadBackupAsync(patch.PatchedEncrypted, ct).ConfigureAwait(false);
+                if (await web.GetIdentityAsync(_skipFirmwareCheck, ct).ConfigureAwait(false) != webIdentity)
+                    throw new InvalidDataException("Устройство изменилось перед восстановлением веб-бэкапа.");
+                try
+                {
+                    _progress?.Invoke("Восстановление ADB-only бэкапа B31: модем может перезагрузиться. Ожидается root USB ADB.");
+                    await pending.RequestRestoreOnceAsync(
+                        value => SavePendingAsync(value, ct),
+                        () => web.RestoreBackupAsync(ct)).ConfigureAwait(false);
+                }
+                catch (RestoreDeliveryUncertainException)
+                {
+                    // A disconnected HTTP request may already have started restore.
+                    // Wait for ADB; do not submit the same restore again.
+                }
+            }
+            else if (_diagnosticAccess && patch.AlreadyEnabled && !pending.DiagnosticRebootRequested)
+            {
+                if (await web.GetIdentityAsync(true, ct).ConfigureAwait(false) != webIdentity)
+                    throw new InvalidDataException("Устройство изменилось перед диагностической перезагрузкой.");
+                _progress?.Invoke("В бэкапе B31 уже есть включение ADB. Запрашивается одна штатная перезагрузка без восстановления бэкапа.");
+                await pending.RequestDiagnosticRebootOnceAsync(value => SavePendingAsync(value, ct),
+                    () => web.RebootDeviceAsync(ct)).ConfigureAwait(false);
+            }
+            else _progress?.Invoke("В rc.local уже есть включение ADB. Повторное восстановление не требуется; проверяются USB и драйвер.");
+        }
+        if (match is null && !IsB31(webIdentity) && !pending.DirectAdbRequested)
+            throw new InvalidOperationException("Прошивка не объявляет штатный способ включения ADB; B31-восстановление к ней неприменимо. " + _lastAdbDiagnostic);
+        return match ?? await WaitForAdbAsync(webIdentity, ct).ConfigureAwait(false);
+    }
+
     private static bool IsB31(WebIdentity identity) => identity.Firmware == "CN_ZTE_MU5250V1.0.0B31" &&
         identity.Inner == "BD_CNMU5250V1.0.0B31";
+
+    internal static bool IsLegacyUsbDebugFirmware(WebIdentity identity)
+    {
+        var match = Regex.Match(identity.Firmware, @"^CN_ZTE_MU5250V1\.0\.0B(\d{2})$", RegexOptions.CultureInvariant);
+        return match.Success && int.TryParse(match.Groups[1].Value, out var version) && version is > 0 and <= 27 &&
+            identity.Inner == "BD_CNMU5250V1.0.0B" + match.Groups[1].Value;
+    }
 
     private string InstallerProfile(WebIdentity web, DeviceIdentity device)
     {
@@ -337,11 +577,17 @@ public sealed class OnboardingEngine
     }
 
     private async Task<(string Serial, DeviceIdentity Identity)?> FindMatchingAdbAsync(
-        WebIdentity web, CancellationToken ct)
+        WebIdentity web, CancellationToken ct, bool tolerateDiscoveryFailure = false)
     {
         IReadOnlyList<AdbDevice> devices;
-        try { devices = await _adb.GetUsbDevicesAsync(ct).ConfigureAwait(false); }
-        catch (IOException) { return null; }
+        try
+        {
+            var inventory = await _adb.InspectUsbAsync(ct).ConfigureAwait(false);
+            devices = inventory.ReadyDevices;
+            _lastAdbDiagnostic = inventory.UnavailableReason;
+        }
+        catch (Exception error) when (tolerateDiscoveryFailure && (error is TimeoutException || error is IOException and not FileNotFoundException))
+        { _lastAdbDiagnostic = error.Message; return null; }
         var matches = new List<(string, DeviceIdentity)>();
         foreach (var device in devices)
         {
@@ -350,8 +596,8 @@ public sealed class OnboardingEngine
                 var identity = await ReadAdbIdentityAsync(device.Serial, web, ct).ConfigureAwait(false);
                 matches.Add((device.Serial, identity));
             }
-            catch (Exception error) when (error is IOException or InvalidDataException)
-            { /* The unrelated USB device cannot authorize this installation. */ }
+            catch (Exception error) when (error is IOException or InvalidDataException or TimeoutException or JsonException)
+            { _lastAdbDiagnostic = "USB ADB найден, но root и идентичность нужного модема не подтверждены: " + error.Message; }
         }
         if (matches.Count > 1)
             throw new InvalidOperationException("Несколько USB-модемов совпали с ожидаемым устройством.");
@@ -361,14 +607,29 @@ public sealed class OnboardingEngine
     private async Task<(string Serial, DeviceIdentity Identity)> WaitForAdbAsync(
         WebIdentity web, CancellationToken ct)
     {
-        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromMinutes(4);
-        while (DateTimeOffset.UtcNow < deadline)
+        var match = await TryWaitForAdbAsync(web, TimeSpan.FromMinutes(4), ct).ConfigureAwait(false);
+        return match ?? throw new TimeoutException(_lastAdbDiagnostic + " Включение ADB и восстановление не повторяются автоматически; исправьте подключение и продолжите подготовку.");
+    }
+
+    private async Task<(string Serial, DeviceIdentity Identity)?> TryWaitForAdbAsync(
+        WebIdentity web, TimeSpan timeout, CancellationToken ct)
+    {
+        var timer = Stopwatch.StartNew();
+        var lastProgress = TimeSpan.MinValue;
+        string? previous = null;
+        while (timer.Elapsed < timeout)
         {
-            var match = await FindMatchingAdbAsync(web, ct).ConfigureAwait(false);
+            var match = await FindMatchingAdbAsync(web, ct, tolerateDiscoveryFailure: true).ConfigureAwait(false);
             if (match is not null) return match.Value;
+            if (previous != _lastAdbDiagnostic || timer.Elapsed - lastProgress >= TimeSpan.FromSeconds(15))
+            {
+                _progress?.Invoke("Ожидание USB ADB: " + _lastAdbDiagnostic);
+                previous = _lastAdbDiagnostic;
+                lastProgress = timer.Elapsed;
+            }
             await Task.Delay(TimeSpan.FromSeconds(3), ct).ConfigureAwait(false);
         }
-        throw new TimeoutException("USB ADB не появился. Подключите модем кабелем данных и продолжите настройку; веб-восстановление не повторяется автоматически.");
+        return null;
     }
 
     private async Task<DeviceIdentity> ReadAdbIdentityAsync(string serial,
@@ -377,7 +638,7 @@ public sealed class OnboardingEngine
         var reply = await _adb.ShellAsync(serial, IdentityCommand(), TimeSpan.FromSeconds(20), ct)
             .ConfigureAwait(false);
         if (!reply.Success) throw new InvalidDataException("USB ADB не подтвердил root и идентификацию модема.");
-        return ParseIdentity(reply.Stdout, web);
+        return ParseIdentity(reply.Stdout, web, requireInstallerRouter: !_diagnosticAccess);
     }
 
     private static string IdentityCommand() =>
@@ -386,7 +647,7 @@ public sealed class OnboardingEngine
         "cat /sys/block/mmcblk0/device/cid /proc/sys/kernel/random/boot_id; " +
         "ubus call zwrt_web device_info '{}'";
 
-    private static DeviceIdentity ParseIdentity(byte[] bytes, WebIdentity web)
+    internal static DeviceIdentity ParseIdentity(byte[] bytes, WebIdentity web, bool requireInstallerRouter = true)
     {
         if (bytes.Length > 65536) throw new InvalidDataException("Слишком большой ответ идентификации.");
         var text = StrictUtf8.GetString(bytes).Replace("\r\n", "\n", StringComparison.Ordinal);
@@ -403,10 +664,10 @@ public sealed class OnboardingEngine
         var router = HashLine(lines[1], "/usr/bin/diag-router");
         var cid = lines[2].Trim();
         var boot = lines[3].Trim();
-        if (router != ImeiEngine.RouterHash || cid.Length != 32 ||
+        if (cid.Length != 32 ||
             cid.Any(c => c is not (>= '0' and <= '9' or >= 'a' and <= 'f')) ||
             !Guid.TryParse(boot, out _))
-            throw new InvalidDataException("Неверные CID, router SHA256 или boot ID.");
+            throw new InvalidDataException("Неверные CID или boot ID.");
         using var document = JsonDocument.Parse(string.Join('\n', lines.Skip(4)));
         var root = document.RootElement;
         if (root.ValueKind != JsonValueKind.Object ||
@@ -414,6 +675,8 @@ public sealed class OnboardingEngine
             root.GetProperty("integrate_version").GetString() != web.Firmware ||
             root.GetProperty("wa_inner_version").GetString() != web.Inner)
             throw new InvalidDataException("USB/SSH и Web относятся к разным устройствам.");
+        if (requireInstallerRouter && router != ImeiEngine.RouterHash)
+            throw new InvalidOperationException("Модем отвечает через root shell, но версия diag-router не поддерживается установщиком. Автоматическая подготовка остановлена; включать ADB повторно не требуется.");
         return new DeviceIdentity(cid, firmware, boot);
     }
 
@@ -688,13 +951,20 @@ public sealed class OnboardingEngine
             await File.ReadAllBytesAsync(PendingPath, ct).ConfigureAwait(false));
         if (pending is null || !Guid.TryParse(pending.Id, out _) ||
             pending.WebIdentity is null ||
+            pending.Intent != (_diagnosticAccess ? "diagnostic-adb" : "preparation") ||
+            (_diagnosticAccess && pending.InstallRequested) ||
+            (pending.DiagnosticRebootRequested && (!_diagnosticAccess || pending.RestoreRequested || pending.InstallRequested || pending.Phase != "diagnostic-reboot-requested")) ||
+            (!pending.DiagnosticRebootRequested && pending.Phase == "diagnostic-reboot-requested") ||
             string.IsNullOrEmpty(pending.BackupDirectory) ||
-            pending.Phase is not ("prepared" or "restore-requested" or "install-requested" or "ready" or "complete") ||
+            (pending.DirectAdbOutcome is not (null or "requested" or "accepted" or "rejected" or "uncertain")) ||
+            (!pending.DirectAdbRequested && pending.DirectAdbOutcome is not null) ||
+            (pending.DirectAdbRequested && pending.DirectAdbOutcome is null) ||
+            pending.Phase is not ("prepared" or "restore-requested" or "install-requested" or "ready" or "complete" or "diagnostic-reboot-requested") ||
             (pending.RestoreRequested && pending.Phase == "prepared") ||
             (pending.InstallRequested && pending.Phase is "prepared" or "restore-requested") ||
             (!pending.InstallRequested && pending.Phase is "install-requested" or "ready" or "complete") ||
             !Path.GetFullPath(pending.BackupDirectory).StartsWith(
-                Path.GetFullPath(Path.Combine(_storage, "SetupBackups")) + Path.DirectorySeparatorChar,
+                Path.GetFullPath(Path.Combine(_storage, BackupFolder)) + Path.DirectorySeparatorChar,
                 StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException("Повреждён журнал незавершённой установки.");
         return pending;
@@ -705,7 +975,7 @@ public sealed class OnboardingEngine
 
     private async Task FinishAsync(OnboardingPending pending, CancellationToken ct)
     {
-        await WriteJsonAsync(Path.Combine(pending.BackupDirectory, "setup-result.json"), pending, ct)
+        await WriteJsonAsync(Path.Combine(pending.BackupDirectory, _diagnosticAccess ? "adb-access-result.json" : "setup-result.json"), pending, ct)
             .ConfigureAwait(false);
         File.Delete(PendingPath);
     }

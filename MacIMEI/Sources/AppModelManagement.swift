@@ -46,7 +46,7 @@ import AppKit
     }
     func collectDiagnostics() {
         let expected = modemInformation?.identity ?? connectedIdentity
-        let mode = activeChannel ?? connectionMode, session = channelSession, expectedWeb = connectedWebIdentity ?? channelSummary?.webIdentity
+        let mode = diagnosticConnectionMode, session = channelSession, expectedWeb = connectedWebIdentity ?? channelSummary?.webIdentity
         let expectedIMEI = connectedIMEI ?? channelSummary?.primaryIMEI
         let webSecret = webPassword, agentSecret = agentPassword
         runManaged("Собираю диагностическую информацию…", readOnly: true, usesSelectedChannel: true, work: { engine in

@@ -72,6 +72,7 @@ public sealed partial class MainWindow : Window
     private readonly List<Button> _actionButtons = [];
     private Button? _refreshButton;
     private Button? _preparationButton;
+    private Button? _diagnosticAdbButton;
     private readonly Dictionary<string, string> _form = new(StringComparer.Ordinal);
     private readonly Dictionary<string, TextBox> _secretFields = new(StringComparer.Ordinal);
     private StackPanel? _metricRows;
@@ -84,7 +85,9 @@ public sealed partial class MainWindow : Window
     private IReadOnlyList<LogEntry> _logs = [];
     private DeviceSnapshot? _snapshot;
     private ITerminalSession? _terminal;
-    private TextBox? _terminalOutput;
+    private SelectableTextBlock? _terminalOutput;
+    private ScrollViewer? _terminalViewport;
+    private bool _terminalFollowOutput = true;
     private TextBox? _terminalInput;
     private string _terminalText = "";
     private bool _busy;
@@ -283,6 +286,7 @@ public sealed partial class MainWindow : Window
         ClearSecrets();
         _actionButtons.Clear();
         _preparationButton = null;
+        _diagnosticAdbButton = null;
         if (_refreshButton is not null) _actionButtons.Add(_refreshButton);
         var page = Pages[_page];
         _pageTitle.Text = Localization.Translate(page.Title);
@@ -333,24 +337,11 @@ public sealed partial class MainWindow : Window
         switch (_sections[0])
         {
             case 0:
-                AddCard("Подключение к модему", "Адрес и учётные данные используются для выбранного способа подключения.", panel =>
+                AddCard("Подключение к модему", "Обычная работа — по SSH. Для нового модема: Web → USB ADB → агент и SSH. ADB используется для подготовки и диагностики.", panel =>
                 {
                     panel.Children.Add(FieldPair(Field("Адрес модема", "host", "192.168.0.1"), Field("Пользователь SSH", "username", "root")));
                     panel.Children.Add(FieldPair(Field("Пароль веб-интерфейса", "web_password", "Введите пароль", secret: true), Field("Пароль агента / SSH", "agent_password", "Введите пароль", secret: true)));
-                    panel.Children.Add(Field("Backup-key suffix вашей прошивки", "backup_key_suffix", "Только для предварительной подготовки", secret: true));
-                    panel.Children.Add(Muted("Режим подключения"));
-                    var modes = new ComboBox
-                    {
-                        ItemsSource = new[] { "Автоматически", "SSH", "ADB" }.Select(Localization.Translate).ToArray(),
-                        SelectedIndex = Get("mode") switch { "SSH" => 1, "ADB" => 2, _ => 0 },
-                        MinWidth = 220,
-                        HorizontalAlignment = HorizontalAlignment.Left,
-                    };
-                    modes.SelectionChanged += (_, _) => _form["mode"] = modes.SelectedIndex switch
-                    {
-                        1 => "SSH", 2 => "ADB", _ => "Автоматически",
-                    };
-                    panel.Children.Add(modes);
+                    panel.Children.Add(Field("Backup-key suffix вашей прошивки", "backup_key_suffix", "Только для проверки бэкапа B31", secret: true));
                     panel.Children.Add(FileField("Приватный ключ SSH", "key_path", "Использовать локальный ключ"));
                     panel.Children.Add(FileField("Файл known_hosts", "known_hosts_path", "Использовать локальный known_hosts"));
                     var skipCheck = new CheckBox
@@ -367,10 +358,20 @@ public sealed partial class MainWindow : Window
                     var preparation = new WrapPanel { Orientation = Orientation.Horizontal };
                     _preparationButton = ActionButton("Выполнить предварительную подготовку модема", async () =>
                         await ExecuteAsync(ModemOperation.PrepareSsh, ["host", "username", "web_password", "agent_password", "backup_key_suffix", "skip_firmware_check", "key_path", "known_hosts_path"]), true);
-                    _preparationButton.IsEnabled = !_busy && !(_snapshot?.IsConnected == true && _snapshot.ConnectionMode == "SSH");
+                    _preparationButton.IsEnabled = !_busy && _terminal?.IsConnected != true && !_terminalOpening && _snapshot?.AdbActivationPending != true && (_snapshot?.PreparationPending == true || !(_snapshot?.IsConnected == true && _snapshot.ConnectionMode == "SSH"));
                     preparation.Children.Add(_preparationButton);
                     preparation.Children.Add(OperationInfoButton(OperationHelpContent.Preparation));
                     panel.Children.Add(preparation);
+                    var diagnostics = new WrapPanel();
+                    _diagnosticAdbButton = ActionButton(_snapshot?.AdbActivationPending == true ? "Продолжить включение ADB" : "Принудительно включить ADB", async () =>
+                        await ExecuteAsync(ModemOperation.EnableDiagnosticAdb, ["host", "web_password", "backup_key_suffix", "skip_firmware_check"]), false);
+                    _diagnosticAdbButton.Name = "EnableDiagnosticAdb";
+                    _diagnosticAdbButton.IsEnabled = !_busy && _terminal?.IsConnected != true && !_terminalOpening && _snapshot?.PreparationPending != true;
+                    diagnostics.Children.Add(_diagnosticAdbButton);
+                    diagnostics.Children.Add(OperationInfoButton(OperationHelpContent.DiagnosticAdb));
+                    panel.Children.Add(diagnostics);
+                    panel.Children.Add(Muted("Для диагностического ADB нужны USB-кабель и пароль Web выше. Пароль агента не нужен. Доступ можно включить при работающем SSH; возможна перезагрузка модема."));
+                    if (_terminal?.IsConnected == true || _terminalOpening) panel.Children.Add(Muted("Перед включением ADB отключите интерактивный терминал."));
                 });
                 BuildFirmwareResearch();
                 AddSnapshotCard();
@@ -1223,21 +1224,32 @@ public sealed partial class MainWindow : Window
             }, false));
             buttons.Children.Add(ActionButton("Отключить", async () => { _terminalAutoAttempted = true; await CloseTerminalAsync(); }, false));
             panel.Children.Add(buttons);
-            _terminalOutput = new TextBox
+            _terminalOutput = new SelectableTextBlock
             {
                 Text = _terminalText,
-                IsReadOnly = true,
-                AcceptsReturn = true,
-                TextWrapping = TextWrapping.Wrap,
-                MinHeight = 180,
-                MaxHeight = 360,
+                Name = "TerminalOutput",
+                TextWrapping = TextWrapping.NoWrap,
                 FontFamily = new FontFamily("Consolas, Cascadia Mono, monospace"),
                 Background = Canvas,
                 Foreground = Foreground,
             };
-            panel.Children.Add(_terminalOutput);
+            _terminalViewport = new ScrollViewer
+            {
+                Name = "TerminalViewport", Content = _terminalOutput, Height = 320, AllowAutoHide = false,
+                HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
+                VerticalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
+                Background = Canvas,
+            };
+            _terminalViewport.ScrollChanged += (_, args) =>
+            {
+                if (args.ViewportDelta != default && _terminalFollowOutput) FollowTerminalOutput();
+                if (args.ExtentDelta == default && args.ViewportDelta == default)
+                    _terminalFollowOutput = _terminalViewport.Offset.Y >= Math.Max(0, _terminalViewport.Extent.Height - _terminalViewport.Viewport.Height) - 1;
+            };
+            panel.Children.Add(_terminalViewport);
+            FollowTerminalOutput();
             if (_snapshot?.IsConnected != true || _snapshot.ConnectionMode != "SSH") panel.Children.Add(Muted("Для терминала подключитесь к модему по SSH."));
-            _terminalInput = new TextBox { Watermark = Localization.Translate("Команда"), Background = Elevated, Foreground = Foreground };
+            _terminalInput = new TextBox { Name = "TerminalInput", Watermark = Localization.Translate("Команда"), Background = Elevated, Foreground = Foreground };
             _terminalInput.KeyDown += async (_, args) =>
             {
                 if (args.Key == Avalonia.Input.Key.Enter)
@@ -1290,9 +1302,24 @@ public sealed partial class MainWindow : Window
             if (_terminalOutput is not null)
             {
                 _terminalOutput.Text = _terminalText;
-                _terminalOutput.CaretIndex = _terminalText.Length;
+                FollowTerminalOutput();
             }
         });
+
+    private void FollowTerminalOutput()
+    {
+        if (!_terminalFollowOutput || _terminalViewport is not { } viewport) return;
+        // Text layout must establish the new extent before choosing the final
+        // offset; caret movement in a bounded TextBox happened before layout.
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (_terminalFollowOutput && ReferenceEquals(viewport, _terminalViewport))
+            {
+                viewport.UpdateLayout();
+                viewport.ScrollToEnd();
+            }
+        }, DispatcherPriority.Loaded);
+    }
 
     private async Task SendTerminalAsync()
     {
@@ -1601,12 +1628,38 @@ public sealed partial class MainWindow : Window
     private async Task ExecuteAsync(ModemOperation operation, IReadOnlyDictionary<string, string>? parameters)
     {
         if (_busy) return;
+        if (operation == ModemOperation.EnableDiagnosticAdb && (_terminal?.IsConnected == true || _terminalOpening))
+        {
+            SetStatus("Перед включением ADB отключите интерактивный терминал.", true);
+            return;
+        }
         var preserveSecrets = operation == ModemOperation.DiscoverConnections;
         SetBusy(true);
         SetStatus("Выполняется операция на модеме…");
+        var preparationStarted = DateTimeOffset.Now;
+        var preparationActive = operation is ModemOperation.PrepareSsh or ModemOperation.EnableDiagnosticAdb;
+        var readingPreparation = false;
+        var preparationTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        preparationTimer.Tick += async (_, _) =>
+        {
+            if (!preparationActive || readingPreparation) return;
+            readingPreparation = true;
+            try
+            {
+                var logs = await _service.GetLogsAsync(_lifetime.Token);
+                var latest = logs.LastOrDefault(entry => entry.Timestamp >= preparationStarted &&
+                    entry.Message.StartsWith("Подготовка: ", StringComparison.Ordinal));
+                if (preparationActive && latest is not null) SetStatus(latest.Message[12..]);
+            }
+            catch (OperationCanceledException) { }
+            finally { readingPreparation = false; }
+        };
+        if (preparationActive) preparationTimer.Start();
         try
         {
             var result = await _service.RunAsync(new OperationRequest(operation, parameters), _lifetime.Token);
+            preparationActive = false;
+            preparationTimer.Stop();
             if (!preserveSecrets) ClearSecrets();
             SetStatus(result.Message, !result.Success);
             if (result.Values is { } values)
@@ -1616,7 +1669,7 @@ public sealed partial class MainWindow : Window
             }
             if (!string.IsNullOrWhiteSpace(result.Details))
                 await ShowMessageAsync(result.Success ? "Результат" : "Ошибка", result.Details);
-            if (result.Success && !preserveSecrets)
+            if ((result.Success && !preserveSecrets) || operation is ModemOperation.EnableDiagnosticAdb or ModemOperation.Connect)
             {
                 await ReloadSnapshotAsync();
                 if (_page == 2 || (_page == 6 && _sections[6] == 1)) await RefreshBackupsAsync();
@@ -1626,7 +1679,7 @@ public sealed partial class MainWindow : Window
         }
         catch (OperationCanceledException) { SetStatus("Операция отменена.", true); }
         catch (Exception error) { SetStatus(error.Message, true); await ShowMessageAsync("Ошибка", error.Message); }
-        finally { if (!preserveSecrets) ClearSecrets(); SetBusy(false); }
+        finally { preparationActive = false; preparationTimer.Stop(); if (!preserveSecrets) ClearSecrets(); SetBusy(false); }
     }
 
     private async Task RefreshAsync()
@@ -1727,7 +1780,9 @@ public sealed partial class MainWindow : Window
         _busy = busy;
         foreach (var button in _actionButtons) button.IsEnabled = !busy;
         if (_preparationButton is not null)
-            _preparationButton.IsEnabled = !busy && !(_snapshot?.IsConnected == true && _snapshot.ConnectionMode == "SSH");
+            _preparationButton.IsEnabled = !busy && _terminal?.IsConnected != true && !_terminalOpening && _snapshot?.AdbActivationPending != true && (_snapshot?.PreparationPending == true || !(_snapshot?.IsConnected == true && _snapshot.ConnectionMode == "SSH"));
+        if (_diagnosticAdbButton is not null)
+            _diagnosticAdbButton.IsEnabled = !busy && _terminal?.IsConnected != true && !_terminalOpening && _snapshot?.PreparationPending != true;
         if (!busy && _page == 5 && _sections[5] == 2 && !_terminalAutoAttempted)
             _ = LoadPageDataAsync();
         UpdateEsimAvailability();
