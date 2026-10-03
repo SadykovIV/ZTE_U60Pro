@@ -404,6 +404,8 @@ struct ContentView: View {
                     connectionPasswordField("ПАРОЛЬ WEB", placeholder: "Пароль штатной панели", text: $model.webPassword)
                     connectionPasswordField("ПАРОЛЬ АГЕНТА", placeholder: "Текущий или новый пароль", text: $model.agentPassword)
                 }.disabled(model.busy)
+                Text(L10n.text("Если Web недоступен, оставьте его пароль пустым и подключите один root USB ADB модем. Введённый пароль Web включает обязательную проверку совпадения IP и USB-устройства.", "If Web is unavailable, leave its password empty and connect one root USB ADB modem. Entering a Web password requires matching the IP and USB device."))
+                    .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
                 connectionPasswordField("КЛЮЧ БЭКАПА (BACKUP-KEY SUFFIX)", placeholder: "Ключ для вашей прошивки", text: $model.backupSuffix).disabled(model.busy)
                 HStack(alignment: .center, spacing: 14) {
                     Toggle(L10n.text("Не проверять прошивку"), isOn: Binding(get: { model.skipFirmwareCheck }, set: { model.setFirmwareCheckSkipped($0) }))
@@ -425,8 +427,8 @@ struct ContentView: View {
                         .font(.system(size: 11, weight: .medium)).foregroundStyle(StudioStyle.secondary)
                 }
             }
-            connectionRoutingCard
             firmwareResearchCard
+            connectionRoutingCard
         }.onAppear {
             if !model.connectionsChecked && !model.busy { model.discoverConnectionsPassively() }
         }

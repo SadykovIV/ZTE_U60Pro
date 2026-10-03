@@ -71,25 +71,14 @@ final class DiagnosticSession {
 }
 
 enum DiagnosticTransportSelector {
-    static let identityCommand = "set -e; test \"$(id -u)\" = 0; test \"$(uname -m)\" = aarch64; sha256sum /firmware/image/modem.b16 /usr/bin/diag-router; cat /sys/block/mmcblk0/device/cid /proc/sys/kernel/random/boot_id"
+    static let identityCommand = AccessIdentity.command
     static func identityCommand(requireWeb: Bool) -> String {
         identityCommand + (requireWeb ? "; ubus call zwrt_web device_info '{}'" : "")
     }
     static func parseIdentity(_ data: Data, requireWeb: Bool) throws -> DiagnosticDeviceProof {
-        try require(data.count <= 65536, "Слишком большой ответ идентификации диагностики")
-        let lines = CommandText.decode(data).split(separator: "\n").map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
-        try require(lines.count >= 4 && (requireWeb || lines.count == 4), "Неполная идентификация модема")
-        let firmware = try FirmwareCheck.hash(lines[0], path: "/firmware/image/modem.b16")
-        let router = try FirmwareCheck.hash(lines[1], path: "/usr/bin/diag-router")
-        let cid = lines[2], boot = lines[3]
-        try require(cid.count == 32 && cid.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) } && UUID(uuidString: boot) != nil, "Неверные CID или boot ID диагностики")
-        var web: WebIdentity?
-        if requireWeb {
-            guard let object = try JSONSerialization.jsonObject(with: Data(lines.dropFirst(4).joined(separator: "\n").utf8)) as? [String: Any] else { throw IMEIError.message("Нет идентификации веб-устройства через выбранный транспорт") }
-            web = try WebIdentity(object, skipFirmwareCheck: true)
-        }
-        return DiagnosticDeviceProof(identity: Identity(cid: cid, firmwareHash: firmware), routerHash: router, bootID: boot, webIdentity: web)
+        try AccessIdentity.parse(data, requireWeb: requireWeb)
     }
+
     static func hostTrustFailure(_ message: String) -> Bool {
         let lower = message.lowercased()
         return lower.contains("host key verification failed") || lower.contains("remote host identification has changed") || lower.contains("offending") && lower.contains("key")

@@ -337,10 +337,12 @@ public sealed partial class MainWindow : Window
         switch (_sections[0])
         {
             case 0:
+                BuildFirmwareResearch();
                 AddCard("Подключение к модему", "Обычная работа — по SSH. Для нового модема: Web → USB ADB → агент и SSH. ADB используется для подготовки и диагностики.", panel =>
                 {
                     panel.Children.Add(FieldPair(Field("Адрес модема", "host", "192.168.0.1"), Field("Пользователь SSH", "username", "root")));
                     panel.Children.Add(FieldPair(Field("Пароль веб-интерфейса", "web_password", "Введите пароль", secret: true), Field("Пароль агента / SSH", "agent_password", "Введите пароль", secret: true)));
+                    panel.Children.Add(Muted(Localization.IsEnglish ? "With working root USB ADB, leave the Web password empty for access-only installation. Generic mode starts a passive agent; device functions require separate checks." : "При работающем root USB ADB оставьте пароль Web пустым для установки доступа. Универсальный режим запускает пассивный агент; функции модема проверяются отдельно."));
                     panel.Children.Add(Field("Backup-key suffix вашей прошивки", "backup_key_suffix", "Только для проверки бэкапа B31", secret: true));
                     panel.Children.Add(FileField("Приватный ключ SSH", "key_path", "Использовать локальный ключ"));
                     panel.Children.Add(FileField("Файл known_hosts", "known_hosts_path", "Использовать локальный known_hosts"));
@@ -373,7 +375,6 @@ public sealed partial class MainWindow : Window
                     panel.Children.Add(Muted("Для диагностического ADB нужны USB-кабель и пароль Web выше. Пароль агента не нужен. Доступ можно включить при работающем SSH; возможна перезагрузка модема."));
                     if (_terminal?.IsConnected == true || _terminalOpening) panel.Children.Add(Muted("Перед включением ADB отключите интерактивный терминал."));
                 });
-                BuildFirmwareResearch();
                 AddSnapshotCard();
                 break;
             case 1:
@@ -1628,6 +1629,11 @@ public sealed partial class MainWindow : Window
     private async Task ExecuteAsync(ModemOperation operation, IReadOnlyDictionary<string, string>? parameters)
     {
         if (_busy) return;
+        if (operation == ModemOperation.PrepareSsh && _lastResearchInput != ResearchInputKey())
+        {
+            await CollectFirmwareResearchAsync();
+            if (_lastResearchInput != ResearchInputKey()) return;
+        }
         if (operation == ModemOperation.EnableDiagnosticAdb && (_terminal?.IsConnected == true || _terminalOpening))
         {
             SetStatus("Перед включением ADB отключите интерактивный терминал.", true);

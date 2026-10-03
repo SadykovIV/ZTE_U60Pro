@@ -16,12 +16,19 @@ private func specification() -> ResearchSpecification {
 private final class FakeRunner: ResearchProcessRunning {
     var calls: [[String]] = []; var sshFailure = "Connection refused"; var sshOutcome = "failed"; var devices = ["USB-SECRET"]
     var nonroot = false; var mismatch = false; var missingIdentity = false; var changeAfter = false; var probeCalls = 0
+    var physicalMismatch = false; var losePhysicalAfterProbe = false
+    var physicalDelay: TimeInterval = 0; var probeTimeouts = [TimeInterval]()
     var probeOutcome = "success"; var token: ResearchCancellation?; var cancelAfterFirst = false
     var remoteCode = 0; var omitFooter = false; var lineEnding = "\n"
     func run(_ executable: URL, arguments: [String], timeout: TimeInterval, maxBytes: Int, cancellation: ResearchCancellation) throws -> ResearchCommandResult {
         calls.append(arguments)
         if executable.lastPathComponent == "ssh" { return .init(status: 255, stdout: Data(), stderr: Data(sshFailure.utf8), outcome: sshOutcome, duration: 0.01) }
         if arguments == ["version"] { return .init(status: 0, stdout: Data("Android Debug Bridge test".utf8), stderr: Data(), outcome: "success", duration: 0) }
+        if arguments == ["-d", "get-serialno"] {
+            if physicalDelay > 0 { Thread.sleep(forTimeInterval: physicalDelay) }
+            let ok = devices.count == 1 && !(losePhysicalAfterProbe && probeCalls > 0)
+            return .init(status: ok ? 0 : 1, stdout: Data((physicalMismatch ? "OTHER-USB" : devices.first ?? "").utf8), stderr: Data(), outcome: ok ? "success" : "failed", duration: 0)
+        }
         if arguments == ["devices", "-l"] { return .init(status: 0, stdout: Data(("List of devices attached\n" + devices.map { $0 + " device usb:1 transport_id:1\n" }.joined()).utf8), stderr: Data(), outcome: "success", duration: 0) }
         try check(arguments.count == 4 && arguments[0] == "-s" && arguments[2] == "shell", "Unexpected mutation/tool command")
         let command = arguments[3]; guard let marker = ADBClient.shellMarker(in: command) else { throw Failure.assertion("No footer") }
@@ -29,7 +36,7 @@ private final class FakeRunner: ResearchProcessRunning {
         if command.contains(FirmwareResearchCollector.bootstrap) {
             output = "uid=\(nonroot ? "2000" : "0")\narchitecture=aarch64\n" + (missingIdentity ? "" : "cid=\(mismatch ? String(repeating: "a", count: 64) : cidHash)\nboot=\(changeAfter && probeCalls > 0 ? String(repeating: "b", count: 64) : bootHash)\n")
         } else {
-            probeCalls += 1
+            probeCalls += 1; probeTimeouts.append(timeout)
             if cancelAfterFirst { cancellation.cancel() }
             if command.contains("sha256sum") { output = "FR_FACT firmware_sha256=unknown\nFR_FACT router_sha256=known-router\n" }
             else { output = "FR_FACT uid=\(nonroot ? "2000" : "0")\nFR_FACT architecture=aarch64\nFR_FACT root=\(nonroot ? "0" : "1")\nSUPER-SECRET-WEB\npassword=unlabelled-value\nIMEI=867123456789017\n" }
@@ -80,12 +87,29 @@ private final class FakeRunner: ResearchProcessRunning {
         try check(ambiguous.transport == "none" && several.probeCalls == 0, "Ambiguous USB selection")
         let mismatch = FakeRunner(); mismatch.mismatch = true; let mismatchReport = collect(mismatch, mode: .adb, expected: cid)
         try check(mismatchReport.transport == "none" && mismatch.probeCalls == 0, "Mismatched device")
+        let physical = FakeRunner(); physical.physicalMismatch = true
+        try check(collect(physical, mode: .adb).probes.allSatisfy { $0.outcome == "skipped" } && physical.probeCalls == 0, "ADB serial alone must not prove physical USB")
+        let slowUSB = FakeRunner(); slowUSB.physicalDelay = 0.04
+        try check(collect(slowUSB, mode: .adb).outcome == "complete" && slowUSB.probeTimeouts.count == 2 && slowUSB.probeTimeouts.allSatisfy { $0 > 0 && $0 < 0.98 }, "Physical USB proof must share the command deadline")
+        let lostPhysical = FakeRunner(); lostPhysical.losePhysicalAfterProbe = true; lostPhysical.missingIdentity = true
+        try check(collect(lostPhysical, mode: .adb).probes.allSatisfy { $0.outcome == "skipped" } && lostPhysical.probeCalls == 1, "Unbound USB loss must discard active probe and stop")
         let changed = FakeRunner(); changed.changeAfter = true; let changedReport = collect(changed)
         try check(changedReport.probes.allSatisfy { $0.outcome == "skipped" } && changed.probeCalls == 1, "Device change must discard current probe and stop")
         let nonroot = FakeRunner(); nonroot.nonroot = true; let nonrootReport = collect(nonroot)
         try check(nonrootReport.transport == "adb" && nonrootReport.features[0].state == "blocked", "Nonroot diagnosis must collect and report specific blocker")
         let missing = FakeRunner(); missing.missingIdentity = true; let missingReport = collect(missing)
-        try check(missingReport.transport == "adb" && !missingReport.warnings.isEmpty && missing.probeCalls == 0 && missingReport.binding["uid"] == "0", "Missing fingerprints retain bootstrap but cannot bind arbitrary probes")
+        try check(missingReport.transport == "adb" && !missingReport.warnings.isEmpty && missing.probeCalls == 2 && missingReport.binding["uid"] == "0", "Missing fingerprints must still collect bounded read-only evidence without granting authorization")
+        try check(missingReport.bindingStrength == "transport-only" && missingReport.authorization == "none", "Unbound evidence cannot authorize writes")
+        try check(report.bindingStrength == "full" && report.authorization == "none", "Bound evidence cannot authorize writes either")
+        try check(FirmwareResearchCollector.bindingStrength(["boot": bootHash]) == "partial", "Partial binding")
+        let observationSpec = ResearchSpecification(schemaVersion: 1, revision: 1, profiles: [], probes: specification().probes, features: [], observations: [.init(id: "root", title: title, probe: "identity", fact: "root")])
+        for (raw, expectedState) in [("0", "known"), ("1", "known"), ("absent", "absent"), ("missing", "absent"), ("not-assessed", "not-assessed"), ("conflicting", "not-assessed")] {
+            let probe = ResearchProbeResult(id: "identity", title: title, category: "identity", command: "", outcome: "success", exitCode: 0, stdout: "", stderr: "", durationSeconds: 0, facts: ["root": raw])
+            let result = FirmwareResearchCollector.observe(observationSpec, results: [probe])[0]
+            try check(result.sourceStatus == "success" && result.sourceExitCode == 0, "Observation provenance missing")
+            try check(result.state == expectedState && (expectedState == "known" ? result.value == raw : result.value == nil), "Observation state misrepresented unavailable or zero value")
+            try check(FirmwareResearchCollector.observe(observationSpec, results: [probe], continuityLost: true)[0].state == "not-assessed", "Lost continuity cannot certify observations")
+        }
         let timed = FakeRunner(); timed.probeOutcome = "timeout"; let timedReport = collect(timed)
         try check(timedReport.probes.allSatisfy { $0.outcome == "timeout" } && timedReport.features[0].state == "unknown", "Timeout evidence cannot satisfy prerequisites")
         let remoteFailure = FakeRunner(); remoteFailure.remoteCode = 1; let remoteFailureReport = collect(remoteFailure)
@@ -112,16 +136,23 @@ private final class FakeRunner: ResearchProcessRunning {
         try check(stopped.outcome == "cancelled", "Host cancellation")
         let unclosed = try processRunner.run(URL(fileURLWithPath: "/bin/sh"), arguments: ["-c", "sleep 2 & printf inherited"], timeout: 4, maxBytes: 1024, cancellation: ResearchCancellation())
         try check(unclosed.outcome == "timeout", "Inherited incomplete output must not count as success")
-        try check(FirmwareResearchCollector.facts("FR_FACT root=1\nFR_FACT root=0").isEmpty, "Ambiguous duplicate facts")
+        try check(FirmwareResearchCollector.facts("FR_FACT root=1\nFR_FACT root=0")["root"] == "conflicting", "Ambiguous duplicate facts")
+        let fullLength = String(repeating: "x", count: 512)
+        try check(FirmwareResearchCollector.facts("FR_FACT test=" + fullLength)["test"] == fullLength, "512-byte facts omitted")
+        try check(FirmwareResearchCollector.facts("FR_FACT test=" + fullLength + "x").isEmpty && FirmwareResearchCollector.facts("FR_FACT test=tab\tvalue").isEmpty && FirmwareResearchCollector.facts("FR_FACT test=bad\0value").isEmpty, "Oversize or control facts accepted")
+        let dynamicProbe = ResearchProbeResult(id: "identity", title: title, category: "identity", command: "", outcome: "success", exitCode: 0, stdout: "", stderr: "", durationSeconds: 0, facts: ["new_component": "0"])
+        let dynamic = FirmwareResearchCollector.observe(specification(), results: [dynamicProbe])
+        try check(dynamic.count == 1 && dynamic[0].probe == "identity" && dynamic[0].fact == "new_component" && dynamic[0].value == "0", "Unmapped observed facts disappear from inventory")
         let identityProbe = ResearchProbeResult(id: "identity", title: title, category: "identity", command: "id", outcome: "success", exitCode: 0, stdout: "", stderr: "", durationSeconds: 0, facts: ["architecture": "aarch64", "root": "1", "firmware_sha256": "known", "router_sha256": "known-router"])
         try check(FirmwareResearchCollector.profile(specification(), results: [identityProbe]) == nil, "Unrelated probe may not supply firmware hashes")
         let afterChange = FirmwareResearchCollector.assess(specification(), results: [identityProbe], profile: "b31", continuityLost: true)
         try check(afterChange.allSatisfy { $0.state == "unknown" }, "Lost device continuity cannot leave green prerequisites")
+        try check(FirmwareResearchCollector.assess(specification(), results: [identityProbe], profile: "b31", bindingComplete: false).allSatisfy { $0.state == "unknown" }, "Partial binding produced green operation prerequisites")
         let unsupported = FirmwareResearchCollector.assess(specification(), results: [identityProbe], profile: "b02-experimental")
         try check(unsupported.allSatisfy { $0.state == "blocked" }, "A known firmware profile excluded by current operation is a confirmed blocker")
         let bundledResources = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("Resources")
         let bundled = try ResearchSpecification.load(bundledResources)
-        try check(bundled.probes.count == 38 && bundled.features.count == 18 && bundled.revision == 6, "Bundled reviewed specification")
+        try check(bundled.probes.count == 46 && bundled.features.count == 19 && bundled.revision == 7 && bundled.observations?.count == 45, "Bundled reviewed specification")
         var values = [String: [String: String]]()
         for feature in bundled.features { for requirement in feature.requirements { values[requirement.probe, default: [:]][requirement.fact] = requirement.equals } }
         values["boot-protection"]?["restore_readiness"] = "not-assessed"

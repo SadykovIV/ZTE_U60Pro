@@ -4,13 +4,14 @@ enum ResearchUI {
     static func detail(_ value: String) -> String {
         guard L10n.language != "en" else { return value }
         let messages = [
+            "Physical USB identity is unavailable or changed; collection stopped without selecting another transport.": "Физический USB-модем не подтверждён или изменился; сбор остановлен без выбора другого канала.",
             "SSH key or known_hosts file is unavailable.": "SSH-ключ или файл known_hosts недоступен.",
             "USB ADB root shell is available.": "Через USB ADB доступна оболочка с правами root.",
             "USB ADB is available without confirmed root; privilege-dependent results may be unknown.": "USB ADB доступен, права root не подтверждены; часть проверок может остаться без результата.",
             "Strict SSH host key verification passed; firmware research does not require a known firmware hash or root.": "Ключ сервера SSH проверен; для исследования не требуется известный хэш прошивки или root.",
             "CID or boot ID is unavailable. Device continuity has limited evidence; missing facts are not treated as compatible.": "CID или идентификатор загрузки недоступен. Возможности проверки устройства ограничены; отсутствующие сведения не означают совместимость.",
             "The sole USB ADB device was selected. Its relationship to the configured WEB IP address is not established.": "Выбрано единственное устройство USB ADB. Его связь с указанным адресом WEB не установлена.",
-            "CID and boot fingerprints are both unavailable. Only bootstrap evidence was retained; the modem cannot be bound for further probes.": "Отпечатки CID и загрузки недоступны. Сохранены только начальные сведения: невозможно привязать дальнейшие проверки к конкретному модему.",
+            "CID and boot fingerprints are unavailable. Read-only observations use the same transport endpoint; device continuity is not proven and no writes are authorized.": "CID и загрузка недоступны. Чтение продолжается через тот же транспорт; неизменность устройства не доказана, запись не разрешена.",
             "SSH host trust failed; automatic fallback is stopped.": "Ключ сервера SSH не прошёл проверку доверия; автоматический переход на другой канал остановлен.",
             "SSH failed; a responding or untrusted endpoint is not bypassed with ADB.": "Ошибка SSH: при ответе устройства или проблеме доверия переход на ADB не выполняется.",
             "Manual SSH mode requires SSH key and known_hosts files.": "При ручном выборе SSH необходимы ключ и файл known_hosts.",
@@ -29,8 +30,13 @@ enum ResearchUI {
     }
     static func outcome(_ value: String) -> String {
         switch value {
+        case "known": return L10n.text("Наблюдается", "Observed")
+        case "absent": return L10n.text("Отсутствует", "Absent")
+        case "not-assessed": return L10n.text("Не удалось определить", "Not assessed")
+        case "full": return L10n.text("CID и загрузка подтверждены", "CID and boot bound")
+        case "partial": return L10n.text("Частично", "Partial")
+        case "transport-only": return L10n.text("Только транспорт, устройство не привязано", "Transport only, device not bound")
         case "complete": return L10n.text("Сбор завершён", "Collection complete")
-        case "partial": return L10n.text("Собран частичный отчёт", "Partial report collected")
         case "collecting": return L10n.text("Идёт сбор", "Collecting")
         case "cancelled": return L10n.text("Остановлено пользователем", "Cancelled")
         case "success": return L10n.text("Получено", "Collected")
@@ -57,14 +63,14 @@ enum ResearchUI {
 extension ContentView {
     var firmwareResearchCard: some View {
         StudioCard {
-            Label(L10n.text("Исследование прошивки", "Firmware research"), systemImage: "doc.text.magnifyingglass")
+            Label(L10n.text("Проверить устройство", "Check device"), systemImage: "doc.text.magnifyingglass")
                 .font(.system(size: 16, weight: .semibold))
             Text(L10n.text("Проверка условий для функций программы, включая eSIM. Это не общий вердикт совместимости прошивки: отсутствие данных отличается от конкретного препятствия, например прав каталога. Доступна через работающий USB ADB или SSH без ключа бэкапа и отключения проверки прошивки.", "Checks prerequisites for application features, including eSIM. This is not an overall firmware compatibility verdict: missing evidence differs from a specific blocker such as directory permissions. Available through working USB ADB or SSH without a backup key or firmware-check override."))
                 .font(.system(size: 12)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
             Text(L10n.text("Только чтение: без включения ADB, установки, перезагрузки и записи в модем. Результат не разрешает операции записи и не гарантирует их совместимость.", "Read-only: no ADB activation, installation, reboot or modem writes. Findings do not authorize writes or certify their compatibility."))
                 .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 10) {
-                Button(L10n.text("Исследовать прошивку", "Research firmware"), action: model.startFirmwareResearch)
+                Button(L10n.text("Проверить устройство", "Check device"), action: model.startFirmwareResearch)
                     .buttonStyle(StudioButtonStyle(prominent: true)).disabled(!model.canResearchFirmware)
                 if model.firmwareResearchRunning {
                     Button(L10n.text("Остановить", "Stop"), action: model.cancelFirmwareResearch).buttonStyle(StudioButtonStyle())
@@ -82,6 +88,19 @@ extension ContentView {
                     Text(report.transport.uppercased() + " · " + (report.profile ?? L10n.text("профиль неизвестен", "unknown profile")))
                         .font(.system(size: 11, weight: .medium))
                 }.foregroundStyle(StudioStyle.secondary)
+                Text(ResearchUI.outcome(report.bindingStrength ?? "transport-only") + " · " + L10n.text("Разрешение на запись: нет", "Write authorization: none"))
+                    .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary)
+                if let observations = report.observations, !observations.isEmpty {
+                    DisclosureGroup(L10n.text("Обнаруженные возможности и компоненты", "Observed capabilities and components")) {
+                        ForEach(observations) { item in
+                            VStack(alignment: .leading, spacing: 3) {
+                                HStack { Text(item.title.text(L10n.language)); Spacer(); Text(ResearchUI.outcome(item.state)) }.font(.system(size: 11, weight: .medium))
+                                if let value = item.value { Text(value).font(.system(size: 11, design: .monospaced)).textSelection(.enabled) }
+                                Text(item.probe + " · " + item.fact + " · " + ResearchUI.outcome(item.sourceStatus ?? "not-assessed") + (item.sourceExitCode.map { " · exit " + String($0) } ?? "")).font(.system(size: 9)).foregroundStyle(StudioStyle.secondary)
+                            }.padding(.vertical, 3)
+                        }
+                    }
+                }
                 if !report.features.isEmpty {
                     ForEach(report.features) { feature in
                         DisclosureGroup {

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "revision": 6,
+  "revision": 7,
   "profiles": [
     {
       "id": "b31",
@@ -17,13 +17,24 @@
   ],
   "probes": [
     {
+      "id": "discovery-tools",
+      "title": {
+        "ru": "Инструменты переносимого исследования",
+        "en": "Portable discovery tools"
+      },
+      "category": "discovery",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\ncount=0\nfor name in sleep wc sh id uname stat sha256sum busybox awk sed grep cut tr head od readelf file readlink find df cat ubus jsonfilter getprop procd systemctl opkg dpkg rpm timeout; do\n if command -v \"$name\" >/dev/null 2>&1; then fact \"discovery_tool_$name\" 1; count=$((count+1)); else fact \"discovery_tool_$name\" 0; fi\ndone\nfact discovery_tool_count \"$count\"\nfact survey_writes_performed 0\n",
+      "timeoutSeconds": 12,
+      "maxBytes": 32768
+    },
+    {
       "id": "identity",
       "title": {
         "ru": "Архитектура и права текущего канала",
         "en": "Architecture and current channel privileges"
       },
       "category": "identity",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed id uname\nuid=$(id -u); arch=$(uname -m)\nfact uid \"$uid\"; fact architecture \"$arch\"\nif test \"$uid\" = 0; then fact root 1; else fact root 0; fi\nuname -s; uname -r; uname -v\nif test -r /proc/self/status; then\n count=0\n while IFS= read -r line; do\n  count=$((count+1)); test \"$count\" -le 128 || break\n  case \"$line\" in CapInh:*|CapPrm:*|CapEff:*|CapBnd:*|CapAmb:*|NoNewPrivs:*|Seccomp:*) printf '%s\\n' \"$line\";; esac\n done < /proc/self/status\nfi\nif test -r /sys/fs/selinux/enforce; then enforced=; IFS= read -r enforced < /sys/fs/selinux/enforce || :; case \"$enforced\" in 0|1) fact selinux_enforcing \"$enforced\";; *) fact selinux_enforcing unknown;; esac; else fact selinux_enforcing missing; fi\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nuid=not-assessed; architecture=not-assessed\nif command -v id >/dev/null 2>&1; then candidate=$(id -u 2>/dev/null) || candidate=; case \"$candidate\" in ''|*[!0-9]*) :;; *) uid=$candidate;; esac; fi\nif test \"$uid\" = not-assessed && test -r /proc/self/status; then\n while IFS=' ' read -r line; do case \"$line\" in Uid:*) set -- $line; if test \"$#\" -ge 3; then case \"$3\" in ''|*[!0-9]*) :;; *) uid=$3;; esac; fi; break;; esac; done < /proc/self/status\nfi\nfact uid \"$uid\"\ncase \"$uid\" in 0) fact root 1;; not-assessed) fact root not-assessed;; *) fact root 0;; esac\nif command -v uname >/dev/null 2>&1; then\n operating_system=$(uname -s 2>/dev/null) || operating_system=not-assessed; fact operating_system \"$operating_system\"\n architecture=$(uname -m 2>/dev/null) || architecture=not-assessed\n kernel=$(uname -r 2>/dev/null) || kernel=not-assessed\n fact kernel_release \"$kernel\"\nelse fact kernel_release not-assessed; fact operating_system not-assessed; fi\nfact architecture \"$architecture\"\nif test -r /proc/self/status; then\n count=0\n while IFS= read -r line; do count=$((count+1)); test \"$count\" -le 128 || break\n  case \"$line\" in CapInh:*|CapPrm:*|CapEff:*|CapBnd:*|CapAmb:*|NoNewPrivs:*|Seccomp:*) printf '%s\\n' \"$line\";; esac\n done < /proc/self/status\nfi\nif test -r /sys/fs/selinux/enforce; then enforced=; IFS= read -r enforced < /sys/fs/selinux/enforce || :; case \"$enforced\" in 0|1) fact selinux_enforcing \"$enforced\";; *) fact selinux_enforcing not-assessed;; esac\nelse fact selinux_enforcing \"$(path_state /sys/fs/selinux/enforce)\"; fi\n",
       "timeoutSeconds": 12,
       "maxBytes": 32768
     },
@@ -34,7 +45,7 @@
         "en": "Pseudonymous device and boot fingerprint"
       },
       "category": "identity",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed sha256sum\nhash_fact() {\n if test -f \"$2\" && test -r \"$2\"; then\n  value=$(sha256sum \"$2\") || { printf 'FR_ERROR hash_failed=%s\\n' \"$2\" >&2; exit 1; }\n  set -- \"$1\" $value\n  fact \"$1\" \"$2\"\n else fact \"$1\" missing; fi\n}\n\nhash_fact cid_sha256 /sys/block/mmcblk0/device/cid\nhash_fact boot_sha256 /proc/sys/kernel/random/boot_id\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nhasher=not-assessed\nif command -v sha256sum >/dev/null 2>&1; then hasher=sha256sum\nelif command -v busybox >/dev/null 2>&1 && busybox sha256sum </dev/null >/dev/null 2>&1; then hasher=busybox-sha256sum; fi\nhash_fact() {\n hash_key=$1; hash_path=$2\n if test -L \"$hash_path\" || test ! -r \"$hash_path\" || test ! -f \"$hash_path\"; then state=$(path_state \"$hash_path\"); test \"$state\" != present || state=not-assessed; fact \"$hash_key\" \"$state\"; return; fi\n if test \"$hasher\" = not-assessed; then fact \"$hash_key\" not-assessed; return; fi\n if test \"$hasher\" = sha256sum; then if hash_result=$(sha256sum \"$hash_path\" 2>/dev/null); then hash_code=0; else hash_code=$?; fi\n else if hash_result=$(busybox sha256sum \"$hash_path\" 2>/dev/null); then hash_code=0; else hash_code=$?; fi; fi\n hash_result=${hash_result%% *}\n case \"$hash_result\" in ''|*[!0-9a-f]*) fact \"$hash_key\" not-assessed;; *)\n  if test \"$hash_code\" = 0 && test \"${#hash_result}\" = 64; then fact \"$hash_key\" \"$hash_result\"; else fact \"$hash_key\" not-assessed; fi;; esac\n}\nfact hasher \"$hasher\"\nhash_fact cid_sha256 /sys/block/mmcblk0/device/cid\nhash_fact boot_sha256 /proc/sys/kernel/random/boot_id\nexit 0\n",
       "timeoutSeconds": 12,
       "maxBytes": 32768
     },
@@ -45,7 +56,7 @@
         "en": "Firmware and DIAG router hashes"
       },
       "category": "identity",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed sha256sum\nhash_fact() {\n if test -f \"$2\" && test -r \"$2\"; then\n  value=$(sha256sum \"$2\") || { printf 'FR_ERROR hash_failed=%s\\n' \"$2\" >&2; exit 1; }\n  set -- \"$1\" $value\n  fact \"$1\" \"$2\"\n else fact \"$1\" missing; fi\n}\n\nhash_fact firmware_sha256 /firmware/image/modem.b16\nhash_fact router_sha256 /usr/bin/diag-router\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nhasher=not-assessed\nif command -v sha256sum >/dev/null 2>&1; then hasher=sha256sum\nelif command -v busybox >/dev/null 2>&1 && busybox sha256sum </dev/null >/dev/null 2>&1; then hasher=busybox-sha256sum; fi\nhash_fact() {\n hash_key=$1; hash_path=$2\n if test -L \"$hash_path\" || test ! -r \"$hash_path\" || test ! -f \"$hash_path\"; then state=$(path_state \"$hash_path\"); test \"$state\" != present || state=not-assessed; fact \"$hash_key\" \"$state\"; return; fi\n if test \"$hasher\" = not-assessed; then fact \"$hash_key\" not-assessed; return; fi\n if test \"$hasher\" = sha256sum; then if hash_result=$(sha256sum \"$hash_path\" 2>/dev/null); then hash_code=0; else hash_code=$?; fi\n else if hash_result=$(busybox sha256sum \"$hash_path\" 2>/dev/null); then hash_code=0; else hash_code=$?; fi; fi\n hash_result=${hash_result%% *}\n case \"$hash_result\" in ''|*[!0-9a-f]*) fact \"$hash_key\" not-assessed;; *)\n  if test \"$hash_code\" = 0 && test \"${#hash_result}\" = 64; then fact \"$hash_key\" \"$hash_result\"; else fact \"$hash_key\" not-assessed; fi;; esac\n}\nhash_fact firmware_sha256 /firmware/image/modem.b16\nhash_fact router_sha256 /usr/bin/diag-router\n",
       "timeoutSeconds": 20,
       "maxBytes": 32768
     },
@@ -56,7 +67,7 @@
         "en": "System versions and package ABI"
       },
       "category": "identity",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed awk\nif test -r /etc/openwrt_release; then\n awk -F= '/^DISTRIB_(ID|RELEASE|REVISION|TARGET|ARCH)=/ {v=substr($0,index($0,\"=\")+1); gsub(/\\047|\"/,\"\",v); print $1 \"=\" v; if($1==\"DISTRIB_RELEASE\"){r=v}; if($1==\"DISTRIB_ARCH\"){a=v}} END {print \"FR_FACT openwrt_release=\" (r!=\"\"?r:\"missing\"); print \"FR_FACT package_arch=\" (a!=\"\"?a:\"missing\")}' /etc/openwrt_release\nelse fact openwrt_release missing; fact package_arch missing; fi\nif test -r /etc/os-release; then awk 'NR<=60 && /^(ID|VERSION_ID|VERSION|BUILD_ID|PRETTY_NAME)=/ {print}' /etc/os-release; fi\nif test -r /etc/build.prop; then awk 'NR<=500 && /^ro\\.build\\.(display\\.id|version\\.release|version\\.incremental)=/ {print}' /etc/build.prop; fi\n\n# Read only the two confirmed ZTE version fields. Never print device_info JSON.\nzte_version_facts() {\n if ! command -v ubus >/dev/null 2>&1 || ! command -v jsonfilter >/dev/null 2>&1 || ! command -v head >/dev/null 2>&1 || ! command -v tr >/dev/null 2>&1; then\n  fact zte_integrate_version not-assessed; fact zte_inner_version not-assessed; return\n fi\n # Capture at most 64 KiB plus one byte, including a separate RPC exit proof.\n # Keep stderr private and refuse a truncated response even if it resembles JSON.\n zte_reply=$({ if ubus -t 5 call zwrt_web device_info '{}' 2>/dev/null; then zte_code=0; else zte_code=$?; fi; printf '\\nFR_ZTE_RPC_EXIT=%s\\n' \"$zte_code\"; } 2>/dev/null | head -c 65537 | tr '\\000' '?'; printf '.')\n zte_reply=${zte_reply%.}\n if test \"${#zte_reply}\" -ge 65537; then\n  fact zte_integrate_version not-assessed; fact zte_inner_version not-assessed; return\n fi\n case \"$zte_reply\" in\n  *'\nFR_ZTE_RPC_EXIT=0\n') zte_json=${zte_reply%'\nFR_ZTE_RPC_EXIT=0\n'};;\n  *) fact zte_integrate_version not-assessed; fact zte_inner_version not-assessed; return;;\n esac\n for zte_field in integrate_version wa_inner_version; do\n  case \"$zte_field\" in integrate_version) zte_fact=zte_integrate_version;; wa_inner_version) zte_fact=zte_inner_version;; esac\n  # Preserve parser status while rejecting NUL before shell capture can discard it.\n  zte_value=$({ printf '%s\\n' \"$zte_json\" | jsonfilter -e \"@.$zte_field\" 2>/dev/null; zte_code=$?; printf '\\nFR_ZTE_FIELD_EXIT=%s\\n' \"$zte_code\"; } | tr '\\000' '?'; printf '.')\n  zte_value=${zte_value%.}\n  case \"$zte_value\" in\n   *'\nFR_ZTE_FIELD_EXIT=0\n')\n    zte_value=${zte_value%'\nFR_ZTE_FIELD_EXIT=0\n'}\n    zte_value=${zte_value%'\n'}\n    case \"$zte_value\" in\n     ''|null) fact \"$zte_fact\" missing;;\n     *[!A-Za-z0-9._+:/\\ -]*) fact \"$zte_fact\" not-assessed;;\n     *) if test \"${#zte_value}\" -le 256; then fact \"$zte_fact\" \"$zte_value\"; else fact \"$zte_fact\" not-assessed; fi;;\n    esac;;\n   *) fact \"$zte_fact\" not-assessed;;\n  esac\n done\n}\nzte_version_facts\nunset zte_reply zte_json zte_value zte_code zte_field zte_fact\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nif command -v awk >/dev/null 2>&1; then\nif test -r /etc/openwrt_release; then\n awk -F= '/^DISTRIB_(ID|RELEASE|REVISION|TARGET|ARCH)=/ {v=substr($0,index($0,\"=\")+1); gsub(/\\047|\"/,\"\",v); print $1 \"=\" v; if($1==\"DISTRIB_RELEASE\"){r=v}; if($1==\"DISTRIB_ARCH\"){a=v}} END {print \"FR_FACT openwrt_release=\" (r!=\"\"?r:\"missing\"); print \"FR_FACT package_arch=\" (a!=\"\"?a:\"missing\")}' /etc/openwrt_release\nelse fact openwrt_release missing; fact package_arch missing; fi\nif test -r /etc/os-release; then awk 'NR<=60 && /^(ID|VERSION_ID|VERSION|BUILD_ID|PRETTY_NAME)=/ {print}' /etc/os-release; fi\nif test -r /etc/build.prop; then awk 'NR<=500 && /^ro\\.build\\.(display\\.id|version\\.release|version\\.incremental)=/ {print}' /etc/build.prop; fi\n\nelse fact openwrt_release not-assessed; fact package_arch not-assessed; fi\n\n# Read only the two confirmed ZTE version fields. Never print device_info JSON.\nzte_version_facts() {\n if ! command -v ubus >/dev/null 2>&1 || ! command -v jsonfilter >/dev/null 2>&1 || ! command -v head >/dev/null 2>&1 || ! command -v tr >/dev/null 2>&1; then\n  fact zte_integrate_version not-assessed; fact zte_inner_version not-assessed; return\n fi\n # Capture at most 64 KiB plus one byte, including a separate RPC exit proof.\n # Keep stderr private and refuse a truncated response even if it resembles JSON.\n zte_reply=$({ if ubus -t 5 call zwrt_web device_info '{}' 2>/dev/null; then zte_code=0; else zte_code=$?; fi; printf '\\nFR_ZTE_RPC_EXIT=%s\\n' \"$zte_code\"; } 2>/dev/null | head -c 65537 | tr '\\000' '?'; printf '.')\n zte_reply=${zte_reply%.}\n if test \"${#zte_reply}\" -ge 65537; then\n  fact zte_integrate_version not-assessed; fact zte_inner_version not-assessed; return\n fi\n case \"$zte_reply\" in\n  *'\nFR_ZTE_RPC_EXIT=0\n') zte_json=${zte_reply%'\nFR_ZTE_RPC_EXIT=0\n'};;\n  *) fact zte_integrate_version not-assessed; fact zte_inner_version not-assessed; return;;\n esac\n for zte_field in integrate_version wa_inner_version; do\n  case \"$zte_field\" in integrate_version) zte_fact=zte_integrate_version;; wa_inner_version) zte_fact=zte_inner_version;; esac\n  # Preserve parser status while rejecting NUL before shell capture can discard it.\n  zte_value=$({ printf '%s\\n' \"$zte_json\" | jsonfilter -e \"@.$zte_field\" 2>/dev/null; zte_code=$?; printf '\\nFR_ZTE_FIELD_EXIT=%s\\n' \"$zte_code\"; } | tr '\\000' '?'; printf '.')\n  zte_value=${zte_value%.}\n  case \"$zte_value\" in\n   *'\nFR_ZTE_FIELD_EXIT=0\n')\n    zte_value=${zte_value%'\nFR_ZTE_FIELD_EXIT=0\n'}\n    zte_value=${zte_value%'\n'}\n    case \"$zte_value\" in\n     ''|null) fact \"$zte_fact\" missing;;\n     *[!A-Za-z0-9._+:/\\ -]*) fact \"$zte_fact\" not-assessed;;\n     *) if test \"${#zte_value}\" -le 256; then fact \"$zte_fact\" \"$zte_value\"; else fact \"$zte_fact\" not-assessed; fi;;\n    esac;;\n   *) fact \"$zte_fact\" not-assessed;;\n  esac\n done\n}\nzte_version_facts\nunset zte_reply zte_json zte_value zte_code zte_field zte_fact\n",
       "timeoutSeconds": 12,
       "maxBytes": 32768
     },
@@ -67,7 +78,7 @@
         "en": "BusyBox inventory and optional commands"
       },
       "category": "capabilities",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed busybox awk\noutput=$(busybox --list)\nprintf '%s\\n' \"$output\" | awk 'NR<=512 {print \"APPLET \" $0} END {print \"FR_FACT applet_count=\" NR}'\nfor wanted in flock timeout tar gzip stat readlink; do\n if printf '%s\\n' \"$output\" | awk -v a=\"$wanted\" '$0==a {found=1} END {exit !found}'; then fact \"applet_$wanted\" 1; else fact \"applet_$wanted\" 0; fi\ndone\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nneed busybox awk\noutput=$(busybox --list)\nprintf '%s\\n' \"$output\" | awk 'NR<=512 {print \"APPLET \" $0} END {print \"FR_FACT applet_count=\" NR}'\nfor wanted in flock timeout tar gzip stat readlink; do\n if printf '%s\\n' \"$output\" | awk -v a=\"$wanted\" '$0==a {found=1} END {exit !found}'; then fact \"applet_$wanted\" 1; else fact \"applet_$wanted\" 0; fi\ndone\n",
       "timeoutSeconds": 12,
       "maxBytes": 32768
     },
@@ -78,7 +89,7 @@
         "en": "Preparation command availability"
       },
       "category": "capabilities",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nfor tool in sh sha256sum awk grep tr sed cut stat df chmod mkdir cp mv rm rmdir cat sync pidof readlink nohup logger ubus curl; do\n if command -v \"$tool\" >/dev/null 2>&1; then fact \"tool_$tool\" 1; else fact \"tool_$tool\" 0; printf 'FR_NOTICE absent_tool=%s\\n' \"$tool\" >&2; fi\ndone\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nfor tool in sh sha256sum awk grep tr sed cut stat df chmod mkdir cp mv rm rmdir cat sync pidof readlink nohup logger ubus curl; do\n if command -v \"$tool\" >/dev/null 2>&1; then fact \"tool_$tool\" 1; else fact \"tool_$tool\" 0; printf 'FR_NOTICE absent_tool=%s\\n' \"$tool\" >&2; fi\ndone\n",
       "timeoutSeconds": 12,
       "maxBytes": 32768
     },
@@ -89,7 +100,7 @@
         "en": "Network commands and diagnostic tools"
       },
       "category": "capabilities",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nfor tool in lua uci nft iptables ip6tables iptables-save iptables-restore ebtables dnsmasq ip ubus tc conntrack ss netstat iw iwinfo flock timeout; do\n if command -v \"$tool\" >/dev/null 2>&1; then fact \"tool_$tool\" 1; else fact \"tool_$tool\" 0; printf 'FR_NOTICE absent_tool=%s\\n' \"$tool\" >&2; fi\ndone\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nfor tool in lua uci nft iptables ip6tables iptables-save iptables-restore ebtables dnsmasq ip ubus tc conntrack ss netstat iw iwinfo flock timeout; do\n if command -v \"$tool\" >/dev/null 2>&1; then fact \"tool_$tool\" 1; else fact \"tool_$tool\" 0; printf 'FR_NOTICE absent_tool=%s\\n' \"$tool\" >&2; fi\ndone\n",
       "timeoutSeconds": 12,
       "maxBytes": 32768
     },
@@ -100,7 +111,7 @@
         "en": "Installation and backup command availability"
       },
       "category": "capabilities",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nfor tool in chroot flock cp tar gzip find sha256sum stat awk sed readlink mknod sort cmp od df sync dd mkfifo wc du chpasswd cryptpw openssl; do\n if command -v \"$tool\" >/dev/null 2>&1; then fact \"tool_$tool\" 1; else fact \"tool_$tool\" 0; printf 'FR_NOTICE absent_tool=%s\\n' \"$tool\" >&2; fi\ndone\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nfor tool in chroot flock cp tar gzip find sha256sum stat awk sed readlink mknod sort cmp od df sync dd mkfifo wc du chpasswd cryptpw openssl; do\n if command -v \"$tool\" >/dev/null 2>&1; then fact \"tool_$tool\" 1; else fact \"tool_$tool\" 0; printf 'FR_NOTICE absent_tool=%s\\n' \"$tool\" >&2; fi\ndone\n",
       "timeoutSeconds": 12,
       "maxBytes": 32768
     },
@@ -111,7 +122,7 @@
         "en": "Preparation directories: permissions and parents"
       },
       "category": "filesystem",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed stat\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  printf 'PATH %s ' \"$1\"\n  stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\"\n else printf 'PATH %s missing\\n' \"$1\"; fi\n}\npresent() { if test -e \"$2\" || test -L \"$2\"; then fact \"$1\" 1; else fact \"$1\" 0; fi; }\n\nsafe_dir() {\n test -d \"$1\" && test ! -L \"$1\" || return 1\n owner=$(stat -c %u \"$1\") || return 1; mode=$(stat -c %a \"$1\") || return 1\n test \"$owner\" = 0 || return 1\n case \"$mode\" in ''|*[!0-7]*) return 1;; esac\n test \"$((0$mode & 022))\" = 0\n}\ntmp_stage_parent_safe() {\n test -d \"$1\" && test ! -L \"$1\" || return 1\n owner=$(stat -c %u \"$1\") || return 1; mode=$(stat -c %a \"$1\") || return 1\n test \"$owner\" = 0 || return 1\n case \"$mode\" in ''|*[!0-7]*) return 1;; esac\n test -w \"$1\" || return 1\n # A root-owned sticky shared /tmp supports a fresh private 0700 stage.\n test \"$((0$mode & 022))\" = 0 || test \"$((0$mode & 01000))\" != 0\n}\nfor path in / /data /data/local /data/local/tmp /data/bin /data/dropbear /etc /etc/dropbear /tmp /var/run /etc/config /etc/init.d /etc/rc.d /etc/hotplug.d /etc/hotplug.d/iface; do meta \"$path\"; done\nfor name in data etc tmp; do if safe_dir \"/$name\"; then fact \"${name}_safe\" 1; else fact \"${name}_safe\" 0; fi; done\nparents_safe=1\nfor path in /data/local /data/local/tmp /data/bin /data/dropbear /etc/dropbear /data/local/tmp/zte-imei-installations; do\n if test -e \"$path\" || test -L \"$path\"; then if ! safe_dir \"$path\"; then parents_safe=0; fi; fi\ndone\nfact setup_parents_safe \"$parents_safe\"\nfor name in data etc; do if test -d \"/$name\" && test -w \"/$name\"; then fact \"${name}_writable\" 1; else fact \"${name}_writable\" 0; fi; done\nif test -d /var/run && test -w /var/run; then fact runtime_writable 1; else fact runtime_writable 0; fi\nif test -d /etc/config && test -r /etc/config; then fact config_readable 1; else fact config_readable 0; fi\npresent local_tmp_exists /data/local/tmp\nif tmp_stage_parent_safe /tmp; then fact tmp_private_stage_parent 1; else fact tmp_private_stage_parent 0; fi\ndashboard_safe=1\nfor path in /data/zte-dashboard-runtime /data/zte-dashboard-runtime/dashboards /data/zte-dashboard-runtime/installer; do\n meta \"$path\"\n if test -e \"$path\" || test -L \"$path\"; then\n  if test -d \"$path\" && test ! -L \"$path\" && test \"$(stat -c '%u:%a' \"$path\")\" = 0:700; then :; else dashboard_safe=0; fi\n fi\ndone\nfact dashboard_runtime_safe \"$dashboard_safe\"\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nneed stat\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  if metadata=$(stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\" 2>/dev/null); then printf 'PATH %s %s\\n' \"$1\" \"$metadata\"\n  else printf 'PATH %s not-assessed\\n' \"$1\"; fi\n else printf 'PATH %s %s\\n' \"$1\" \"$(path_state \"$1\")\"; fi\n}\npresent() { case \"$(path_state \"$2\")\" in present) fact \"$1\" 1;; missing) fact \"$1\" 0;; *) fact \"$1\" not-assessed;; esac; }\n\nsafe_dir() {\n test -d \"$1\" && test ! -L \"$1\" || return 1\n owner=$(stat -c %u \"$1\") || return 1; mode=$(stat -c %a \"$1\") || return 1\n test \"$owner\" = 0 || return 1\n case \"$mode\" in ''|*[!0-7]*) return 1;; esac\n test \"$((0$mode & 022))\" = 0\n}\ntmp_stage_parent_safe() {\n test -d \"$1\" && test ! -L \"$1\" || return 1\n owner=$(stat -c %u \"$1\") || return 1; mode=$(stat -c %a \"$1\") || return 1\n test \"$owner\" = 0 || return 1\n case \"$mode\" in ''|*[!0-7]*) return 1;; esac\n test -w \"$1\" || return 1\n # A root-owned sticky shared /tmp supports a fresh private 0700 stage.\n test \"$((0$mode & 022))\" = 0 || test \"$((0$mode & 01000))\" != 0\n}\nfor path in / /data /data/local /data/local/tmp /data/bin /data/dropbear /etc /etc/dropbear /tmp /var/run /etc/config /etc/init.d /etc/rc.d /etc/hotplug.d /etc/hotplug.d/iface; do meta \"$path\"; done\nfor name in data etc tmp; do if safe_dir \"/$name\"; then fact \"${name}_safe\" 1; else fact \"${name}_safe\" 0; fi; done\nparents_safe=1\nfor path in /data/local /data/local/tmp /data/bin /data/dropbear /etc/dropbear /data/local/tmp/zte-imei-installations; do\n case \"$(path_state \"$path\")\" in present) if ! safe_dir \"$path\"; then parents_safe=0; fi;; missing) :;; *) test \"$parents_safe\" = 0 || parents_safe=not-assessed;; esac\ndone\nfact setup_parents_safe \"$parents_safe\"\nfor name in data etc; do if test -d \"/$name\" && test -w \"/$name\"; then fact \"${name}_writable\" 1; else fact \"${name}_writable\" 0; fi; done\nif test -d /var/run && test -w /var/run; then fact runtime_writable 1; else fact runtime_writable 0; fi\nif test -d /etc/config && test -r /etc/config; then fact config_readable 1; else fact config_readable 0; fi\npresent local_tmp_exists /data/local/tmp\nif tmp_stage_parent_safe /tmp; then fact tmp_private_stage_parent 1; else fact tmp_private_stage_parent 0; fi\ndashboard_safe=1\nfor path in /data/zte-dashboard-runtime /data/zte-dashboard-runtime/dashboards /data/zte-dashboard-runtime/installer; do\n meta \"$path\"\n if test -e \"$path\" || test -L \"$path\"; then\n  if test -d \"$path\" && test ! -L \"$path\" && test \"$(stat -c '%u:%a' \"$path\")\" = 0:700; then :; else dashboard_safe=0; fi\n elif test \"$(path_state \"$path\")\" != missing; then test \"$dashboard_safe\" = 0 || dashboard_safe=not-assessed\n fi\ndone\nfact dashboard_runtime_safe \"$dashboard_safe\"\n",
       "timeoutSeconds": 12,
       "maxBytes": 32768
     },
@@ -122,7 +133,7 @@
         "en": "Mounts: read-only, noexec, nosuid, ZTEDATA"
       },
       "category": "filesystem",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed awk\nif test ! -r /proc/self/mountinfo; then printf 'FR_ERROR unreadable=/proc/self/mountinfo\\n' >&2; exit 1; fi\nawk 'NR<=256 {print} END {if(NR>256)print \"FR_NOTICE mount_inventory_truncated\"}' /proc/self/mountinfo\nfor item in dashboard_runtime:/data/zte-dashboard-runtime data:/data etc:/etc setup_tmp:/data/local/tmp data_bin:/data/bin data_dropbear:/data/dropbear etc_dropbear:/etc/dropbear ztedata:/usr/zte_web; do\n name=${item%%:*}; path=${item#*:}\n awk -v path=\"$path\" -v name=\"$name\" '$5==\"/\" || $5==path || index(path,$5\"/\")==1 {n=length($5); if(n>best){best=n;count=0;opts=$6;type=\"missing\";for(i=7;i<=NF;i++)if($i==\"-\")type=$(i+1)};if(n==best)count++} END {known=(count==1); rw=known && opts ~ /(^|,)rw(,|$)/; executable=known && opts !~ /(^|,)noexec(,|$)/; print \"FR_FACT \" name \"_mount_known=\" (known?1:0); print \"FR_FACT \" name \"_rw=\" (rw?1:0); print \"FR_FACT \" name \"_exec=\" (executable?1:0); print \"FR_FACT \" name \"_suid=\" (known && opts !~ /(^|,)nosuid(,|$)/?1:0); print \"FR_FACT \" name \"_install_mount=\" (rw && executable && (type==\"ext4\"||type==\"overlay\")?1:0); print \"FR_FACT \" name \"_fs=\" (known?type:\"unknown\")}' /proc/self/mountinfo\ndone\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\n# Capture is private, bounded to 128 KiB, and requires the producer's exit proof.\n# Never export cap_output directly: callers select only fixed public fields/counts.\ncap() {\n cap_output=\n command -v head >/dev/null 2>&1 && command -v tr >/dev/null 2>&1 || return 1\n cap_output=$({ \"$@\" 2>/dev/null; cap_code=$?; printf '\\nFR_CAPTURE_EXIT=%s\\n' \"$cap_code\"; } | head -c 131073 | tr '\\000' '?'; printf '.')\n cap_output=${cap_output%.}\n test \"${#cap_output}\" -lt 131073 || { cap_output=; return 1; }\n case \"$cap_output\" in *'\nFR_CAPTURE_EXIT=0\n') cap_output=${cap_output%'\nFR_CAPTURE_EXIT=0\n'}; return 0;; *) cap_output=; return 1;; esac\n}\nif ! command -v awk >/dev/null 2>&1 || ! test -r /proc/self/mountinfo || ! cap cat /proc/self/mountinfo; then fact mount_inventory not-assessed; exit 0; fi\n# Do not print raw sources, root paths, or arbitrary mount/superblock options.\nprintf '%s\\n' \"$cap_output\" | awk 'END{print \"FR_FACT mount_count=\" NR}'\nfor item in root:/ overlay:/overlay dashboard_runtime:/data/zte-dashboard-runtime data:/data etc:/etc setup_tmp:/data/local/tmp data_bin:/data/bin data_dropbear:/data/dropbear etc_dropbear:/etc/dropbear ztedata:/usr/zte_web tmp:/tmp; do\n name=${item%%:*}; path=${item#*:}\n printf '%s\\n' \"$cap_output\" | awk -v path=\"$path\" -v name=\"$name\" '$5==\"/\" || $5==path || index(path,$5\"/\")==1 {n=length($5); if(n>best){best=n;count=0;opts=$6;type=\"missing\";for(i=7;i<=NF;i++)if($i==\"-\")type=$(i+1)};if(n==best)count++} END {known=(count==1); rw=known && opts ~ /(^|,)rw(,|$)/; executable=known && opts !~ /(^|,)noexec(,|$)/; print \"FR_FACT \" name \"_mount_known=\" (known?1:\"not-assessed\"); print \"FR_FACT \" name \"_rw=\" (known?(rw?1:0):\"not-assessed\"); print \"FR_FACT \" name \"_exec=\" (known?(executable?1:0):\"not-assessed\"); print \"FR_FACT \" name \"_suid=\" (known?(opts !~ /(^|,)nosuid(,|$)/?1:0):\"not-assessed\"); print \"FR_FACT \" name \"_install_mount=\" (known?(rw && executable && (type==\"ext4\"||type==\"overlay\")?1:0):\"not-assessed\"); print \"FR_FACT \" name \"_fs=\" (known && type ~ /^[A-Za-z0-9_.-]+$/?type:\"not-assessed\")}'\ndone\nfact mount_inventory known\n",
       "timeoutSeconds": 12,
       "maxBytes": 65536
     },
@@ -133,7 +144,7 @@
         "en": "Free space and installer thresholds"
       },
       "category": "filesystem",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed df awk\nfor name in data etc tmp; do\n if test ! -d \"/$name\"; then fact \"${name}_free_kib\" missing; for threshold in 2048 16384 32768 65536 131072; do fact \"${name}_free_${threshold}\" 0; done; continue; fi\n output=$(df -Pk \"/$name\")\n free=$(printf '%s\\n' \"$output\" | awk 'END{print $4}')\n case \"$free\" in ''|*[!0-9]*) printf 'FR_ERROR invalid_free_space=%s\\n' \"$name\" >&2; exit 1;; esac\n fact \"${name}_free_kib\" \"$free\"\n for threshold in 2048 16384 32768 65536 131072; do if test \"$free\" -ge \"$threshold\"; then fact \"${name}_free_${threshold}\" 1; else fact \"${name}_free_${threshold}\" 0; fi; done\ndone\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nfor name in data etc tmp; do\n free=not-assessed\n if test -d \"/$name\" && test -r \"/$name\" && test -x \"/$name\" && command -v df >/dev/null 2>&1 && command -v awk >/dev/null 2>&1; then\n  if output=$(df -Pk \"/$name\" 2>/dev/null); then free=$(printf '%s\\n' \"$output\" | awk 'END{print $4}'); case \"$free\" in ''|*[!0-9]*) free=not-assessed;; esac; fi\n fi\n fact \"${name}_free_kib\" \"$free\"\n for threshold in 2048 16384 32768 65536 131072; do\n  if test \"$free\" = not-assessed; then fact \"${name}_free_${threshold}\" not-assessed\n  elif test \"$free\" -ge \"$threshold\"; then fact \"${name}_free_${threshold}\" 1; else fact \"${name}_free_${threshold}\" 0; fi\n done\ndone\n",
       "timeoutSeconds": 12,
       "maxBytes": 32768
     },
@@ -144,7 +155,7 @@
         "en": "ABI loaders and libraries: metadata and hashes"
       },
       "category": "runtime",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed stat sha256sum\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  printf 'PATH %s ' \"$1\"\n  stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\"\n else printf 'PATH %s missing\\n' \"$1\"; fi\n}\npresent() { if test -e \"$2\" || test -L \"$2\"; then fact \"$1\" 1; else fact \"$1\" 0; fi; }\nhash_fact() {\n if test -f \"$2\" && test -r \"$2\"; then\n  value=$(sha256sum \"$2\") || { printf 'FR_ERROR hash_failed=%s\\n' \"$2\" >&2; exit 1; }\n  set -- \"$1\" $value\n  fact \"$1\" \"$2\"\n else fact \"$1\" missing; fi\n}\n\nfor path in /lib/ld-linux-aarch64.so.1 /lib/ld-musl-aarch64.so.1 /lib/libc.so /lib/libc.so.6 /usr/lib/libdiag.so.1 /usr/lib/libubus.so /usr/lib/libubox.so /usr/lib/libuci.so /usr/lib/liblua.so.5.1; do meta \"$path\"; done\nhash_fact libdiag_sha256 /usr/lib/libdiag.so.1\nif test -r /usr/lib/libdiag.so.1; then fact libdiag_readable 1; else fact libdiag_readable 0; fi\nif test -e /lib/ld-linux-aarch64.so.1 || test -e /lib/ld-musl-aarch64.so.1; then fact loader_present 1; else fact loader_present 0; fi\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nhasher=not-assessed\nif command -v sha256sum >/dev/null 2>&1; then hasher=sha256sum\nelif command -v busybox >/dev/null 2>&1 && busybox sha256sum </dev/null >/dev/null 2>&1; then hasher=busybox-sha256sum; fi\nhash_fact() {\n hash_key=$1; hash_path=$2\n if test -L \"$hash_path\" || test ! -r \"$hash_path\" || test ! -f \"$hash_path\"; then state=$(path_state \"$hash_path\"); test \"$state\" != present || state=not-assessed; fact \"$hash_key\" \"$state\"; return; fi\n if test \"$hasher\" = not-assessed; then fact \"$hash_key\" not-assessed; return; fi\n if test \"$hasher\" = sha256sum; then if hash_result=$(sha256sum \"$hash_path\" 2>/dev/null); then hash_code=0; else hash_code=$?; fi\n else if hash_result=$(busybox sha256sum \"$hash_path\" 2>/dev/null); then hash_code=0; else hash_code=$?; fi; fi\n hash_result=${hash_result%% *}\n case \"$hash_result\" in ''|*[!0-9a-f]*) fact \"$hash_key\" not-assessed;; *)\n  if test \"$hash_code\" = 0 && test \"${#hash_result}\" = 64; then fact \"$hash_key\" \"$hash_result\"; else fact \"$hash_key\" not-assessed; fi;; esac\n}\nfor item in glibc_loader:/lib/ld-linux-aarch64.so.1 musl_loader:/lib/ld-musl-aarch64.so.1 libc:/lib/libc.so glibc:/lib/libc.so.6 libdiag:/usr/lib/libdiag.so.1 libubus:/usr/lib/libubus.so libubox:/usr/lib/libubox.so libuci:/usr/lib/libuci.so liblua:/usr/lib/liblua.so.5.1; do\n name=${item%%:*}; path=${item#*:}; fact \"runtime_$name\" \"$(path_state \"$path\")\"\ndone\nhash_fact libdiag_sha256 /usr/lib/libdiag.so.1\nif test -r /usr/lib/libdiag.so.1; then fact libdiag_readable 1; else state=$(path_state /usr/lib/libdiag.so.1); if test \"$state\" = missing; then fact libdiag_readable 0; else fact libdiag_readable not-assessed; fi; fi\nif test -e /lib/ld-linux-aarch64.so.1 || test -e /lib/ld-musl-aarch64.so.1; then fact loader_present 1\nelif test -r /lib && test -x /lib; then fact loader_present 0; else fact loader_present not-assessed; fi\n",
       "timeoutSeconds": 12,
       "maxBytes": 32768
     },
@@ -155,7 +166,7 @@
         "en": "Kernel capabilities: modules, filesystems, netfilter"
       },
       "category": "kernel",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed awk\nfor file in /proc/filesystems /proc/modules /proc/net/ip_tables_names /proc/net/ip_tables_targets /proc/net/ip_tables_matches; do\n printf 'SOURCE %s\\n' \"$file\"\n if test -r \"$file\"; then awk 'NR<=256 {print} END {if(NR>256)print \"FR_NOTICE inventory_truncated\"}' \"$file\"; else printf 'FR_NOTICE unavailable=%s\\n' \"$file\" >&2; fi\ndone\nif test -r /proc/net/ip_tables_targets && awk '$0==\"TTL\"{f=1}END{exit !f}' /proc/net/ip_tables_targets; then fact ttl_target 1; else fact ttl_target 0; fi\nif test -c /dev/net/tun; then fact tun 1; else fact tun 0; fi\nif test -r /proc/filesystems && awk '$NF==\"ext4\"{f=1}END{exit !f}' /proc/filesystems; then fact ext4 1; else fact ext4 0; fi\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nif command -v awk >/dev/null 2>&1 && test -r /proc/filesystems; then\n awk 'NR<=128 && $NF~/^[A-Za-z0-9_.-]+$/ {print \"FILESYSTEM \" $NF} END {print \"FR_FACT filesystem_count=\" NR}' /proc/filesystems\n if awk '$NF==\"ext4\"{f=1}END{exit !f}' /proc/filesystems; then fact ext4 1; else fact ext4 0; fi\nelse fact ext4 not-assessed; fact filesystem_count not-assessed; fi\nif command -v awk >/dev/null 2>&1 && test -r /proc/net/ip_tables_targets; then\n if awk '$0==\"TTL\"{f=1}END{exit !f}' /proc/net/ip_tables_targets; then fact ttl_target 1; else fact ttl_target 0; fi\nelse fact ttl_target not-assessed; fi\nif test -c /dev/net/tun; then fact tun 1; elif test \"$(path_state /dev/net/tun)\" = missing; then fact tun 0; else fact tun not-assessed; fi\nif command -v awk >/dev/null 2>&1 && test -r /proc/modules; then awk 'NR<=256 && $1~/^[A-Za-z0-9_-]+$/ {print \"MODULE \" $1} END{print \"FR_FACT loaded_module_count=\" NR}' /proc/modules; else fact loaded_module_count not-assessed; fi\n",
       "timeoutSeconds": 12,
       "maxBytes": 65536
     },
@@ -166,7 +177,7 @@
         "en": "eMMC layout without reading partitions"
       },
       "category": "storage",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed cat awk stat\ncount=0\nfor path in /sys/class/block/mmcblk0 /sys/class/block/mmcblk0boot0 /sys/class/block/mmcblk0boot1 /sys/class/block/mmcblk0p*; do\n test -d \"$path\" || continue\n count=$((count+1)); if test \"$count\" -gt 160; then printf 'FR_ERROR partition_limit\\n' >&2; exit 1; fi\n name=${path##*/}; printf 'BLOCK %s\\n' \"$name\"\n for field in dev size start partition ro force_ro queue/logical_block_size queue/physical_block_size; do\n  if test -r \"$path/$field\"; then value=$(cat \"$path/$field\"); case \"$value\" in ''|*[!0-9:]*) printf 'FR_ERROR malformed_block_metadata\\n' >&2; exit 1;; esac; printf '%s=%s\\n' \"$field\" \"$value\"; fi\n done\n if test -r \"$path/uevent\"; then awk '/^PARTNAME=[A-Za-z0-9_:-]+$/ {print}' \"$path/uevent\"; fi\n if test -b \"/dev/$name\"; then stat -c 'node_mode=%a node_uid=%u major=%t minor=%T' \"/dev/$name\"; fi\ndone\nfact block_count \"$count\"\nfor name in mmcblk0 mmcblk0boot0 mmcblk0boot1; do if test -b \"/dev/$name\" && test ! -L \"/dev/$name\" && test -r \"/dev/$name\" && test -r \"/sys/class/block/$name/size\"; then fact \"${name}_readable\" 1; else fact \"${name}_readable\" 0; fi; done\nlayout=1\nfor pair in mmcblk0p8:modemst1:8192 mmcblk0p9:modemst2:8192 mmcblk0p10:fsg:8192 mmcblk0p56:persist:16384; do\n dev=${pair%%:*}; rest=${pair#*:}; name=${rest%%:*}; size=${rest##*:}\n if test -b \"/dev/$dev\" && test ! -L \"/dev/$dev\" && test -r \"/sys/class/block/$dev/size\" && test -r \"/sys/class/block/$dev/uevent\"; then\n  actual=$(cat \"/sys/class/block/$dev/size\")\n  if test \"$actual\" != \"$size\" || ! awk -v name=\"$name\" '$0==\"PARTNAME=\" name{f=1}END{exit !f}' \"/sys/class/block/$dev/uevent\"; then layout=0; fi\n else layout=0; fi\ndone\nfact modem_partition_layout_b31 \"$layout\"\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\ncount=0\nfor path in /sys/class/block/*; do\n test -d \"$path\" || continue; count=$((count+1)); if test \"$count\" -gt 128; then fact block_inventory not-assessed; break; fi\n name=${path##*/}; case \"$name\" in ''|*[!A-Za-z0-9_.-]*) continue;; esac\n printf 'BLOCK %s\\n' \"$name\"\n for field in dev size start partition ro force_ro queue/logical_block_size queue/physical_block_size; do\n  if test -r \"$path/$field\"; then v=; IFS= read -r v < \"$path/$field\" || :; case \"$v\" in ''|*[!0-9:]*) :;; *) printf '%s=%s\\n' \"$field\" \"$v\";; esac; fi\n done\n if command -v awk >/dev/null 2>&1 && test -r \"$path/uevent\"; then awk 'NR<=64 && /^PARTNAME=[A-Za-z0-9_:-]+$/ && length($0)<=80 {print}' \"$path/uevent\"; fi\ndone\nif test -r /sys/class/block && test -x /sys/class/block && test \"$count\" -le 128; then fact block_count \"$count\"; else fact block_count not-assessed; fi\nfor name in mmcblk0 mmcblk0boot0 mmcblk0boot1; do\n if test -b \"/dev/$name\" && test ! -L \"/dev/$name\" && test -r \"/dev/$name\" && test -r \"/sys/class/block/$name/size\"; then fact \"${name}_readable\" 1\n elif test \"$(path_state \"/dev/$name\")\" = missing; then fact \"${name}_readable\" 0; else fact \"${name}_readable\" not-assessed; fi\ndone\nif command -v cat >/dev/null 2>&1 && command -v awk >/dev/null 2>&1; then\nlayout=1\nfor pair in mmcblk0p8:modemst1:8192 mmcblk0p9:modemst2:8192 mmcblk0p10:fsg:8192 mmcblk0p56:persist:16384; do\n dev=${pair%%:*}; rest=${pair#*:}; name=${rest%%:*}; size=${rest##*:}\n if test -b \"/dev/$dev\" && test ! -L \"/dev/$dev\" && test -r \"/sys/class/block/$dev/size\" && test -r \"/sys/class/block/$dev/uevent\"; then\n  actual=$(cat \"/sys/class/block/$dev/size\")\n  if test \"$actual\" != \"$size\" || ! awk -v name=\"$name\" '$0==\"PARTNAME=\" name{f=1}END{exit !f}' \"/sys/class/block/$dev/uevent\"; then layout=0; fi\n else layout=0; fi\ndone\nfact modem_partition_layout_b31 \"$layout\"\nelse fact modem_partition_layout_b31 not-assessed; fi\n",
       "timeoutSeconds": 15,
       "maxBytes": 65536
     },
@@ -177,7 +188,7 @@
         "en": "Write protection: interface presence only"
       },
       "category": "storage",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed stat\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  printf 'PATH %s ' \"$1\"\n  stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\"\n else printf 'PATH %s missing\\n' \"$1\"; fi\n}\npresent() { if test -e \"$2\" || test -L \"$2\"; then fact \"$1\" 1; else fact \"$1\" 0; fi; }\n\n# NEVER read sensor_id or codec_id: vendor implements side effects on read.\nfor path in /proc/driver/sensor_id /proc/driver/codec_id /sys/class/block/mmcblk0boot0/force_ro /sys/class/block/mmcblk0boot1/force_ro; do meta \"$path\"; done\npresent vendor_unlock_interface /proc/driver/sensor_id\npresent vendor_relock_interface /proc/driver/codec_id\nfact restore_readiness not-assessed\nfact partition_contents_collected 0\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nneed stat\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  if metadata=$(stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\" 2>/dev/null); then printf 'PATH %s %s\\n' \"$1\" \"$metadata\"\n  else printf 'PATH %s not-assessed\\n' \"$1\"; fi\n else printf 'PATH %s %s\\n' \"$1\" \"$(path_state \"$1\")\"; fi\n}\npresent() { case \"$(path_state \"$2\")\" in present) fact \"$1\" 1;; missing) fact \"$1\" 0;; *) fact \"$1\" not-assessed;; esac; }\n\n# NEVER read sensor_id or codec_id: vendor implements side effects on read.\nfor path in /proc/driver/sensor_id /proc/driver/codec_id /sys/class/block/mmcblk0boot0/force_ro /sys/class/block/mmcblk0boot1/force_ro; do meta \"$path\"; done\npresent vendor_unlock_interface /proc/driver/sensor_id\npresent vendor_relock_interface /proc/driver/codec_id\nfact restore_readiness not-assessed\nfact partition_contents_collected 0\n",
       "timeoutSeconds": 12,
       "maxBytes": 32768
     },
@@ -188,7 +199,7 @@
         "en": "USB and ADB: device functions without serial numbers"
       },
       "category": "access",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed stat cat\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  printf 'PATH %s ' \"$1\"\n  stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\"\n else printf 'PATH %s missing\\n' \"$1\"; fi\n}\npresent() { if test -e \"$2\" || test -L \"$2\"; then fact \"$1\" 1; else fact \"$1\" 0; fi; }\n\nfor path in /usr/bin/adbd /sbin/adbd /data/bin/adbd /dev/android_adb /sys/class/android_usb/android0 /sys/kernel/config/usb_gadget; do meta \"$path\"; done\nfor field in enable state functions idVendor idProduct; do\n path=/sys/class/android_usb/android0/$field\n if test -r \"$path\"; then value=$(cat \"$path\"); printf 'USB %s=%s\\n' \"$field\" \"$value\"; fi\ndone\nif command -v adbd >/dev/null 2>&1 || test -x /sbin/adbd || test -x /usr/bin/adbd; then fact adbd_present 1; else fact adbd_present 0; fi\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nneed stat cat\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  if metadata=$(stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\" 2>/dev/null); then printf 'PATH %s %s\\n' \"$1\" \"$metadata\"\n  else printf 'PATH %s not-assessed\\n' \"$1\"; fi\n else printf 'PATH %s %s\\n' \"$1\" \"$(path_state \"$1\")\"; fi\n}\npresent() { case \"$(path_state \"$2\")\" in present) fact \"$1\" 1;; missing) fact \"$1\" 0;; *) fact \"$1\" not-assessed;; esac; }\n\nfor path in /usr/bin/adbd /sbin/adbd /data/bin/adbd /dev/android_adb /sys/class/android_usb/android0 /sys/kernel/config/usb_gadget; do meta \"$path\"; done\nfor field in enable state functions idVendor idProduct; do\n path=/sys/class/android_usb/android0/$field\n if test -r \"$path\"; then value=$(cat \"$path\"); printf 'USB %s=%s\\n' \"$field\" \"$value\"; fi\ndone\nif command -v adbd >/dev/null 2>&1 || test -x /sbin/adbd || test -x /usr/bin/adbd; then fact adbd_present 1; else fact adbd_present 0; fi\n",
       "timeoutSeconds": 12,
       "maxBytes": 32768
     },
@@ -199,7 +210,7 @@
         "en": "Services without process arguments"
       },
       "category": "access",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed pidof stat\nfor name in adbd dropbear sshd zte-agent uhttpd diag-router zte_topsw_devui netifd ubusd procd ipacm dnsmasq mihomo; do\n if pidof \"$name\" >/dev/null; then fact \"running_$name\" 1; else code=$?; if test \"$code\" != 1; then printf 'FR_ERROR pidof_failed=%s\\n' \"$name\" >&2; exit \"$code\"; fi; fact \"running_$name\" 0; fi\ndone\nfor path in /etc/init.d/zte_topsw_devui /etc/init.d/dropbear /etc/init.d/zte_vpn /etc/init.d/zte_launcher /etc/init.d/zte_imei_screen_ru /etc/init.d/network /etc/rc.local; do if test -e \"$path\" || test -L \"$path\"; then printf 'SERVICE %s ' \"$path\"; stat -c 'type=%F mode=%a uid=%u' \"$path\"; fi; done\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nfor name in adbd dropbear sshd zte-agent uhttpd diag-router zte_topsw_devui netifd ubusd procd ipacm dnsmasq mihomo systemd; do\n if command -v pidof >/dev/null 2>&1; then\n  if pidof \"$name\" >/dev/null 2>&1; then fact \"running_$name\" 1; else code=$?; if test \"$code\" = 1; then fact \"running_$name\" 0; else fact \"running_$name\" not-assessed; fi; fi\n else fact \"running_$name\" not-assessed; fi\ndone\nfor item in stock_ui:/etc/init.d/zte_topsw_devui dropbear:/etc/init.d/dropbear vpn:/etc/init.d/zte_vpn launcher:/etc/init.d/zte_launcher network:/etc/init.d/network rc_local:/etc/rc.local; do name=${item%%:*}; path=${item#*:}; fact \"service_$name\" \"$(path_state \"$path\")\"; done\n",
       "timeoutSeconds": 12,
       "maxBytes": 32768
     },
@@ -210,7 +221,7 @@
         "en": "Management ports without connection IP addresses"
       },
       "category": "access",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed awk\nif test ! -r /proc/net/tcp; then printf 'FR_ERROR unreadable=/proc/net/tcp\\n' >&2; exit 1; fi\nawk 'BEGIN{split(\"0016 0050 01bb 08ae 1f90 1f91 115c 15b3\",ports,\" \");for(i in ports)wanted[ports[i]]=1} NR>1 && $4==\"0A\" {split($2,a,\":\");p=tolower(a[2]);if(p in wanted)found[p]=1} END{for(i=1;i<=8;i++){p=ports[i];print \"FR_FACT tcp_listen_hex_\" p \"=\" (found[p]?1:0)}}' /proc/net/tcp\nif test -r /proc/net/tcp6; then awk 'NR>1 && $4==\"0A\" {n++}END{print \"FR_FACT ipv6_listener_count=\" n+0}' /proc/net/tcp6; else fact ipv6_listener_count missing; fi\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nneed awk\nif test ! -r /proc/net/tcp; then printf 'FR_ERROR unreadable=/proc/net/tcp\\n' >&2; exit 1; fi\nawk 'BEGIN{split(\"0016 0050 01bb 08ae 1f90 1f91 115c 15b3\",ports,\" \");for(i in ports)wanted[ports[i]]=1} NR>1 && $4==\"0A\" {split($2,a,\":\");p=tolower(a[2]);if(p in wanted)found[p]=1} END{for(i=1;i<=8;i++){p=ports[i];print \"FR_FACT tcp_listen_hex_\" p \"=\" (found[p]?1:0)}}' /proc/net/tcp\nif test -r /proc/net/tcp6; then awk 'NR>1 && $4==\"0A\" {n++}END{print \"FR_FACT ipv6_listener_count=\" n+0}' /proc/net/tcp6; else fact ipv6_listener_count not-assessed; fi\n",
       "timeoutSeconds": 12,
       "maxBytes": 32768
     },
@@ -221,7 +232,7 @@
         "en": "Ubus objects and method signatures, no calls"
       },
       "category": "access",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed ubus awk\nobjects=$(ubus list)\nprintf '%s\\n' \"$objects\" | awk 'NR<=256 {print \"OBJECT \" $0}END{if(NR>256)print \"FR_NOTICE ubus_inventory_truncated\"}'\nfor object in zwrt_web zwrt_router network wireless system; do\n if printf '%s\\n' \"$objects\" | awk -v wanted=\"$object\" '$0==wanted{f=1}END{exit !f}'; then\n  fact \"object_$object\" 1\n  methods=$(ubus -v list \"$object\")\n  printf '%s\\n' \"$methods\" | awk 'NR<=160{print}END{if(NR>160)print \"FR_NOTICE method_inventory_truncated\"}'\n else fact \"object_$object\" 0; fi\ndone\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\n# Capture is private, bounded to 128 KiB, and requires the producer's exit proof.\n# Never export cap_output directly: callers select only fixed public fields/counts.\ncap() {\n cap_output=\n command -v head >/dev/null 2>&1 && command -v tr >/dev/null 2>&1 || return 1\n cap_output=$({ \"$@\" 2>/dev/null; cap_code=$?; printf '\\nFR_CAPTURE_EXIT=%s\\n' \"$cap_code\"; } | head -c 131073 | tr '\\000' '?'; printf '.')\n cap_output=${cap_output%.}\n test \"${#cap_output}\" -lt 131073 || { cap_output=; return 1; }\n case \"$cap_output\" in *'\nFR_CAPTURE_EXIT=0\n') cap_output=${cap_output%'\nFR_CAPTURE_EXIT=0\n'}; return 0;; *) cap_output=; return 1;; esac\n}\nif ! command -v awk >/dev/null 2>&1 || ! cap ubus -t 5 list; then fact ubus_inventory not-assessed; exit 0; fi\nobjects=$cap_output\nprintf '%s\\n' \"$objects\" | awk 'NR<=256 && /^[A-Za-z0-9_.:-]+$/ {print \"OBJECT \" $0} END{print \"FR_FACT ubus_object_count=\" NR}'\nfor object in zwrt_web zwrt_router network wireless system; do\n if printf '%s\\n' \"$objects\" | awk -v wanted=\"$object\" '$0==wanted{f=1}END{exit !f}'; then fact \"object_$object\" 1; else fact \"object_$object\" 0; fi\ndone\nfact ubus_inventory known\n",
       "timeoutSeconds": 15,
       "maxBytes": 65536
     },
@@ -232,7 +243,7 @@
         "en": "DIAG and NV/EFS: structure and dependencies only"
       },
       "category": "imei",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed stat\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  printf 'PATH %s ' \"$1\"\n  stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\"\n else printf 'PATH %s missing\\n' \"$1\"; fi\n}\npresent() { if test -e \"$2\" || test -L \"$2\"; then fact \"$1\" 1; else fact \"$1\" 0; fi; }\n\nfor path in /usr/bin/diag-router /usr/lib/libdiag.so.1 /dev/diag /dev/diag_tty /dev/at_mdm0 /dev/at_mdm1 /dev/at_usb0 /dev/smd7 /dev/smd11; do meta \"$path\"; done\nif test -x /usr/bin/diag-router && test -r /usr/lib/libdiag.so.1; then fact diag_dependencies 1; else fact diag_dependencies 0; fi\nfact nv550_pair_validated not-performed\nfact efs_config_validated not-performed\nfact linux_config_is_efs_config 0\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nneed stat\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  if metadata=$(stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\" 2>/dev/null); then printf 'PATH %s %s\\n' \"$1\" \"$metadata\"\n  else printf 'PATH %s not-assessed\\n' \"$1\"; fi\n else printf 'PATH %s %s\\n' \"$1\" \"$(path_state \"$1\")\"; fi\n}\npresent() { case \"$(path_state \"$2\")\" in present) fact \"$1\" 1;; missing) fact \"$1\" 0;; *) fact \"$1\" not-assessed;; esac; }\n\nfor path in /usr/bin/diag-router /usr/lib/libdiag.so.1 /dev/diag /dev/diag_tty /dev/at_mdm0 /dev/at_mdm1 /dev/at_usb0 /dev/smd7 /dev/smd11; do meta \"$path\"; done\nif test -x /usr/bin/diag-router && test -r /usr/lib/libdiag.so.1; then fact diag_dependencies 1; else fact diag_dependencies 0; fi\nfact nv550_pair_validated not-performed\nfact efs_config_validated not-performed\nfact linux_config_is_efs_config 0\n",
       "timeoutSeconds": 12,
       "maxBytes": 32768
     },
@@ -243,7 +254,7 @@
         "en": "TTL: iptables version and available target"
       },
       "category": "network",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed iptables awk\nversion=$(iptables --version); printf '%s\\n' \"$version\"\ncase \"$version\" in *'v1.8.8 (legacy)'*) fact iptables_b31 1;; *) fact iptables_b31 0;; esac\nif test -r /proc/net/ip_tables_targets && awk '$0==\"TTL\"{f=1}END{exit !f}' /proc/net/ip_tables_targets; then fact ttl_target 1; else fact ttl_target 0; fi\nfor path in /etc/hotplug.d/iface /etc/config/firewall; do if test -e \"$path\" && test -w \"$path\"; then printf 'WRITABLE %s\\n' \"$path\"; else printf 'NOT_WRITABLE %s\\n' \"$path\"; fi; done\nif test -d /etc/hotplug.d/iface && test -w /etc/hotplug.d/iface; then fact hotplug_writable 1; else fact hotplug_writable 0; fi\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\n# Capture is private, bounded to 128 KiB, and requires the producer's exit proof.\n# Never export cap_output directly: callers select only fixed public fields/counts.\ncap() {\n cap_output=\n command -v head >/dev/null 2>&1 && command -v tr >/dev/null 2>&1 || return 1\n cap_output=$({ \"$@\" 2>/dev/null; cap_code=$?; printf '\\nFR_CAPTURE_EXIT=%s\\n' \"$cap_code\"; } | head -c 131073 | tr '\\000' '?'; printf '.')\n cap_output=${cap_output%.}\n test \"${#cap_output}\" -lt 131073 || { cap_output=; return 1; }\n case \"$cap_output\" in *'\nFR_CAPTURE_EXIT=0\n') cap_output=${cap_output%'\nFR_CAPTURE_EXIT=0\n'}; return 0;; *) cap_output=; return 1;; esac\n}\nif command -v iptables >/dev/null 2>&1 && cap iptables --version; then\n case \"$cap_output\" in *'v1.8.8 (legacy)'*) fact iptables_b31 1;; *) fact iptables_b31 0;; esac\nelse fact iptables_b31 not-assessed; fi\nif command -v awk >/dev/null 2>&1 && test -r /proc/net/ip_tables_targets && cap cat /proc/net/ip_tables_targets; then\n if printf '%s\\n' \"$cap_output\" | awk '$0==\"TTL\"{f=1}END{exit !f}'; then fact ttl_target 1; else fact ttl_target 0; fi\nelse fact ttl_target not-assessed; fi\nif test -d /etc/hotplug.d/iface && test -w /etc/hotplug.d/iface; then fact hotplug_writable 1; else fact hotplug_writable 0; fi\n",
       "timeoutSeconds": 12,
       "maxBytes": 32768
     },
@@ -254,7 +265,7 @@
         "en": "IPA: acceleration hashes and safe flags"
       },
       "category": "network",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed sha256sum uci\nhash_fact() {\n if test -f \"$2\" && test -r \"$2\"; then\n  value=$(sha256sum \"$2\") || { printf 'FR_ERROR hash_failed=%s\\n' \"$2\" >&2; exit 1; }\n  set -- \"$1\" $value\n  fact \"$1\" \"$2\"\n else fact \"$1\" missing; fi\n}\n\nhash_fact switch_sha256 /sbin/ipacm_switch.sh\nhash_fact ipacm_sha256 /usr/bin/ipacm\nfor key in zwrt_router.tmp_router.close_ipa_acce zwrt_router.other.ipa_disable; do\n if value=$(uci -q get \"$key\"); then case \"$value\" in 0|1) printf 'SETTING %s=%s\\n' \"$key\" \"$value\";; *) printf 'FR_ERROR unexpected_ipa_flag=%s\\n' \"$key\" >&2; exit 1;; esac\n else code=$?; printf 'FR_NOTICE unavailable_setting=%s exit=%s\\n' \"$key\" \"$code\" >&2; fi\ndone\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nneed uci\nhasher=not-assessed\nif command -v sha256sum >/dev/null 2>&1; then hasher=sha256sum\nelif command -v busybox >/dev/null 2>&1 && busybox sha256sum </dev/null >/dev/null 2>&1; then hasher=busybox-sha256sum; fi\nhash_fact() {\n hash_key=$1; hash_path=$2\n if test -L \"$hash_path\" || test ! -r \"$hash_path\" || test ! -f \"$hash_path\"; then state=$(path_state \"$hash_path\"); test \"$state\" != present || state=not-assessed; fact \"$hash_key\" \"$state\"; return; fi\n if test \"$hasher\" = not-assessed; then fact \"$hash_key\" not-assessed; return; fi\n if test \"$hasher\" = sha256sum; then if hash_result=$(sha256sum \"$hash_path\" 2>/dev/null); then hash_code=0; else hash_code=$?; fi\n else if hash_result=$(busybox sha256sum \"$hash_path\" 2>/dev/null); then hash_code=0; else hash_code=$?; fi; fi\n hash_result=${hash_result%% *}\n case \"$hash_result\" in ''|*[!0-9a-f]*) fact \"$hash_key\" not-assessed;; *)\n  if test \"$hash_code\" = 0 && test \"${#hash_result}\" = 64; then fact \"$hash_key\" \"$hash_result\"; else fact \"$hash_key\" not-assessed; fi;; esac\n}\n\nhash_fact switch_sha256 /sbin/ipacm_switch.sh\nhash_fact ipacm_sha256 /usr/bin/ipacm\nfor key in zwrt_router.tmp_router.close_ipa_acce zwrt_router.other.ipa_disable; do\n if value=$(uci -q get \"$key\"); then case \"$value\" in 0|1) printf 'SETTING %s=%s\\n' \"$key\" \"$value\";; *) printf 'FR_ERROR unexpected_ipa_flag=%s\\n' \"$key\" >&2; exit 1;; esac\n else code=$?; printf 'FR_NOTICE unavailable_setting=%s exit=%s\\n' \"$key\" \"$code\" >&2; fi\ndone\n",
       "timeoutSeconds": 12,
       "maxBytes": 32768
     },
@@ -265,7 +276,7 @@
         "en": "VPN: TUN, Lua UCI/JSON and network command versions"
       },
       "category": "network",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed lua nft iptables ip6tables ebtables dnsmasq\nif test -c /dev/net/tun; then fact tun 1; else fact tun 0; fi\nlua -e 'for _,name in ipairs({\"uci\",\"luci.jsonc\"}) do local ok=pcall(require,name); print(\"FR_FACT lua_\"..name:gsub(\"%.\",\"_\")..\"=\"..(ok and \"1\" or \"0\")); if not ok then io.stderr:write(\"FR_NOTICE missing_lua_module=\"..name..\"\\n\") end end'\nnft --version; iptables --version; ip6tables --version; ebtables --version; dnsmasq --version\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nif test -c /dev/net/tun; then fact tun 1; elif test \"$(path_state /dev/net/tun)\" = missing; then fact tun 0; else fact tun not-assessed; fi\nfact lua_uci not-assessed\nfact lua_luci_jsonc not-assessed\nfact lua_module_execution_performed 0\nfor item in uci:/usr/lib/lua/uci.so luci_jsonc:/usr/lib/lua/luci/jsonc.so; do name=${item%%:*};path=${item#*:};fact \"lua_module_file_$name\" \"$(path_state \"$path\")\";done\nfor tool in lua nft iptables ip6tables ebtables dnsmasq; do\n if command -v \"$tool\" >/dev/null 2>&1; then fact \"vpn_tool_$tool\" 1; else fact \"vpn_tool_$tool\" 0; fi\ndone\n",
       "timeoutSeconds": 15,
       "maxBytes": 32768
     },
@@ -276,7 +287,7 @@
         "en": "Guest Wi-Fi: section types without SSIDs or passwords"
       },
       "category": "network",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed uci\nfor name in main_2g main_5g guest_2g guest_5g; do\n if kind=$(uci -q get \"wireless.$name\"); then\n  case \"$kind\" in wifi-iface) fact \"${name}_iface\" 1;; *) fact \"${name}_iface\" 0; printf 'FR_NOTICE unexpected_section_type=%s\\n' \"$name\" >&2;; esac\n else code=$?; fact \"${name}_iface\" 0; printf 'FR_NOTICE unavailable_section=%s exit=%s\\n' \"$name\" \"$code\" >&2; fi\ndone\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nneed uci\nfor name in main_2g main_5g guest_2g guest_5g; do\n if kind=$(uci -q get \"wireless.$name\"); then\n  case \"$kind\" in wifi-iface) fact \"${name}_iface\" 1;; *) fact \"${name}_iface\" 0; printf 'FR_NOTICE unexpected_section_type=%s\\n' \"$name\" >&2;; esac\n else code=$?; fact \"${name}_iface\" not-assessed; printf 'FR_NOTICE unavailable_section=%s exit=%s\\n' \"$name\" \"$code\" >&2; fi\ndone\n",
       "timeoutSeconds": 12,
       "maxBytes": 32768
     },
@@ -287,7 +298,7 @@
         "en": "Launcher: display ABI and service hash"
       },
       "category": "display",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed stat sha256sum\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  printf 'PATH %s ' \"$1\"\n  stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\"\n else printf 'PATH %s missing\\n' \"$1\"; fi\n}\npresent() { if test -e \"$2\" || test -L \"$2\"; then fact \"$1\" 1; else fact \"$1\" 0; fi; }\nhash_fact() {\n if test -f \"$2\" && test -r \"$2\"; then\n  value=$(sha256sum \"$2\") || { printf 'FR_ERROR hash_failed=%s\\n' \"$2\" >&2; exit 1; }\n  set -- \"$1\" $value\n  fact \"$1\" \"$2\"\n else fact \"$1\" missing; fi\n}\n\nfor path in /usr/bin/zte_topsw_devui /etc/init.d/zte_topsw_devui /usr/ui /usr/lib/libMiniGUI.so /dev/fb0 /dev/input /data/zte-launcher /data/zte-launcher-trial /tmp/zte-vpn-screen; do meta \"$path\"; done\nhash_fact ui_sha256 /usr/bin/zte_topsw_devui\nhash_fact ui_service_sha256 /etc/init.d/zte_topsw_devui\nif test -x /usr/bin/zte_topsw_devui && test -f /etc/init.d/zte_topsw_devui; then fact ui_present 1; else fact ui_present 0; fi\nservice_known=0\nif test -f /etc/init.d/zte_topsw_devui && test -r /etc/init.d/zte_topsw_devui; then\n value=$(sha256sum /etc/init.d/zte_topsw_devui); set -- $value\n case \"$1\" in a30da6481637f1fd94e037373d406e574be7e722937a4965325086740be67e35|0a462f4021b1306ac5fbf074a674bae9fef952f240436a47468c0126c5d41b50) service_known=1;; esac\nfi\nfact service_hash_known \"$service_known\"\nui_known=0\nif test -f /usr/bin/zte_topsw_devui && test -r /usr/bin/zte_topsw_devui; then\n value=$(sha256sum /usr/bin/zte_topsw_devui); set -- $value\n case \"$1\" in e3914e78a8488cb736770f0ac9fb8ce10e0e5222fa50285f08e9e8be90d7f1e9|16eb92e27f54b5cf5c6b316a6e7a62b782053a2a609d0d4904a7f08a7bc0afa4) ui_known=1;; esac\nfi\nfact ui_hash_known \"$ui_known\"\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nneed stat\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  if metadata=$(stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\" 2>/dev/null); then printf 'PATH %s %s\\n' \"$1\" \"$metadata\"\n  else printf 'PATH %s not-assessed\\n' \"$1\"; fi\n else printf 'PATH %s %s\\n' \"$1\" \"$(path_state \"$1\")\"; fi\n}\npresent() { case \"$(path_state \"$2\")\" in present) fact \"$1\" 1;; missing) fact \"$1\" 0;; *) fact \"$1\" not-assessed;; esac; }\nhasher=not-assessed\nif command -v sha256sum >/dev/null 2>&1; then hasher=sha256sum\nelif command -v busybox >/dev/null 2>&1 && busybox sha256sum </dev/null >/dev/null 2>&1; then hasher=busybox-sha256sum; fi\nhash_fact() {\n hash_key=$1; hash_path=$2\n if test -L \"$hash_path\" || test ! -r \"$hash_path\" || test ! -f \"$hash_path\"; then state=$(path_state \"$hash_path\"); test \"$state\" != present || state=not-assessed; fact \"$hash_key\" \"$state\"; return; fi\n if test \"$hasher\" = not-assessed; then fact \"$hash_key\" not-assessed; return; fi\n if test \"$hasher\" = sha256sum; then if hash_result=$(sha256sum \"$hash_path\" 2>/dev/null); then hash_code=0; else hash_code=$?; fi\n else if hash_result=$(busybox sha256sum \"$hash_path\" 2>/dev/null); then hash_code=0; else hash_code=$?; fi; fi\n hash_result=${hash_result%% *}\n case \"$hash_result\" in ''|*[!0-9a-f]*) fact \"$hash_key\" not-assessed;; *)\n  if test \"$hash_code\" = 0 && test \"${#hash_result}\" = 64; then fact \"$hash_key\" \"$hash_result\"; else fact \"$hash_key\" not-assessed; fi;; esac\n}\n\nfor path in /usr/bin/zte_topsw_devui /etc/init.d/zte_topsw_devui /usr/ui /usr/lib/libMiniGUI.so /dev/fb0 /dev/input /data/zte-launcher /data/zte-launcher-trial /tmp/zte-vpn-screen; do meta \"$path\"; done\nhash_fact ui_sha256 /usr/bin/zte_topsw_devui\nhash_fact ui_service_sha256 /etc/init.d/zte_topsw_devui\nif test -x /usr/bin/zte_topsw_devui && test -f /etc/init.d/zte_topsw_devui; then fact ui_present 1; else fact ui_present 0; fi\nservice_known=0\nif test -f /etc/init.d/zte_topsw_devui && test -r /etc/init.d/zte_topsw_devui; then\n value=$(sha256sum /etc/init.d/zte_topsw_devui); set -- $value\n case \"$1\" in a30da6481637f1fd94e037373d406e574be7e722937a4965325086740be67e35|0a462f4021b1306ac5fbf074a674bae9fef952f240436a47468c0126c5d41b50) service_known=1;; esac\nfi\nfact service_hash_known \"$service_known\"\nui_known=0\nif test -f /usr/bin/zte_topsw_devui && test -r /usr/bin/zte_topsw_devui; then\n value=$(sha256sum /usr/bin/zte_topsw_devui); set -- $value\n case \"$1\" in e3914e78a8488cb736770f0ac9fb8ce10e0e5222fa50285f08e9e8be90d7f1e9|16eb92e27f54b5cf5c6b316a6e7a62b782053a2a609d0d4904a7f08a7bc0afa4) ui_known=1;; esac\nfi\nfact ui_hash_known \"$ui_known\"\n",
       "timeoutSeconds": 12,
       "maxBytes": 32768
     },
@@ -298,7 +309,7 @@
         "en": "Screen localization: resource hashes and cache metadata"
       },
       "category": "display",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed stat sha256sum\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  printf 'PATH %s ' \"$1\"\n  stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\"\n else printf 'PATH %s missing\\n' \"$1\"; fi\n}\npresent() { if test -e \"$2\" || test -L \"$2\"; then fact \"$1\" 1; else fact \"$1\" 0; fi; }\nhash_fact() {\n if test -f \"$2\" && test -r \"$2\"; then\n  value=$(sha256sum \"$2\") || { printf 'FR_ERROR hash_failed=%s\\n' \"$2\" >&2; exit 1; }\n  set -- \"$1\" $value\n  fact \"$1\" \"$2\"\n else fact \"$1\" missing; fi\n}\n\nfor path in /usr/ui/language /usr/ui/language/English.ini /usr/ui/language/Chinese.ini /cache /cache/language.txt /data/zte-imei-screen-ru; do meta \"$path\"; done\nhash_fact english_sha256 /usr/ui/language/English.ini\nhash_fact chinese_sha256 /usr/ui/language/Chinese.ini\nassets_known=1\nfor language in English Chinese; do\n path=/usr/ui/language/$language.ini\n if test -f \"$path\" && test ! -L \"$path\" && test -r \"$path\"; then\n  value=$(sha256sum \"$path\"); set -- $value\n  case \"$language:$1\" in English:47348faa9783bc69109743eb9cfcc3bd3888508040e9eca51cb4a6460b7a70ce|English:d97925e40f9c119e05dd692e8fbce36593b55aa3faf718af373b2cb57075981a|Chinese:b84c05af9046dd2458b2220633320fb0089e1000e03c45c3dc81dc72df0c44fc|Chinese:5c4b6e3896593172608f2d8890da56c7ff521667129375d0a52383243bb760df) ;; *) assets_known=0;; esac\n else assets_known=0; fi\ndone\nfact language_hashes_known \"$assets_known\"\nif test -f /cache/language.txt && test ! -L /cache/language.txt; then fact cache_regular 1; else fact cache_regular 0; fi\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nneed stat\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  if metadata=$(stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\" 2>/dev/null); then printf 'PATH %s %s\\n' \"$1\" \"$metadata\"\n  else printf 'PATH %s not-assessed\\n' \"$1\"; fi\n else printf 'PATH %s %s\\n' \"$1\" \"$(path_state \"$1\")\"; fi\n}\npresent() { case \"$(path_state \"$2\")\" in present) fact \"$1\" 1;; missing) fact \"$1\" 0;; *) fact \"$1\" not-assessed;; esac; }\nhasher=not-assessed\nif command -v sha256sum >/dev/null 2>&1; then hasher=sha256sum\nelif command -v busybox >/dev/null 2>&1 && busybox sha256sum </dev/null >/dev/null 2>&1; then hasher=busybox-sha256sum; fi\nhash_fact() {\n hash_key=$1; hash_path=$2\n if test -L \"$hash_path\" || test ! -r \"$hash_path\" || test ! -f \"$hash_path\"; then state=$(path_state \"$hash_path\"); test \"$state\" != present || state=not-assessed; fact \"$hash_key\" \"$state\"; return; fi\n if test \"$hasher\" = not-assessed; then fact \"$hash_key\" not-assessed; return; fi\n if test \"$hasher\" = sha256sum; then if hash_result=$(sha256sum \"$hash_path\" 2>/dev/null); then hash_code=0; else hash_code=$?; fi\n else if hash_result=$(busybox sha256sum \"$hash_path\" 2>/dev/null); then hash_code=0; else hash_code=$?; fi; fi\n hash_result=${hash_result%% *}\n case \"$hash_result\" in ''|*[!0-9a-f]*) fact \"$hash_key\" not-assessed;; *)\n  if test \"$hash_code\" = 0 && test \"${#hash_result}\" = 64; then fact \"$hash_key\" \"$hash_result\"; else fact \"$hash_key\" not-assessed; fi;; esac\n}\n\nfor path in /usr/ui/language /usr/ui/language/English.ini /usr/ui/language/Chinese.ini /cache /cache/language.txt /data/zte-imei-screen-ru; do meta \"$path\"; done\nhash_fact english_sha256 /usr/ui/language/English.ini\nhash_fact chinese_sha256 /usr/ui/language/Chinese.ini\nassets_known=1\nfor language in English Chinese; do\n path=/usr/ui/language/$language.ini\n if test -f \"$path\" && test ! -L \"$path\" && test -r \"$path\"; then\n  value=$(sha256sum \"$path\"); set -- $value\n  case \"$language:$1\" in English:47348faa9783bc69109743eb9cfcc3bd3888508040e9eca51cb4a6460b7a70ce|English:d97925e40f9c119e05dd692e8fbce36593b55aa3faf718af373b2cb57075981a|Chinese:b84c05af9046dd2458b2220633320fb0089e1000e03c45c3dc81dc72df0c44fc|Chinese:5c4b6e3896593172608f2d8890da56c7ff521667129375d0a52383243bb760df) ;; *) assets_known=0;; esac\n else assets_known=0; fi\ndone\nfact language_hashes_known \"$assets_known\"\nif test -f /cache/language.txt && test ! -L /cache/language.txt; then fact cache_regular 1; else fact cache_regular 0; fi\n",
       "timeoutSeconds": 12,
       "maxBytes": 32768
     },
@@ -309,7 +320,7 @@
         "en": "Agent: metadata, hash and dependencies"
       },
       "category": "access",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed stat sha256sum\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  printf 'PATH %s ' \"$1\"\n  stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\"\n else printf 'PATH %s missing\\n' \"$1\"; fi\n}\npresent() { if test -e \"$2\" || test -L \"$2\"; then fact \"$1\" 1; else fact \"$1\" 0; fi; }\nhash_fact() {\n if test -f \"$2\" && test -r \"$2\"; then\n  value=$(sha256sum \"$2\") || { printf 'FR_ERROR hash_failed=%s\\n' \"$2\" >&2; exit 1; }\n  set -- \"$1\" $value\n  fact \"$1\" \"$2\"\n else fact \"$1\" missing; fi\n}\n\nfor path in /data/zte-agent /data/local/tmp/start_zte_agent.sh /data/local/tmp/start_zte_imei_studio.sh /usr/bin/curl /var/run; do meta \"$path\"; done\nhash_fact agent_sha256 /data/zte-agent\nif test -f /usr/bin/curl && test ! -L /usr/bin/curl && test -x /usr/bin/curl; then fact curl_regular_executable 1; else fact curl_regular_executable 0; fi\nif test -x /data/zte-agent; then fact agent_installed 1; else fact agent_installed 0; fi\nif test -f /data/zte-agent && test ! -L /data/zte-agent && test -x /data/zte-agent && test \"$(stat -c %u /data/zte-agent)\" = 0 && test -f /data/local/tmp/start_zte_agent.sh && test ! -L /data/local/tmp/start_zte_agent.sh && test \"$(stat -c %u /data/local/tmp/start_zte_agent.sh)\" = 0 && sh -n /data/local/tmp/start_zte_agent.sh >/dev/null 2>&1; then fact agent_update_layout 1; else fact agent_update_layout 0; fi\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nneed stat\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  if metadata=$(stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\" 2>/dev/null); then printf 'PATH %s %s\\n' \"$1\" \"$metadata\"\n  else printf 'PATH %s not-assessed\\n' \"$1\"; fi\n else printf 'PATH %s %s\\n' \"$1\" \"$(path_state \"$1\")\"; fi\n}\npresent() { case \"$(path_state \"$2\")\" in present) fact \"$1\" 1;; missing) fact \"$1\" 0;; *) fact \"$1\" not-assessed;; esac; }\nhasher=not-assessed\nif command -v sha256sum >/dev/null 2>&1; then hasher=sha256sum\nelif command -v busybox >/dev/null 2>&1 && busybox sha256sum </dev/null >/dev/null 2>&1; then hasher=busybox-sha256sum; fi\nhash_fact() {\n hash_key=$1; hash_path=$2\n if test -L \"$hash_path\" || test ! -r \"$hash_path\" || test ! -f \"$hash_path\"; then state=$(path_state \"$hash_path\"); test \"$state\" != present || state=not-assessed; fact \"$hash_key\" \"$state\"; return; fi\n if test \"$hasher\" = not-assessed; then fact \"$hash_key\" not-assessed; return; fi\n if test \"$hasher\" = sha256sum; then if hash_result=$(sha256sum \"$hash_path\" 2>/dev/null); then hash_code=0; else hash_code=$?; fi\n else if hash_result=$(busybox sha256sum \"$hash_path\" 2>/dev/null); then hash_code=0; else hash_code=$?; fi; fi\n hash_result=${hash_result%% *}\n case \"$hash_result\" in ''|*[!0-9a-f]*) fact \"$hash_key\" not-assessed;; *)\n  if test \"$hash_code\" = 0 && test \"${#hash_result}\" = 64; then fact \"$hash_key\" \"$hash_result\"; else fact \"$hash_key\" not-assessed; fi;; esac\n}\n\nfor path in /data/zte-agent /data/local/tmp/start_zte_agent.sh /data/local/tmp/start_zte_imei_studio.sh /usr/bin/curl /var/run; do meta \"$path\"; done\nhash_fact agent_sha256 /data/zte-agent\nif test -f /usr/bin/curl && test ! -L /usr/bin/curl && test -x /usr/bin/curl; then fact curl_regular_executable 1; else fact curl_regular_executable 0; fi\nif test -x /data/zte-agent; then fact agent_installed 1; else fact agent_installed 0; fi\nif test -f /data/zte-agent && test ! -L /data/zte-agent && test -x /data/zte-agent && test \"$(stat -c %u /data/zte-agent)\" = 0 && test -f /data/local/tmp/start_zte_agent.sh && test ! -L /data/local/tmp/start_zte_agent.sh && test \"$(stat -c %u /data/local/tmp/start_zte_agent.sh)\" = 0 && sh -n /data/local/tmp/start_zte_agent.sh >/dev/null 2>&1; then fact agent_update_layout 1; else fact agent_update_layout 0; fi\n",
       "timeoutSeconds": 12,
       "maxBytes": 32768
     },
@@ -320,7 +331,7 @@
         "en": "SSH: directory metadata without key contents"
       },
       "category": "access",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed stat sh\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  printf 'PATH %s ' \"$1\"\n  stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\"\n else printf 'PATH %s missing\\n' \"$1\"; fi\n}\npresent() { if test -e \"$2\" || test -L \"$2\"; then fact \"$1\" 1; else fact \"$1\" 0; fi; }\n\nfor path in /data/bin/dropbear /data/dropbear /etc/dropbear /etc/ssh /data/local/tmp/start_dropbear.sh /etc/rc.local /data/zte-imei-admin /etc/zte-imei-admin; do meta \"$path\"; done\nif test -x /data/bin/dropbear; then fact management_dropbear_present 1; else fact management_dropbear_present 0; fi\nif test -f /etc/rc.local && test ! -L /etc/rc.local && test -w /etc/rc.local; then fact rc_local_writable 1; else fact rc_local_writable 0; fi\nif test -f /etc/rc.local && test -r /etc/rc.local; then if sh -n /etc/rc.local 2>/dev/null; then fact rc_local_syntax 1; else fact rc_local_syntax 0; printf 'FR_ERROR invalid_rc_local_syntax\\n' >&2; exit 1; fi; else fact rc_local_syntax 0; fi\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nneed stat sh\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  if metadata=$(stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\" 2>/dev/null); then printf 'PATH %s %s\\n' \"$1\" \"$metadata\"\n  else printf 'PATH %s not-assessed\\n' \"$1\"; fi\n else printf 'PATH %s %s\\n' \"$1\" \"$(path_state \"$1\")\"; fi\n}\npresent() { case \"$(path_state \"$2\")\" in present) fact \"$1\" 1;; missing) fact \"$1\" 0;; *) fact \"$1\" not-assessed;; esac; }\n\nfor path in /data/bin/dropbear /data/dropbear /etc/dropbear /etc/ssh /data/local/tmp/start_dropbear.sh /etc/rc.local /data/zte-imei-admin /etc/zte-imei-admin; do meta \"$path\"; done\nif test -x /data/bin/dropbear; then fact management_dropbear_present 1; else fact management_dropbear_present 0; fi\nif test -f /etc/rc.local && test ! -L /etc/rc.local && test -w /etc/rc.local; then fact rc_local_writable 1; else fact rc_local_writable 0; fi\nif test -f /etc/rc.local && test -r /etc/rc.local; then if sh -n /etc/rc.local 2>/dev/null; then fact rc_local_syntax 1; else fact rc_local_syntax 0; printf 'FR_ERROR invalid_rc_local_syntax\\n' >&2; exit 1; fi; else fact rc_local_syntax 0; fi\n",
       "timeoutSeconds": 12,
       "maxBytes": 32768
     },
@@ -331,7 +342,7 @@
         "en": "SSH accounts: database types and permissions only"
       },
       "category": "access",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed stat\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  printf 'PATH %s ' \"$1\"\n  stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\"\n else printf 'PATH %s missing\\n' \"$1\"; fi\n}\npresent() { if test -e \"$2\" || test -L \"$2\"; then fact \"$1\" 1; else fact \"$1\" 0; fi; }\n\nregular=1\nfor path in /etc/passwd /etc/group /etc/shadow; do\n meta \"$path\"\n if test ! -f \"$path\" || test -L \"$path\"; then regular=0; continue; fi\n owner=$(stat -c %u \"$path\"); if test \"$owner\" != 0; then regular=0; fi\ndone\nfact account_databases_regular \"$regular\"\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nneed stat\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  if metadata=$(stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\" 2>/dev/null); then printf 'PATH %s %s\\n' \"$1\" \"$metadata\"\n  else printf 'PATH %s not-assessed\\n' \"$1\"; fi\n else printf 'PATH %s %s\\n' \"$1\" \"$(path_state \"$1\")\"; fi\n}\npresent() { case \"$(path_state \"$2\")\" in present) fact \"$1\" 1;; missing) fact \"$1\" 0;; *) fact \"$1\" not-assessed;; esac; }\n\nregular=1\nfor path in /etc/passwd /etc/group /etc/shadow; do\n meta \"$path\"\n if test ! -f \"$path\" || test -L \"$path\"; then regular=0; continue; fi\n owner=$(stat -c %u \"$path\"); if test \"$owner\" != 0; then regular=0; fi\ndone\nfact account_databases_regular \"$regular\"\n",
       "timeoutSeconds": 12,
       "maxBytes": 32768
     },
@@ -342,7 +353,7 @@
         "en": "Packages: names, versions and architecture only"
       },
       "category": "applications",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed awk stat\nfor path in /usr/lib/opkg/status /data/zte-imei-apps/diagnostics /data/zte-imei-apps/opkg /data/zte-imei-apps/ssclash; do if test -e \"$path\"; then printf 'PATH %s ' \"$path\"; stat -c 'type=%F mode=%a uid=%u' \"$path\"; fi; done\nif test -f /usr/lib/opkg/status && test -r /usr/lib/opkg/status; then\n awk 'BEGIN{n=0} /^(Package|Version|Architecture|Status): / {if(++n>1600){print \"FR_NOTICE package_inventory_truncated\";exit};print}' /usr/lib/opkg/status\n fact stock_package_database 1\nelse fact stock_package_database 0; fi\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nneed awk stat\nfor path in /usr/lib/opkg/status /data/zte-imei-apps/diagnostics /data/zte-imei-apps/opkg /data/zte-imei-apps/ssclash; do if test -e \"$path\"; then printf 'PATH %s ' \"$path\"; stat -c 'type=%F mode=%a uid=%u' \"$path\"; fi; done\nif test -f /usr/lib/opkg/status && test -r /usr/lib/opkg/status; then\n awk 'BEGIN{n=0} /^(Package|Version|Architecture|Status): / {if(++n>1600){print \"FR_NOTICE package_inventory_truncated\";exit};print}' /usr/lib/opkg/status\n fact stock_package_database 1\nelse fact stock_package_database 0; fi\n",
       "timeoutSeconds": 12,
       "maxBytes": 131072
     },
@@ -353,7 +364,7 @@
         "en": "opkg adapter: structure without manager execution"
       },
       "category": "applications",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed stat\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  printf 'PATH %s ' \"$1\"\n  stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\"\n else printf 'PATH %s missing\\n' \"$1\"; fi\n}\npresent() { if test -e \"$2\" || test -L \"$2\"; then fact \"$1\" 1; else fact \"$1\" 0; fi; }\n\nfor path in /data/zte-imei-apps /data/zte-imei-apps/opkg /data/zte-imei-apps/opkg/opkg /data/zte-imei-apps/opkg/active /data/zte-imei-apps/opkg/releases /data/zte-imei-apps/opkg/runners; do meta \"$path\"; done\npresent private_opkg_present /data/zte-imei-apps/opkg/opkg\nfact adapter_status_executed 0\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nneed stat\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  if metadata=$(stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\" 2>/dev/null); then printf 'PATH %s %s\\n' \"$1\" \"$metadata\"\n  else printf 'PATH %s not-assessed\\n' \"$1\"; fi\n else printf 'PATH %s %s\\n' \"$1\" \"$(path_state \"$1\")\"; fi\n}\npresent() { case \"$(path_state \"$2\")\" in present) fact \"$1\" 1;; missing) fact \"$1\" 0;; *) fact \"$1\" not-assessed;; esac; }\n\nfor path in /data/zte-imei-apps /data/zte-imei-apps/opkg /data/zte-imei-apps/opkg/opkg /data/zte-imei-apps/opkg/active /data/zte-imei-apps/opkg/releases /data/zte-imei-apps/opkg/runners; do meta \"$path\"; done\npresent private_opkg_present /data/zte-imei-apps/opkg/opkg\nfact adapter_status_executed 0\n",
       "timeoutSeconds": 12,
       "maxBytes": 32768
     },
@@ -364,7 +375,7 @@
         "en": "Backups: source availability without content reads"
       },
       "category": "backup",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed stat\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  printf 'PATH %s ' \"$1\"\n  stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\"\n else printf 'PATH %s missing\\n' \"$1\"; fi\n}\npresent() { if test -e \"$2\" || test -L \"$2\"; then fact \"$1\" 1; else fact \"$1\" 0; fi; }\n\nfor path in /data /etc/config /etc/rc.local /data/zte-vpn/profiles /data/zte-vpn/config.json /data/zte-imei-ttl /data/zte-imei-screen-ru /data/zte-imei-admin; do meta \"$path\"; done\nif test -d /data && test -r /data; then fact data_readable 1; else fact data_readable 0; fi\nif test -d /etc/config && test -r /etc/config && test -f /etc/rc.local; then fact config_sources_present 1; else fact config_sources_present 0; fi\nfact backup_consistency_validated not-performed\nfact secret_contents_collected 0\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nneed stat\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  if metadata=$(stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\" 2>/dev/null); then printf 'PATH %s %s\\n' \"$1\" \"$metadata\"\n  else printf 'PATH %s not-assessed\\n' \"$1\"; fi\n else printf 'PATH %s %s\\n' \"$1\" \"$(path_state \"$1\")\"; fi\n}\npresent() { case \"$(path_state \"$2\")\" in present) fact \"$1\" 1;; missing) fact \"$1\" 0;; *) fact \"$1\" not-assessed;; esac; }\n\nfor path in /data /etc/config /etc/rc.local /data/zte-vpn/profiles /data/zte-vpn/config.json /data/zte-imei-ttl /data/zte-imei-screen-ru /data/zte-imei-admin; do meta \"$path\"; done\nif test -d /data && test -r /data; then fact data_readable 1; else fact data_readable 0; fi\nif test -d /etc/config && test -r /etc/config && test -f /etc/rc.local; then fact config_sources_present 1; else fact config_sources_present 0; fi\nfact backup_consistency_validated not-performed\nfact secret_contents_collected 0\n",
       "timeoutSeconds": 12,
       "maxBytes": 32768
     },
@@ -375,7 +386,7 @@
         "en": "Pending operations and firmware update markers"
       },
       "category": "safety",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed stat\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  printf 'PATH %s ' \"$1\"\n  stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\"\n else printf 'PATH %s missing\\n' \"$1\"; fi\n}\npresent() { if test -e \"$2\" || test -L \"$2\"; then fact \"$1\" 1; else fact \"$1\" 0; fi; }\n\nclear=1\nfor path in /data/zte-dashboard-runtime/installer/lock /data/local/tmp/zte-imei-installations/active /data/local/tmp/zte-imei-installations/lock /data/local/tmp/open-u60-transactions/active /tmp/fota_install_processing /tmp/zte-imei-app.lock /tmp/zte-system-backup-helper.lock /data/zte-vpn/transaction /data/zte-vpn/controller-upgrade /data/zte-launcher-update /data/zte-imei-admin/active /data/zte-imei-screen-ru/.transaction /data/zte-imei-ttl/.transaction; do\n if test -e \"$path\" || test -L \"$path\"; then clear=0; meta \"$path\"; fi\ndone\nfact no_pending_operations \"$clear\"\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nneed stat\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  if metadata=$(stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\" 2>/dev/null); then printf 'PATH %s %s\\n' \"$1\" \"$metadata\"\n  else printf 'PATH %s not-assessed\\n' \"$1\"; fi\n else printf 'PATH %s %s\\n' \"$1\" \"$(path_state \"$1\")\"; fi\n}\npresent() { case \"$(path_state \"$2\")\" in present) fact \"$1\" 1;; missing) fact \"$1\" 0;; *) fact \"$1\" not-assessed;; esac; }\n\nclear=1\nfor path in /data/zte-dashboard-runtime/installer/lock /data/local/tmp/zte-imei-installations/active /data/local/tmp/zte-imei-installations/lock /data/local/tmp/open-u60-transactions/active /tmp/fota_install_processing /tmp/zte-imei-app.lock /tmp/zte-system-backup-helper.lock /data/zte-vpn/transaction /data/zte-vpn/controller-upgrade /data/zte-launcher-update /data/zte-imei-admin/active /data/zte-imei-screen-ru/.transaction /data/zte-imei-ttl/.transaction; do\n case \"$(path_state \"$path\")\" in present) clear=0; meta \"$path\";; missing) :;; *) test \"$clear\" = 0 || clear=not-assessed;; esac\ndone\nfact no_pending_operations \"$clear\"\n",
       "timeoutSeconds": 12,
       "maxBytes": 32768
     },
@@ -386,7 +397,7 @@
         "en": "CPU, memory and temperatures without identifiers"
       },
       "category": "runtime",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed awk cat\nfor file in /proc/meminfo /proc/loadavg /proc/uptime; do if test -r \"$file\"; then printf 'SOURCE %s\\n' \"$file\"; awk 'NR<=64{print}' \"$file\"; fi; done\nif test -r /proc/cpuinfo; then awk '/^(processor|BogoMIPS|Features|CPU implementer|CPU architecture|CPU variant|CPU part|CPU revision)[[:space:]]*:/ && NR<=1000 {print}' /proc/cpuinfo; fi\ncount=0\nfor path in /sys/class/thermal/thermal_zone*; do\n test -d \"$path\" || continue; count=$((count+1)); test \"$count\" -le 32 || break\n for field in type temp; do if test -r \"$path/$field\"; then value=$(cat \"$path/$field\"); printf 'THERMAL %s %s=%s\\n' \"${path##*/}\" \"$field\" \"$value\"; fi; done\ndone\nfact thermal_zone_count \"$count\"\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nneed awk cat\nfor file in /proc/meminfo /proc/loadavg /proc/uptime; do if test -r \"$file\"; then printf 'SOURCE %s\\n' \"$file\"; awk 'NR<=64{print}' \"$file\"; fi; done\nif test -r /proc/cpuinfo; then awk '/^(processor|BogoMIPS|Features|CPU implementer|CPU architecture|CPU variant|CPU part|CPU revision)[[:space:]]*:/ && NR<=1000 {print}' /proc/cpuinfo; fi\ncount=0\nfor path in /sys/class/thermal/thermal_zone*; do\n test -d \"$path\" || continue; count=$((count+1)); test \"$count\" -le 32 || break\n for field in type temp; do if test -r \"$path/$field\"; then value=$(cat \"$path/$field\"); printf 'THERMAL %s %s=%s\\n' \"${path##*/}\" \"$field\" \"$value\"; fi; done\ndone\nfact thermal_zone_count \"$count\"\n",
       "timeoutSeconds": 12,
       "maxBytes": 32768
     },
@@ -397,7 +408,7 @@
         "en": "Kernel: I/O and ext4 error counters without log text"
       },
       "category": "health",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed dmesg awk\noutput=$(dmesg)\nprintf '%s\\n' \"$output\" | awk '{s=tolower($0);if(s~/i\\/o error|buffer i\\/o/)io++;if(s~/ext4.*(error|warning|abort)/)ext++;if(s~/read-only file system|remounting filesystem read-only/)ro++;if(s~/out of memory|killed process/)oom++;if(s~/mmc.*(error|timeout)/)mmc++} END{print \"FR_FACT io_error_lines=\" io+0;print \"FR_FACT ext4_error_lines=\" ext+0;print \"FR_FACT readonly_error_lines=\" ro+0;print \"FR_FACT oom_lines=\" oom+0;print \"FR_FACT mmc_error_lines=\" mmc+0;print \"FR_FACT kernel_log_lines=\" NR}'\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\n# Capture is private, bounded to 128 KiB, and requires the producer's exit proof.\n# Never export cap_output directly: callers select only fixed public fields/counts.\ncap() {\n cap_output=\n command -v head >/dev/null 2>&1 && command -v tr >/dev/null 2>&1 || return 1\n cap_output=$({ \"$@\" 2>/dev/null; cap_code=$?; printf '\\nFR_CAPTURE_EXIT=%s\\n' \"$cap_code\"; } | head -c 131073 | tr '\\000' '?'; printf '.')\n cap_output=${cap_output%.}\n test \"${#cap_output}\" -lt 131073 || { cap_output=; return 1; }\n case \"$cap_output\" in *'\nFR_CAPTURE_EXIT=0\n') cap_output=${cap_output%'\nFR_CAPTURE_EXIT=0\n'}; return 0;; *) cap_output=; return 1;; esac\n}\nif ! command -v awk >/dev/null 2>&1 || ! cap dmesg; then fact health_sample not-assessed; exit 0; fi\nprintf '%s\\n' \"$cap_output\" | awk '{s=tolower($0);if(s~/i\\/o error|buffer i\\/o/)io++;if(s~/ext4.*(error|warning|abort)/)ext++;if(s~/read-only file system|remounting filesystem read-only/)ro++;if(s~/out of memory|killed process/)oom++;if(s~/mmc.*(error|timeout)/)mmc++} END{print \"FR_FACT io_error_lines=\" io+0;print \"FR_FACT ext4_error_lines=\" ext+0;print \"FR_FACT readonly_error_lines=\" ro+0;print \"FR_FACT oom_lines=\" oom+0;print \"FR_FACT mmc_error_lines=\" mmc+0;print \"FR_FACT kernel_log_lines=\" NR}'\nfact health_sample known\n",
       "timeoutSeconds": 15,
       "maxBytes": 32768
     },
@@ -408,7 +419,7 @@
         "en": "Latest 200 system log lines: counters only"
       },
       "category": "health",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed logread awk\noutput=$(logread -l 200)\nprintf '%s\\n' \"$output\" | awk '{s=tolower($0);if(s~/dropbear|sshd/)ssh++;if(s~/adbd|android.*usb/)adb++;if(s~/zte-agent/)agent++;if(s~/diag-router/)diag++;if(s~/error|failed|denied|refused/)errors++}END{print \"FR_FACT sampled_lines=\" NR;print \"FR_FACT ssh_lines=\" ssh+0;print \"FR_FACT adb_lines=\" adb+0;print \"FR_FACT agent_lines=\" agent+0;print \"FR_FACT diag_lines=\" diag+0;print \"FR_FACT error_lines=\" errors+0}'\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\n# Capture is private, bounded to 128 KiB, and requires the producer's exit proof.\n# Never export cap_output directly: callers select only fixed public fields/counts.\ncap() {\n cap_output=\n command -v head >/dev/null 2>&1 && command -v tr >/dev/null 2>&1 || return 1\n cap_output=$({ \"$@\" 2>/dev/null; cap_code=$?; printf '\\nFR_CAPTURE_EXIT=%s\\n' \"$cap_code\"; } | head -c 131073 | tr '\\000' '?'; printf '.')\n cap_output=${cap_output%.}\n test \"${#cap_output}\" -lt 131073 || { cap_output=; return 1; }\n case \"$cap_output\" in *'\nFR_CAPTURE_EXIT=0\n') cap_output=${cap_output%'\nFR_CAPTURE_EXIT=0\n'}; return 0;; *) cap_output=; return 1;; esac\n}\nif ! command -v awk >/dev/null 2>&1 || ! cap logread -l 200; then fact health_sample not-assessed; exit 0; fi\nprintf '%s\\n' \"$cap_output\" | awk '{s=tolower($0);if(s~/dropbear|sshd/)ssh++;if(s~/adbd|android.*usb/)adb++;if(s~/zte-agent/)agent++;if(s~/diag-router/)diag++;if(s~/error|failed|denied|refused/)errors++}END{print \"FR_FACT sampled_lines=\" NR;print \"FR_FACT ssh_lines=\" ssh+0;print \"FR_FACT adb_lines=\" adb+0;print \"FR_FACT agent_lines=\" agent+0;print \"FR_FACT diag_lines=\" diag+0;print \"FR_FACT error_lines=\" errors+0}'\nfact health_sample known\n",
       "timeoutSeconds": 15,
       "maxBytes": 32768
     },
@@ -419,7 +430,7 @@
         "en": "Interfaces, bridges and route counts without addresses"
       },
       "category": "network",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$2\"; }\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; fi; done; }\nneed cat awk readlink\ncount=0\nfor path in /sys/class/net/*; do\n test -d \"$path\" || continue; count=$((count+1)); if test \"$count\" -gt 64; then printf 'FR_ERROR interface_limit\\n' >&2; exit 1; fi\n name=${path##*/}; case \"$name\" in ''|*[!a-zA-Z0-9_.:-]*) printf 'FR_ERROR invalid_interface_name\\n' >&2; exit 1;; esac\n printf 'INTERFACE %s\\n' \"$name\"\n for field in type mtu operstate; do\n  if test -r \"$path/$field\"; then value=$(cat \"$path/$field\"); printf '%s=%s\\n' \"$field\" \"$value\"; fi\n done\n if test -L \"$path/master\"; then target=$(readlink \"$path/master\"); printf 'master=%s\\n' \"${target##*/}\"; fi\ndone\nfact interface_count \"$count\"\nfor name in br-lan wlan1 wlan3; do if test -d \"/sys/class/net/$name\"; then fact \"interface_$name\" 1; else fact \"interface_$name\" 0; fi; done\nif test -r /proc/net/route; then\n awk 'NR>1{n++;seen[$1]++;if($2==\"00000000\")defaults++}END{print \"FR_FACT ipv4_route_count=\" n+0;print \"FR_FACT ipv4_default_route_count=\" defaults+0;for(i in seen)print \"ROUTE_INTERFACE \" i \" count=\" seen[i]}' /proc/net/route\nelse fact ipv4_route_count missing; fact ipv4_default_route_count missing; fi\nif test -r /proc/net/ipv6_route; then awk 'END{print \"FR_FACT ipv6_route_count=\" NR}' /proc/net/ipv6_route; else fact ipv6_route_count missing; fi\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\n# Capture is private, bounded to 128 KiB, and requires the producer's exit proof.\n# Never export cap_output directly: callers select only fixed public fields/counts.\ncap() {\n cap_output=\n command -v head >/dev/null 2>&1 && command -v tr >/dev/null 2>&1 || return 1\n cap_output=$({ \"$@\" 2>/dev/null; cap_code=$?; printf '\\nFR_CAPTURE_EXIT=%s\\n' \"$cap_code\"; } | head -c 131073 | tr '\\000' '?'; printf '.')\n cap_output=${cap_output%.}\n test \"${#cap_output}\" -lt 131073 || { cap_output=; return 1; }\n case \"$cap_output\" in *'\nFR_CAPTURE_EXIT=0\n') cap_output=${cap_output%'\nFR_CAPTURE_EXIT=0\n'}; return 0;; *) cap_output=; return 1;; esac\n}\nneed awk\ncount=0\nfor path in /sys/class/net/*; do\n test -d \"$path\" || continue; count=$((count+1)); if test \"$count\" -gt 64; then printf 'FR_ERROR interface_limit\\n' >&2; exit 1; fi\n name=${path##*/}; case \"$name\" in ''|*[!a-zA-Z0-9_.:-]*) printf 'FR_ERROR invalid_interface_name\\n' >&2; exit 1;; esac\n printf 'INTERFACE %s\\n' \"$name\"\n for field in type mtu operstate; do\n  if test -r \"$path/$field\"; then\n   value=; IFS= read -r value < \"$path/$field\" || :\n   case \"$field:$value\" in type:*|mtu:*) case \"$value\" in ''|*[!0-9]*) :;; *) printf '%s=%s\\n' \"$field\" \"$value\";; esac;; operstate:up|operstate:down|operstate:unknown|operstate:dormant|operstate:lowerlayerdown|operstate:notpresent|operstate:testing) printf '%s=%s\\n' \"$field\" \"$value\";; esac\n  fi\n done\n if command -v readlink >/dev/null 2>&1 && test -L \"$path/master\"; then target=$(readlink \"$path/master\"); target=${target##*/}; case \"$target\" in ''|*[!a-zA-Z0-9_.:-]*) :;; *) printf 'master=%s\\n' \"$target\";; esac; fi\ndone\nif test -d /sys/class/net && test -r /sys/class/net && test -x /sys/class/net; then fact interface_count \"$count\"; else fact interface_count not-assessed; fi\nfor name in br-lan wlan1 wlan3; do case \"$(path_state \"/sys/class/net/$name\")\" in present) fact \"interface_$name\" 1;; missing) fact \"interface_$name\" 0;; *) fact \"interface_$name\" not-assessed;; esac; done\nif test -r /proc/net/route && cap cat /proc/net/route; then\n if counts=$(printf '%s\\n' \"$cap_output\" | awk 'NR==1{if($1!=\"Iface\" || $2!=\"Destination\")bad=1;next} NF{if(NF<8 || $1!~/^[A-Za-z0-9_.:-]+$/ || $2!~/^[0-9A-Fa-f]+$/ || length($2)!=8)bad=1;else{n++;if($2==\"00000000\")d++}}END{if(bad || NR<1)exit 1;print n+0,d+0}'); then\n  set -- $counts; fact ipv4_route_count \"$1\"; fact ipv4_default_route_count \"$2\"\n else fact ipv4_route_count not-assessed; fact ipv4_default_route_count not-assessed; fi\nelse fact ipv4_route_count not-assessed; fact ipv4_default_route_count not-assessed; fi\nif test -r /proc/net/ipv6_route && cap cat /proc/net/ipv6_route; then\n if count=$(printf '%s' \"$cap_output\" | awk 'NF{if(NF!=10 || length($1)!=32 || $1!~/^[0-9a-fA-F]+$/ || $10!~/^[A-Za-z0-9_.:-]+$/)bad=1;else n++}END{if(bad)exit 1;print n+0}'); then fact ipv6_route_count \"$count\"; else fact ipv6_route_count not-assessed; fi\nelse fact ipv6_route_count not-assessed; fi\n",
       "timeoutSeconds": 12,
       "maxBytes": 32768
     },
@@ -430,22 +441,96 @@
         "en": "eSIM: components and API schema without card access"
       },
       "category": "capabilities",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\nfact() { printf 'FR_FACT %s=%s\\n' \"$1\" \"$2\"; }\nfor tool in stat sha256sum awk ubus; do command -v \"$tool\" >/dev/null 2>&1 || { printf 'FR_ERROR missing_tool=%s\\n' \"$tool\" >&2; exit 127; }; done\ncomponent() {\n key=$1; path=$2\n if test ! -f \"$path\" || test -L \"$path\" || test ! -r \"$path\"; then fact \"${key}_sha256\" missing; return; fi\n bytes=$(stat -c %s \"$path\")\n case \"$bytes\" in ''|*[!0-9]*) exit 1;; esac\n if test \"$bytes\" -gt 67108864; then fact \"${key}_sha256\" not-assessed; return; fi\n value=$(sha256sum \"$path\"); set -- $value\n fact \"${key}_sha256\" \"$1\"\n}\ncomponent esim_mdm /usr/bin/zte_topsw_mdm\ncomponent esim_sdk /usr/lib/libzte_SDKowrt.so\ncomponent esim_qcril /usr/bin/qcrilNrd\ncomponent esim_installed_agent /data/zte-agent\nif methods=$(ubus -t 5 -v list zwrt_zte_mdm.api 2>/dev/null); then\n if test \"${#methods}\" -gt 262144; then printf 'FR_ERROR schema_limit\\n' >&2; exit 1; fi\n for method in zte_get_current_slot_info get_sim_info zwrt_zte_mdm_activate_sim zwrt_mdm_change_provision_session; do\n  if printf '%s\\n' \"$methods\" | awk -v name=\"$method\" 'index($0,\"\\\"\" name \"\\\":\"){found=1;print \"METHOD \" $0}END{exit !found}'; then fact \"esim_method_$method\" 1; else fact \"esim_method_$method\" 0; fi\n done\nelse fact esim_method_inventory unknown; fi\nif command -v strings >/dev/null 2>&1 && test -f /usr/lib/libzte_SDKowrt.so && test ! -L /usr/lib/libzte_SDKowrt.so && test -r /usr/lib/libzte_SDKowrt.so; then\n bytes=$(stat -c %s /usr/lib/libzte_SDKowrt.so)\n case \"$bytes\" in ''|*[!0-9]*) exit 1;; esac\n if test \"$bytes\" -le 16777216; then\n  strings /usr/lib/libzte_SDKowrt.so | awk '$0==\"ZTD_GetCurrentSimSlot\" || $0==\"ZTD_SetCurrentSimSlot\" || $0==\"ZTD_SetActiveSimSlot\" {if(!seen[$0]++)print \"SDK_SYMBOL \" $0}'\n else fact esim_sdk_symbols not-assessed; fi\nelse fact esim_sdk_symbols unknown; fi\nfact physical_euicc_management not-assessed\nfact native_isdr_access not-assessed\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\n# Capture is private, bounded to 128 KiB, and requires the producer's exit proof.\n# Never export cap_output directly: callers select only fixed public fields/counts.\ncap() {\n cap_output=\n command -v head >/dev/null 2>&1 && command -v tr >/dev/null 2>&1 || return 1\n cap_output=$({ \"$@\" 2>/dev/null; cap_code=$?; printf '\\nFR_CAPTURE_EXIT=%s\\n' \"$cap_code\"; } | head -c 131073 | tr '\\000' '?'; printf '.')\n cap_output=${cap_output%.}\n test \"${#cap_output}\" -lt 131073 || { cap_output=; return 1; }\n case \"$cap_output\" in *'\nFR_CAPTURE_EXIT=0\n') cap_output=${cap_output%'\nFR_CAPTURE_EXIT=0\n'}; return 0;; *) cap_output=; return 1;; esac\n}\nfor tool in stat sha256sum awk ubus; do command -v \"$tool\" >/dev/null 2>&1 || { fact esim_component_inventory not-assessed; exit 0; }; done\ncomponent() {\n key=$1; path=$2\n if test ! -f \"$path\" || test -L \"$path\" || test ! -r \"$path\"; then state=$(path_state \"$path\"); test \"$state\" != present || state=not-assessed; fact \"${key}_sha256\" \"$state\"; return; fi\n bytes=$(stat -c %s \"$path\")\n case \"$bytes\" in ''|*[!0-9]*) exit 1;; esac\n if test \"$bytes\" -gt 67108864; then fact \"${key}_sha256\" not-assessed; return; fi\n if value=$(sha256sum \"$path\" 2>/dev/null); then value=${value%% *}; else value=; fi\n case \"$value\" in ''|*[!0-9a-f]*) fact \"${key}_sha256\" not-assessed;; *) if test \"${#value}\" = 64; then fact \"${key}_sha256\" \"$value\"; else fact \"${key}_sha256\" not-assessed; fi;; esac\n}\ncomponent esim_mdm /usr/bin/zte_topsw_mdm\ncomponent esim_sdk /usr/lib/libzte_SDKowrt.so\ncomponent esim_qcril /usr/bin/qcrilNrd\ncomponent esim_installed_agent /data/zte-agent\nif cap ubus -t 5 -v list zwrt_zte_mdm.api; then\n methods=$cap_output\n for method in zte_get_current_slot_info get_sim_info zwrt_zte_mdm_activate_sim zwrt_mdm_change_provision_session; do\n  if printf '%s\\n' \"$methods\" | awk -v name=\"$method\" 'index($0,\"\\\"\" name \"\\\":\"){found=1;print \"METHOD \" name}END{exit !found}'; then fact \"esim_method_$method\" 1; else fact \"esim_method_$method\" 0; fi\n done\nelse fact esim_method_inventory not-assessed; fi\nif command -v strings >/dev/null 2>&1 && test -f /usr/lib/libzte_SDKowrt.so && test ! -L /usr/lib/libzte_SDKowrt.so && test -r /usr/lib/libzte_SDKowrt.so; then\n bytes=$(stat -c %s /usr/lib/libzte_SDKowrt.so)\n case \"$bytes\" in ''|*[!0-9]*) exit 1;; esac\n if test \"$bytes\" -le 16777216; then\n  strings /usr/lib/libzte_SDKowrt.so | awk '$0==\"ZTD_GetCurrentSimSlot\" || $0==\"ZTD_SetCurrentSimSlot\" || $0==\"ZTD_SetActiveSimSlot\" {if(!seen[$0]++)print \"SDK_SYMBOL \" $0}'\n else fact esim_sdk_symbols not-assessed; fi\nelse fact esim_sdk_symbols unknown; fi\nfact physical_euicc_management not-assessed\nfact native_isdr_access not-assessed\n",
       "timeoutSeconds": 25,
+      "maxBytes": 32768
+    },
+    {
+      "id": "elf-abi",
+      "title": {
+        "ru": "Формат ELF системных программ",
+        "en": "System executable ELF ABI"
+      },
+      "category": "discovery",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\n# Capture is private, bounded to 128 KiB, and requires the producer's exit proof.\n# Never export cap_output directly: callers select only fixed public fields/counts.\ncap() {\n cap_output=\n command -v head >/dev/null 2>&1 && command -v tr >/dev/null 2>&1 || return 1\n cap_output=$({ \"$@\" 2>/dev/null; cap_code=$?; printf '\\nFR_CAPTURE_EXIT=%s\\n' \"$cap_code\"; } | head -c 131073 | tr '\\000' '?'; printf '.')\n cap_output=${cap_output%.}\n test \"${#cap_output}\" -lt 131073 || { cap_output=; return 1; }\n case \"$cap_output\" in *'\nFR_CAPTURE_EXIT=0\n') cap_output=${cap_output%'\nFR_CAPTURE_EXIT=0\n'}; return 0;; *) cap_output=; return 1;; esac\n}\nif ! command -v od >/dev/null 2>&1 || ! command -v awk >/dev/null 2>&1; then fact elf_headers not-assessed; exit 0; fi\ncount=0\nfor item in shell:/bin/sh busybox:/bin/busybox init:/sbin/init ubus:/bin/ubus agent:/data/zte-agent ui:/usr/bin/zte_topsw_devui router:/usr/bin/diag-router; do\n name=${item%%:*}; path=${item#*:}\n if test -f \"$path\" && test -r \"$path\"; then\n  if cap od -An -v -tu1 -N 64 \"$path\"; then\n   printf '%s\\n' \"$cap_output\" | awk -v name=\"$name\" '{for(i=1;i<=NF;i++)b[++n]=$i}END{if(n<20||b[1]!=127||b[2]!=69||b[3]!=76||b[4]!=70||(b[5]!=1&&b[5]!=2)||(b[6]!=1&&b[6]!=2)){print \"FR_FACT elf_\" name \"_class=not-assessed\";exit};print \"FR_FACT elf_\" name \"_class=\" (b[5]==1?32:64);print \"FR_FACT elf_\" name \"_endian=\" (b[6]==1?\"little\":\"big\");print \"FR_FACT elf_\" name \"_machine=\" (b[6]==1?b[19]+256*b[20]:256*b[19]+b[20]);print \"FR_FACT elf_\" name \"_type=\" (b[6]==1?b[17]+256*b[18]:256*b[17]+b[18])}'\n   count=$((count+1))\n  else fact \"elf_${name}_class\" not-assessed; fi\n else fact \"elf_${name}_class\" \"$(path_state \"$path\")\"; fi\ndone\nfact elf_header_files \"$count\"; fact elf_headers known\n# readelf parses files, not processes; ldd and executable launch are never used.\nif command -v readelf >/dev/null 2>&1 && test -f /bin/sh && test -r /bin/sh && cap readelf -l -d /bin/sh; then\n printf '%s\\n' \"$cap_output\" | awk '/Requesting program interpreter:/ {v=$0;sub(/^.*interpreter: /,\"\",v);sub(/\\].*$/, \"\",v);if(v~/^\\/(lib|lib64|usr\\/lib)\\/[A-Za-z0-9_.\\/-]+$/)print \"FR_FACT elf_shell_interpreter=\" v} /\\(NEEDED\\)/ {v=$0;sub(/^.*\\[/,\"\",v);sub(/\\].*$/, \"\",v);if(v~/^[A-Za-z0-9_.+-]+$/ && ++n<=32)print \"ELF_NEEDED \" v} END{print \"FR_FACT elf_shell_needed_count=\" n+0}'\nelse fact elf_shell_interpreter not-assessed; fact elf_shell_needed_count not-assessed; fi\n",
+      "timeoutSeconds": 12,
+      "maxBytes": 32768
+    },
+    {
+      "id": "init-runtime",
+      "title": {
+        "ru": "Init и среда запуска",
+        "en": "Init and startup runtime"
+      },
+      "category": "discovery",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nif test -r /proc/1/comm; then v=; IFS= read -r v < /proc/1/comm || :; case \"$v\" in ''|*[!A-Za-z0-9_.-]*) fact init_comm not-assessed;; *) fact init_comm \"$v\";; esac; else fact init_comm not-assessed; fi\nfor item in procd:/sbin/procd systemd:/lib/systemd/systemd sysv:/etc/init.d openrc:/sbin/openrc rc_local:/etc/rc.local; do name=${item%%:*};path=${item#*:};fact \"init_$name\" \"$(path_state \"$path\")\";done\nfor item in musl64:/lib/ld-musl-aarch64.so.1 glibc64:/lib/ld-linux-aarch64.so.1 musl32:/lib/ld-musl-armhf.so.1 glibc32:/lib/ld-linux-armhf.so.3 glibcx64:/lib64/ld-linux-x86-64.so.2; do name=${item%%:*};path=${item#*:};fact \"loader_$name\" \"$(path_state \"$path\")\";done\n",
+      "timeoutSeconds": 12,
+      "maxBytes": 32768
+    },
+    {
+      "id": "startup-structure",
+      "title": {
+        "ru": "Структура постоянного запуска",
+        "en": "Persistent startup structure"
+      },
+      "category": "discovery",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nfor item in rc_local:/etc/rc.local inittab:/etc/inittab initd:/etc/init.d rcd:/etc/rc.d systemd:/etc/systemd/system hotplug:/etc/hotplug.d; do\n name=${item%%:*};path=${item#*:};fact \"startup_$name\" \"$(path_state \"$path\")\"\n if command -v stat >/dev/null 2>&1 && (test -e \"$path\" || test -L \"$path\"); then\n  v=$(stat -c '%u:%g:%a:%h' \"$path\" 2>/dev/null) || v=not-assessed;fact \"startup_${name}_metadata\" \"$v\"\n fi\ndone\nif test -f /etc/rc.local && test ! -L /etc/rc.local && test -r /etc/rc.local; then if sh -n /etc/rc.local 2>/dev/null;then fact startup_rc_local_syntax 1;else fact startup_rc_local_syntax 0;fi;else fact startup_rc_local_syntax not-assessed;fi\n# No startup script is sourced or executed. No command lines or key files exported.\nfact startup_execution_performed 0\n\n# Capture is private, bounded to 128 KiB, and requires the producer's exit proof.\n# Never export cap_output directly: callers select only fixed public fields/counts.\ncap() {\n cap_output=\n command -v head >/dev/null 2>&1 && command -v tr >/dev/null 2>&1 || return 1\n cap_output=$({ \"$@\" 2>/dev/null; cap_code=$?; printf '\\nFR_CAPTURE_EXIT=%s\\n' \"$cap_code\"; } | head -c 131073 | tr '\\000' '?'; printf '.')\n cap_output=${cap_output%.}\n test \"${#cap_output}\" -lt 131073 || { cap_output=; return 1; }\n case \"$cap_output\" in *'\nFR_CAPTURE_EXIT=0\n') cap_output=${cap_output%'\nFR_CAPTURE_EXIT=0\n'}; return 0;; *) cap_output=; return 1;; esac\n}\nif command -v awk >/dev/null 2>&1 && test -f /etc/init.d/done && test ! -L /etc/init.d/done && test -r /etc/init.d/done && cap cat /etc/init.d/done; then\n if printf '%s\\n' \"$cap_output\" | awk '/^[[:space:]]*sh[[:space:]]+\\/etc\\/rc\\.local([[:space:]]|$)/{f=1}END{exit !f}'; then fact startup_procd_rc_local 1; else fact startup_procd_rc_local 0; fi\nelse fact startup_procd_rc_local not-assessed; fi\n",
+      "timeoutSeconds": 12,
+      "maxBytes": 32768
+    },
+    {
+      "id": "kernel-config",
+      "title": {
+        "ru": "Проверяемые возможности ядра",
+        "en": "Selected kernel configuration"
+      },
+      "category": "discovery",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\n# Capture is private, bounded to 128 KiB, and requires the producer's exit proof.\n# Never export cap_output directly: callers select only fixed public fields/counts.\ncap() {\n cap_output=\n command -v head >/dev/null 2>&1 && command -v tr >/dev/null 2>&1 || return 1\n cap_output=$({ \"$@\" 2>/dev/null; cap_code=$?; printf '\\nFR_CAPTURE_EXIT=%s\\n' \"$cap_code\"; } | head -c 131073 | tr '\\000' '?'; printf '.')\n cap_output=${cap_output%.}\n test \"${#cap_output}\" -lt 131073 || { cap_output=; return 1; }\n case \"$cap_output\" in *'\nFR_CAPTURE_EXIT=0\n') cap_output=${cap_output%'\nFR_CAPTURE_EXIT=0\n'}; return 0;; *) cap_output=; return 1;; esac\n}\nif ! command -v awk >/dev/null 2>&1; then fact kernel_config_source not-assessed;exit 0;fi\nfilter_config() { awk '\nBEGIN{split(\"CONFIG_NETFILTER CONFIG_TUN CONFIG_NAMESPACES CONFIG_USER_NS CONFIG_NET_NS CONFIG_CGROUPS CONFIG_SECCOMP CONFIG_SECURITY_SELINUX CONFIG_USB_CONFIGFS CONFIG_OVERLAY_FS CONFIG_EXT4_FS CONFIG_QRTR CONFIG_QCOM_Q6V5_PAS CONFIG_DEVMEM CONFIG_PROC_KCORE\",a,\" \");for(i in a)w[a[i]]=1}\n/^CONFIG_[A-Z0-9_]+=[ymn]$/ {split($0,x,\"=\");if(x[1] in w){seen[x[1]]=1;print \"FR_FACT kernel_\" tolower(x[1]) \"=\" x[2]}}\n/^# CONFIG_[A-Z0-9_]+ is not set$/ {if($2 in w){seen[$2]=1;print \"FR_FACT kernel_\" tolower($2) \"=n\"}}\nEND{for(k in w)if(!(k in seen))print \"FR_FACT kernel_\" tolower(k) \"=not-assessed\"}' ; }\nif test -r /proc/config.gz && cap gzip -cd /proc/config.gz; then printf '%s\\n' \"$cap_output\" | filter_config;fact kernel_config_source proc_config\nelse fact kernel_config_source not-assessed;fi\nfor item in cgroup:/sys/fs/cgroup namespaces:/proc/self/ns selinux:/sys/fs/selinux;do name=${item%%:*};path=${item#*:};fact \"kernel_runtime_$name\" \"$(path_state \"$path\")\";done\n",
+      "timeoutSeconds": 12,
+      "maxBytes": 32768
+    },
+    {
+      "id": "hardware-metadata",
+      "title": {
+        "ru": "Общая аппаратная структура",
+        "en": "Generic hardware metadata"
+      },
+      "category": "discovery",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nfor item in device_tree:/sys/firmware/devicetree/base remoteproc:/sys/class/remoteproc rpmsg:/sys/bus/rpmsg/devices qrtr:/sys/bus/qrtr/devices usb_gadget:/sys/kernel/config/usb_gadget framebuffer:/dev/fb0 drm:/sys/class/drm;do name=${item%%:*};path=${item#*:};fact \"hardware_$name\" \"$(path_state \"$path\")\";done\nif command -v tr >/dev/null 2>&1 && command -v head >/dev/null 2>&1 && test -r /sys/firmware/devicetree/base/compatible;then\n v=$(head -c 513 /sys/firmware/devicetree/base/compatible | tr '\\000' ',');case \"$v\" in ''|*[!A-Za-z0-9,._+-]*) fact hardware_compatible not-assessed;;*) if test \"${#v}\" -le 512;then fact hardware_compatible \"$v\";else fact hardware_compatible not-assessed;fi;;esac\nelse fact hardware_compatible not-assessed;fi\ncount=0\nfor path in /sys/class/remoteproc/remoteproc*;do test -d \"$path\"||continue;count=$((count+1));test \"$count\" -le 16||break\n if test -r \"$path/state\";then v=;IFS= read -r v < \"$path/state\"||:;case \"$v\" in running|offline|suspended|crashed|attached|detached)printf 'REMOTEPROC %s state=%s\\n' \"${path##*/}\" \"$v\";;esac;fi\ndone\nif test -r /sys/class/remoteproc && test -x /sys/class/remoteproc && test \"$count\" -le 16;then fact hardware_remoteproc_count \"$count\";else fact hardware_remoteproc_count not-assessed;fi\nfact hardware_character_devices_opened 0\n",
+      "timeoutSeconds": 12,
+      "maxBytes": 32768
+    },
+    {
+      "id": "api-surface",
+      "title": {
+        "ru": "Схемы доступных системных API",
+        "en": "Available system API schemas"
+      },
+      "category": "discovery",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\n# Capture is private, bounded to 128 KiB, and requires the producer's exit proof.\n# Never export cap_output directly: callers select only fixed public fields/counts.\ncap() {\n cap_output=\n command -v head >/dev/null 2>&1 && command -v tr >/dev/null 2>&1 || return 1\n cap_output=$({ \"$@\" 2>/dev/null; cap_code=$?; printf '\\nFR_CAPTURE_EXIT=%s\\n' \"$cap_code\"; } | head -c 131073 | tr '\\000' '?'; printf '.')\n cap_output=${cap_output%.}\n test \"${#cap_output}\" -lt 131073 || { cap_output=; return 1; }\n case \"$cap_output\" in *'\nFR_CAPTURE_EXIT=0\n') cap_output=${cap_output%'\nFR_CAPTURE_EXIT=0\n'}; return 0;; *) cap_output=; return 1;; esac\n}\nif ! command -v awk >/dev/null 2>&1 || ! cap ubus -t 5 list;then fact api_schema_inventory not-assessed;exit 0;fi\nobjects=$cap_output;count=0\nfor object in system service network network.interface network.device wireless zwrt_web zwrt_router zwrt_zte_mdm.api zte_nwinfo_api;do\n if ! printf '%s\\n' \"$objects\" | awk -v wanted=\"$object\" '$0==wanted{f=1}END{exit !f}';then continue;fi\n if cap ubus -t 5 -v list \"$object\";then\n  printf 'API_OBJECT %s\\n' \"$object\"\n  printf '%s\\n' \"$cap_output\" | awk 'NR<=128 && length($0)<=512 && /^[\\t ]*\"[A-Za-z0-9_.-]+\"[\\t ]*:/ {v=$0;sub(/^[\\t ]*\"/,\"\",v);sub(/\".*$/,\"\",v);if(length(v)<=64)print \"API_METHOD \" v}'\n  count=$((count+1))\n fi\ndone\nfact api_schema_objects \"$count\";fact api_schema_inventory known\nfact api_methods_invoked 0\n",
+      "timeoutSeconds": 60,
+      "maxBytes": 32768
+    },
+    {
+      "id": "runtime-security",
+      "title": {
+        "ru": "Ограничения текущего процесса",
+        "en": "Current process security boundaries"
+      },
+      "category": "discovery",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nif test -r /proc/self/status;then\n while IFS= read -r line;do case \"$line\" in NoNewPrivs:*|Seccomp:*)set -- $line;case \"${2:-}\" in 0|1|2)case \"$1\" in NoNewPrivs:)fact security_no_new_privs \"$2\";;Seccomp:)fact security_seccomp \"$2\";;esac;;esac;;esac;done < /proc/self/status\nelse fact security_no_new_privs not-assessed;fact security_seccomp not-assessed;fi\nfor item in apparmor:/sys/module/apparmor selinux:/sys/fs/selinux proc_namespaces:/proc/self/ns;do name=${item%%:*};path=${item#*:};fact \"security_$name\" \"$(path_state \"$path\")\";done\nfor field in ptrace_scope dmesg_restrict kptr_restrict;do case \"$field\" in ptrace_scope)path=/proc/sys/kernel/yama/ptrace_scope;;*)path=/proc/sys/kernel/$field;;esac\n if test -r \"$path\";then v=;IFS= read -r v < \"$path\"||:;case \"$v\" in 0|1|2|3)fact \"security_$field\" \"$v\";;*)fact \"security_$field\" not-assessed;;esac;else fact \"security_$field\" not-assessed;fi\ndone\n",
+      "timeoutSeconds": 12,
       "maxBytes": 32768
     }
   ],
   "features": [
     {
-      "id": "preparation",
+      "id": "generic-access",
       "title": {
-        "ru": "Предварительная подготовка через WEB/ADB",
-        "en": "Initial WEB/ADB preparation"
+        "ru": "Диагностический доступ: SSH и пассивный агент",
+        "en": "Diagnostic access: SSH and passive agent"
       },
-      "profiles": [
-        "b31",
-        "b02-experimental"
-      ],
+      "profiles": [],
       "requirements": [
         {
           "probe": "identity",
@@ -799,18 +884,536 @@
           }
         },
         {
-          "probe": "tools-core",
-          "fact": "tool_ubus",
+          "probe": "identity",
+          "fact": "operating_system",
+          "equals": "Linux",
+          "label": {
+            "ru": "Ядро Linux",
+            "en": "Linux kernel"
+          }
+        },
+        {
+          "probe": "init-runtime",
+          "fact": "init_comm",
+          "equals": "procd",
+          "label": {
+            "ru": "PID 1 — procd",
+            "en": "PID 1 is procd"
+          }
+        },
+        {
+          "probe": "startup-structure",
+          "fact": "startup_procd_rc_local",
           "equals": "1",
           "label": {
-            "ru": "Команда ubus",
-            "en": "Command ubus"
+            "ru": "Штатный startup вызывает rc.local",
+            "en": "Stock startup invokes rc.local"
+          }
+        },
+        {
+          "probe": "discovery-tools",
+          "fact": "discovery_tool_od",
+          "equals": "1",
+          "label": {
+            "ru": "Команда od",
+            "en": "Command od"
+          }
+        },
+        {
+          "probe": "discovery-tools",
+          "fact": "discovery_tool_timeout",
+          "equals": "1",
+          "label": {
+            "ru": "Команда timeout",
+            "en": "Command timeout"
+          }
+        },
+        {
+          "probe": "discovery-tools",
+          "fact": "discovery_tool_wc",
+          "equals": "1",
+          "label": {
+            "ru": "Команда wc",
+            "en": "Command wc"
+          }
+        },
+        {
+          "probe": "discovery-tools",
+          "fact": "discovery_tool_sleep",
+          "equals": "1",
+          "label": {
+            "ru": "Команда sleep",
+            "en": "Command sleep"
+          }
+        },
+        {
+          "probe": "discovery-tools",
+          "fact": "discovery_tool_id",
+          "equals": "1",
+          "label": {
+            "ru": "Команда id",
+            "en": "Command id"
+          }
+        },
+        {
+          "probe": "discovery-tools",
+          "fact": "discovery_tool_uname",
+          "equals": "1",
+          "label": {
+            "ru": "Команда uname",
+            "en": "Command uname"
           }
         }
       ],
       "limitations": {
-        "ru": "Проверяется только доступная файловая структура. Включение ADB через WEB, пароль и перенос файлов не выполняются. B02 остаётся экспериментальным профилем; отсутствие /data/local/tmp показано отдельно и само по себе не блокирует создание родителей.",
-        "en": "Only accessible filesystem prerequisites are surveyed. WEB activation of ADB, credentials and file transfer are not exercised. B02 remains experimental; missing /data/local/tmp is reported separately and does not by itself block parent creation."
+        "ru": "Наблюдаются условия общего Linux ARM64 доступа через уже доступный канал. Нет зависимости от Web API или метки прошивки. Установщик отдельно повторяет CID/boot, ABI, файлы, startup и транзакционные проверки. Это не разрешение записи и не проверка функций модема.",
+        "en": "Observes general Linux ARM64 access prerequisites on an existing channel, independently of Web API or firmware labels. The installer separately repeats CID/boot, ABI, file, startup and transaction checks. This is neither write authorization nor modem-function validation."
+      }
+    },
+    {
+      "id": "preparation",
+      "title": {
+        "ru": "Предпосылки подготовки диагностического доступа",
+        "en": "Diagnostic access preparation prerequisites"
+      },
+      "profiles": [],
+      "requirements": [
+        {
+          "probe": "identity",
+          "fact": "root",
+          "equals": "1",
+          "label": {
+            "ru": "Права root в выбранном канале",
+            "en": "Root privileges on the selected channel"
+          }
+        },
+        {
+          "probe": "identity",
+          "fact": "architecture",
+          "equals": "aarch64",
+          "label": {
+            "ru": "Архитектура ARM64",
+            "en": "ARM64 architecture"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "data_safe",
+          "equals": "1",
+          "label": {
+            "ru": "Безопасный каталог /data",
+            "en": "Safe /data directory"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "etc_safe",
+          "equals": "1",
+          "label": {
+            "ru": "Безопасный каталог /etc",
+            "en": "Safe /etc directory"
+          }
+        },
+        {
+          "probe": "pending-operations",
+          "fact": "no_pending_operations",
+          "equals": "1",
+          "label": {
+            "ru": "Нет обнаруженных незавершённых операций",
+            "en": "No detected pending operations"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "setup_parents_safe",
+          "equals": "1",
+          "label": {
+            "ru": "Безопасные существующие родители /data/local/tmp",
+            "en": "Safe existing /data/local/tmp parents"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "data_writable",
+          "equals": "1",
+          "label": {
+            "ru": "Доступен /data",
+            "en": "Writable /data"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "etc_writable",
+          "equals": "1",
+          "label": {
+            "ru": "Доступен /etc",
+            "en": "Writable /etc"
+          }
+        },
+        {
+          "probe": "permissions",
+          "fact": "runtime_writable",
+          "equals": "1",
+          "label": {
+            "ru": "Доступен /var/run",
+            "en": "Writable /var/run"
+          }
+        },
+        {
+          "probe": "agent-layout",
+          "fact": "curl_regular_executable",
+          "equals": "1",
+          "label": {
+            "ru": "Штатный curl пригоден к запуску",
+            "en": "Stock curl is executable"
+          }
+        },
+        {
+          "probe": "ssh-layout",
+          "fact": "rc_local_writable",
+          "equals": "1",
+          "label": {
+            "ru": "Обычный файл /etc/rc.local доступен для записи",
+            "en": "Regular /etc/rc.local is writable"
+          }
+        },
+        {
+          "probe": "ssh-layout",
+          "fact": "rc_local_syntax",
+          "equals": "1",
+          "label": {
+            "ru": "Корректный синтаксис rc.local",
+            "en": "Valid rc.local shell syntax"
+          }
+        },
+        {
+          "probe": "storage",
+          "fact": "data_free_16384",
+          "equals": "1",
+          "label": {
+            "ru": "Не менее 16 МиБ свободно в /data",
+            "en": "At least 16 MiB free on /data"
+          }
+        },
+        {
+          "probe": "storage",
+          "fact": "etc_free_2048",
+          "equals": "1",
+          "label": {
+            "ru": "Не менее 2 МиБ свободно в /etc",
+            "en": "At least 2 MiB free on /etc"
+          }
+        },
+        {
+          "probe": "mounts",
+          "fact": "setup_tmp_install_mount",
+          "equals": "1",
+          "label": {
+            "ru": "Монтирование /data/local/tmp поддерживает установку",
+            "en": "Installation mount supports /data/local/tmp"
+          }
+        },
+        {
+          "probe": "mounts",
+          "fact": "data_bin_install_mount",
+          "equals": "1",
+          "label": {
+            "ru": "Монтирование /data/bin поддерживает установку",
+            "en": "Installation mount supports /data/bin"
+          }
+        },
+        {
+          "probe": "mounts",
+          "fact": "data_dropbear_install_mount",
+          "equals": "1",
+          "label": {
+            "ru": "Монтирование /data/dropbear поддерживает установку",
+            "en": "Installation mount supports /data/dropbear"
+          }
+        },
+        {
+          "probe": "mounts",
+          "fact": "etc_dropbear_install_mount",
+          "equals": "1",
+          "label": {
+            "ru": "Монтирование /etc/dropbear поддерживает установку",
+            "en": "Installation mount supports /etc/dropbear"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_sh",
+          "equals": "1",
+          "label": {
+            "ru": "Команда sh",
+            "en": "Command sh"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_sha256sum",
+          "equals": "1",
+          "label": {
+            "ru": "Команда sha256sum",
+            "en": "Command sha256sum"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_awk",
+          "equals": "1",
+          "label": {
+            "ru": "Команда awk",
+            "en": "Command awk"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_grep",
+          "equals": "1",
+          "label": {
+            "ru": "Команда grep",
+            "en": "Command grep"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_tr",
+          "equals": "1",
+          "label": {
+            "ru": "Команда tr",
+            "en": "Command tr"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_sed",
+          "equals": "1",
+          "label": {
+            "ru": "Команда sed",
+            "en": "Command sed"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_cut",
+          "equals": "1",
+          "label": {
+            "ru": "Команда cut",
+            "en": "Command cut"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_stat",
+          "equals": "1",
+          "label": {
+            "ru": "Команда stat",
+            "en": "Command stat"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_df",
+          "equals": "1",
+          "label": {
+            "ru": "Команда df",
+            "en": "Command df"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_chmod",
+          "equals": "1",
+          "label": {
+            "ru": "Команда chmod",
+            "en": "Command chmod"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_mkdir",
+          "equals": "1",
+          "label": {
+            "ru": "Команда mkdir",
+            "en": "Command mkdir"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_cp",
+          "equals": "1",
+          "label": {
+            "ru": "Команда cp",
+            "en": "Command cp"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_mv",
+          "equals": "1",
+          "label": {
+            "ru": "Команда mv",
+            "en": "Command mv"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_rm",
+          "equals": "1",
+          "label": {
+            "ru": "Команда rm",
+            "en": "Command rm"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_rmdir",
+          "equals": "1",
+          "label": {
+            "ru": "Команда rmdir",
+            "en": "Command rmdir"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_cat",
+          "equals": "1",
+          "label": {
+            "ru": "Команда cat",
+            "en": "Command cat"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_sync",
+          "equals": "1",
+          "label": {
+            "ru": "Команда sync",
+            "en": "Command sync"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_pidof",
+          "equals": "1",
+          "label": {
+            "ru": "Команда pidof",
+            "en": "Command pidof"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_readlink",
+          "equals": "1",
+          "label": {
+            "ru": "Команда readlink",
+            "en": "Command readlink"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_nohup",
+          "equals": "1",
+          "label": {
+            "ru": "Команда nohup",
+            "en": "Command nohup"
+          }
+        },
+        {
+          "probe": "tools-core",
+          "fact": "tool_logger",
+          "equals": "1",
+          "label": {
+            "ru": "Команда logger",
+            "en": "Command logger"
+          }
+        },
+        {
+          "probe": "identity",
+          "fact": "operating_system",
+          "equals": "Linux",
+          "label": {
+            "ru": "Ядро Linux",
+            "en": "Linux kernel"
+          }
+        },
+        {
+          "probe": "init-runtime",
+          "fact": "init_comm",
+          "equals": "procd",
+          "label": {
+            "ru": "PID 1 — procd",
+            "en": "PID 1 is procd"
+          }
+        },
+        {
+          "probe": "startup-structure",
+          "fact": "startup_procd_rc_local",
+          "equals": "1",
+          "label": {
+            "ru": "Штатный startup вызывает rc.local",
+            "en": "Stock startup invokes rc.local"
+          }
+        },
+        {
+          "probe": "discovery-tools",
+          "fact": "discovery_tool_od",
+          "equals": "1",
+          "label": {
+            "ru": "Команда od",
+            "en": "Command od"
+          }
+        },
+        {
+          "probe": "discovery-tools",
+          "fact": "discovery_tool_timeout",
+          "equals": "1",
+          "label": {
+            "ru": "Команда timeout",
+            "en": "Command timeout"
+          }
+        },
+        {
+          "probe": "discovery-tools",
+          "fact": "discovery_tool_wc",
+          "equals": "1",
+          "label": {
+            "ru": "Команда wc",
+            "en": "Command wc"
+          }
+        },
+        {
+          "probe": "discovery-tools",
+          "fact": "discovery_tool_sleep",
+          "equals": "1",
+          "label": {
+            "ru": "Команда sleep",
+            "en": "Command sleep"
+          }
+        },
+        {
+          "probe": "discovery-tools",
+          "fact": "discovery_tool_id",
+          "equals": "1",
+          "label": {
+            "ru": "Команда id",
+            "en": "Command id"
+          }
+        },
+        {
+          "probe": "discovery-tools",
+          "fact": "discovery_tool_uname",
+          "equals": "1",
+          "label": {
+            "ru": "Команда uname",
+            "en": "Command uname"
+          }
+        }
+      ],
+      "limitations": {
+        "ru": "Наблюдаются условия общего Linux ARM64 доступа через уже доступный канал. Нет зависимости от Web API или метки прошивки. Установщик отдельно повторяет CID/boot, ABI, файлы, startup и транзакционные проверки. Это не разрешение записи и не проверка функций модема.",
+        "en": "Observes general Linux ARM64 access prerequisites on an existing channel, independently of Web API or firmware labels. The installer separately repeats CID/boot, ABI, file, startup and transaction checks. This is neither write authorization nor modem-function validation."
       }
     },
     {
@@ -1177,20 +1780,17 @@
         }
       ],
       "limitations": {
-        "ru": "Проверяются условия обновления уже подготовленного агента и панели в отдельном /data/zte-dashboard-runtime. Первичная подготовка WEB/ADB показана отдельно. Пароль не читается; службы не запускаются; точные payload/процессы проверяет установщик до изменений.",
-        "en": "Surveys updates of an already prepared agent and dashboard under private /data/zte-dashboard-runtime. Initial WEB/ADB preparation is separate. No password is read and no service starts; the installer checks exact payloads and processes before changes."
+        "ru": "Проверяются условия обновления уже подготовленного агента и панели в отдельном /data/zte-dashboard-runtime. Первичная подготовка WEB/ADB показана отдельно. Пароль не читается; службы не запускаются; точные payload/процессы проверяет установщик до изменений. Общий пассивный агент устанавливается отдельным путём диагностического доступа; этот адаптер обновления не применяется к непроверенной прошивке.",
+        "en": "Surveys updates of an already prepared agent and dashboard under private /data/zte-dashboard-runtime. Initial WEB/ADB preparation is separate. No password is read and no service starts; the installer checks exact payloads and processes before changes. The general passive agent uses the separate diagnostic-access path; this update adapter does not apply to unassessed firmware."
       }
     },
     {
       "id": "ssh",
       "title": {
-        "ru": "Установка служебного SSH",
-        "en": "Management SSH installation"
+        "ru": "Предпосылки служебного SSH без Web",
+        "en": "Management SSH prerequisites without Web"
       },
-      "profiles": [
-        "b31",
-        "b02-experimental"
-      ],
+      "profiles": [],
       "requirements": [
         {
           "probe": "identity",
@@ -1544,18 +2144,90 @@
           }
         },
         {
-          "probe": "tools-core",
-          "fact": "tool_ubus",
+          "probe": "identity",
+          "fact": "operating_system",
+          "equals": "Linux",
+          "label": {
+            "ru": "Ядро Linux",
+            "en": "Linux kernel"
+          }
+        },
+        {
+          "probe": "init-runtime",
+          "fact": "init_comm",
+          "equals": "procd",
+          "label": {
+            "ru": "PID 1 — procd",
+            "en": "PID 1 is procd"
+          }
+        },
+        {
+          "probe": "startup-structure",
+          "fact": "startup_procd_rc_local",
           "equals": "1",
           "label": {
-            "ru": "Команда ubus",
-            "en": "Command ubus"
+            "ru": "Штатный startup вызывает rc.local",
+            "en": "Stock startup invokes rc.local"
+          }
+        },
+        {
+          "probe": "discovery-tools",
+          "fact": "discovery_tool_od",
+          "equals": "1",
+          "label": {
+            "ru": "Команда od",
+            "en": "Command od"
+          }
+        },
+        {
+          "probe": "discovery-tools",
+          "fact": "discovery_tool_timeout",
+          "equals": "1",
+          "label": {
+            "ru": "Команда timeout",
+            "en": "Command timeout"
+          }
+        },
+        {
+          "probe": "discovery-tools",
+          "fact": "discovery_tool_wc",
+          "equals": "1",
+          "label": {
+            "ru": "Команда wc",
+            "en": "Command wc"
+          }
+        },
+        {
+          "probe": "discovery-tools",
+          "fact": "discovery_tool_sleep",
+          "equals": "1",
+          "label": {
+            "ru": "Команда sleep",
+            "en": "Command sleep"
+          }
+        },
+        {
+          "probe": "discovery-tools",
+          "fact": "discovery_tool_id",
+          "equals": "1",
+          "label": {
+            "ru": "Команда id",
+            "en": "Command id"
+          }
+        },
+        {
+          "probe": "discovery-tools",
+          "fact": "discovery_tool_uname",
+          "equals": "1",
+          "label": {
+            "ru": "Команда uname",
+            "en": "Command uname"
           }
         }
       ],
       "limitations": {
-        "ru": "Проверяется возможность подготовки SSH. Авторизация, доверие ключу сервера, занятый нестандартный порт и запуск нового сервера проверяются отдельной процедурой подключения.",
-        "en": "Surveys SSH preparation prerequisites. Authentication, host-key trust, custom port conflicts and server startup are checked by the connection workflow."
+        "ru": "Наблюдаются условия общего Linux ARM64 доступа через уже доступный канал. Нет зависимости от Web API или метки прошивки. Установщик отдельно повторяет CID/boot, ABI, файлы, startup и транзакционные проверки. Это не разрешение записи и не проверка функций модема.",
+        "en": "Observes general Linux ARM64 access prerequisites on an existing channel, independently of Web API or firmware labels. The installer separately repeats CID/boot, ABI, file, startup and transaction checks. This is neither write authorization nor modem-function validation."
       }
     },
     {
@@ -3601,6 +4273,413 @@
         "ru": "Этот сбор метаданных не устанавливает тип встроенного чипа и не подтверждает BYO QR. Наличие eSIM API, строк в бинарнике или пакета lpac не означает доступность стандартного ISD-R. Состояние остаётся неизвестным.",
         "en": "This metadata collection does not identify the embedded chip or establish BYO QR support. eSIM APIs, binary strings or an lpac package do not establish standard ISD-R access. The result remains unknown."
       }
+    }
+  ],
+  "observations": [
+    {
+      "id": "identity-architecture",
+      "title": {
+        "ru": "Архитектура ядра",
+        "en": "Kernel architecture"
+      },
+      "probe": "identity",
+      "fact": "architecture"
+    },
+    {
+      "id": "identity-kernel-release",
+      "title": {
+        "ru": "Версия ядра",
+        "en": "Kernel release"
+      },
+      "probe": "identity",
+      "fact": "kernel_release"
+    },
+    {
+      "id": "identity-root",
+      "title": {
+        "ru": "Права root текущего канала",
+        "en": "Current channel root privileges"
+      },
+      "probe": "identity",
+      "fact": "root"
+    },
+    {
+      "id": "release-zte-integrate-version",
+      "title": {
+        "ru": "Версия ZTE",
+        "en": "ZTE release"
+      },
+      "probe": "release",
+      "fact": "zte_integrate_version"
+    },
+    {
+      "id": "release-zte-inner-version",
+      "title": {
+        "ru": "Внутренняя версия ZTE",
+        "en": "ZTE internal release"
+      },
+      "probe": "release",
+      "fact": "zte_inner_version"
+    },
+    {
+      "id": "release-openwrt-release",
+      "title": {
+        "ru": "Версия OpenWrt",
+        "en": "OpenWrt release"
+      },
+      "probe": "release",
+      "fact": "openwrt_release"
+    },
+    {
+      "id": "fingerprint-hasher",
+      "title": {
+        "ru": "Средство хэширования",
+        "en": "Hash utility"
+      },
+      "probe": "fingerprint",
+      "fact": "hasher"
+    },
+    {
+      "id": "discovery-tools-discovery-tool-count",
+      "title": {
+        "ru": "Найденные инструменты",
+        "en": "Discovered tools"
+      },
+      "probe": "discovery-tools",
+      "fact": "discovery_tool_count"
+    },
+    {
+      "id": "elf-abi-elf-shell-class",
+      "title": {
+        "ru": "Разрядность ELF оболочки",
+        "en": "Shell ELF class"
+      },
+      "probe": "elf-abi",
+      "fact": "elf_shell_class"
+    },
+    {
+      "id": "elf-abi-elf-shell-machine",
+      "title": {
+        "ru": "ELF machine оболочки",
+        "en": "Shell ELF machine"
+      },
+      "probe": "elf-abi",
+      "fact": "elf_shell_machine"
+    },
+    {
+      "id": "elf-abi-elf-shell-endian",
+      "title": {
+        "ru": "Порядок байт ELF",
+        "en": "ELF byte order"
+      },
+      "probe": "elf-abi",
+      "fact": "elf_shell_endian"
+    },
+    {
+      "id": "elf-abi-elf-shell-interpreter",
+      "title": {
+        "ru": "Загрузчик оболочки",
+        "en": "Shell interpreter"
+      },
+      "probe": "elf-abi",
+      "fact": "elf_shell_interpreter"
+    },
+    {
+      "id": "init-runtime-init-comm",
+      "title": {
+        "ru": "Процесс init",
+        "en": "Init process"
+      },
+      "probe": "init-runtime",
+      "fact": "init_comm"
+    },
+    {
+      "id": "init-runtime-init-procd",
+      "title": {
+        "ru": "Наличие procd",
+        "en": "procd presence"
+      },
+      "probe": "init-runtime",
+      "fact": "init_procd"
+    },
+    {
+      "id": "init-runtime-init-systemd",
+      "title": {
+        "ru": "Наличие systemd",
+        "en": "systemd presence"
+      },
+      "probe": "init-runtime",
+      "fact": "init_systemd"
+    },
+    {
+      "id": "runtime-libraries-libdiag-readable",
+      "title": {
+        "ru": "Доступность libdiag для чтения",
+        "en": "libdiag readable"
+      },
+      "probe": "runtime-libraries",
+      "fact": "libdiag_readable"
+    },
+    {
+      "id": "runtime-libraries-runtime-libubus",
+      "title": {
+        "ru": "Библиотека ubus",
+        "en": "ubus library"
+      },
+      "probe": "runtime-libraries",
+      "fact": "runtime_libubus"
+    },
+    {
+      "id": "mounts-root-fs",
+      "title": {
+        "ru": "Корневая файловая система",
+        "en": "Root filesystem"
+      },
+      "probe": "mounts",
+      "fact": "root_fs"
+    },
+    {
+      "id": "mounts-data-fs",
+      "title": {
+        "ru": "Файловая система /data",
+        "en": "/data filesystem"
+      },
+      "probe": "mounts",
+      "fact": "data_fs"
+    },
+    {
+      "id": "mounts-data-rw",
+      "title": {
+        "ru": "Режим записи /data",
+        "en": "/data mount writable flag"
+      },
+      "probe": "mounts",
+      "fact": "data_rw"
+    },
+    {
+      "id": "mounts-tmp-exec",
+      "title": {
+        "ru": "Разрешение исполнения /tmp",
+        "en": "/tmp executable mount flag"
+      },
+      "probe": "mounts",
+      "fact": "tmp_exec"
+    },
+    {
+      "id": "partitions-block-count",
+      "title": {
+        "ru": "Блочные устройства",
+        "en": "Block device count"
+      },
+      "probe": "partitions",
+      "fact": "block_count"
+    },
+    {
+      "id": "storage-data-free-kib",
+      "title": {
+        "ru": "Свободное место /data, КиБ",
+        "en": "Free /data space, KiB"
+      },
+      "probe": "storage",
+      "fact": "data_free_kib"
+    },
+    {
+      "id": "kernel-features-tun",
+      "title": {
+        "ru": "Наличие TUN node",
+        "en": "TUN node present"
+      },
+      "probe": "kernel-features",
+      "fact": "tun"
+    },
+    {
+      "id": "kernel-features-ttl-target",
+      "title": {
+        "ru": "Зарегистрированная цель TTL",
+        "en": "Registered TTL target"
+      },
+      "probe": "kernel-features",
+      "fact": "ttl_target"
+    },
+    {
+      "id": "kernel-features-loaded-module-count",
+      "title": {
+        "ru": "Загруженные модули",
+        "en": "Loaded module count"
+      },
+      "probe": "kernel-features",
+      "fact": "loaded_module_count"
+    },
+    {
+      "id": "kernel-config-kernel-config-source",
+      "title": {
+        "ru": "Источник конфигурации ядра",
+        "en": "Kernel config source"
+      },
+      "probe": "kernel-config",
+      "fact": "kernel_config_source"
+    },
+    {
+      "id": "runtime-security-security-seccomp",
+      "title": {
+        "ru": "Режим seccomp",
+        "en": "Seccomp mode"
+      },
+      "probe": "runtime-security",
+      "fact": "security_seccomp"
+    },
+    {
+      "id": "identity-selinux-enforcing",
+      "title": {
+        "ru": "SELinux enforcing",
+        "en": "SELinux enforcing"
+      },
+      "probe": "identity",
+      "fact": "selinux_enforcing"
+    },
+    {
+      "id": "startup-structure-startup-rc-local",
+      "title": {
+        "ru": "Наличие rc.local",
+        "en": "rc.local presence"
+      },
+      "probe": "startup-structure",
+      "fact": "startup_rc_local"
+    },
+    {
+      "id": "startup-structure-startup-rc-local-syntax",
+      "title": {
+        "ru": "Синтаксис rc.local",
+        "en": "rc.local syntax"
+      },
+      "probe": "startup-structure",
+      "fact": "startup_rc_local_syntax"
+    },
+    {
+      "id": "services-running-dropbear",
+      "title": {
+        "ru": "Процесс Dropbear",
+        "en": "Dropbear running"
+      },
+      "probe": "services",
+      "fact": "running_dropbear"
+    },
+    {
+      "id": "services-running-sshd",
+      "title": {
+        "ru": "Процесс sshd",
+        "en": "sshd running"
+      },
+      "probe": "services",
+      "fact": "running_sshd"
+    },
+    {
+      "id": "services-running-zte-agent",
+      "title": {
+        "ru": "Процесс агента",
+        "en": "Agent running"
+      },
+      "probe": "services",
+      "fact": "running_zte_agent"
+    },
+    {
+      "id": "ubus-inventory-ubus-object-count",
+      "title": {
+        "ru": "Объекты ubus",
+        "en": "ubus objects"
+      },
+      "probe": "ubus-inventory",
+      "fact": "ubus_object_count"
+    },
+    {
+      "id": "api-surface-api-schema-objects",
+      "title": {
+        "ru": "Прочитанные схемы API",
+        "en": "Read API schemas"
+      },
+      "probe": "api-surface",
+      "fact": "api_schema_objects"
+    },
+    {
+      "id": "hardware-metadata-hardware-compatible",
+      "title": {
+        "ru": "Device-tree compatible",
+        "en": "Device-tree compatible"
+      },
+      "probe": "hardware-metadata",
+      "fact": "hardware_compatible"
+    },
+    {
+      "id": "hardware-metadata-hardware-remoteproc-count",
+      "title": {
+        "ru": "Remoteproc устройства",
+        "en": "Remoteproc devices"
+      },
+      "probe": "hardware-metadata",
+      "fact": "hardware_remoteproc_count"
+    },
+    {
+      "id": "hardware-metadata-hardware-qrtr",
+      "title": {
+        "ru": "QRTR sysfs",
+        "en": "QRTR sysfs"
+      },
+      "probe": "hardware-metadata",
+      "fact": "hardware_qrtr"
+    },
+    {
+      "id": "network-structure-interface-count",
+      "title": {
+        "ru": "Сетевые интерфейсы",
+        "en": "Network interfaces"
+      },
+      "probe": "network-structure",
+      "fact": "interface_count"
+    },
+    {
+      "id": "network-structure-ipv4-default-route-count",
+      "title": {
+        "ru": "Маршруты IPv4 по умолчанию",
+        "en": "IPv4 default routes"
+      },
+      "probe": "network-structure",
+      "fact": "ipv4_default_route_count"
+    },
+    {
+      "id": "kernel-health-health-sample",
+      "title": {
+        "ru": "Чтение сводки ядра",
+        "en": "Kernel summary read"
+      },
+      "probe": "kernel-health",
+      "fact": "health_sample"
+    },
+    {
+      "id": "service-health-health-sample",
+      "title": {
+        "ru": "Чтение сводки служб",
+        "en": "Service summary read"
+      },
+      "probe": "service-health",
+      "fact": "health_sample"
+    },
+    {
+      "id": "operating-system",
+      "title": {
+        "ru": "Операционная система",
+        "en": "Operating system"
+      },
+      "probe": "identity",
+      "fact": "operating_system"
+    },
+    {
+      "id": "startup-procd-rc-local",
+      "title": {
+        "ru": "Вызов rc.local из startup",
+        "en": "Startup invokes rc.local"
+      },
+      "probe": "startup-structure",
+      "fact": "startup_procd_rc_local"
     }
   ]
 }

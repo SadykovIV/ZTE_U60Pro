@@ -75,33 +75,33 @@ final class AgentInstallationManager {
     let engine: ModemEngine
     static let scriptHash = "d12154677e50567a311ca1d9f7d4f4019565e2e6f41cf7dc75d10d47fc8ef3a1"
     init(engine: ModemEngine) { self.engine = engine }
-    private func staged<T>(cleanupAllowed: () -> Bool = { true }, _ work: (String, Identity, String) throws -> T) throws -> T {
+    private func staged<T>(cleanupAllowed: () -> Bool = { true }, _ work: (String, Identity, String, String) throws -> T) throws -> T {
         try require(engine.lockFD >= 0, "Установка агента требует блокировки приложения")
         try require(!engine.fm.fileExists(atPath: engine.root.appendingPathComponent("adb-access-pending.json").path), "Сначала завершите включение ADB для диагностики")
         try require(!engine.fm.fileExists(atPath: engine.pendingURL.path) && !engine.fm.fileExists(atPath: engine.root.appendingPathComponent("setup-pending.json").path), "Сначала завершите текущую подготовку или смену IMEI")
         let script = try Data(contentsOf: engine.resources.appendingPathComponent("AgentInstallation/manager.sh"))
         try require(digest(script) == Self.scriptHash, "Повреждён установщик агента")
-        let (identity, boot) = try engine.identity()
+        let proof = try engine.measuredIdentity(); let identity = proof.identity, boot = proof.bootID, router = proof.routerHash
         try engine.acquireRemoteLock()
         let stage = "/tmp/zte-agent-stage-" + UUID().uuidString.lowercased()
         _ = try engine.remote("umask 077; mkdir " + shellQuote(stage))
         defer { if cleanupAllowed() { _ = try? engine.remote("rm -f " + shellQuote(stage + "/manager.sh") + " " + shellQuote(stage + "/agent.bin") + "; rmdir " + shellQuote(stage)) } }
         try upload(script, to: stage + "/manager.sh")
-        return try work(stage, identity, boot)
+        return try work(stage, identity, boot, router)
     }
     private func upload(_ data: Data, to path: String) throws {
         let result = try engine.textResult("umask 077; cat > " + shellQuote(path) + " && sha256sum " + shellQuote(path), input: data)
         try require(try FirmwareCheck.hash(result, path: path) == digest(data), "Контрольная сумма после передачи агента не совпала")
     }
-    private func sameDevice(_ identity: Identity, _ boot: String) throws {
-        let after = try engine.identity()
-        try require(after.0 == identity && after.1 == boot, "Модем изменился или перезагрузился во время подготовки агента")
+    private func sameDevice(_ identity: Identity, _ boot: String, _ router: String) throws {
+        let after = try engine.measuredIdentity()
+        try require(after.identity == identity && after.bootID == boot && after.routerHash == router, "Модем изменился или перезагрузился во время подготовки агента")
     }
     private func status(_ stage: String) throws -> AgentInstallationStatus {
         try AgentInstallationStatus.parse(engine.text("sh " + shellQuote(stage + "/manager.sh") + " status"))
     }
     func inspect() throws -> AgentInstallationStatus {
-        try staged { stage, _, _ in try status(stage) }
+        try staged { stage, _, _, _ in try status(stage) }
     }
     func install(_ candidate: AgentCandidate) throws -> AgentInstallationStatus {
         // Re-read and validate the exact file selected by the user before any device write.
@@ -110,7 +110,7 @@ final class AgentInstallationManager {
         let data = try Data(contentsOf: candidate.url)
         try require(digest(data) == candidate.sha256, "Файл изменился во время чтения")
         var cleanupSafe = true
-        return try staged(cleanupAllowed: { cleanupSafe }) { stage, identity, boot in
+        return try staged(cleanupAllowed: { cleanupSafe }) { stage, identity, boot, router in
             let before = try status(stage)
             try require(!before.recoveryPending, "Сначала восстановите предыдущий агент")
             try require(before.hash != "absent" && before.startupReady, "Сначала выполните автоматическую подготовку модема с паролем веб-интерфейса")
@@ -118,7 +118,7 @@ final class AgentInstallationManager {
             if before.hash == candidate.sha256 && before.running { return before }
             engine.update("Передаю выбранный агент; затем будет создана резервная копия текущего…", 0.3)
             try upload(data, to: stage + "/agent.bin")
-            try sameDevice(identity, boot)
+            try sameDevice(identity, boot, router)
             cleanupSafe = false
             let result = try engine.transport.run("sh " + shellQuote(stage + "/manager.sh") + " install " + shellQuote(stage + "/agent.bin") + " " + shellQuote(candidate.sha256), input: nil, timeout: 90)
             cleanupSafe = result.status >= 0 && result.status < 255
@@ -138,7 +138,7 @@ final class AgentInstallationManager {
     }
     private func installDashboard(_ payload: AgentDashboardPayload, installAgent: () throws -> AgentInstallationStatus) throws -> AgentInstallationStatus {
         try require(engine.lockFD >= 0, "Установка панели требует блокировки приложения")
-        let (identity, boot) = try engine.identity()
+        let proof = try engine.measuredIdentity(); let identity = proof.identity, boot = proof.bootID, router = proof.routerHash
         try engine.acquireRemoteLock()
         let stage = "/tmp/zte-dashboard-stage-" + UUID().uuidString.lowercased()
         // The helper receipt identifies its actual staging directory.
@@ -148,7 +148,7 @@ final class AgentInstallationManager {
         var cleanupSafe = true
         defer { if cleanupSafe { _ = try? engine.remote(cleanup, timeout: 15) } }
         for name in AgentDashboardPayload.names { try upload(payload.files[name]!, to: stage + "/" + name) }
-        try sameDevice(identity, boot)
+        try sameDevice(identity, boot, router)
         let command = "sh " + [stage + "/dashboard.sh", stage, identity.cid, BundledAgent.sha256].map(shellQuote).joined(separator: " ")
         engine.update("Проверяю условия установки веб-панели до замены агента", 0.15)
         let preflight = try engine.transport.run(command + " preflight", input: nil, timeout: 45)
@@ -157,7 +157,7 @@ final class AgentInstallationManager {
         let installed = try installAgent()
         var dashboardOutcome = "DASHBOARD_PRE_APPLY_FAILED"
         do {
-            try sameDevice(identity, boot)
+            try sameDevice(identity, boot, router)
             engine.update("Устанавливаю веб-панель с eSIM без изменения VPN", 0.95)
             // An interrupted SSH process may leave the remote rollback running.
             // Preserve its staging tools until a remote exit is known.
@@ -171,7 +171,7 @@ final class AgentInstallationManager {
             dashboardOutcome = "DASHBOARD_RECEIPT_INVALID"
             try require(response == "DASHBOARD_INSTALLED " + receiptID, "Код: DASHBOARD_RECEIPT_INVALID")
             dashboardOutcome = "DASHBOARD_TARGET_CHANGED"
-            try sameDevice(identity, boot)
+            try sameDevice(identity, boot, router)
             engine.update("Агент с eSIM и веб-панель установлены", 1)
             return installed
         } catch {
@@ -189,10 +189,10 @@ final class AgentInstallationManager {
     }
     func restore() throws -> AgentInstallationStatus {
         var cleanupSafe = true
-        return try staged(cleanupAllowed: { cleanupSafe }) { stage, identity, boot in
+        return try staged(cleanupAllowed: { cleanupSafe }) { stage, identity, boot, router in
             let before = try status(stage)
             guard let expected = before.backupHash else { throw IMEIError.message("Проверенная копия предыдущего агента отсутствует") }
-            try sameDevice(identity, boot)
+            try sameDevice(identity, boot, router)
             cleanupSafe = false
             let result = try engine.transport.run("sh " + shellQuote(stage + "/manager.sh") + " restore", input: nil, timeout: 90)
             cleanupSafe = result.status >= 0 && result.status < 255

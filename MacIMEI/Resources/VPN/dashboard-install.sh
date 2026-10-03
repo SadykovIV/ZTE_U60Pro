@@ -40,7 +40,7 @@ fi
 [ ! -e "$base/lock" ] && [ ! -L "$base/lock" ] || exit 1
 for file in dashboard.tar.gz dashboard-uhttpd start-dashboard.sh dashboard-html.sh stop-owned-listener.sh update-rc-local.sh preserve-dashboard-assets.sh payload.sha256; do plain "$stage/$file"; done
 # Updated and pinned by the release packager.
-payload_sha=89f8f55bef456e15adc6401de9e369fbef70c8476d8641631512ab29fd8963ae
+payload_sha=36c7a92a4516bf137f2d1217ae742f68d5e66e064a10049509ca4da634ff11ac
 [ "$(hash "$stage/payload.sha256")" = "$payload_sha" ]
 (cd "$stage" && sha256sum -c payload.sha256 >/dev/null)
 plain /etc/rc.local && sh -n /etc/rc.local || exit 1

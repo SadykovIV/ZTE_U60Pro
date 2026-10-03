@@ -6,8 +6,8 @@ namespace ZteImeiStudio.Windows.Core;
 /// <summary>The same pinned build is installed permanently and used by private desktop RPC.</summary>
 public static class AgentPackage
 {
-    public const string Version = "2.7.0-esim.8";
-    public const string Sha256 = "8ee8073b684613f358a5b857f7ed85ac165fc96f0d74980b04be006659ebea67";
+    public const string Version = "2.9.0-esim.1";
+    public const string Sha256 = "110f1144e7c0bd044b81cc37a1f5925cdae721043139bb46459a40f1db649deb";
     public const string LegacyPublicSha256 = "c50ba6b7ac6f77c581c2b657ba769f976d8d20aca0c6b7d08c9254ef2de9d346";
     public const string LegacyVpnSha256 = "3da0915669ca101fe8b2faef3d683405957a2fbd49000a58257d28868321b3df";
     public const string LegacyEsimSha256 = "7a2d1a517d564a3d66dfe98e6622be6ca2428635aa9cbd83cbf02c179dd7703e";
@@ -18,6 +18,7 @@ public static class AgentPackage
     public const string LegacyEsimPagesSha256 = "6168ae6c539bb3ca7136eb40a1d4cae03d75aa18900be105f2ff2d5016da4b5c";
     public static string? VersionForHash(string hash) => hash == Sha256 ? Version : hash switch
     {
+        "8ee8073b684613f358a5b857f7ed85ac165fc96f0d74980b04be006659ebea67" => "2.7.0-esim.8",
         LegacyPublicSha256 => "2.8.0",
         LegacyVpnSha256 => "2.7.0-vpn.1",
         LegacyEsimSha256 => "2.7.0-esim.1",
@@ -29,6 +30,7 @@ public static class AgentPackage
         _ => null
     };
     public static readonly IReadOnlySet<string> SupportedUpgradeHashes = new[] { Sha256,
+        "8ee8073b684613f358a5b857f7ed85ac165fc96f0d74980b04be006659ebea67",
         "c50ba6b7ac6f77c581c2b657ba769f976d8d20aca0c6b7d08c9254ef2de9d346",
         "6168ae6c539bb3ca7136eb40a1d4cae03d75aa18900be105f2ff2d5016da4b5c",
         "be945c0a7181070aa69be3bb579a1e967a1cf147b2af2987f31ae5d242b10a66",

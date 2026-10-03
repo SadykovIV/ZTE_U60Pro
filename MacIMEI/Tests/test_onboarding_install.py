@@ -14,6 +14,7 @@ import tempfile
 import unittest
 
 RES = Path(__file__).resolve().parents[1] / 'Resources/Onboarding'
+BOOT = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
 CID = '0123456789abcdef0123456789abcdef'
 TOKEN = '11111111-2222-3333-4444-555555555555'
 FIRMWARE = '604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263'
@@ -28,7 +29,7 @@ def digest(path):
 class InstallTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='zte-onboarding-test-')
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         self.bin = self.root / 'mock-bin'
         self.bin.mkdir()
         self.stage = self.root / f'data/local/tmp/zte-imei-setup-{TOKEN}'
@@ -45,7 +46,7 @@ class InstallTests(unittest.TestCase):
         self.write('/usr/bin/curl', '#!/bin/sh\nexit 0\n',0o700)
         (self.root/'var/run').mkdir(parents=True)
         self.command('id', '#!/bin/sh\necho 0\n')
-        self.command('uname', '#!/bin/sh\necho aarch64\n')
+        self.command('uname', '#!/bin/sh\nif [ \"$1\" = -s ]; then echo Linux; else echo aarch64; fi\n')
         self.command('sync', '#!/bin/sh\nexit 0\n')
         self.command('ubus', '#!/bin/sh\nexit 0\n')
         self.command('sleep', '#!/bin/sh\nexit 0\n')
@@ -115,24 +116,133 @@ esac
         p.write_text(text)
         p.chmod(0o700)
 
-    def run_setup(self, cid=CID, agent_hash=None, profile=None, firmware=None, router=ROUTER):
+    def run_setup(self, cid=CID, agent_hash=None, profile=None, firmware=None, router=ROUTER, boot=None):
         args = [str(self.stage), cid, agent_hash or digest(self.stage/'zte-agent'), digest(self.stage/'dropbear'), digest(self.stage/'id_ed25519.pub')]
         if profile is not None: args.extend([profile, firmware or FIRMWARE, router])
+        if boot is not None: args.append(boot)
         return subprocess.run(['/bin/sh', str(self.stage/'setup-agent.sh'), *args], env=self.env, capture_output=True, text=True)
 
-    def commit(self, profile=None, firmware=None, router=ROUTER):
+    def commit(self, profile=None, firmware=None, router=ROUTER, boot=None):
         args=['--commit', str(self.journal), CID]
         if profile is not None: args.extend([profile,firmware or FIRMWARE,router])
+        if boot is not None: args.append(boot)
         return subprocess.run(['/bin/sh', str(self.stage/'setup-agent.sh'), *args], env=self.env, capture_output=True, text=True)
 
-    def preflight(self, cid=CID, profile='b31', firmware=FIRMWARE, router=ROUTER):
-        return subprocess.run(['/bin/sh','-c',self.script_text,'--','--preflight',cid,profile,firmware,router],env=self.env,capture_output=True,text=True)
+    def preflight(self, cid=CID, profile='b31', firmware=FIRMWARE, router=ROUTER, boot=None):
+        args=['/bin/sh','-c',self.script_text,'--','--preflight',cid,profile,firmware,router]
+        if boot is not None: args.append(boot)
+        return subprocess.run(args,env=self.env,capture_output=True,text=True)
 
-    def owner(self, profile='b31', firmware=FIRMWARE, router=ROUTER):
-        p=self.stage/'.owner';p.write_text(f'{TOKEN} {CID} {profile} {firmware} {router}\n');p.chmod(0o600)
+    def owner(self, profile='b31', firmware=FIRMWARE, router=ROUTER, boot=None):
+        p=self.stage/'.owner';p.write_text(f'{TOKEN} {CID} {profile} {firmware} {router}'+(' '+boot if boot else '')+'\n');p.chmod(0o600)
 
     def assert_success(self, result):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def generic(self, absent=False):
+        self.env['MOCK_FIRMWARE']='a'*64
+        self.env['MOCK_ROUTER']='b'*64
+        self.write('/proc/sys/kernel/random/boot_id',BOOT+'\n')
+        self.write('/proc/1/comm','procd\n')
+        self.write('/proc/1234/environ','ZTE_AGENT_MODE=discovery\0')
+        self.write('/etc/init.d/done',f'#!/bin/sh\nsh {self.root}/etc/rc.local\n',0o700)
+        # Mock only the ELF header inspection and pinned Dropbear's -V entry.
+        self.command('od','#!/bin/sh\necho 7f454c460201010000000000000000000200b700\n')
+        self.command('timeout','#!/bin/sh\nshift; exec "$@"\n')
+        (self.stage/'dropbear').chmod(0o700)
+        (self.stage/'zte-agent').chmod(0o700)
+        (self.stage/'start-agent.sh').write_text("#!/bin/sh\nexport ZTE_AGENT_MODE='discovery'\ntouch \"$MOCK_ROOT/running\"\n")
+        if absent:
+            (self.root/'usr/bin/diag-router').unlink()
+        router='absent' if absent else 'b'*64
+        self.owner('linux-arm64-access','a'*64,router,BOOT)
+        return dict(profile='linux-arm64-access',firmware='a'*64,router=router,boot=BOOT)
+
+    def test_generic_unknown_firmware_installs_discovery_transaction(self):
+        args=self.generic()
+        self.assert_success(self.preflight(**args))
+        self.assertFalse(self.journal.parent.exists())
+        self.assert_success(self.run_setup(**args))
+        self.assertEqual((self.journal/'profile.identity').read_text(),f"linux-arm64-access {'a'*64} {'b'*64} {BOOT}\n")
+        self.assertIn("export ZTE_AGENT_MODE='discovery'",(self.root/'data/local/tmp/start_zte_agent.sh').read_text())
+        self.assert_success(self.commit(**args))
+
+    def test_generic_no_diag_router_can_install_access_only(self):
+        args=self.generic(absent=True)
+        self.assert_success(self.preflight(**args))
+        self.assert_success(self.run_setup(**args))
+        self.assert_success(self.commit(**args))
+
+    def test_generic_cannot_certify_existing_object_as_absent(self):
+        args=self.generic();args['router']='absent'
+        self.assertIn('ROUTER_MISMATCH',self.preflight(**args).stderr)
+        self.assertFalse(self.journal.parent.exists())
+
+    def test_generic_boot_change_blocks_install_and_commit(self):
+        args=self.generic()
+        self.write('/proc/sys/kernel/random/boot_id','ffffffff-bbbb-cccc-dddd-eeeeeeeeeeee\n')
+        self.assertIn('BOOT_MISMATCH',self.run_setup(**args).stderr)
+        self.assertFalse(self.journal.parent.exists())
+        self.write('/proc/sys/kernel/random/boot_id',BOOT+'\n')
+        self.assert_success(self.run_setup(**args))
+        self.write('/proc/sys/kernel/random/boot_id','ffffffff-bbbb-cccc-dddd-eeeeeeeeeeee\n')
+        self.assertIn('BOOT_MISMATCH',self.commit(**args).stderr)
+        self.assertEqual((self.journal/'state').read_text().strip(),'ready')
+
+    def test_generic_unassessed_boot_hook_blocks_before_mutation(self):
+        args=self.generic();self.write('/proc/1/comm','systemd\n')
+        self.assertIn('STARTUP_NOT_ASSESSED',self.preflight(**args).stderr)
+        self.assertFalse(self.journal.parent.exists())
+
+    def test_generic_existing_normal_agent_requires_review(self):
+        args=self.generic()
+        agent=self.write('/data/zte-agent','original',0o700)
+        self.write('/data/local/tmp/start_zte_agent.sh','#!/bin/sh\n# normal\n',0o700)
+        result=self.run_setup(**args)
+        self.assertIn('DISCOVERY_STARTUP_REQUIRED',result.stderr)
+        self.assertEqual(agent.read_text(),'original')
+        self.assertFalse(self.journal.parent.exists())
+
+    def test_generic_running_normal_agent_is_not_started_or_replaced(self):
+        args=self.generic()
+        self.write('/data/zte-agent',(self.stage/'zte-agent').read_text(),0o700)
+        self.write('/data/local/tmp/start_zte_agent.sh',(self.stage/'start-agent.sh').read_text(),0o700)
+        self.write('/running','yes')
+        self.write('/proc/1234/environ','ZTE_AGENT_MODE=normal\0')
+        self.assertIn('EXISTING_AGENT_REVIEW_REQUIRED',self.run_setup(**args).stderr)
+        self.assertFalse(self.journal.parent.exists())
+
+    def test_generic_unpinned_preserved_helper_blocks_before_mutation(self):
+        args=self.generic()
+        original=self.write('/data/bin/dropbearkey','#!/bin/sh\n# arbitrary existing helper\n',0o700)
+        self.assertIn('EXISTING_DROPBEAR_REVIEW_REQUIRED',self.run_setup(**args).stderr)
+        self.assertEqual(original.read_text(),'#!/bin/sh\n# arbitrary existing helper\n')
+        self.assertFalse(self.journal.parent.exists())
+
+    def test_generic_pinned_agent_runtime_failure_blocks_before_mutation(self):
+        args=self.generic();(self.stage/'zte-agent').write_text('#!/bin/sh\nexit 1\n')
+        self.assertIn('AGENT_ABI',self.run_setup(**args).stderr)
+        self.assertFalse(self.journal.parent.exists())
+
+    def test_generic_elf_mismatch_blocks_before_mutation(self):
+        args=self.generic();self.command('od','#!/bin/sh\necho 7f454c4601010100000000000000000002002800\n')
+        self.assertIn('PAYLOAD_ABI',self.run_setup(**args).stderr)
+        self.assertFalse(self.journal.parent.exists())
+
+    def test_generic_profile_cannot_override_mode_guards_with_colon(self):
+        args=self.generic();args['profile']='linux-arm64-access:extra'
+        self.assertIn('UNSUPPORTED_PROFILE',self.preflight(**args).stderr)
+        self.assertFalse(self.journal.parent.exists())
+
+    def test_generic_unknown_boot_and_symlink_never_authorise(self):
+        args=self.generic();args['boot']='not-assessed'
+        self.assertIn('BOOT_FORMAT',self.preflight(**args).stderr)
+        args['boot']=BOOT
+        p=self.root/'usr/bin/diag-router';p.unlink();p.symlink_to(self.root/'firmware/image/modem.b16')
+        self.assertIn('IDENTITY_UNREADABLE',self.preflight(**args).stderr)
+        args['router']='absent'
+        self.assertIn('ROUTER_MISMATCH',self.preflight(**args).stderr)
+        self.assertFalse(self.journal.parent.exists())
 
     def test_fresh_setup_snapshot_commit_preserves_rc(self):
         original = (self.root/'etc/rc.local').read_bytes()

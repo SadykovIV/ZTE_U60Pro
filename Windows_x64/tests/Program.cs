@@ -3,6 +3,8 @@ using System.Text;
 using System.Text.Json;
 using ZteImeiStudio.Windows.Core;
 
+if (args.Contains("--discovery-only")) { await UniversalDiscoveryTests.RunAsync(); return; }
+
 if (args.Contains("--adb-line-endings-only"))
 {
     await AdbLineEndingTests.RunAsync(args.SkipWhile(x => x != "--adb-line-endings-only").Skip(1).FirstOrDefault());

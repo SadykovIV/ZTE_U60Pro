@@ -58,6 +58,7 @@ enum ConnectionOverview {
         guard let shell = session.diagnosticSession, [.ssh, .adb].contains(session.mode) else {
             throw IMEIError.message("Для подключения к модему требуется SSH или ADB")
         }
+        let sections = session.summary.fields["accessProfile"] == "linux-arm64-access" ? sections.intersection([.information]) : sections
         let readers = ConnectionOverviewReaders(
             information: {
                 let result = try shell.run(ModemInformationManager.command, timeout: 30)
@@ -76,7 +77,7 @@ enum ConnectionOverview {
             // The session verifies its original transport. Separately bind the
             // manager's engine to that same device and boot before using SSH.
             if session.mode == .ssh {
-                let current = try engine.diagnosticIdentity()
+                let current = try engine.accessIdentity()
                 try require(current.0 == shell.proof.identity && current.1 == shell.proof.bootID,
                             "Устройство, прошивка или сеанс загрузки SSH изменились; обновление разделов остановлено")
             }

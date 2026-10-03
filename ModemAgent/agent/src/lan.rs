@@ -34,6 +34,16 @@ impl Binding {
             fixed,
         }
     }
+    /// Avoid vendor UCI queries on an unassessed device. The installer provides
+    /// an explicit LAN bind address when available.
+    pub fn discovery() -> Self {
+        Self {
+            address: Mutex::new(std::env::var("ZTE_AGENT_BIND")
+                .unwrap_or_else(|_| "192.168.0.1:9090".into())),
+            generation: AtomicU64::new(0),
+            fixed: true,
+        }
+    }
     pub fn address(&self) -> String {
         self.address.safe_lock().clone()
     }

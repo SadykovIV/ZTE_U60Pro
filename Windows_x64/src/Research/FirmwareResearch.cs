@@ -14,9 +14,11 @@ public sealed record ResearchProfile(string Id,string FirmwareSHA256,string Rout
 public sealed record ResearchProbe(string Id,ResearchText Title,string Category,string Command,int TimeoutSeconds,int MaxBytes);
 public sealed record ResearchRequirement(string Probe,string Fact,[property:System.Text.Json.Serialization.JsonPropertyName("equals")] string Expected,ResearchText Label,string[]? Platforms=null);
 public sealed record ResearchFeature(string Id,ResearchText Title,string[] Profiles,ResearchRequirement[] Requirements,ResearchText Limitations,string[]? Platforms=null);
-public sealed record ResearchSpec(int SchemaVersion,int Revision,ResearchProfile[] Profiles,ResearchProbe[] Probes,ResearchFeature[] Features)
+public sealed record ResearchObservation(string Id,ResearchText Title,string Probe,string Fact);
+public sealed record ResearchObservationResult(string Id,ResearchText Title,string Probe,string Fact,string Status,string? Value,string SourceStatus,int? ExitCode);
+public sealed record ResearchSpec(int SchemaVersion,int Revision,ResearchProfile[] Profiles,ResearchProbe[] Probes,ResearchFeature[] Features,ResearchObservation[]? Observations=null)
 {
-    public const string ExpectedSpecificationSha256="c89a709250317d1552ceb73fb3c10583b926ed2b09a5816c3aa3c66a98ee8f3c";
+    public const string ExpectedSpecificationSha256="86b3e60ef1ac531ee68c6394e23c06fe96f31756162b99a41be704b042e73223";
     public string? Sha256 { get; private set; }
     public static readonly JsonSerializerOptions Json=new() { PropertyNameCaseInsensitive=true,PropertyNamingPolicy=JsonNamingPolicy.CamelCase,WriteIndented=true };
     public static ResearchSpec Load(string path)
@@ -33,6 +35,7 @@ public sealed record ResearchSpec(int SchemaVersion,int Revision,ResearchProfile
         foreach(var probe in Probes)
             if(!Regex.IsMatch(probe.Id,@"^[a-z][a-z0-9-]{0,63}$") || probe.MaxBytes is <1024 or >262144 || probe.TimeoutSeconds is <1 or >60 || probe.Command.Length is <1 or >65536 || probe.Command.Contains('\0'))
                 throw new InvalidDataException("Invalid probe or capture limits.");
+        if(Observations is { } observations && (observations.Length>512 || observations.Select(x=>x.Id).Distinct().Count()!=observations.Length || observations.Any(x=>!Probes.Any(p=>p.Id==x.Probe) || !Regex.IsMatch(x.Fact,@"^[a-z0-9_]{1,64}$")))) throw new InvalidDataException("Invalid observation specification.");
         foreach(var feature in Features)
             if(feature.Requirements.Any(r=>!Probes.Any(p=>p.Id==r.Probe)) || feature.Profiles.Any(p=>!Profiles.Any(x=>x.Id==p)))
                 throw new InvalidDataException("Invalid feature requirements.");
@@ -41,7 +44,7 @@ public sealed record ResearchSpec(int SchemaVersion,int Revision,ResearchProfile
 public sealed record ResearchProbeResult(string Id,ResearchText Title,string Category,string Command,string Status,int? ExitCode,string Stdout,string Stderr,long DurationMs,DateTimeOffset StartedAt,bool Truncated,IReadOnlyDictionary<string,string> Facts,int? LocalExitCode=null);
 public sealed record ResearchFeatureResult(string Id,ResearchText Title,string State,ResearchText[] Reasons,ResearchText Limitations);
 public sealed record ResearchProgress(int Completed,int Total,ResearchText Title);
-public sealed record ResearchReport(int SchemaVersion,string Id,DateTimeOffset StartedAt,DateTimeOffset CompletedAt,string Outcome,string Channel,string? Profile,string ApplicationVersion,int SpecificationRevision,ResearchProbeResult[] Probes,ResearchFeatureResult[] Features,string[] Omissions,string? SpecificationSHA256=null,string RequestedMode="auto");
+public sealed record ResearchReport(int SchemaVersion,string Id,DateTimeOffset StartedAt,DateTimeOffset CompletedAt,string Outcome,string Channel,string? Profile,string ApplicationVersion,int SpecificationRevision,ResearchProbeResult[] Probes,ResearchFeatureResult[] Features,string[] Omissions,string? SpecificationSHA256=null,string RequestedMode="auto",string BindingStrength="transport-only",ResearchObservationResult[]? Observations=null);
 
 public sealed class ResearchRedactor(IEnumerable<string>? secrets=null)
 {
@@ -72,11 +75,15 @@ public sealed class FirmwareResearchEngine(ResearchSpec spec,IResearchTransportF
     private int _bytes;
     private IResearchShell? _shell;
     private string _outcome="complete";
+    private string? _selectedSerial;
+    private bool _requiresSingleUsb=true;
     private static readonly IReadOnlyDictionary<string,string> NoFacts=new Dictionary<string,string>();
     private ResearchProbe Fingerprint=>spec.Probes.Single(p=>p.Id=="fingerprint");
     public async Task<ResearchReport> CollectAsync(string mode,string? boundCidHash,IProgress<ResearchProgress>? progress,CancellationToken ct)
     {
         spec.Validate(); var started=DateTimeOffset.UtcNow;
+        using var deadline=CancellationTokenSource.CreateLinkedTokenSource(ct); deadline.CancelAfter(TimeSpan.FromMinutes(8));
+        var callerToken=ct; ct=deadline.Token; var strength="transport-only";
         try
         {
             await SelectAsync(mode,boundCidHash,ct).ConfigureAwait(false);
@@ -84,22 +91,24 @@ public sealed class FirmwareResearchEngine(ResearchSpec spec,IResearchTransportF
             {
                 var initial=await ProbeAsync(Fingerprint,ct).ConfigureAwait(false); _results.Add(initial);
                 var binding=Binding(initial);
-                if(binding.Count!=2) { _outcome="partial"; AddIssue("identity-unavailable","Both stable CID and boot fingerprints are required; further probes skipped.");
-                    var identity=spec.Probes.SingleOrDefault(p=>p.Id=="identity");if(identity is not null)_results.Add(await ProbeAsync(identity,ct).ConfigureAwait(false)); }
-                else if(boundCidHash is not null && binding.GetValueOrDefault("cid_sha256")!=boundCidHash) { _outcome="device_changed";AddIssue("saved-identity-mismatch","USB device does not match the saved modem CID."); }
+                strength=binding.Count==2?"full":binding.Count==1?"partial":"transport-only";
+                if(binding.Count!=2) { _outcome="partial"; AddIssue("identity-unavailable","Incomplete device binding: read-only observations continue; operation prerequisites cannot be authorized.","skipped"); }
+                if(boundCidHash is not null && binding.GetValueOrDefault("cid_sha256")!=boundCidHash) { _outcome="device_changed";AddIssue("saved-identity-mismatch","USB device does not match the explicitly bound modem CID."); }
                 else
                 {
                     foreach(var probe in spec.Probes.Where(p=>p.Id!="fingerprint"))
                     {
                         if(ct.IsCancellationRequested) { _outcome="cancelled";break; }
                         if(_bytes> TotalLimit-524288) { _outcome="partial"; AddIssue("total-limit","Report byte limit reached.");break; }
+                        if(!await CheckTransportAsync(ct).ConfigureAwait(false)) { _outcome="connection_lost";break; }
                         var guard=await ProbeAsync(Fingerprint,ct).ConfigureAwait(false);
-                        if(!SameBinding(binding,Binding(guard))) { _results.Add(guard with {Id="fingerprint-change-before-"+probe.Id});_outcome=ct.IsCancellationRequested?"cancelled":guard.Status=="success"?"device_changed":"connection_lost";break; }
+                        if(!BindingContinues(binding,Binding(guard))) { _results.Add(guard with {Id="fingerprint-change-before-"+probe.Id});_outcome=ct.IsCancellationRequested?"cancelled":guard.Status=="success"?"device_changed":"connection_lost";break; }
                         progress?.Report(new(spec.Probes.Count(p=>_results.Any(r=>r.Id==p.Id)),spec.Probes.Length,probe.Title));
                         var result=await ProbeAsync(probe,ct).ConfigureAwait(false);_results.Add(result);
                         if(result.Status=="cancelled") { _outcome="cancelled";break; }
                         var after=await ProbeAsync(Fingerprint,ct).ConfigureAwait(false);
-                        if(!SameBinding(binding,Binding(after))) { _results.Add(after with {Id="fingerprint-change-after-"+probe.Id});_outcome=ct.IsCancellationRequested?"cancelled":after.Status=="success"?"device_changed":"connection_lost";break; }
+                        if(!BindingContinues(binding,Binding(after))) { _results.Add(after with {Id="fingerprint-change-after-"+probe.Id});_outcome=ct.IsCancellationRequested?"cancelled":after.Status=="success"?"device_changed":"connection_lost";break; }
+                        if(!await CheckTransportAsync(ct).ConfigureAwait(false)) { _outcome="connection_lost";break; }
                     }
                 }
             }
@@ -110,11 +119,13 @@ public sealed class FirmwareResearchEngine(ResearchSpec spec,IResearchTransportF
         foreach(var probe in spec.Probes.Where(p=>!_results.Any(r=>r.Id==p.Id)))
             _results.Add(new(probe.Id,probe.Title,probe.Category,probe.Command,"skipped",null,"","Not collected: "+_outcome,0,DateTimeOffset.UtcNow,false,NoFacts));
         if(_outcome=="complete" && _results.Any(x=>x.Status!="success"))_outcome="partial";
+        if(deadline.IsCancellationRequested && !callerToken.IsCancellationRequested)_outcome="time_limit";
         var profile=MatchProfile(spec,_results);
         var features=Evaluate(spec,_results,profile,_outcome);
+        if(strength!="full")features=features.Select(f=>f.State=="prerequisites_met"?f with {State="unknown",Reasons=f.Reasons.Append(new ResearchText("Привязка устройства неполная; нужна свежая проверка перед операцией.","Device binding is incomplete; a fresh check is required before an operation.")).ToArray()}:f).ToArray();
         return new(1,Guid.NewGuid().ToString("N"),started,DateTimeOffset.UtcNow,_outcome,_shell?.Channel??"none",profile,
             typeof(FirmwareResearchEngine).Assembly.GetName().Version?.ToString()??"unknown",spec.Revision,_results.ToArray(),features,
-            ["Read-only prerequisite survey; no operation is executed or certified compatible.","No passwords, private keys, raw NV/EFS, configuration backups or personal traffic are collected.","CID and boot identifiers are hashed on device; fingerprint absence stops collection.","No ADB activation, no SSH trust enrollment, no preparation, upload, install, remount or firmware check bypass.","Full restore is not implemented on Windows; only available prerequisites are assessed."],spec.Sha256,mode);
+            ["Read-only prerequisite survey; no operation is executed or certified compatible.","No passwords, private keys, raw NV/EFS, configuration backups or personal traffic are collected.","CID and boot identifiers are hashed on device; incomplete binding permits observations only and never authorizes operations.","No ADB activation, no SSH trust enrollment, no preparation, upload, install, remount or firmware check bypass.","Full restore is not implemented on Windows; only available prerequisites are assessed."],spec.Sha256,mode,strength,Observe(spec,_results));
     }
     private async Task SelectAsync(string mode,string? boundCidHash,CancellationToken ct)
     {
@@ -147,7 +158,7 @@ public sealed class FirmwareResearchEngine(ResearchSpec spec,IResearchTransportF
             var usbWatch=Stopwatch.StartNew();var usb=await factory.SingleUsbSerialAsync(ct).ConfigureAwait(false);
             _results.Add(ToResult(new("adb-usb-proof",new("Проверка USB ADB","USB ADB proof"),"connection","adb -d get-serialno",10,16384),usb,usbWatch.ElapsedMilliseconds));
             if(usb.Status!="success" || usb.Stdout.Trim()!=serials[0])throw new IOException("ADB device is not confirmed as the single USB device; collection stopped.");
-            _shell=factory.OpenAdb(serials[0]);return;
+            _selectedSerial=serials[0];_shell=factory.OpenAdb(serials[0]);return;
         }
         if(string.IsNullOrEmpty(boundCidHash))throw new IOException("Multiple USB ADB devices: selection is ambiguous. Leave only the intended modem connected.");
         IResearchShell? selected=null;
@@ -156,9 +167,45 @@ public sealed class FirmwareResearchEngine(ResearchSpec spec,IResearchTransportF
             var candidate=factory.OpenAdb(serial);var watchCandidate=Stopwatch.StartNew();var result=await candidate.ExecuteAsync(Fingerprint.Command,Fingerprint.TimeoutSeconds,Fingerprint.MaxBytes,ct).ConfigureAwait(false);
             _results.Add(ToResult(Fingerprint with {Id="adb-candidate-"+_results.Count},result,watchCandidate.ElapsedMilliseconds));
             var facts=Facts(result);
-            if(result.Status=="success" && facts.GetValueOrDefault("cid_sha256")==boundCidHash) { if(selected is not null)throw new IOException("Multiple devices match the saved identity.");selected=candidate; }
+            if(result.Status=="success" && facts.GetValueOrDefault("cid_sha256")==boundCidHash) { if(selected is not null)throw new IOException("Multiple devices match the saved identity.");selected=candidate;_selectedSerial=serial;_requiresSingleUsb=false; }
         }
         _shell=selected??throw new IOException("No USB device matches the saved modem identity.");
+    }
+    private static bool LocalProbeSucceeded(ResearchCommandResult value)=>value.Status=="success" && !value.Truncated && value.ExitCode is null or 0 && value.LocalExitCode is null or 0 && (value.LocalExitCode==0 || value.ExitCode==0);
+    private async Task<bool> CheckTransportAsync(CancellationToken ct)
+    {
+        if(_selectedSerial is null)return true;
+        if(!_requiresSingleUsb)
+        {
+            var inventory=await factory.ListAdbAsync(ct).ConfigureAwait(false);
+            if(LocalProbeSucceeded(inventory) && ParseAdb(inventory.Stdout).Contains(_selectedSerial))return true;
+            AddIssue("usb-binding-lost","The explicitly bound USB device is no longer present.");return false;
+        }
+        var proof=await factory.SingleUsbSerialAsync(ct).ConfigureAwait(false);
+        if(LocalProbeSucceeded(proof) && proof.Stdout.Trim()==_selectedSerial)return true;
+        AddIssue("usb-binding-lost","The originally selected single USB device is no longer confirmed.");return false;
+    }
+    private static bool BindingContinues(Dictionary<string,string> initial,Dictionary<string,string> current)
+    {
+        // Newly available fingerprints may strengthen subsequent comparisons, but
+        // cannot upgrade the authorization level of an initially unbound report.
+        if(initial.Any(x=>current.GetValueOrDefault(x.Key)!=x.Value))return false;
+        foreach(var pair in current)initial.TryAdd(pair.Key,pair.Value);
+        return true;
+    }
+    public static ResearchObservationResult[] Observe(ResearchSpec spec,IReadOnlyList<ResearchProbeResult> results)
+    {
+        var definitions=(spec.Observations??[]).ToList();
+        foreach(var probe in results.Where(x=>spec.Probes.Any(p=>p.Id==x.Id)))
+            foreach(var fact in probe.Facts.Keys)
+                if(!definitions.Any(x=>x.Probe==probe.Id && x.Fact==fact))definitions.Add(new(probe.Id+":"+fact,probe.Title,probe.Id,fact));
+        return definitions.Select(item=>
+        {
+            var probe=results.SingleOrDefault(x=>x.Id==item.Probe);
+            var value=probe is {Status:"success",ExitCode:0,Truncated:false,LocalExitCode:null or 0}?probe.Facts.GetValueOrDefault(item.Fact):null;
+            var status=value is null or "unknown" or "not-assessed" or "not-performed" or "conflicting"?"not-assessed":value is "missing" or "absent"?"absent":"known";
+            return new ResearchObservationResult(item.Id,item.Title,item.Probe,item.Fact,status,status=="not-assessed"?null:value,probe?.Status??"skipped",probe?.ExitCode);
+        }).ToArray();
     }
     private static bool SafeUnavailable(Exception e)=>e is not SshTrustException && e is not Renci.SshNet.Common.SshAuthenticationException && e is not InvalidDataException && (e is SocketException or TimeoutException || e.InnerException is SocketException);
     public static string HashSavedCid(string cid)=>Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(cid.Trim()+"\n")));
@@ -201,7 +248,6 @@ public sealed class FirmwareResearchEngine(ResearchSpec spec,IResearchTransportF
     }
     private static Dictionary<string,string> Binding(ResearchProbeResult result)=>result.Status=="success"
         ?result.Facts.Where(x=>x.Key is "cid_sha256" or "boot_sha256" && Regex.IsMatch(x.Value,@"^[a-f0-9]{64}$")).ToDictionary(x=>x.Key,x=>x.Value):[];
-    private static bool SameBinding(Dictionary<string,string> before,Dictionary<string,string> after)=>before.Count>0 && before.Count==after.Count && before.All(x=>after.GetValueOrDefault(x.Key)==x.Value);
     public static string? MatchProfile(ResearchSpec spec,IReadOnlyList<ResearchProbeResult> results)
     {
         string? Fact(string probe,string fact)=>results.SingleOrDefault(p=>p.Id==probe && p.Status=="success")?.Facts.GetValueOrDefault(fact);
@@ -222,7 +268,7 @@ public sealed class FirmwareResearchEngine(ResearchSpec spec,IResearchTransportF
                 else if(actual is "not-assessed" or "not-performed" or "unknown" or "conflicting") { unknown=true;reasons.Add(requirement.Label); }
                 else if(actual!=requirement.Expected) { blocked=true;reasons.Add(requirement.Label); }
             }
-            if(outcome is "device_changed" or "cancelled" or "connection_lost" or "trust_rejected") { unknown=true;reasons.Add(new("Сбор прерван; вывод требует повторной проверки.","Collection was interrupted; conclusions need a new survey.")); }
+            if(outcome is "device_changed" or "cancelled" or "connection_lost" or "trust_rejected" or "time_limit") { unknown=true;reasons.Add(new("Сбор прерван; вывод требует повторной проверки.","Collection was interrupted; conclusions need a new survey.")); }
             return new ResearchFeatureResult(feature.Id,feature.Title,blocked?"blocked":unknown?"unknown":"prerequisites_met",reasons.ToArray(),feature.Limitations);
         }).ToArray();
     }
@@ -264,7 +310,7 @@ public static class ResearchReportFiles
     {
         var files=new SortedDictionary<string,byte[]> { ["report.json"]=JsonSerializer.SerializeToUtf8Bytes(report,ResearchSpec.Json),
             ["REPORT_RU.md"]=Encoding.UTF8.GetBytes(Markdown(report,false)),["REPORT_EN.md"]=Encoding.UTF8.GetBytes(Markdown(report,true)),
-            ["app-context.json"]=JsonSerializer.SerializeToUtf8Bytes(new {platform="windows",report.ApplicationVersion,report.SpecificationRevision,report.SpecificationSHA256,report.RequestedMode,runtime=System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,architecture=System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString(),report.StartedAt,report.CompletedAt,report.Channel,report.Outcome},ResearchSpec.Json) };
+            ["app-context.json"]=JsonSerializer.SerializeToUtf8Bytes(new {platform="windows",report.ApplicationVersion,report.SpecificationRevision,report.SpecificationSHA256,report.RequestedMode,runtime=System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,architecture=System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString(),report.StartedAt,report.CompletedAt,report.Channel,report.Outcome,report.BindingStrength},ResearchSpec.Json) };
         foreach(var probe in report.Probes)
         {
             if(!Regex.IsMatch(probe.Id,@"^[a-z][a-z0-9-]{0,127}$"))throw new InvalidDataException("Unsafe probe report path.");
@@ -282,6 +328,9 @@ public static class ResearchReportFiles
         var text=new StringBuilder(en?"# Firmware research\n\n":"# Исследование прошивки\n\n");
         text.AppendLine($"{report.StartedAt:O} → {report.CompletedAt:O}\n\n{report.Channel} · {report.Outcome} · {report.Profile??"unknown firmware"}\n");
         text.AppendLine(en?"This is a read-only prerequisite survey, not proof that a write operation works. No diagnostic action changes firmware support or disables existing checks.\n":"Это проверка предпосылок только чтением, а не доказательство работы изменяющей операции. Исследование не расширяет поддержку прошивок и не отключает проверки.\n");
+        text.AppendLine((en?"Device binding: ":"Привязка устройства: ")+report.BindingStrength+"\n");
+        text.AppendLine(en?"## Technical inventory\n":"## Технические сведения\n");
+        foreach(var item in report.Observations??[])text.AppendLine($"- {item.Title.Text(en)}: {item.Value??item.Status} ({item.Probe}/{item.Fact}; {item.SourceStatus}; exit={item.ExitCode})");
         foreach(var feature in report.Features) { text.AppendLine($"## {feature.Title.Text(en)} — {feature.State}\n");foreach(var reason in feature.Reasons)text.AppendLine("- "+reason.Text(en));text.AppendLine("\n"+feature.Limitations.Text(en)+"\n"); }
         text.AppendLine(en?"## Probe results\n":"## Результаты проверок\n");
         foreach(var probe in report.Probes)text.AppendLine($"- {probe.Id}: {probe.Status}; exit={probe.ExitCode}; {probe.DurationMs} ms; truncated={probe.Truncated}");

@@ -1,7 +1,7 @@
 {
   "source_release": "https://github.com/dklasens/MU5250-OpenUI/releases/tag/v2.4",
   "source_tree": "fabaf8b53678dc50e3c3fa2fa3de8b51061967cc",
-  "agent_sha256": "8ee8073b684613f358a5b857f7ed85ac165fc96f0d74980b04be006659ebea67",
+  "agent_sha256": "110f1144e7c0bd044b81cc37a1f5925cdae721043139bb46459a40f1db649deb",
   "dropbear_package_url": "https://downloads.openwrt.org/releases/23.05.4/targets/armsr/armv8/packages/dropbear_2022.82-6_aarch64_generic.ipk",
   "dropbear_package_sha256": "4fadd1b8529f22fb5d64ee27159d11f4feb68224657953d298a1acf85a83a5c0",
   "files": {
@@ -15,10 +15,10 @@
     "dropbear-libtommath-LICENSE.txt": "2fa64b163659f41965c9815882a8296d3d03ff546b76153e11445f9bdecf955a",
     "setup-agent.sh": "7172804a89bf6851433692bbb75330dd88db9dc37af3b00b6d0f49a6a4f13460",
     "start_zte_imei_studio.sh": "ece54a83e192824b9651ee4a4749fc009ec735e72b7913ec173fe07a2f37816c",
-    "zte-agent": "8ee8073b684613f358a5b857f7ed85ac165fc96f0d74980b04be006659ebea67"
+    "zte-agent": "110f1144e7c0bd044b81cc37a1f5925cdae721043139bb46459a40f1db649deb"
   },
-  "local_agent_version": "2.7.0-esim.8",
-  "local_agent_release": "ModemAgent/releases/2.7.0-esim.8",
+  "local_agent_version": "2.9.0-esim.1",
+  "local_agent_release": "ModemAgent/releases/2.9.0-esim.1",
   "local_changes": [
     "Authenticated TTL schema 2 adapter for the shared pinned modem TTL manager",
     "Legacy start_ttl.sh execution and conflicting TTL/HL handlers removed",

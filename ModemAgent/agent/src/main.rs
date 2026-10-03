@@ -1,4 +1,5 @@
 use crate::process::BoundedCommand;
+mod agent_mode;
 mod at_cmd;
 mod auth;
 mod cache;
@@ -32,7 +33,7 @@ mod vpn;
 mod esim;
 
 #[cfg(feature = "esim")]
-const AGENT_VERSION: &str = "2.7.0-esim.8";
+const AGENT_VERSION: &str = "2.9.0-esim.1";
 #[cfg(not(feature = "esim"))]
 const AGENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -45,6 +46,14 @@ const DEFAULT_THREADS: usize = 4;
 const STARTUP_SCRIPT: &str = "/data/local/tmp/start_zte_agent.sh";
 
 fn main() {
+    let mode_value = std::env::var("ZTE_AGENT_MODE").ok()
+        .or_else(|| read_startup_export("ZTE_AGENT_MODE"));
+    let mode = agent_mode::AgentMode::from_value(mode_value.as_deref());
+    #[cfg(feature = "esim")]
+    if mode == agent_mode::AgentMode::Discovery && std::env::args().len() > 1 {
+        eprintln!("Agent CLI operations require an assessed device adapter.");
+        std::process::exit(2);
+    }
     #[cfg(feature = "esim")]
     if let Some(code) = esim::early_entry() {
         std::process::exit(code);
@@ -55,9 +64,10 @@ fn main() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(DEFAULT_THREADS);
 
-    migrate_drop_removed_features();
-
-    let state = Arc::new(AppState::new());
+    if mode == agent_mode::AgentMode::Normal {
+        migrate_drop_removed_features();
+    }
+    let state = Arc::new(AppState::with_mode(mode));
 
     // Set password from environment if provided
     if let Ok(pw) = std::env::var("ZTE_AGENT_PASSWORD") {
@@ -76,19 +86,15 @@ fn main() {
         }
     }
 
-    // Event bus: single `ubus listen` process dispatches to subscribers
-    let event_bus = EventBus::new();
-    let charger_rx = event_bus.subscribe("BSP_CHARGER_EVENT");
-    event_bus.start();
-
-    state.charge_limit.start(charger_rx);
-
-    // Shared TTL settings are restored by their own boot/firewall hooks.
-    // Never execute the old start_ttl.sh with different TTL/IPv6 semantics.
-
-    usb::enforce_usb_mode_on_boot();
-
-    state.lan.recover();
+    if mode == agent_mode::AgentMode::Normal {
+        // Firmware-specific background controls run only in the assessed mode.
+        let event_bus = EventBus::new();
+        let charger_rx = event_bus.subscribe("BSP_CHARGER_EVENT");
+        event_bus.start();
+        state.charge_limit.start(charger_rx);
+        usb::enforce_usb_mode_on_boot();
+        state.lan.recover();
+    }
     server::start(threads.clamp(1, 16), state);
 }
 

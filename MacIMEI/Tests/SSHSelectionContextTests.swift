@@ -17,7 +17,7 @@ private final class Remote: RemoteTransport {
         calls.append(command)
         try check(input == nil, "Target check sent input")
         let data: Data
-        if command.hasPrefix("sha256sum /firmware/image/modem.b16") {
+        if command == AccessIdentity.command {
             data = Data((firmware + " /firmware/image/modem.b16\n" + ModemEngine.routerHash + " /usr/bin/diag-router\n" + cidValue + "\n" + bootValue + "\n").utf8)
         } else {
             try check(command == "ubus call zwrt_web device_info '{}'", "Target check issued a mutation")

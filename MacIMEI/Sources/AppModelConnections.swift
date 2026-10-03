@@ -15,7 +15,7 @@ import Foundation
         return "Нет подключения"
     }
     var connectionCapabilityText: String {
-        guard connected else { return "Рабочее подключение — SSH. Если оно недоступно, выполните предварительную подготовку. USB ADB используется для диагностики." }
+        guard connected else { return "Сначала нажмите «Проверить устройство». Рабочий root USB ADB позволяет подготовить SSH; неизвестная прошивка требует проверки конкретных условий установки." }
         return activeChannel == .ssh
             ? "SSH: сведения, диагностика и управление. Совместимость каждой операции проверяется отдельно."
             : "ADB по USB: ограниченный доступ — сведения и диагностика. Для установки плиток и управления выполните подготовку SSH."
@@ -27,7 +27,7 @@ import Foundation
         (connected && activeChannel == .ssh && accessReady) || channelStatuses.contains { $0.mode == .ssh && $0.state == .available }
     }
     var canPrepareModem: Bool {
-        !busy && !terminalActive && !pendingOperation && !systemRestorePending && !diagnosticADBPending && (isStockWebAvailable || setupPending)
+        !busy && !terminalActive && !pendingOperation && !systemRestorePending && !diagnosticADBPending && (isStockWebAvailable || setupPending || channelStatuses.contains { $0.mode == .adb && $0.state == .available } || firmwareResearchReport?.transport == "adb")
             && (setupPending || !hasSSHForPreparation)
     }
     var canEnableDiagnosticADB: Bool {
@@ -37,7 +37,7 @@ import Foundation
         if hasSSHForPreparation && !setupPending {
             return "SSH уже доступен: предварительная подготовка не требуется. ADB можно включить отдельно для диагностики."
         }
-        guard connectionsChecked, !isStockWebAvailable, !setupPending else { return nil }
+        guard connectionsChecked, !isStockWebAvailable, !setupPending, firmwareResearchReport?.transport != "adb", !channelStatuses.contains(where: { $0.mode == .adb && $0.state == .available }) else { return nil }
         switch channelStatuses.first(where: { $0.mode == .web })?.state {
         case .invalidPassword:
             return "Неверный пароль штатного Web. Исправьте пароль и нажмите «Проверить подключения»."
@@ -46,7 +46,7 @@ import Foundation
         case .notChecked:
             return "Пароль штатного Web ещё не проверен. Нажмите «Проверить подключения»."
         default:
-            return "Для подготовки нужен штатный Web. Проверьте адрес модема и повторите проверку подключений."
+            return "Сначала нажмите «Проверить устройство». Для подготовки нужен работающий root USB ADB или поддерживаемый способ его включения через штатный Web."
         }
     }
 
@@ -297,6 +297,7 @@ import Foundation
     private func loadConnectedSections(_ session: ReadOnlyChannelSession, config: Connection,
                                        sections: Set<ConnectionOverviewSection> = Set(ConnectionOverviewSection.allCases)) async throws {
         let root = storage, assets = resources
+        let sections = session.summary.fields["accessProfile"] == "linux-arm64-access" ? sections.intersection([.information]) : sections
         append(sections == [.information] ? "Обновляю сведения о модеме…" : connectionLabel + ". Обновляю сведения разделов…", progress: 0.25)
         let snapshot = try await Task.detached(priority: .userInitiated) { [weak self] in
             let engine = try ModemEngine(root: root, resources: assets, connection: config) { _, _ in }
@@ -423,8 +424,8 @@ import Foundation
     func preparePreferredSSH() {
         guard canPrepareModem else { return }
         preparationError = ""
-        guard !webPassword.isEmpty, !agentPassword.isEmpty else {
-            preparationError = "Введите пароли штатного Web и агента в настройках подключения."
+        guard !agentPassword.isEmpty else {
+            preparationError = "Введите пароль агента. Пароль Web нужен только если работающий root USB ADB отсутствует."
             append(preparationError); return
         }
         let config = connection, root = storage, assets = resources
@@ -433,7 +434,7 @@ import Foundation
         let expectedIMEI = connectedIMEI ?? channelSummary?.primaryIMEI
         markConnectionUnavailable("")
         busy = true; progress = 0
-        append("Выполняю подготовку: Web → ADB → агент → SSH…")
+        append("Проверяю устройство и работающий root USB ADB перед подготовкой доступа…")
         operationTask = Task { [weak self] in
             guard let self else { return }
             var prepared = false
@@ -453,6 +454,7 @@ import Foundation
                 prepared = true
                 append("Подготовка завершена. Подключаюсь по SSH и обновляю все разделы…", progress: 1)
             } catch { preparationError = error.localizedDescription; append("Подготовка: " + error.localizedDescription) }
+            firmwareResearchReport = try? FirmwareResearchArchive.latest(root: storage)
             busy = false; refreshBackups(); refreshActivity(); operationTask = nil
             if prepared { connectPreferredChannel() }
         }

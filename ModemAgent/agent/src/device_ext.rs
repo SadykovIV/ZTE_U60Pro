@@ -6,7 +6,30 @@ use crate::handlers::AppState;
 use crate::ubus;
 
 /// GET /api/device/thermal/all — read all useful thermal zones from sysfs
-pub fn device_thermal_all(_state: &AppState) -> (u16, Value) {
+pub fn device_thermal_all(state: &AppState) -> (u16, Value) {
+    if state.mode == crate::agent_mode::AgentMode::Discovery {
+        // Zone numbers and sensor names differ by firmware. Keep the kernel's
+        // type and zone name instead of applying a model-specific mapping.
+        let mut zones = Vec::new();
+        if let Ok(entries) = fs::read_dir("/sys/class/thermal") {
+            for entry in entries.flatten().take(128) {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if !name.strip_prefix("thermal_zone").is_some_and(|v| !v.is_empty() && v.bytes().all(|c| c.is_ascii_digit())) { continue; }
+                let read = |leaf: &str| -> Option<String> {
+                    use std::io::Read;
+                    let mut bytes = Vec::new();
+                    fs::File::open(entry.path().join(leaf)).ok()?.take(128).read_to_end(&mut bytes).ok()?;
+                    String::from_utf8(bytes).ok().map(|s| s.trim().to_string())
+                };
+                let value = read("temp").and_then(|s|s.parse::<i64>().ok());
+                let kind = read("type").filter(|s| !s.is_empty() && s.len() <= 64 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"_-.".contains(&b)));
+                zones.push(json!({"zone": name, "type": kind, "millidegrees": value,
+                    "state": if value.is_some() { "known" } else { "not-assessed" }}));
+            }
+        }
+        zones.sort_by_key(|v|v["zone"].as_str().unwrap_or_default().to_string());
+        return (200,json!({"ok":true,"data":{"mode":"discovery","state":if zones.is_empty() {"not-assessed"} else {"known"},"zones":zones}}));
+    }
     let zones: &[(&str, &str)] = &[
         ("cpu_0", "/sys/class/thermal/thermal_zone16/temp"),
         ("cpu_1", "/sys/class/thermal/thermal_zone17/temp"),

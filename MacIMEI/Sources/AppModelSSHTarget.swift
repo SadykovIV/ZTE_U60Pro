@@ -11,7 +11,7 @@ struct SSHSelectionContext: @unchecked Sendable {
         if let session { _ = try session.requireSSH() }
         let expected = identity ?? session?.summary.identity
         if let expected {
-            let current = try engine.diagnosticIdentity().0
+            let current = try engine.accessIdentity().0
             try require(current == expected, "Устройство или прошивка SSH изменились. Проверьте выбранное подключение заново.")
         }
         if let imei {

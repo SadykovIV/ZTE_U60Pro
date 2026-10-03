@@ -1,6 +1,6 @@
 #!/bin/sh
-# Pinned B31 / explicitly opted-in B02 onboarding. The host matches web/ADB
-# identities and verifies all staged resources before invoking this script.
+# Transactional access installation after a fresh measured preflight. Specific
+# hardware functions retain their own adapters; access never certifies NV/eSIM.
 # No password is an argument, diagnostic, or journal field.
 set -eu
 umask 077
@@ -8,25 +8,67 @@ base=/data/local/tmp/zte-imei-installations
 firmware_sha=604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263
 router_sha=55c54f74aaa427940254a2f16c36771e675a80a002363e4f10b0dfcb604d9c6f
 profile=b31
+boot_id=
 fail() { printf 'INSTALL_ERROR %s\n' "$1" >&2; exit 1; }
 hash() { sha256sum "$1" | awk '{print $1}'; }
 hex() { case "$1" in ''|*[!0-9a-f]*) return 1;; esac; }
 identity() {
     test "$(id -u)" = 0 || fail ROOT_REQUIRED
+    test "$(uname -s)" = Linux || fail OS_MISMATCH
     test "$(uname -m)" = aarch64 || fail ARCH_MISMATCH
     hex "$1" && test "${#1}" = 32 || fail CID_FORMAT
     test "$(cat /sys/block/mmcblk0/device/cid)" = "$1" || fail CID_MISMATCH
-    test "$(hash /firmware/image/modem.b16)" = "$firmware_sha" || fail FIRMWARE_MISMATCH
-    test "$(hash /usr/bin/diag-router)" = "$router_sha" || fail ROUTER_MISMATCH
+    if test "$profile" = linux-arm64-access; then
+        test "$(cat /proc/sys/kernel/random/boot_id)" = "$boot_id" || fail BOOT_MISMATCH
+        measured_file /firmware/image/modem.b16 "$firmware_sha" FIRMWARE_MISMATCH
+        measured_file /usr/bin/diag-router "$router_sha" ROUTER_MISMATCH
+    else
+        test "$(hash /firmware/image/modem.b16)" = "$firmware_sha" || fail FIRMWARE_MISMATCH
+        test "$(hash /usr/bin/diag-router)" = "$router_sha" || fail ROUTER_MISMATCH
+    fi
 }
 plain_file() { test -f "$1" && test ! -L "$1"; }
+# Validate every existing ancestor before treating a missing object as absent.
+# Unreadable paths and symlinks cannot become an "absent" identity witness.
+measured_file() {
+    parent=${1%/*}
+    while test -n "$parent"; do
+        test ! -L "$parent" || fail IDENTITY_PATH_LINK
+        if test -e "$parent"; then
+            test -d "$parent" && test -r "$parent" && test -x "$parent" || fail IDENTITY_UNREADABLE
+        fi
+        parent=${parent%/*}
+    done
+    if test "$2" = absent; then
+        test ! -e "$1" && test ! -L "$1" || fail "$3"
+    else
+        plain_file "$1" && test -r "$1" || fail IDENTITY_UNREADABLE
+        actual=$(hash "$1") || fail IDENTITY_UNREADABLE
+        test "$actual" = "$2" || fail "$3"
+    fi
+}
 select_profile() {
+    boot_id=${4:-}
     case "$1:$2:$3" in
-      b31:604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263:55c54f74aaa427940254a2f16c36771e675a80a002363e4f10b0dfcb604d9c6f|b02-experimental:7f1905a2844337640c08b66edffbde147adf20b3ab3e1e54fefe4939c40e633e:55c54f74aaa427940254a2f16c36771e675a80a002363e4f10b0dfcb604d9c6f) ;;
+      b31:604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263:55c54f74aaa427940254a2f16c36771e675a80a002363e4f10b0dfcb604d9c6f|b02-experimental:7f1905a2844337640c08b66edffbde147adf20b3ab3e1e54fefe4939c40e633e:55c54f74aaa427940254a2f16c36771e675a80a002363e4f10b0dfcb604d9c6f) test -z "$boot_id" || fail ARGUMENTS;;
+      linux-arm64-access:*)
+        test "$1" = linux-arm64-access || fail UNSUPPORTED_PROFILE
+        for value in "$2" "$3"; do
+            if test "$value" != absent; then hex "$value" && test "${#value}" = 64 || fail HASH_FORMAT; fi
+        done
+        printf '%s\n' "$boot_id" | grep -qE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' || fail BOOT_FORMAT
+        ;;
       *) fail UNSUPPORTED_PROFILE;;
     esac
     profile=$1; firmware_sha=$2; router_sha=$3
 }
+discovery_startup() {
+    plain_file "$1" && sh -n "$1" || fail DISCOVERY_STARTUP_REQUIRED
+    test "$(grep -cFx "export ZTE_AGENT_MODE='discovery'" "$1")" = 1 || fail DISCOVERY_STARTUP_REQUIRED
+    # Reject additional assignments that could override the selected mode.
+    test "$(grep -cE '^[[:space:]]*(export[[:space:]]+)?ZTE_AGENT_MODE=' "$1")" = 1 || fail DISCOVERY_STARTUP_REQUIRED
+}
+
 safe_directory() {
     test ! -L "$1" || fail DIRECTORY_LINK
     if test -e "$1"; then
@@ -48,9 +90,17 @@ mount_access() {
       END {exit !(count==1 && opts ~ /(^|,)rw(,|$)/ && (!need_exec || opts !~ /(^|,)noexec(,|$)/) && (type=="ext4" || type=="overlay"))}' /proc/self/mountinfo || fail MOUNT_LAYOUT
 }
 structural_preflight() {
-    for command in sh sha256sum awk grep tr sed cut stat df chmod mkdir cp mv rm rmdir cat sync pidof readlink nohup logger ubus; do
+    for command in sh sha256sum awk grep tr sed cut stat df chmod mkdir cp mv rm rmdir cat sync pidof readlink nohup logger wc sleep id uname; do
         command -v "$command" >/dev/null 2>&1 || fail MISSING_TOOL
     done
+    if test "$profile" = linux-arm64-access; then
+        for command in od timeout; do command -v "$command" >/dev/null 2>&1 || fail MISSING_TOOL; done
+        test "$(cat /proc/1/comm)" = procd || fail STARTUP_NOT_ASSESSED
+        plain_file /etc/init.d/done && test -r /etc/init.d/done || fail STARTUP_NOT_ASSESSED
+        grep -qE '^[[:space:]]*sh[[:space:]]+/etc/rc\.local([[:space:]]|$)' /etc/init.d/done || fail STARTUP_NOT_ASSESSED
+    else
+        command -v ubus >/dev/null 2>&1 || fail MISSING_TOOL
+    fi
     for directory in /data /data/local /data/local/tmp /data/bin /data/dropbear /etc /etc/dropbear "$base"; do safe_directory "$directory"; done
     test -d /data && test -w /data && test -d /etc && test -w /etc || fail REQUIRED_DIRECTORY
     test -r /proc/self/mountinfo && test -r /proc/net/tcp || fail PROC_LAYOUT
@@ -69,7 +119,13 @@ structural_preflight() {
 }
 live_agent() {
     for process in $(pidof zte-agent 2>/dev/null || true); do
-        test "$(readlink "/proc/$process/exe" 2>/dev/null || true)" = /data/zte-agent && return 0
+        if test "$(readlink "/proc/$process/exe" 2>/dev/null || true)" = /data/zte-agent; then
+            if test "$profile" = linux-arm64-access; then
+                test -r "/proc/$process/environ" || continue
+                tr '\000' '\n' < "/proc/$process/environ" | grep -qFx 'ZTE_AGENT_MODE=discovery' || continue
+            fi
+            return 0
+        fi
     done
     return 1
 }
@@ -79,8 +135,8 @@ safe_id() {
 }
 
 if test "${1:-}" = --preflight; then
-    test "$#" = 5 || fail ARGUMENTS
-    select_profile "$3" "$4" "$5"
+    test "$#" = 5 || test "$#" = 6 || fail ARGUMENTS
+    select_profile "$3" "$4" "$5" "${6:-}"
     identity "$2"
     structural_preflight
     # /config is a DIAG/EFS object, not the Linux /config path. Firmware/router
@@ -90,7 +146,7 @@ if test "${1:-}" = --preflight; then
 fi
 
 if test "${1:-}" = --commit; then
-    test "$#" = 3 || test "$#" = 6 || fail ARGUMENTS
+    test "$#" = 3 || test "$#" = 6 || test "$#" = 7 || fail ARGUMENTS
     journal=$2
     case "$journal" in "$base/"*) ;; *) fail JOURNAL_PATH;; esac
     token=${journal#"$base/"}; safe_id "$token" || fail JOURNAL_ID
@@ -98,10 +154,15 @@ if test "${1:-}" = --commit; then
     if test -e "$journal/profile.identity" || test -L "$journal/profile.identity"; then
         plain_file "$journal/profile.identity" && test "$(stat -c %u:%a "$journal/profile.identity")" = 0:600 || fail JOURNAL_PROFILE
         test "$(wc -l < "$journal/profile.identity" | tr -d ' ')" = 1 || fail JOURNAL_PROFILE
-        IFS=' ' read -r saved_profile saved_firmware saved_router < "$journal/profile.identity" || fail JOURNAL_PROFILE
-        select_profile "$saved_profile" "$saved_firmware" "$saved_router"
+        IFS=' ' read -r saved_profile saved_firmware saved_router saved_boot saved_extra < "$journal/profile.identity" || fail JOURNAL_PROFILE
+        test -z "$saved_extra" || fail JOURNAL_PROFILE
+        select_profile "$saved_profile" "$saved_firmware" "$saved_router" "$saved_boot"
     fi
-    if test "$#" = 6; then
+    if test "$profile" = linux-arm64-access; then
+        test "$#" = 7 && test "$7" = "$boot_id" || fail JOURNAL_BOOT_MISMATCH
+        discovery_startup /data/local/tmp/start_zte_agent.sh
+    fi
+    if test "$#" = 6 || test "$#" = 7; then
         test "$4:$5:$6" = "$profile:$firmware_sha:$router_sha" || fail JOURNAL_PROFILE_MISMATCH
     fi
     identity "$3"
@@ -125,10 +186,10 @@ if test "${1:-}" = --commit; then
     exit 0
 fi
 
-test "$#" = 5 || test "$#" = 8 || fail ARGUMENTS
+test "$#" = 5 || test "$#" = 8 || test "$#" = 9 || fail ARGUMENTS
 stage=$1; cid=$2; agent_sha=$3; dropbear_sha=$4; public_sha=$5
 explicit_profile=0
-if test "$#" = 8; then select_profile "$6" "$7" "$8"; explicit_profile=1; fi
+if test "$#" = 8 || test "$#" = 9; then select_profile "$6" "$7" "$8" "${9:-}"; explicit_profile=1; fi
 case "$stage" in /data/local/tmp/zte-imei-setup-*) ;; *) fail STAGE_PATH;; esac
 token=${stage#/data/local/tmp/zte-imei-setup-}; safe_id "$token" || fail STAGE_ID
 for value in "$agent_sha" "$dropbear_sha" "$public_sha"; do
@@ -144,7 +205,9 @@ test -d "$stage" || fail STAGE_MISSING
 safe_directory "$stage"
 if test "$explicit_profile" = 1; then
     plain_file "$stage/.owner" && test "$(stat -c %u:%a "$stage/.owner")" = 0:600 || fail STAGE_OWNER
-    test "$(cat "$stage/.owner")" = "$token $cid $profile $firmware_sha $router_sha" || fail STAGE_OWNER
+    owner="$token $cid $profile $firmware_sha $router_sha"
+    if test "$profile" = linux-arm64-access; then owner="$owner $boot_id"; fi
+    test "$(cat "$stage/.owner")" = "$owner" || fail STAGE_OWNER
 fi
 for item in zte-agent dropbear id_ed25519.pub start-agent.sh start_zte_imei_studio.sh setup-agent.sh; do
     plain_file "$stage/$item" || fail STAGE_FILE
@@ -156,6 +219,17 @@ test "$(wc -l < "$stage/id_ed25519.pub" | tr -d ' ')" = 1 || fail PUBLIC_LINES
 awk 'NF >= 2 && $1 == "ssh-ed25519" && $2 ~ /^[A-Za-z0-9+\/=]+$/ {ok=1} END {exit !ok}' "$stage/id_ed25519.pub" || fail PUBLIC_FORMAT
 sh -n "$stage/start-agent.sh" || fail AGENT_SCRIPT_SYNTAX
 sh -n "$stage/start_zte_imei_studio.sh" || fail STARTUP_SYNTAX
+if test "$profile" = linux-arm64-access; then
+    discovery_startup "$stage/start-agent.sh"
+    for executable in zte-agent dropbear; do
+        header=$(od -An -tx1 -N20 "$stage/$executable" | tr -d ' \n')
+        case "$header" in 7f454c46020101??????????????????0200b700|7f454c46020101??????????????????0300b700) ;; *) fail PAYLOAD_ABI;; esac
+    done
+    timeout 5 "$stage/dropbear" -V >/dev/null 2>&1 || fail DROPBEAR_ABI
+    # The pinned self-check verifies embedded resources and exits before any
+    # server construction, configuration migration or device operation.
+    ZTE_AGENT_MODE=normal timeout 5 "$stage/zte-agent" --esim-check >/dev/null 2>&1 || fail AGENT_ABI
+fi
 plain_file /etc/rc.local || fail RC_LOCAL_TYPE
 sh -n /etc/rc.local || fail RC_LOCAL_SYNTAX
 test ! -e "$base/active" && test ! -e "$base/lock" || fail RECOVERY_PENDING
@@ -182,11 +256,25 @@ done
 for executable in /data/zte-agent /data/bin/dropbear /data/bin/dropbearkey; do
     if test -e "$executable"; then test -x "$executable" || fail EXISTING_NOT_EXECUTABLE; fi
 done
+# A preserved helper must be the same pinned multi-call Dropbear we inspected.
+# Do not execute unknown pre-existing helpers during a generic transaction.
+if test "$profile" = linux-arm64-access; then
+    for executable in /data/bin/dropbear /data/bin/dropbearkey; do
+        if test -e "$executable"; then
+            test "$(hash "$executable")" = "$dropbear_sha" || fail EXISTING_DROPBEAR_REVIEW_REQUIRED
+        fi
+    done
+fi
 # Never replace a previous agent or its credentials. An orphaned installation
 # must be repaired explicitly instead of silently assigning a new password.
 if test -e /data/zte-agent; then
     plain_file /data/local/tmp/start_zte_agent.sh || fail EXISTING_AGENT_STARTUP_MISSING
     sh -n /data/local/tmp/start_zte_agent.sh || fail EXISTING_AGENT_STARTUP_SYNTAX
+    if test "$profile" = linux-arm64-access; then
+        discovery_startup /data/local/tmp/start_zte_agent.sh
+        test "$(hash /data/zte-agent)" = "$agent_sha" || fail EXISTING_AGENT_REVIEW_REQUIRED
+        if pidof zte-agent >/dev/null 2>&1; then live_agent || fail EXISTING_AGENT_REVIEW_REQUIRED; fi
+    fi
 elif test -e /data/local/tmp/start_zte_agent.sh; then
     fail ORPHAN_AGENT_STARTUP
 fi
@@ -203,7 +291,11 @@ printf '%s\n' "$token" > "$base/lock/owner"
 journal=$base/$token
 mkdir "$journal" "$journal/before" "$journal/present"
 printf '%s\n' "$cid" > "$journal/cid"
-printf '%s %s %s\n' "$profile" "$firmware_sha" "$router_sha" > "$journal/profile.identity"
+if test "$profile" = linux-arm64-access; then
+    printf '%s %s %s %s\n' "$profile" "$firmware_sha" "$router_sha" "$boot_id" > "$journal/profile.identity"
+else
+    printf '%s %s %s\n' "$profile" "$firmware_sha" "$router_sha" > "$journal/profile.identity"
+fi
 printf '%s\n' preparing > "$journal/state"
 trap 'code=$?; if test "$code" != 0; then printf "INSTALL_INCOMPLETE %s\n" "$journal" >&2; fi' EXIT
 trap 'exit 130' HUP INT TERM

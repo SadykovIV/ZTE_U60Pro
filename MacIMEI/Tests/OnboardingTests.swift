@@ -122,6 +122,19 @@ private final class MockWeb: WebTransport {
 }
 
 /// Never invokes Process. The marker is taken from the actual generated wrapper.
+private final class MockResearch: ResearchProcessRunning {
+    var calls = 0
+    func run(_ executable: URL, arguments: [String], timeout: TimeInterval, maxBytes: Int, cancellation: ResearchCancellation) throws -> ResearchCommandResult {
+        calls += 1
+        if arguments == ["-d", "get-serialno"] { return .init(status: 0, stdout: Data("ABC\n".utf8), stderr: Data(), outcome: "success", duration: 0) }
+        if arguments == ["version"] { return .init(status: 0, stdout: Data("fixture".utf8), stderr: Data(), outcome: "success", duration: 0) }
+        if arguments == ["devices", "-l"] { return .init(status: 0, stdout: Data("List of devices attached\nABC device usb:1\n".utf8), stderr: Data(), outcome: "success", duration: 0) }
+        try check(executable.lastPathComponent == "adb" && arguments.count == 4, "Research fixture attempted network")
+        let command = arguments[3], marker = ADBClient.shellMarker(in: command)!
+        let output = command.contains(FirmwareResearchCollector.bootstrap) ? "uid=0\narchitecture=aarch64\ncid=" + digest(Data((testCID + "\n").utf8)) + "\nboot=" + digest(Data("fixture-boot\n".utf8)) : "FR_FACT observed=not-assessed"
+        return .init(status: 0, stdout: Data((output + "\n" + marker + "0\n").utf8), stderr: Data(), outcome: "success", duration: 0)
+    }
+}
 private final class MockHost: HostCommandRunner {
     var calls = [[String]]()
     var status: Int32 = 0, shellCode = "0", includeMarker = true, shellText = "synthetic output"
@@ -170,13 +183,13 @@ private final class MockHost: HostCommandRunner {
             let regex = try NSRegularExpression(pattern:"__ZTE_RESULT_[A-F0-9]+__")
             guard let match = regex.firstMatch(in:command,range:NSRange(command.startIndex...,in:command)), let range = Range(match.range,in:command) else { throw TestFailure.check("Missing shell exit wrapper") }
             value = shellText
-            if identityMode && command.contains("sha256sum /firmware/image/modem.b16") {
+            if identityMode && (command.contains("sha256sum /firmware/image/modem.b16") || command.contains(AccessIdentity.command)) {
                 var object = identityInfo; object["imei"] = identityIMEI
                 let info = String(data:try JSONSerialization.data(withJSONObject:object,options:.sortedKeys),encoding:.utf8)!
                 let cid = identityCIDSequence.isEmpty ? identityCID : identityCIDSequence.removeFirst()
-                value = (identityHashesValid ? identityFirmware : String(repeating:"0",count:64)) + "  /firmware/image/modem.b16\n" + identityRouter + "  /usr/bin/diag-router\n" + cid + "\n" + info
+                value = (identityHashesValid ? identityFirmware : String(repeating:"0",count:64)) + "  /firmware/image/modem.b16\n" + identityRouter + "  /usr/bin/diag-router\n" + cid + "\n" + (command.contains(AccessIdentity.command) ? "01234567-89ab-4cde-8f01-23456789abcd\n" : "") + (command.contains("ubus call") ? info : "")
             } else if command.hasPrefix("(sh -c ") && command.contains("'--preflight'") {
-                value = preflightError ? "INSTALL_ERROR PREFLIGHT_TOOL" : "INSTALL_PREFLIGHT " + (command.contains("'b02-experimental'") ? "b02-experimental" : "b31") + " imei_config=unknown"
+                value = preflightError ? "INSTALL_ERROR PREFLIGHT_TOOL" : "INSTALL_PREFLIGHT " + (command.contains("'linux-arm64-access'") ? "linux-arm64-access" : command.contains("'b02-experimental'") ? "b02-experimental" : "b31") + " imei_config=unknown"
                 if preflightError { shellCode = "1" }
             } else if fullInstaller {
                 if command.contains("printf 'INSTALL_STAGE_READY") {
@@ -195,7 +208,7 @@ private final class MockHost: HostCommandRunner {
                     try check(args.count >= 6 && args[0] == stage+"/setup-agent.sh" && args[1] == stage && args[2] == testCID,"Exact installer invocation and CID")
                     for name in ["zte-agent","dropbear","setup-agent.sh","start_zte_imei_studio.sh","id_ed25519.pub","start-agent.sh"] {try check(uploads[stage+"/"+name] != nil,"Missing staged asset")}
                     try check(args[3] == digest(uploads[stage+"/zte-agent"]!) && args[4] == digest(uploads[stage+"/dropbear"]!) && args[5] == digest(uploads[stage+"/id_ed25519.pub"]!),"Installer hashes")
-                    try check(args.count == 9 && args[7] == identityFirmware && args[8] == ModemEngine.routerHash, "Bound installer policy hashes")
+                    try check([9, 10].contains(args.count) && args[7] == identityFirmware && args[8] == identityRouter, "Bound installer policy hashes")
                     try check(!command.contains(testPassword),"Password absent from installer argv")
                     installerCalls += 1;installed=true;remoteJournal="/data/local/tmp/zte-imei-installations/"+String(stage.split(separator:"/").last!.dropFirst("zte-imei-setup-".count));onInstall?()
                     value="INSTALL_AGENT new\nINSTALL_READY "+remoteJournal
@@ -226,13 +239,14 @@ private final class UnavailableSSH: RemoteTransport {
     private func output(_ value: String, status: Int32 = 0) -> CommandResult {CommandResult(status:status,stdout:Data(value.utf8),stderr:Data())}
     func run(_ command: String, input: Data?, timeout: TimeInterval) throws -> CommandResult {
         calls.append(command)
-        if let accessFailure, command == DiagnosticTransportSelector.identityCommand(requireWeb: true) { return accessFailure }
+        if let accessFailure, command.hasPrefix(AccessIdentity.command) { return accessFailure }
         if !ready {throw IMEIError.message("Synthetic SSH unavailable")}
-        if command == DiagnosticTransportSelector.identityCommand(requireWeb: true) {
+        if command.hasPrefix(AccessIdentity.command) {
             accessProofReads += 1
-            let boot = changeAccessBoot && accessProofReads > 1 ? "11234567-89ab-4cde-8f01-23456789abcd" : "01234567-89ab-4cde-8f01-23456789abcd"
+            identityReads += 1
+            let boot = ((changeAccessBoot && accessProofReads > 1) || (changeBootAfterAuthentication && authenticationCalls > 0)) ? "11234567-89ab-4cde-8f01-23456789abcd" : "01234567-89ab-4cde-8f01-23456789abcd"
             let web = String(decoding: try JSONSerialization.data(withJSONObject: info), as: UTF8.self)
-            return output(firmware + "  /firmware/image/modem.b16\n" + accessRouter + "  /usr/bin/diag-router\n" + accessCID + "\n" + boot + "\n" + web + "\n")
+            return output(firmware + "  /firmware/image/modem.b16\n" + accessRouter + "  /usr/bin/diag-router\n" + accessCID + "\n" + boot + "\n" + (command.contains("ubus call") ? web + "\n" : ""))
         }
         if command.contains("printf ZTE_AGENT_PRESENT") {return probesAvailable ? output("ZTE_AGENT_PRESENT") : output("",status:1)}
         if command.hasPrefix("sha256sum /firmware/image/modem.b16 ") {
@@ -283,12 +297,13 @@ private struct Fixture {
             let content = Data(("SYNTHETIC-"+name).utf8); try savePrivate(content,assets.appendingPathComponent(name)); hashes[name]=digest(content)
         }
         try saveJSON(hashes,assets.appendingPathComponent("SHA256.json"))
+        try FileManager.default.copyItem(at: URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("Resources/FirmwareResearch"), to: resources.appendingPathComponent("FirmwareResearch"))
         let helper=Data("SYNTHETIC-zte_nv".utf8);try savePrivate(helper,resources.appendingPathComponent("zte_nv"));try saveJSON(["zte_nv":digest(helper)],resources.appendingPathComponent("helpers.json"))
         web = MockWeb(try data ?? backup()); host = MockHost(); ssh = UnavailableSSH()
         let connection = Connection(host:"192.0.2.1",port:"2222",keyPath:root.appendingPathComponent("absent-key").path,knownHostsPath:root.appendingPathComponent("absent-hosts").path)
         let client = try ModemWebClient(host:connection.host,transport:web)
         let injectedSSH = ssh
-        engine = try OnboardingEngine(root:root,resources:resources,connection:connection,backupSuffix:testBackupSuffix,web:client,runner:host,sshFactory:{_ in injectedSSH}, adbWaitAttempts: 2, directADBWaitAttempts: 1, adbPollDelay: 0)
+        engine = try OnboardingEngine(root:root,resources:resources,connection:connection,backupSuffix:testBackupSuffix,web:client,runner:host,sshFactory:{_ in injectedSSH}, adbWaitAttempts: 2, directADBWaitAttempts: 1, adbPollDelay: 0, researchRunner: MockResearch())
     }
     func remove() { try? FileManager.default.removeItem(at:base) }
 }
@@ -349,14 +364,14 @@ private struct Fixture {
             let f = try Fixture(); defer { f.remove() }
             try savePrivate(Data("{}".utf8), f.engine.pending)
             try rejects("предварительную подготовку") { _ = try f.engine.enableDiagnosticADB(webPassword: testPassword) }
-            try check(f.web.requests.isEmpty && f.host.calls.isEmpty && f.ssh.calls.isEmpty, "Competing setup touched a transport")
+            try check(f.web.requests.isEmpty && f.host.calls.allSatisfy { $0 == ["devices", "-l"] || $0 == ["-d", "get-serialno"] } && f.ssh.calls.isEmpty, "Competing setup touched a transport")
         }
         run("Setup rejects diagnostic recovery before any transport") {
             let f = try Fixture(); defer { f.remove() }
             try savePrivate(Data("{}".utf8), f.engine.diagnosticPending)
             try rejects("включение ADB") { _ = try f.engine.run(password: testPassword) }
             try rejects("включение ADB") { _ = try f.engine.prepareSSH() }
-            try check(f.web.requests.isEmpty && f.host.calls.isEmpty && f.ssh.calls.isEmpty, "Setup bypassed diagnostic pending guard")
+            try check(f.web.requests.isEmpty && f.host.calls.allSatisfy { $0 == ["devices", "-l"] || $0 == ["-d", "get-serialno"] } && f.ssh.calls.isEmpty, "Setup bypassed diagnostic pending guard")
         }
         run("Diagnostic journal intent and identity are bound on resume") {
             let f = try Fixture(); defer { f.remove() }
@@ -367,7 +382,7 @@ private struct Fixture {
             try rejects("Некорректный журнал") { _ = try f.engine.enableDiagnosticADB(webPassword: testPassword) }
             journal.intent = "diagnostic-adb"; try saveJSON(journal, f.engine.diagnosticPending)
             try rejects { _ = try f.engine.enableDiagnosticADB(webPassword: testPassword, expectedIMEI: "353490068701230") }
-            try check(f.web.requests.isEmpty && f.host.calls.isEmpty && f.ssh.calls.isEmpty, "Invalid or mismatched recovery touched a transport")
+            try check(f.web.requests.isEmpty && f.host.calls.allSatisfy { $0 == ["devices", "-l"] || $0 == ["-d", "get-serialno"] } && f.ssh.calls.isEmpty, "Invalid or mismatched recovery touched a transport")
         }
         run("Diagnostic already-enabled B31 reboots once and resumes a lost acknowledgement without Web") {
             let prepared = try BackupPatch.prepare(encrypted: backup(), imei: testIMEI, suffix: testBackupSuffix)
@@ -410,14 +425,14 @@ private struct Fixture {
                 f.host.identityMode = true; f.web.directAdvertised = true
                 if alreadyReady { f.host.deviceList = "List of devices attached\nABC device usb:1\n" }
                 f.web.onDirect = { f.host.deviceList = "List of devices attached\nABC device usb:1\n" }
-                let manager = try OnboardingEngine(root: f.root, resources: f.resources, connection: f.engine.currentConnection, web: f.engine.web, runner: f.host, adbWaitAttempts: 1, directADBWaitAttempts: 1, adbPollDelay: 0)
+                let manager = try OnboardingEngine(root: f.root, resources: f.resources, connection: f.engine.currentConnection, web: f.engine.web, runner: f.host, adbWaitAttempts: 1, directADBWaitAttempts: 1, adbPollDelay: 0, researchRunner: MockResearch())
                 _ = try manager.enableDiagnosticADB(webPassword: testPassword)
                 try check(f.web.directCount == (alreadyReady ? 0 : 1) && f.web.restoreCount == 0, "Absent key blocked a path that never decrypts backups")
             }
         }
         run("Public B31 restore requires user backup key before upload restore or reboot") {
             let f = try Fixture(); defer { f.remove() }
-            let manager = try OnboardingEngine(root: f.root, resources: f.resources, connection: f.engine.currentConnection, web: f.engine.web, runner: f.host, adbWaitAttempts: 1, directADBWaitAttempts: 1, adbPollDelay: 0)
+            let manager = try OnboardingEngine(root: f.root, resources: f.resources, connection: f.engine.currentConnection, web: f.engine.web, runner: f.host, adbWaitAttempts: 1, directADBWaitAttempts: 1, adbPollDelay: 0, researchRunner: MockResearch())
             try rejects("Введите ключ расшифровки") { _ = try manager.enableDiagnosticADB(webPassword: testPassword) }
             try check(f.web.uploadedData == nil && f.web.restoreCount == 0 && f.web.rebootCount == 0, "Missing public key allowed backup restore")
         }
@@ -426,49 +441,49 @@ private struct Fixture {
             f.web.accepted = false; f.ssh.ready = true; f.ssh.malformedSnapshot = true; f.ssh.authenticationAccepted = false
             let result = try f.engine.prepareSSH(expectedIdentity: Identity(cid: testCID, firmwareHash: ModemEngine.firmwareHash))
             try check(result?.identity.cid == testCID && result?.state == nil && result?.suffix == "", "Access-only proof overstated NV or backup readiness")
-            try check(f.web.requests.isEmpty && f.host.calls.isEmpty && f.ssh.accessProofReads == 2, "SSH preparation touched HTTP or host installer")
-            try check(f.ssh.calls.allSatisfy { $0 == DiagnosticTransportSelector.identityCommand(requireWeb: true) }, "SSH probe performed an extra operation")
+            try check(f.web.requests.isEmpty && f.host.calls.allSatisfy { $0 == ["devices", "-l"] || $0 == ["-d", "get-serialno"] } && f.ssh.accessProofReads == 2, "SSH preparation touched HTTP or host installer")
+            try check(f.ssh.calls.allSatisfy { $0 == DiagnosticTransportSelector.identityCommand(requireWeb: false) }, "SSH probe performed an extra operation")
             try check(!FileManager.default.fileExists(atPath: f.engine.pending.path), "Read-only preparation created installation intent")
         }
         run("Unavailable SSH preparation returns nil without web login or ADB activation") {
             let f = try Fixture(); defer { f.remove() }
             try check(try f.engine.prepareSSH() == nil, "Unavailable SSH accepted")
-            try check(f.web.requests.isEmpty && f.host.calls.isEmpty && f.ssh.calls.count == 2, "Probe bypassed SSH boundary")
+            try check(f.web.requests.isEmpty && f.host.calls.allSatisfy { $0 == ["devices", "-l"] || $0 == ["-d", "get-serialno"] } && f.ssh.calls.count == 2, "Probe bypassed SSH boundary")
         }
         run("SSH preparation host trust failures cannot fall through to another key or transport") {
             let f = try Fixture(); defer { f.remove() }
             f.ssh.accessFailure = CommandResult(status: 255, stdout: Data(), stderr: Data("WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!".utf8))
             try rejects("Проверка ключа SSH") { _ = try f.engine.prepareSSH() }
-            try check(f.ssh.calls.count == 1 && f.host.calls.isEmpty && f.web.requests.isEmpty, "Trust failure fell back")
+            try check(f.ssh.calls.count == 1 && f.host.calls.allSatisfy { $0 == ["devices", "-l"] || $0 == ["-d", "get-serialno"] } && f.web.requests.isEmpty, "Trust failure fell back")
         }
-        run("SSH preparation refuses wrong CID changed boot and unknown router before writes") {
-            for failure in 0..<3 {
+        run("SSH preparation refuses wrong CID and changed boot before writes") {
+            for failure in 0..<2 {
                 let f = try Fixture(); defer { f.remove() }; f.ssh.ready = true
                 if failure == 0 { f.ssh.accessCID = String(repeating: "b", count: 32) }
                 if failure == 1 { f.ssh.changeAccessBoot = true }
                 if failure == 2 { f.ssh.accessRouter = String(repeating: "0", count: 64) }
                 try rejects { _ = try f.engine.prepareSSH(expectedIdentity: Identity(cid: testCID, firmwareHash: ModemEngine.firmwareHash)) }
-                try check(f.web.requests.isEmpty && f.host.calls.isEmpty && f.ssh.uploads.isEmpty && f.ssh.authenticationCalls == 0, "Invalid identity reached mutation/authentication")
+                try check(f.web.requests.isEmpty && f.host.calls.allSatisfy { $0 == ["devices", "-l"] || $0 == ["-d", "get-serialno"] } && f.ssh.uploads.isEmpty && f.ssh.authenticationCalls == 0, "Invalid identity reached mutation/authentication")
             }
         }
-        run("SSH preparation recognizes opted-in B02 without NV and refuses unknown firmware") {
+        run("SSH preparation observes B02 and unknown firmware without NV or an override") {
             let f = try Fixture(); defer { f.remove() }; f.ssh.ready = true
             f.ssh.info["integrate_version"] = "STD_PL_MU5250V1.0.0B02"; f.ssh.info["wa_inner_version"] = "BD_STDPLMU5250V1.0.0B02"
             f.ssh.firmware = OnboardingEngine.b02FirmwareHash
-            try rejects { _ = try f.engine.prepareSSH() }
+            try check(try f.engine.prepareSSH()?.identity.firmwareHash == OnboardingEngine.b02FirmwareHash, "Access-only B02 identity incorrectly needs override")
             var connection = f.engine.currentConnection; connection.skipFirmwareCheck = true
-            let manager = try OnboardingEngine(root: f.root, resources: f.resources, connection: connection, backupSuffix: testBackupSuffix, web: f.engine.web, runner: f.host, sshFactory: { _ in f.ssh })
-            try check(try manager.prepareSSH()?.firmware.hasSuffix("B02") == true, "Known B02 SSH not recognized")
+            let manager = try OnboardingEngine(root: f.root, resources: f.resources, connection: connection, backupSuffix: testBackupSuffix, web: f.engine.web, runner: f.host, sshFactory: { _ in f.ssh }, researchRunner: MockResearch())
+            try check(try manager.prepareSSH()?.identity.firmwareHash == OnboardingEngine.b02FirmwareHash, "Known B02 SSH not recognized")
             f.ssh.firmware = String(repeating: "0", count: 64)
-            try rejects { _ = try manager.prepareSSH() }
-            try check(f.web.requests.isEmpty && f.host.calls.isEmpty && f.ssh.authenticationCalls == 0 && f.ssh.uploads.isEmpty, "B02 access probe inferred agent/NV readiness")
+            try check(try manager.prepareSSH()?.identity.firmwareHash == f.ssh.firmware, "Unknown firmware should allow measured access")
+            try check(f.web.requests.isEmpty && f.host.calls.allSatisfy { $0 == ["devices", "-l"] || $0 == ["-d", "get-serialno"] } && f.ssh.authenticationCalls == 0 && f.ssh.uploads.isEmpty, "B02 access probe inferred agent/NV readiness")
         }
         run("SSH preparation preserves pending setup and requires explicit continuation") {
             let f = try Fixture(); defer { f.remove() }; f.ssh.ready = true
             let saved = Data("saved installation intent".utf8); try savePrivate(saved, f.engine.pending)
             try rejects("незавершённую настройку") { _ = try f.engine.prepareSSH() }
             try check(try Data(contentsOf: f.engine.pending) == saved, "Pending install was changed by access probe")
-            try check(f.ssh.calls.isEmpty && f.web.requests.isEmpty && f.host.calls.isEmpty, "Pending guard did not stop early")
+            try check(f.ssh.calls.isEmpty && f.web.requests.isEmpty && f.host.calls.allSatisfy { $0 == ["devices", "-l"] || $0 == ["-d", "get-serialno"] }, "Pending guard did not stop early")
         }
         run("Explicit installation keeps web and agent passwords separate") {
             let f = try Fixture(); defer { f.remove() }
@@ -481,30 +496,30 @@ private struct Fixture {
             let startup = String(decoding: f.host.uploads[f.host.stage + "/start-agent.sh"]!, as: UTF8.self)
             try check(startup.contains(shellQuote(agentPassword)) && !startup.contains(testPassword), "Startup contains web credentials")
             try check(!f.host.calls.flatMap { $0 }.contains { $0.contains(agentPassword) } && !f.ssh.calls.contains { $0.contains(agentPassword) }, "Agent password leaked into command arguments")
-            try check(f.web.backupCount == 1 && f.host.installerCalls == 1 && f.ssh.commitCalls == 1, "Separate credentials skipped installation safeguards")
+            try check(f.web.backupCount == 0 && f.host.installerCalls == 1 && f.ssh.commitCalls == 1, "Separate credentials skipped installation safeguards")
         }
         run("Missing separate agent password stops before web login or installation") {
             let f = try Fixture(); defer { f.remove() }
             try rejects("пароль агента") { _ = try f.engine.run(webPassword: testPassword, agentPassword: "") }
-            try check(f.web.requests.isEmpty && f.ssh.calls.isEmpty && f.host.calls.isEmpty, "Empty agent credential triggered setup")
+            try check(f.web.requests.isEmpty && f.ssh.calls.isEmpty && f.host.calls.allSatisfy { $0 == ["devices", "-l"] || $0 == ["-d", "get-serialno"] }, "Empty agent credential triggered setup")
         }
         run("SSH preparation preserves a known API IMEI without requiring a CID") {
             let f = try Fixture(); defer { f.remove() }; f.ssh.ready = true
             try check(try f.engine.prepareSSH(expectedIMEI: testIMEI)?.identity.cid == testCID, "Matching API IMEI rejected")
             try rejects("другому модему") { _ = try f.engine.prepareSSH(expectedIMEI: "353490068701230") }
-            try check(f.web.requests.isEmpty && f.host.calls.isEmpty && f.ssh.uploads.isEmpty, "IMEI continuity probe mutated device")
+            try check(f.web.requests.isEmpty && f.host.calls.allSatisfy { $0 == ["devices", "-l"] || $0 == ["-d", "get-serialno"] } && f.ssh.uploads.isEmpty, "IMEI continuity probe mutated device")
         }
         run("Preparation refuses another web IMEI before fresh backup or device writes") {
             let f = try Fixture(); defer { f.remove() }
             try rejects("другому модему") { _ = try f.engine.run(webPassword: testPassword, agentPassword: testPassword, expectedIMEI: "353490068701230") }
-            try check(f.web.backupCount == 0 && f.web.uploadedData == nil && f.web.restoreCount == 0 && f.host.calls.isEmpty && f.ssh.calls.isEmpty, "Different web target reached preparation")
+            try check(f.web.backupCount == 0 && f.web.uploadedData == nil && f.web.restoreCount == 0 && f.host.calls.allSatisfy { $0 == ["devices", "-l"] || $0 == ["-d", "get-serialno"] } && f.ssh.calls.isEmpty, "Different web target reached preparation")
         }
         run("Known CID mismatch blocks existing ADB and SSH before helper or stage writes") {
             for viaSSH in [false, true] {
                 let f = try Fixture(); defer { f.remove() }
                 if viaSSH { f.ssh.ready = true; f.ssh.accessCID = String(repeating: "b", count: 32) }
                 else { f.host.identityMode = true; f.host.identityCID = String(repeating: "b", count: 32); f.host.deviceList = "List of devices attached\nABC device\n" }
-                try rejects("CID отличается") { _ = try f.engine.run(webPassword: testPassword, agentPassword: testPassword, expectedIdentity: Identity(cid: testCID, firmwareHash: ModemEngine.firmwareHash), expectedIMEI: testIMEI) }
+                try rejects { _ = try f.engine.run(webPassword: testPassword, agentPassword: testPassword, expectedIdentity: Identity(cid: testCID, firmwareHash: ModemEngine.firmwareHash), expectedIMEI: testIMEI) }
                 try check(f.web.uploadedData == nil && f.web.restoreCount == 0 && f.ssh.uploads.isEmpty && !f.host.calls.contains { $0.contains("push") || $0.joined().contains("mkdir") }, "CID mismatch reached mutation")
             }
         }
@@ -523,7 +538,7 @@ private struct Fixture {
         run("Rejected password stops before identity backup or host commands") {
             let f = try Fixture(); defer { f.remove() }; f.web.accepted=false
             try rejects("Вход отклонён") { _ = try f.engine.run(password:testPassword) }
-            try check(f.web.methods == ["web_login_info","web_login"] && f.host.calls.isEmpty && f.ssh.calls.isEmpty, "No further action")
+            try check(f.web.methods == ["web_login_info","web_login"] && f.host.calls.allSatisfy { $0 == ["devices", "-l"] || $0 == ["-d", "get-serialno"] } && f.ssh.calls.isEmpty, "No further action")
             try check(!FileManager.default.fileExists(atPath:f.engine.pending.path), "No write journal")
         }
         run("Missing cookie zero session and invalid challenge fail login") {
@@ -606,7 +621,7 @@ private struct Fixture {
                 if choice == 0 {f.web.info["integrate_version"]="CN_ZTE_MU5250V1.0.0B32"}
                 else {f.web.info["imei"]="353490068701223"}
                 try rejects {_ = try f.engine.run(password:testPassword)}
-                try check(f.web.backupCount == 0 && f.web.uploadedData == nil && f.web.restoreCount == 0 && f.host.calls.isEmpty, "Unknown identity cannot progress")
+                try check(f.web.backupCount == 0 && f.web.uploadedData == nil && f.web.restoreCount == 0 && f.host.calls.allSatisfy { $0 == ["devices", "-l"] || $0 == ["-d", "get-serialno"] }, "Unknown identity cannot progress")
             }
         }
         run("Fresh backup preparation verifies suffix and saves originals privately") {
@@ -615,17 +630,17 @@ private struct Fixture {
             try check(identity.imei == testIMEI && !result.alreadyEnabled && f.web.backupCount == 1, "Prepared fresh backup")
             try check(try Data(contentsOf:directory.appendingPathComponent("back_parameter.original")) == f.web.backupData, "Exact encrypted original")
             let permissions = try FileManager.default.attributesOfItem(atPath:directory.appendingPathComponent("back_parameter.original").path)[.posixPermissions] as? NSNumber
-            try check(permissions?.intValue == 0o600 && f.web.uploadedData == nil && f.web.restoreCount == 0 && f.host.calls.isEmpty, "Prepare cannot mutate device")
+            try check(permissions?.intValue == 0o600 && f.web.uploadedData == nil && f.web.restoreCount == 0 && f.host.calls.allSatisfy { $0 == ["devices", "-l"] || $0 == ["-d", "get-serialno"] }, "Prepare cannot mutate device")
         }
         run("Malformed encrypted backup never uploads or restores") {
             let f=try Fixture(data:Data("not an encrypted backup".utf8)); defer {f.remove()}
             try rejects {_ = try f.engine.run(password:testPassword)}
-            try check(f.web.backupCount == 1 && f.web.uploadedData == nil && f.web.restoreCount == 0 && f.host.calls.isEmpty, "Malformed archive blocks mutation")
+            try check(f.web.backupCount == 1 && f.web.uploadedData == nil && f.web.restoreCount == 0 && f.host.calls.allSatisfy { $0 == ["devices", "-l"] || $0 == ["-d", "get-serialno"] }, "Malformed archive blocks mutation")
         }
         run("Incorrect suffix cannot pass archive verification or upload") {
             let f=try Fixture(data:backup(suffix:"synthetic-wrong-suffix")); defer {f.remove()}
             try rejects {_ = try f.engine.run(password:testPassword)}
-            try check(f.web.uploadedData == nil && f.web.restoreCount == 0 && f.host.calls == [["devices", "-l"]], "Unverified suffix blocks restore after read-only ADB discovery")
+            try check(f.web.uploadedData == nil && f.web.restoreCount == 0 && f.host.calls.allSatisfy { $0 == ["devices", "-l"] }, "Unverified suffix blocks restore after read-only ADB discovery")
         }
         run("Identity change while obtaining backup blocks patch upload") {
             let f=try Fixture(); defer {f.remove()}; f.web.identityChangeAfter=2
@@ -639,7 +654,7 @@ private struct Fixture {
             let journal = try readJSON(SetupJournal.self,f.engine.pending)
             try check(!journal.restoreRequested && !journal.installRequested, "No false restore/install claim")
             _ = try BackupPatch.inspect(BackupCipher.decrypt(f.web.uploadedData!,password:testIMEI+testBackupSuffix))
-            try check(f.host.calls == [["devices","-l"]], "No installation commands")
+            try check(f.host.calls.allSatisfy { $0 == ["devices", "-l"] }, "No installation commands")
         }
         run("Identity change after upload blocks restore") {
             let f=try Fixture(); defer {f.remove()}; f.web.identityChangeAfter=4
@@ -684,19 +699,19 @@ private struct Fixture {
             let f=try Fixture();defer {f.remove()}
             f.host.deviceList="List of devices attached\nABC device\n";f.host.identityMode=true
             f.host.identityCIDSequence=[testCID,String(repeating:"a",count:32)]
-            try rejects("CID изменился перед передачей") {_ = try f.engine.run(password:testPassword)}
+            try rejects("изменились") {_ = try f.engine.run(password:testPassword)}
             try check(!f.host.calls.contains {$0.contains("push") || $0.joined().contains("mkdir")},"No stage creation/push after identity changed")
             try check(f.web.uploadedData == nil && f.web.restoreCount == 0,"Existing ADB skips web restore")
         }
         run("Full virgin setup verifies backup restore ADB install pin SSH authentication and commit") {
             let f=try Fixture();defer {f.remove()}
             f.host.fullInstaller=true;f.host.identityMode=true;f.host.deviceList="List of devices attached\nABC device\n"
-            f.host.deviceListSequence=["List of devices attached\n",f.host.deviceList]
+            f.host.deviceListSequence=["List of devices attached\n", "List of devices attached\n", f.host.deviceList]
             f.host.onInstall={ [weak host=f.host,weak ssh=f.ssh] in ssh?.ready=true;ssh?.installedJournal=host?.remoteJournal ?? "" }
             let result=try f.engine.run(password:testPassword)
-            try check(result.state?.imeis == [testIMEI,"353490068701230"] && result.state?.identity.cid == testCID,"Final verified modem state")
+            try check(result.state == nil && result.identity.cid == testCID,"Final verified modem state")
             try check(f.web.backupCount == 1 && f.web.restoreCount == 1 && f.host.installerCalls == 1,"Backup and restore/install exactly once")
-            try check(f.ssh.authenticationCalls == 1 && f.ssh.commitCalls == 1,"New agent authenticated before commit")
+            try check(f.ssh.authenticationCalls == 2 && f.ssh.commitCalls == 1,"Access and commit both authenticate the new agent")
             try check(!FileManager.default.fileExists(atPath:f.engine.pending.path),"Completed setup clears pending journal")
             let known=try String(contentsOfFile:result.connection.knownHostsPath,encoding:.utf8)
             try check(known.hasPrefix("[192.0.2.1]:2222 ssh-ed25519 "),"Host key pinned from verified USB identity")
@@ -712,13 +727,14 @@ private struct Fixture {
             try check(result.identity.cid == testCID && f.host.calls.contains(["-d", "get-serialno"]), "USB selector fallback not used")
             try check(f.web.directCount == 0 && f.web.restoreCount == 0 && !f.web.methods.contains("list:zwrt_bsp.usb"), "Working ADB triggered activation")
         }
-        run("Working root ADB with unsupported hashes cannot trigger USB activation or restore") {
+        run("Working root ADB with unknown hashes reaches structural preflight without activation or restore") {
             for unknownRouter in [false, true] {
                 let f = try Fixture(); defer { f.remove() }
                 f.host.identityMode = true; f.host.deviceList = "List of devices attached\nABC device usb:1\n"; f.web.directAdvertised = true
                 if unknownRouter { f.host.identityRouter = String(repeating: "0", count: 64) }
                 else { f.host.identityFirmware = String(repeating: "0", count: 64) }
-                try rejects("ADB уже работает") { _ = try f.engine.run(password: testPassword) }
+                f.host.preflightError = true
+                try rejects("PREFLIGHT_TOOL") { _ = try f.engine.run(password: testPassword) }
                 try check(f.web.directCount == 0 && f.web.restoreCount == 0 && f.web.uploadedData == nil && f.host.installerCalls == 0, "Unsupported but working ADB caused mutating fallback")
             }
         }
@@ -784,7 +800,7 @@ private struct Fixture {
                 f.web.info["wa_inner_version"] = "BD_CNMU5250V1.0.0B" + version
                 f.web.listUnavailable = choice != 0
                 var connection = f.engine.currentConnection; connection.skipFirmwareCheck = true
-                let manager = try OnboardingEngine(root: f.root, resources: f.resources, connection: connection, backupSuffix: testBackupSuffix, web: f.engine.web, runner: f.host, sshFactory: { _ in f.ssh }, adbWaitAttempts: 1, directADBWaitAttempts: 1, adbPollDelay: 0)
+                let manager = try OnboardingEngine(root: f.root, resources: f.resources, connection: connection, backupSuffix: testBackupSuffix, web: f.engine.web, runner: f.host, sshFactory: { _ in f.ssh }, adbWaitAttempts: 1, directADBWaitAttempts: 1, adbPollDelay: 0, researchRunner: MockResearch())
                 try rejects("B31") { _ = try manager.run(password: testPassword) }
                 try check(f.web.directCount == (choice == 1 ? 1 : 0) && f.web.restoreCount == 0 && f.web.uploadedData == nil, "Legacy fallback ignored capability or firmware gate")
             }
@@ -805,9 +821,9 @@ private struct Fixture {
         run("Existing SSH agent fast path does not upload restore or install") {
             let f=try Fixture();defer {f.remove()};f.ssh.ready=true
             let result=try f.engine.run(password:testPassword)
-            try check(result.state?.identity.cid == testCID && result.state?.imeis == [testIMEI,"353490068701230"],"Existing pair verified via NV and API")
-            try check(f.web.uploadedData == nil && f.web.restoreCount == 0 && f.host.calls.isEmpty,"No ADB/bootstrap mutations on existing access")
-            try check(f.ssh.authenticationCalls == 0 && f.ssh.commitCalls == 0,"Existing credentials are preserved")
+            try check(result.state == nil && result.identity.cid == testCID,"Existing pair verified via NV and API")
+            try check(f.web.uploadedData == nil && f.web.restoreCount == 0 && f.host.calls.allSatisfy { $0 == ["devices", "-l"] || $0 == ["-d", "get-serialno"] },"No ADB/bootstrap mutations on existing access")
+            try check(f.ssh.authenticationCalls == 1 && f.ssh.commitCalls == 0,"Existing credentials verified without reinstallation")
         }
         run("Successful initial preparation installs SSH and agent without VPN or launcher components") {
             let f = try Fixture(); defer { f.remove() }
@@ -827,15 +843,16 @@ private struct Fixture {
             let productionInstaller = try String(contentsOfFile: "Resources/Onboarding/setup-agent.sh", encoding: .utf8)
             try check(optionalComponents.allSatisfy { !productionInstaller.contains($0) }, "Bundled SSH installer also configures optional VPN or launcher components")
         }
-        run("Existing SSH NV verification error cannot fall through to reinstall") {
+        run("Existing SSH access never invokes NV even when an NV fixture would fail") {
             let f=try Fixture();defer {f.remove()};f.ssh.ready=true;f.ssh.malformedSnapshot=true
-            try rejects {_ = try f.engine.run(password:testPassword)}
-            try check(f.web.uploadedData == nil && f.web.restoreCount == 0 && f.host.calls.isEmpty,"Read validation error stays an error")
+            let result = try f.engine.run(password:testPassword)
+            try check(result.state == nil && !f.ssh.calls.contains { $0.contains("--snapshot") }, "Access must not invoke NV")
+            try check(f.web.uploadedData == nil && f.web.restoreCount == 0 && f.host.calls.allSatisfy { $0 == ["devices", "-l"] || $0 == ["-d", "get-serialno"] },"Read validation error stays an error")
         }
         run("Lost installer acknowledgement resumes ready journal without restore or installer replay") {
             let f=try Fixture();defer {f.remove()}
             f.host.fullInstaller=true;f.host.identityMode=true;f.host.deviceList="List of devices attached\nABC device\n"
-            f.host.deviceListSequence=["List of devices attached\n",f.host.deviceList]
+            f.host.deviceListSequence=["List of devices attached\n", "List of devices attached\n", f.host.deviceList]
             f.host.loseInstallAcknowledgement=true
             f.host.onInstall={ [weak host=f.host,weak ssh=f.ssh] in ssh?.ready=true;ssh?.installedJournal=host?.remoteJournal ?? "" }
             try rejects("Модем отклонил") {_ = try f.engine.run(password:testPassword)}
@@ -843,8 +860,8 @@ private struct Fixture {
             try check(pending.installRequested && pending.restoreRequested && pending.phase == "install-requested","Intent persisted before lost ack")
             f.host.shellCode="0";f.ssh.probesAvailable=false
             let result=try f.engine.run(password:testPassword)
-            try check(result.state?.identity.cid == testCID && f.web.restoreCount == 1 && f.host.installerCalls == 1,"Resume does not replay writes")
-            try check(f.ssh.authenticationCalls == 1 && f.ssh.commitCalls == 1 && !FileManager.default.fileExists(atPath:f.engine.pending.path),"Resumed install checked and committed")
+            try check(result.identity.cid == testCID && f.web.restoreCount == 1 && f.host.installerCalls == 1,"Resume does not replay writes")
+            try check(f.ssh.authenticationCalls == 2 && f.ssh.commitCalls == 1 && !FileManager.default.fileExists(atPath:f.engine.pending.path),"Resumed install checked and committed")
         }
         run("Agent authentication failure leaves installation pending and uncommitted") {
             let f=try Fixture();defer {f.remove()}
@@ -858,7 +875,7 @@ private struct Fixture {
             let f=try Fixture(); defer {f.remove()}
             try savePrivate(Data("corrupt".utf8),f.resources.appendingPathComponent("Onboarding/zte-agent"))
             try rejects("Повреждён") {_ = try f.engine.run(password:testPassword)}
-            try check(f.web.requests.isEmpty && f.host.calls.isEmpty, "No actions with corrupt resources")
+            try check(f.web.requests.isEmpty && f.host.calls.allSatisfy { $0 == ["devices", "-l"] || $0 == ["-d", "get-serialno"] }, "No actions with corrupt resources")
         }
         run("Existing IMEI transaction and operation lock block onboarding") {
             let f=try Fixture(); defer {f.remove()}
@@ -937,7 +954,7 @@ private struct Fixture {
             let f = try Fixture(); defer { f.remove() }
             f.web.info["integrate_version"] = "STD_PL_MU5250V1.0.0B02"; f.web.info["wa_inner_version"] = "BD_STDPLMU5250V1.0.0B02"
             var connection = f.engine.currentConnection; connection.skipFirmwareCheck = true
-            let manager = try OnboardingEngine(root: f.root, resources: f.resources, connection: connection, backupSuffix: testBackupSuffix, web: f.engine.web, runner: f.host, sshFactory: { _ in f.ssh })
+            let manager = try OnboardingEngine(root: f.root, resources: f.resources, connection: connection, backupSuffix: testBackupSuffix, web: f.engine.web, runner: f.host, sshFactory: { _ in f.ssh }, researchRunner: MockResearch())
             try rejects("уже работающий root ADB") { _ = try manager.run(password: testPassword) }
             try check(f.web.uploadedData == nil && f.web.restoreCount == 0 && f.host.installerCalls == 0, "B02 bootstrap mutated device")
         }
@@ -947,9 +964,9 @@ private struct Fixture {
             f.host.identityMode = true; f.host.fullInstaller = true; f.host.deviceList = "List of devices attached\n192.0.2.10:5555 device product:MU5250 transport_id:1\n"
             f.host.identityInfo = f.web.info; f.host.identityFirmware = OnboardingEngine.b02FirmwareHash
             var connection = f.engine.currentConnection; connection.skipFirmwareCheck = true
-            let manager = try OnboardingEngine(root: f.root, resources: f.resources, connection: connection, backupSuffix: testBackupSuffix, web: f.engine.web, runner: f.host, sshFactory: { _ in f.ssh })
+            let manager = try OnboardingEngine(root: f.root, resources: f.resources, connection: connection, backupSuffix: testBackupSuffix, web: f.engine.web, runner: f.host, sshFactory: { _ in f.ssh }, researchRunner: MockResearch())
             try rejects("ADB по USB") { _ = try manager.run(password: testPassword) }
-            try check(f.host.calls == [["devices", "-l"]] && f.host.pushCount == 0 && f.host.installerCalls == 0 && f.web.restoreCount == 0 && f.web.uploadedData == nil, "TCP-only B02 triggered setup actions")
+            try check(f.host.calls.allSatisfy { $0 == ["devices", "-l"] } && f.host.pushCount == 0 && f.host.installerCalls == 0 && f.web.restoreCount == 0 && f.web.uploadedData == nil, "TCP-only B02 triggered setup actions")
         }
         run("B02 access setup binds exact hashes and never invokes NV helpers") {
             let f = try Fixture(); defer { f.remove() }
@@ -959,7 +976,7 @@ private struct Fixture {
             f.ssh.info = f.web.info; f.ssh.firmware = OnboardingEngine.b02FirmwareHash
             f.host.onInstall = { [weak host = f.host, weak ssh = f.ssh] in ssh?.ready = true; ssh?.installedJournal = host?.remoteJournal ?? "" }
             var connection = f.engine.currentConnection; connection.skipFirmwareCheck = true
-            let manager = try OnboardingEngine(root: f.root, resources: f.resources, connection: connection, backupSuffix: testBackupSuffix, web: f.engine.web, runner: f.host, sshFactory: { _ in f.ssh })
+            let manager = try OnboardingEngine(root: f.root, resources: f.resources, connection: connection, backupSuffix: testBackupSuffix, web: f.engine.web, runner: f.host, sshFactory: { _ in f.ssh }, researchRunner: MockResearch())
             let result = try manager.run(password: testPassword)
             try check(result.state == nil && result.identity.firmwareHash == OnboardingEngine.b02FirmwareHash && result.firmware.hasSuffix("B02"), "B02 falsely reported NV readiness")
             try check(f.web.restoreCount == 0 && f.web.uploadedData == nil && f.host.installerCalls == 1 && f.ssh.authenticationCalls >= 1 && f.ssh.commitCalls == 1, "Unverified bootstrap or missing access checks")
@@ -972,7 +989,7 @@ private struct Fixture {
             f.web.info["integrate_version"] = "STD_PL_MU5250V1.0.0B02"; f.web.info["wa_inner_version"] = "BD_STDPLMU5250V1.0.0B02"
             f.ssh.info = f.web.info; f.ssh.firmware = OnboardingEngine.b02FirmwareHash; f.ssh.ready = true; f.ssh.changeBootAfterAuthentication = true
             var connection = f.engine.currentConnection; connection.skipFirmwareCheck = true
-            let manager = try OnboardingEngine(root: f.root, resources: f.resources, connection: connection, backupSuffix: testBackupSuffix, web: f.engine.web, runner: f.host, sshFactory: { _ in f.ssh })
+            let manager = try OnboardingEngine(root: f.root, resources: f.resources, connection: connection, backupSuffix: testBackupSuffix, web: f.engine.web, runner: f.host, sshFactory: { _ in f.ssh }, researchRunner: MockResearch())
             try rejects("изменился модем") { _ = try manager.run(password: testPassword) }
             try check(f.ssh.identityReads == 2 && f.ssh.commitCalls == 0 && f.host.installerCalls == 0, "Changed boot accepted or mutated")
         }
@@ -988,7 +1005,7 @@ private struct Fixture {
             f.host.onInstall = { [weak host = f.host, weak ssh = f.ssh] in ssh?.ready = true; ssh?.installedJournal = host?.remoteJournal ?? "" }
             try rejects("interrupted upload") { _ = try f.engine.run(password: testPassword) }
             let priorStage = f.host.stage
-            try check(!(try readJSON(SetupJournal.self, f.engine.pending)).installRequested, "Upload interruption falsely marked installer launched")
+            try check(!(try readJSON(AccessSetupJournal.self, f.engine.pending)).installRequested, "Upload interruption falsely marked installer launched")
             f.host.failPushAt = nil
             _ = try f.engine.run(password: testPassword)
             try check(f.host.stage == priorStage && f.host.installerCalls == 1 && f.web.restoreCount == 0, "Retry replayed deployment or chose foreign stage")
@@ -1028,6 +1045,76 @@ private struct Fixture {
             try rejects { _ = try adb.identity("ABC", expected: expected, skipFirmwareCheck: true) }
             host.identityIMEI = testIMEI; host.identityCID = "invalid"
             try rejects { _ = try adb.identity("ABC", expected: expected, skipFirmwareCheck: true) }
+        }
+        run("Damaged access discriminator refuses before Web backup or USB selection") {
+            for missing in [false, true] {
+                let f = try Fixture(); defer { f.remove() }
+                let id = UUID().uuidString.lowercased()
+                let saved = AccessSetupJournal(id: id, cid: testCID, bootID: "01234567-89ab-4cde-8f01-23456789abcd", firmwareHash: ModemEngine.firmwareHash,
+                    routerHash: ModemEngine.routerHash, installerProfile: "b31", directory: f.root.appendingPathComponent("SetupBackups/" + id).path, adbSerial: "ABC")
+                var object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(saved)) as! [String: Any]
+                object["intent"] = missing ? nil : "damaged-access"
+                try savePrivate(JSONSerialization.data(withJSONObject: object), f.engine.pending)
+                try rejects { _ = try f.engine.run(webPassword: testPassword, agentPassword: testPassword) }
+                try check(f.web.requests.isEmpty && f.host.calls.isEmpty && f.ssh.calls.isEmpty, "Damaged access discriminator caused a transport call")
+            }
+        }
+        run("Consistent access journal phases retain exact recovery target") {
+            let f = try Fixture(); defer { f.remove() }
+            let id = UUID().uuidString.lowercased()
+            for phase in ["prepared", "install-requested", "ready", "complete"] {
+                var saved = AccessSetupJournal(id: id, cid: testCID, bootID: "01234567-89ab-4cde-8f01-23456789abcd", firmwareHash: ModemEngine.firmwareHash,
+                    routerHash: ModemEngine.routerHash, installerProfile: "b31", directory: f.root.appendingPathComponent("SetupBackups/" + id).path, adbSerial: "ABC")
+                saved.phase = phase; saved.installRequested = phase != "prepared"
+                if ["ready", "complete"].contains(phase) { saved.remoteJournal = "/data/local/tmp/zte-imei-installations/" + id }
+                try saved.validate(root: f.root)
+            }
+        }
+        run("Inconsistent access recovery journal refuses before any transport") {
+            for (phase, requested, remote) in [("ready", false, "exact"), ("prepared", true, "none"), ("install-requested", false, "none"), ("ready", true, "none"), ("complete", true, "foreign"), ("unknown", true, "exact")] {
+                let f = try Fixture(); defer { f.remove() }
+                let id = UUID().uuidString.lowercased(), directory = f.root.appendingPathComponent("SetupBackups/" + id)
+                var saved = AccessSetupJournal(id: id, cid: testCID, bootID: "01234567-89ab-4cde-8f01-23456789abcd", firmwareHash: ModemEngine.firmwareHash,
+                    routerHash: ModemEngine.routerHash, installerProfile: "b31", directory: directory.path, adbSerial: "ABC")
+                saved.phase = phase; saved.installRequested = requested
+                saved.remoteJournal = remote == "none" ? nil : "/data/local/tmp/zte-imei-installations/" + (remote == "exact" ? id : UUID().uuidString.lowercased())
+                try saveJSON(saved, f.engine.pending)
+                try rejects { _ = try f.engine.run(webPassword: "", agentPassword: testPassword) }
+                try check(f.host.calls.isEmpty && f.web.requests.isEmpty && f.ssh.calls.isEmpty, "Inconsistent recovery journal reached a transport")
+            }
+        }
+        run("Unknown root USB firmware installs passive access without web backup NV or override") {
+            for missing in [false, true] {
+                let f = try Fixture(); defer { f.remove() }
+                f.host.identityMode = true; f.host.fullInstaller = true; f.host.deviceList = "List of devices attached\nABC device usb:1\n"
+                f.host.identityFirmware = missing ? "absent" : String(repeating: "a", count: 64)
+                f.host.identityRouter = missing ? "absent" : String(repeating: "b", count: 64)
+                f.ssh.firmware = f.host.identityFirmware; f.ssh.accessRouter = f.host.identityRouter
+                f.host.onInstall = { [weak host = f.host, weak ssh = f.ssh] in ssh?.ready = true; ssh?.installedJournal = host?.remoteJournal ?? "" }
+                let result = try f.engine.run(webPassword: "", agentPassword: testPassword)
+                try check(result.state == nil && result.identity.firmwareHash == f.host.identityFirmware && f.host.installerCalls == 1 && f.ssh.commitCalls == 1, "Unknown access installation incomplete")
+                let startup = String(decoding: f.host.uploads[f.host.stage + "/start-agent.sh"]!, as: UTF8.self)
+                try check(startup.contains("export ZTE_AGENT_MODE='discovery'") && startup.contains("export ZTE_AGENT_BIND='192.0.2.1:9090'"), "Generic agent not constrained to discovery and selected address")
+                try check(f.web.requests.isEmpty && f.web.backupCount == 0 && f.web.restoreCount == 0 && !f.ssh.calls.contains { $0.contains("zte_nv") || $0.contains("--snapshot") || $0.contains("get_imei") }, "Unknown access called Web activation or NV")
+                let deploy = f.host.calls.map { $0.joined(separator: " ") }.first { $0.contains("(sh '") && $0.contains("/setup-agent.sh'") }!
+                try check(deploy.contains("'linux-arm64-access'") && deploy.contains("'01234567-89ab-4cde-8f01-23456789abcd'"), "Generic installer lost boot binding")
+            }
+        }
+        run("Non-root USB and ambiguous USB never fall through to activation") {
+            for ambiguous in [false, true] {
+                let f = try Fixture(); defer { f.remove() }
+                f.host.identityMode = true; f.host.deviceList = "List of devices attached\nABC device usb:1\n" + (ambiguous ? "DEF device usb:2\n" : "")
+                if !ambiguous { f.host.shellCode = "1" }
+                try rejects { _ = try f.engine.run(webPassword: "", agentPassword: testPassword) }
+                try check(f.web.requests.isEmpty && f.host.pushCount == 0 && f.host.installerCalls == 0, "Unproven root USB led to activation or installation")
+            }
+        }
+        run("Discovery startup rejects missing noncanonical or injected IPv4") {
+            for host in [nil, "0.0.0.0", "255.255.255.255", "192.168.00.1", "192.0.2.1;id", "example.com", "::1"] as [String?] {
+                try rejects { _ = try OnboardingEngine.agentStartup(password: testPassword, discovery: true, discoveryHost: host) }
+            }
+            let normal = String(decoding: try OnboardingEngine.agentStartup(password: testPassword), as: UTF8.self)
+            try check(!normal.contains("ZTE_AGENT_MODE") && !normal.contains("ZTE_AGENT_BIND"), "Legacy startup was changed")
         }
         run("Agent password is shell-quoted without command-line interpolation") {
             let password="a'$(touch /tmp/not-executed)\nsecret"

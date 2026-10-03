@@ -37,13 +37,20 @@ import SwiftUI
         let catalog = VerifiedCatalogStore(cacheURL: model.storage.appendingPathComponent("catalog-preview.json"))
         precondition(catalog.entries.map(\.id) == ["htop", "opkg"])
         var paths: [String] = []
-        let syntheticResearch = FirmwareResearchReport(startedAt: "2026-09-27T12:00:00Z", finishedAt: "2026-09-27T12:02:08Z", specificationRevision: 4, transport: "adb", outcome: "partial", profile: nil,
+        var syntheticResearch = FirmwareResearchReport(startedAt: "2026-09-27T12:00:00Z", finishedAt: "2026-09-27T12:02:08Z", specificationRevision: 7, transport: "adb", outcome: "partial", profile: nil,
             attempts: [.init(transport: "ssh", outcome: "unconfigured", detail: "SSH key or known_hosts file is unavailable."), .init(transport: "adb", outcome: "available", detail: "USB ADB root shell is available.")],
             warnings: ["The sole USB ADB device was selected. Its relationship to the configured WEB IP address is not established."],
             features: [
                 .init(id: "agent", title: .init(ru: "Установка агента и SSH", en: "Agent and SSH installation"), state: "prerequisites_met", evidence: [.init(ru: "Права root: выполнено", en: "Root privilege: met")], limitations: .init(ru: "Установка не выполнялась. Результат не даёт разрешения на запись.", en: "No installation was performed. This finding grants no write permission.")),
                 .init(id: "imei", title: .init(ru: "Изменение IMEI", en: "IMEI changes"), state: "unknown", evidence: [.init(ru: "Нет совпадения с проверенным профилем прошивки", en: "No matching verified firmware profile")], limitations: .init(ru: "NV/EFS не читаются и не меняются исследованием.", en: "Research does not read or change NV/EFS contents.")),
                 .init(id: "vpn", title: .init(ru: "Компоненты VPN", en: "VPN components"), state: "blocked", evidence: [.init(ru: "Требуемая функция ядра: не выполнено", en: "Required kernel feature: not met")], limitations: .init(ru: "Сетевая конфигурация не менялась.", en: "Network configuration was not changed."))], application: ["fixture": "synthetic; no modem access"])
+        syntheticResearch.bindingStrength = "transport-only"
+        syntheticResearch.authorization = "none"
+        syntheticResearch.observations = [
+                .init(id: "architecture", title: .init(ru: "Архитектура", en: "Architecture"), probe: "identity", fact: "architecture", state: "known", value: "aarch64", sourceStatus: "success", sourceExitCode: 0),
+                .init(id: "init", title: .init(ru: "Система запуска", en: "Init system"), probe: "init-runtime", fact: "init_comm", state: "known", value: "procd", sourceStatus: "success", sourceExitCode: 0),
+                .init(id: "hasher", title: .init(ru: "SHA-256", en: "SHA-256"), probe: "fingerprint", fact: "hasher", state: "known", value: "busybox-sha256sum", sourceStatus: "success", sourceExitCode: 0),
+                .init(id: "esim", title: .init(ru: "Интерфейс eSIM", en: "eSIM interface"), probe: "esim-components", fact: "esim_controller", state: "not-assessed", value: nil, sourceStatus: "skipped", reason: "No verified service schema")]
 
         for language in ["ru", "en"] {
             UserDefaults.standard.setVolatileDomain([L10n.preferenceKey: language], forName: UserDefaults.argumentDomain)
@@ -65,7 +72,8 @@ import SwiftUI
                         .overlay(RoundedRectangle(cornerRadius: 14).stroke(StudioStyle.line))
                 }))
             ]
-            for (screen, rootView) in screens {
+            let filter = ProcessInfo.processInfo.environment["ZTE_UI_PREVIEW_FILTER"]
+            for (screen, rootView) in screens where filter == nil || screen.hasPrefix(filter!) {
                 model.displayPages = ModemLauncherPages(pages: [.esim, .info])
                 model.displaySavedPages = .defaultPages
                 model.displayPagesDraftEdited = true

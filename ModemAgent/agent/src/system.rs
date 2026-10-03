@@ -524,15 +524,17 @@ impl ProcessTracker {
                 }
             }
         }
-        let result = self.sample_fresh();
+        let result = self.sample_fresh(true);
         *self.cache.safe_lock() = (std::time::Instant::now(), Some(result.clone()));
         result
     }
 
-    fn sample_fresh(&self) -> ProcessListResult {
+    pub fn sample_readonly(&self) -> ProcessListResult { self.sample_fresh(false) }
+
+    fn sample_fresh(&self, command_lines: bool) -> ProcessListResult {
         // An unreadable or malformed barrier deliberately produces no
         // stop-eligible processes in the UI.
-        let protected = protected_daemons(DAEMON_SYNC_CONFIG).ok();
+        let protected = if command_lines { protected_daemons(DAEMON_SYNC_CONFIG).ok() } else { None };
         let total_ticks = read_total_cpu_ticks();
         let mut prev = self.prev.safe_lock();
         let (prev_per_pid, prev_total) = &*prev;
@@ -604,7 +606,7 @@ impl ProcessTracker {
             new_per_pid.insert(pid, proc_ticks);
 
             // Read cmdline for better name matching
-            let cmdline_name = fs::read_to_string(format!("/proc/{pid}/cmdline"))
+            let cmdline_name = if command_lines { fs::read_to_string(format!("/proc/{pid}/cmdline"))
                 .ok()
                 .and_then(|s| {
                     let clean = s.replace('\0', " ");
@@ -615,8 +617,8 @@ impl ProcessTracker {
                     } else {
                         Some(basename)
                     }
-                });
-
+                })
+            } else { None };
             let display_name = cmdline_name.as_deref().unwrap_or(&comm);
             let is_bloat = protected
                 .as_ref()

@@ -7,6 +7,7 @@ using Avalonia.Threading;
 using ZteImeiStudio.Windows;
 using System.Reflection;
 using System.Security.Cryptography;
+using ZteImeiStudio.Windows.Research;
 var windowsRoot=Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,"../../../../"));
 var lockPath=Path.Combine(windowsRoot,"src","packages.lock.json");
 var screenshots=Path.Combine(Path.GetTempPath(),"zte-diagnostic-terminal-ui");Directory.CreateDirectory(screenshots);
@@ -83,6 +84,13 @@ await session.Dispatch(()=> {
   Check(modem.Operations==0,"UI checks performed without modem operations");window.Close();Pump();
  }
  Localization.SetLanguage("ru",persist:false);
+ var discovery=new FakeModem {AllowPreparation=true};var first=new MainWindow(discovery,persistPreferences:false);first.Show();Pump();
+ var check=first.GetLogicalDescendants().OfType<Button>().Single(b=>b.Name=="CollectFirmwareResearch");
+ Check(check.Content?.ToString()=="Проверить устройство","Discovery is the named first main preparation action");
+ FindButton(first,"Выполнить предварительную подготовку модема").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();
+ Check(discovery.Events.SequenceEqual(new[]{"research","prepare"}),"GUI collects research before preparing access");
+ Check(((ResearchReport?)Get(first,"_researchReport"))?.BindingStrength=="transport-only","GUI retains incomplete survey rather than inventing full identity");
+ first.Close();Pump();
 },CancellationToken.None);
 Check(before.AsSpan().SequenceEqual(SHA256.HashData(File.ReadAllBytes(lockPath))),"Windows publication lock unchanged");
 static Button FindButton(Window w,string value)=>w.GetLogicalDescendants().OfType<Button>().Single(b=>b.Content?.ToString()==Localization.Translate(value));
@@ -102,9 +110,10 @@ internal sealed class FakeTerminal:ITerminalSession {
  public ValueTask DisposeAsync()=>ValueTask.CompletedTask;
 }
 internal sealed class FakeModem:IModemService {
- public int Operations{get;private set;}
+ public int Operations{get;private set;} public bool AllowPreparation;public List<string> Events=[];
  public Task<DeviceSnapshot> GetDeviceSnapshotAsync(CancellationToken ct=default)=>Task.FromResult(new DeviceSnapshot(false,"Нет подключения"));
- public Task<OperationResult> RunAsync(OperationRequest request,CancellationToken ct=default){Operations++;throw new Exception("Unexpected modem operation");}
+ public Task<OperationResult> RunAsync(OperationRequest request,CancellationToken ct=default){Operations++;if(AllowPreparation&&request.Operation==ModemOperation.PrepareSsh){Events.Add("prepare");return Task.FromResult(new OperationResult(false,"Synthetic preflight refused; no writes."));}throw new Exception("Unexpected modem operation");}
+ public Task<ResearchReport> CollectFirmwareResearchAsync(IReadOnlyDictionary<string,string> parameters,IProgress<ResearchProgress>? progress,CancellationToken ct=default){if(!AllowPreparation)throw new Exception("Unexpected research");Events.Add("research");return Task.FromResult(new ResearchReport(1,"fixture",DateTimeOffset.UtcNow,DateTimeOffset.UtcNow,"partial","ADB",null,"test",7,[],[],[],BindingStrength:"transport-only"));}
  public Task<IReadOnlyList<BackupInfo>> ListBackupsAsync(CancellationToken ct=default)=>Task.FromResult<IReadOnlyList<BackupInfo>>([]);
  public Task<IReadOnlyList<ModemAppInfo>> ListApplicationsAsync(CancellationToken ct=default)=>Task.FromResult<IReadOnlyList<ModemAppInfo>>([]);
  public Task<IReadOnlyList<LogEntry>> GetLogsAsync(CancellationToken ct=default)=>Task.FromResult<IReadOnlyList<LogEntry>>([]);

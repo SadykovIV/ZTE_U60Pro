@@ -27,9 +27,10 @@ public sealed partial class WindowsModemService
             var secrets=parameters.Where(p=>p.Key.Contains("password",StringComparison.Ordinal)||p.Key=="backup_key_suffix").Select(p=>p.Value);
             var engine=new FirmwareResearchEngine(spec,factory,new ResearchRedactor(secrets));
             using var deadline=CancellationTokenSource.CreateLinkedTokenSource(ct);deadline.CancelAfter(TimeSpan.FromMinutes(8));
-            var boundCid=_adbCid??(host==_host?_snapshot.Serial:null);
-            boundCid=ReadPendingResearchCid(boundCid);
-            var cidHash=boundCid is {Length:32} && boundCid.All(Uri.IsHexDigit)?FirmwareResearchEngine.HashSavedCid(boundCid):null;
+            // An explicit survey is not continuation of an old installation.
+            // Select the current single USB device; transaction journals are
+            // checked independently before any later operation.
+            string? cidHash=null;
             var report=await engine.CollectAsync(mode,cidHash,progress,deadline.Token).ConfigureAwait(false);
             if(deadline.IsCancellationRequested && !ct.IsCancellationRequested)report=report with { Outcome="time_limit",Omissions=report.Omissions.Append("Collection stopped at the eight-minute time limit; partial evidence is retained.").ToArray() };
             ResearchReportFiles.Save(report,ResearchPath);

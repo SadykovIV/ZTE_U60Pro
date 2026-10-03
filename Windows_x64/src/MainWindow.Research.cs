@@ -13,6 +13,8 @@ public sealed partial class MainWindow
     private CancellationTokenSource? _researchCancellation;
     private TextBlock? _researchProgress;
     private string _researchProgressText="";
+    private string? _lastResearchInput;
+    private string ResearchInputKey()=>string.Join("\n",new[]{"host","mode","key_path","known_hosts_path"}.Select(Get));
     private static string ResearchState(string state)=>state switch
     {
         "prerequisites_met"=>"Предпосылки подтверждены",
@@ -25,7 +27,7 @@ public sealed partial class MainWindow
     });
     private void BuildFirmwareResearch()
     {
-        AddCard("Исследование прошивки","Проверка условий для функций программы, включая eSIM. Это не общий вердикт совместимости прошивки: отсутствие данных отличается от конкретного препятствия, например прав каталога. Доступна через работающий USB ADB или SSH без ключа бэкапа и отключения проверки прошивки.",panel=>
+        AddCard(Localization.IsEnglish ? "1. Check device" : "1. Проверить устройство", Localization.IsEnglish ? "First collect technical information over available USB ADB or SSH. Unknown firmware and missing CID do not stop the survey. Installation prerequisites are checked again before each operation." : "Сначала собираются технические сведения через работающий USB ADB или SSH. Неизвестная прошивка и отсутствие CID не прекращают диагностику. Возможности установки проверяются отдельно перед каждой операцией.",panel=>
         {
             panel.Children.Add(Muted("Только чтение. Исследование не включает ADB, не устанавливает компоненты и не подтверждает безопасность изменяющих операций. В ручном режиме используется только выбранный канал."));
             var mode = new ComboBox { ItemsSource = new[] { "Автоматически", "SSH", "ADB" }.Select(Localization.Translate).ToArray(),
@@ -33,7 +35,7 @@ public sealed partial class MainWindow
             mode.SelectionChanged += (_, _) => _form["mode"] = mode.SelectedIndex switch { 1 => "SSH", 2 => "ADB", _ => "Автоматически" };
             panel.Children.Add(Muted("Канал исследования")); panel.Children.Add(mode);
             var row=new WrapPanel {Orientation=Orientation.Horizontal};
-            var collect=ActionButton("Исследовать прошивку",CollectFirmwareResearchAsync,true);
+            var collect=ActionButton(Localization.IsEnglish ? "Check device" : "Проверить устройство",CollectFirmwareResearchAsync,true);
             collect.Name="CollectFirmwareResearch";collect.IsEnabled=!_busy && _terminal?.IsConnected!=true && !_terminalOpening;
             row.Children.Add(collect);
             if(_researchCancellation is not null)
@@ -49,6 +51,11 @@ public sealed partial class MainWindow
             panel.Children.Add(Muted($"{report.CompletedAt.LocalDateTime:dd.MM.yyyy HH:mm:ss} · {report.Channel} · {ResearchOutcome(report.Outcome)} · {report.Profile??Localization.Translate("Неизвестная прошивка")}"));
             panel.Children.Add(Muted("Отчёт сохраняется локально. ZIP можно экспортировать после отключения модема или перезапуска программы; пароли и личные идентификаторы скрываются."));
             var details=new StackPanel {Spacing=12};
+            details.Children.Add(Muted((Localization.IsEnglish ? "Device binding: " : "Привязка устройства: ")+report.BindingStrength));
+            details.Children.Add(new TextBlock {Text=Localization.IsEnglish ? "Technical inventory" : "Технические сведения",Foreground=Accent,FontWeight=FontWeight.SemiBold});
+            foreach(var observation in report.Observations??[])
+                details.Children.Add(Muted(observation.Title.Text(Localization.IsEnglish)+": "+(observation.Value??observation.Status)+" · "+observation.Probe+"/"+observation.Fact+" · "+observation.SourceStatus));
+            details.Children.Add(new TextBlock {Text=Localization.IsEnglish ? "Operation prerequisites" : "Предпосылки функций",Foreground=Accent,FontWeight=FontWeight.SemiBold});
             foreach(var feature in report.Features)
             {
                 var featurePanel=new StackPanel {Spacing=4};
@@ -66,6 +73,8 @@ public sealed partial class MainWindow
     private async Task CollectFirmwareResearchAsync()
     {
         if(_busy || _terminal?.IsConnected==true || _terminalOpening)return;
+        var inspectedInput=ResearchInputKey();
+        _lastResearchInput=null;
         _researchCancellation=CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
         SetBusy(true);_researchProgressText=Localization.Translate("Определение доступного канала…");RenderPage();
         try
@@ -77,6 +86,7 @@ public sealed partial class MainWindow
                 if(_researchProgress is not null)_researchProgress.Text=_researchProgressText;
             }));
             _researchReport=await _service.CollectFirmwareResearchAsync(parameters,progress,_researchCancellation.Token);
+            if(_researchReport.Outcome is not ("cancelled" or "device_changed" or "trust_rejected"))_lastResearchInput=inspectedInput;
             _researchProgressText=Localization.Translate("Исследование завершено. Частичный отчёт также доступен для экспорта.");
         }
         catch(Exception error) { _researchProgressText=error.Message; }

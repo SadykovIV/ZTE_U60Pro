@@ -38,7 +38,16 @@ struct LoginAttempt {
 
 impl AuthState {
     pub fn new() -> Self {
-        let salt = load_or_create_salt();
+        Self::with_salt(load_or_create_salt())
+    }
+
+    /// Discovery sessions keep all authentication state in memory.
+    pub fn ephemeral() -> Self {
+        let mut salt = vec![0u8; 32];
+        read_urandom(&mut salt);
+        Self::with_salt(salt)
+    }
+    fn with_salt(salt: Vec<u8>) -> Self {
         Self {
             password_hash: Mutex::new(None),
             pin_hash: Mutex::new(None),

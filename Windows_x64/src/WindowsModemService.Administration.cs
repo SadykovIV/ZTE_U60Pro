@@ -15,8 +15,8 @@ public sealed partial class WindowsModemService
         var agentPassword = parameters?.GetValueOrDefault("agent_password") ?? "";
         var backupKeySuffix = parameters?.GetValueOrDefault("backup_key_suffix") ?? "";
         var skipFirmware = Param(parameters,"skip_firmware_check") == "true";
-        if (string.IsNullOrEmpty(webPassword) || string.IsNullOrEmpty(agentPassword))
-            throw new ArgumentException("Для подготовки нужны пароль веб-интерфейса и пароль агента.");
+        if (string.IsNullOrEmpty(agentPassword))
+            throw new ArgumentException("Для подготовки нужен пароль агента. Без пароля Web используется только уже доступный единственный root USB ADB.");
         var onboarding = new OnboardingEngine(host,_storage,_resources,_adb,skipFirmware,
             progress: message => Log("info","Подготовка: " + message));
         var setup = await onboarding.PrepareAsync(webPassword,agentPassword,backupKeySuffix,ct);
@@ -27,9 +27,10 @@ public sealed partial class WindowsModemService
             ["host"] = host, ["mode"] = "SSH", ["key_path"] = _keyPath,
             ["known_hosts_path"] = _knownHostsPath,
             ["skip_firmware_check"] = skipFirmware ? "true" : "false",
+            ["access_only"] = setup.Profile == "linux-arm64-access" ? "true" : "false",
         };
         var message = await ConnectAsync(connection,ct);
-        if (setup.FirmwareHash == DeviceFeatureService.FirmwareHash)
+        if (setup.Profile != "linux-arm64-access" && setup.FirmwareHash == DeviceFeatureService.FirmwareHash)
         {
             try
             {
@@ -59,7 +60,7 @@ public sealed partial class WindowsModemService
         var previousCid = _snapshot.Serial;
         if (_ssh is not null && !resuming)
         {
-            expected = await _imei!.IdentityAsync(ct);
+            expected = await _imei!.MeasuredIdentityAsync(ct);
             var reply = await _ssh.RunAsync("ubus call zwrt_web device_info '{}'", timeout:TimeSpan.FromSeconds(15), ct:ct);
             if (!reply.Success) throw new IOException("SSH не подтвердил IMEI для сопоставления с Web.");
             using var document = JsonDocument.Parse(reply.Stdout);
@@ -81,7 +82,7 @@ public sealed partial class WindowsModemService
             {
                 try
                 {
-                    var current = await _imei!.IdentityAsync(CancellationToken.None);
+                    var current = await _imei!.MeasuredIdentityAsync(CancellationToken.None);
                     if (current.Cid != (expected?.Cid ?? previousCid) || expected is not null && current.FirmwareHash != expected.FirmwareHash)
                         throw new InvalidDataException("SSH-модем изменился.");
                     _snapshot = _snapshot with { IsConnected = true, ConnectionMode = "SSH", Status = "Подключено по SSH" };

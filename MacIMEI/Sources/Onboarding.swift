@@ -165,13 +165,15 @@ final class OnboardingEngine: @unchecked Sendable {
     let runner: HostCommandRunner
     let sshFactory: ((Connection) -> RemoteTransport)?
     let update: @Sendable (String, Double) -> Void
+    let researchRunner: ResearchProcessRunning
     let adbWaitAttempts: Int, directADBWaitAttempts: Int, adbPollDelay: TimeInterval
     private var lastADBFailure = ""
     let fm = FileManager.default
     var assets: URL { resources.appendingPathComponent("Onboarding") }
     var pending: URL { root.appendingPathComponent("setup-pending.json") }
     var diagnosticPending: URL { root.appendingPathComponent("adb-access-pending.json") }
-    init(root: URL, resources: URL, connection: Connection, backupSuffix: String = "", web: ModemWebClient? = nil, runner: HostCommandRunner = HostProcessRunner(), sshFactory: ((Connection) -> RemoteTransport)? = nil, adbWaitAttempts: Int = 80, directADBWaitAttempts: Int = 30, adbPollDelay: TimeInterval = 3, update: @escaping @Sendable (String,Double)->Void = {_,_ in}) throws {
+    init(root: URL, resources: URL, connection: Connection, backupSuffix: String = "", web: ModemWebClient? = nil, runner: HostCommandRunner = HostProcessRunner(), sshFactory: ((Connection) -> RemoteTransport)? = nil, adbWaitAttempts: Int = 80, directADBWaitAttempts: Int = 30, adbPollDelay: TimeInterval = 3, researchRunner: ResearchProcessRunning = ResearchBoundedRunner(), update: @escaping @Sendable (String,Double)->Void = {_,_ in}) throws {
+        self.researchRunner = researchRunner
         self.backupSuffix = backupSuffix
         self.root = root; self.resources = resources; self.host = connection.host; self.currentConnection = connection
         self.adbWaitAttempts = max(1, adbWaitAttempts); self.directADBWaitAttempts = max(1, directADBWaitAttempts); self.adbPollDelay = max(0, adbPollDelay)
@@ -210,7 +212,7 @@ final class OnboardingEngine: @unchecked Sendable {
             let expected = try DiagnosticDeviceExpectation.load(root: root, identity: expectedIdentity, web: nil, imei: expectedIMEI)
             let own = Connection(host: host, port: "2222", keyPath: root.appendingPathComponent("SSH/id_ed25519").path, knownHostsPath: root.appendingPathComponent("SSH/known_hosts").path, skipFirmwareCheck: currentConnection.skipFirmwareCheck)
             var seen = Set<String>()
-            let command = DiagnosticTransportSelector.identityCommand(requireWeb: true)
+            let command = DiagnosticTransportSelector.identityCommand(requireWeb: expected.requiresWeb)
             for candidate in [currentConnection, own] {
                 let key = [candidate.host, candidate.port, candidate.keyPath, candidate.knownHostsPath].joined(separator: "\n")
                 guard seen.insert(key).inserted else { continue }
@@ -226,15 +228,12 @@ final class OnboardingEngine: @unchecked Sendable {
                 try require(!DiagnosticTransportSelector.hostTrustFailure(detail), "Проверка ключа SSH не пройдена. Подготовка остановлена без изменения модема.")
                 if first.status == 255 || first.status == -1 { continue }
                 try require(first.status == 0, "SSH отвечает, но не подтвердил root-доступ и идентификацию модема")
-                let proof = try DiagnosticTransportSelector.parseIdentity(first.stdout, requireWeb: true)
+                let proof = try DiagnosticTransportSelector.parseIdentity(first.stdout, requireWeb: expected.requiresWeb)
                 try require(expected.matches(proof) && (expectedIdentity == nil || expectedIdentity == proof.identity), "SSH подключён к другому модему или прошивке; подготовка остановлена")
-                guard let webIdentity = proof.webIdentity else { throw IMEIError.message("SSH не вернул сведения модели модема") }
-                try require(proof.routerHash == ModemEngine.routerHash, "SSH-модем имеет неподдерживаемый diag-router")
-                _ = try Self.installerProfile(web: webIdentity, device: proof.identity, experimental: currentConnection.skipFirmwareCheck)
                 let second = try ssh.run(command, input: nil, timeout: 15)
-                try require(second.status == 0 && (try DiagnosticTransportSelector.parseIdentity(second.stdout, requireWeb: true)) == proof, "Во время проверки SSH изменился модем, прошивка или загрузка")
+                try require(second.status == 0 && (try DiagnosticTransportSelector.parseIdentity(second.stdout, requireWeb: expected.requiresWeb)) == proof, "Во время проверки SSH изменился модем, прошивка или загрузка")
                 update("SSH проверен. Готовность агента и IMEI проверяются отдельно.", 1)
-                return SetupResult(connection: candidate, state: nil, identity: proof.identity, firmware: webIdentity.firmware, suffix: "")
+                return SetupResult(connection: candidate, state: nil, identity: proof.identity, firmware: proof.webIdentity?.firmware ?? "unknown", suffix: "")
             }
             return nil
         }
@@ -249,12 +248,8 @@ final class OnboardingEngine: @unchecked Sendable {
         return state
     }
     func inspectSetupSSH(_ connection: Connection, expected: WebIdentity, password: String) throws -> (Identity, DeviceState?) {
-        if Self.isB31(expected) {
-            let state = try inspectSSH(connection, expected: expected)
-            return (state.identity, state)
-        }
         let engine = try ModemEngine(root: root, resources: resources, connection: connection, transport: sshFactory?(connection))
-        let (identity, boot) = try engine.diagnosticIdentity()
+        let (identity, boot) = try engine.accessIdentity()
         _ = try Self.installerProfile(web: expected, device: identity, experimental: currentConnection.skipFirmwareCheck)
         let info = try engine.remote("set -e; test \"$(id -u)\" = 0; test \"$(uname -m)\" = aarch64; test \"$(sha256sum /usr/bin/diag-router | cut -d ' ' -f1)\" = " + shellQuote(ModemEngine.routerHash) + "; ubus call zwrt_web device_info '{}'")
         guard let object = try JSONSerialization.jsonObject(with: info) as? [String: Any] else { throw IMEIError.message("Неполная идентификация SSH после установки") }
@@ -262,11 +257,11 @@ final class OnboardingEngine: @unchecked Sendable {
         let proof = try engine.text("set -e; found=0; for p in $(pidof zte-agent); do if test \"$(readlink /proc/$p/exe)\" = /data/zte-agent; then found=1; fi; done; test \"$found\" = 1; printf AGENT_READY")
         try require(proof == "AGENT_READY", "Агент установлен, но не запущен")
         try authenticateAgent(transport: engine.transport, password: password)
-        let after = try engine.diagnosticIdentity()
+        let after = try engine.accessIdentity()
         try require(after.0 == identity && after.1 == boot, "Во время проверки доступа изменился модем, прошивка или загрузка")
         return (identity, nil)
     }
-    private func authenticateAgent(transport: RemoteTransport, password: String) throws {
+    func authenticateAgent(transport: RemoteTransport, password: String) throws {
         let body = try JSONSerialization.data(withJSONObject: ["password": password])
         let login = try transport.run("/usr/bin/curl --noproxy '*' --fail --silent --show-error --connect-timeout 5 --max-time 15 -H 'Content-Type: application/json' --data-binary @- " + shellQuote("http://" + host + ":9090/api/auth/login"), input: body, timeout: 20)
         guard login.status == 0, let response = try JSONSerialization.jsonObject(with: login.stdout) as? [String: Any], response["ok"] as? Bool == true, let data = response["data"] as? [String: Any], let token = data["token"] as? String, !token.isEmpty else {
@@ -297,7 +292,7 @@ final class OnboardingEngine: @unchecked Sendable {
         printf 'INSTALL_STAGE_READY\\n'
         """
     }
-    private func pushStaged(_ adb: ADBClient, serial: String, source: URL, stage: String, name: String, owner: String) throws {
+    func pushStaged(_ adb: ADBClient, serial: String, source: URL, stage: String, name: String, owner: String) throws {
         let incoming = stage + "/incoming-" + UUID().uuidString.lowercased(), destination = stage + "/" + name
         try adb.push(serial, source: source, destination: incoming)
         let command = "set -eu; test -d " + shellQuote(stage) + "; test ! -L " + shellQuote(stage) + "; test \"$(cat " + shellQuote(stage + "/.owner") + ")\" = " + shellQuote(owner) + "; test ! -e " + shellQuote(stage + "/.install-requested") + "; test ! -L " + shellQuote(stage + "/.install-requested") + "; test -f " + shellQuote(incoming) + "; test ! -L " + shellQuote(incoming) + "; test \"$(stat -c %h " + shellQuote(incoming) + ")\" = 1; test ! -L " + shellQuote(destination) + "; if test -e " + shellQuote(destination) + "; then test -f " + shellQuote(destination) + "; test \"$(stat -c %h " + shellQuote(destination) + ")\" = 1; fi; mv " + shellQuote(incoming) + " " + shellQuote(destination)
@@ -356,9 +351,16 @@ final class OnboardingEngine: @unchecked Sendable {
         if let match = try pollADB(adb, expected: expected, attempts: adbWaitAttempts, enforceInstallerPolicy: enforceInstallerPolicy) { return match }
         throw IMEIError.message("Работающий ADB модема не подтверждён. " + lastADBFailure + " Повторное восстановление бэкапа автоматически не запускается.")
     }
-    static func agentStartup(password: String) throws -> Data {
+    static func agentStartup(password: String, discovery: Bool = false, discoveryHost: String? = nil) throws -> Data {
         try require(!password.isEmpty && !password.contains("\0"), "Неверный пароль")
-        return Data(("#!/bin/sh\nexport ZTE_AGENT_PASSWORD=" + shellQuote(password) + "\nunset ZTE_AGENT_PIN\ntrap '' HUP\nnohup sh -c '/data/zte-agent 2>&1 | logger -t zte-agent' >/dev/null 2>&1 </dev/null &\n").utf8)
+        var mode = ""
+        if discovery {
+            guard let host = discoveryHost else { throw IMEIError.message("Для discovery нужен выбранный IPv4-адрес") }
+            let parts = host.split(separator: ".", omittingEmptySubsequences: false)
+            try require(parts.count == 4 && parts.allSatisfy { p in guard let n = UInt8(p) else { return false }; return String(n) == p } && host != "0.0.0.0" && host != "255.255.255.255", "Некорректный адрес discovery")
+            mode = "export ZTE_AGENT_MODE='discovery'\nexport ZTE_AGENT_BIND=" + shellQuote(host + ":9090") + "\n"
+        }
+        return Data(("#!/bin/sh\nexport ZTE_AGENT_PASSWORD=" + shellQuote(password) + "\n" + mode + "unset ZTE_AGENT_PIN\ntrap '' HUP\nnohup sh -c '/data/zte-agent 2>&1 | logger -t zte-agent' >/dev/null 2>&1 </dev/null &\n").utf8)
     }
     func prepare(password: String, expectedIMEI: String? = nil) throws -> (WebIdentity, BackupPatch.Result, URL) {
         let (identity, encrypted, directory) = try prepareRawBackup(password: password, expectedIMEI: expectedIMEI)
@@ -532,7 +534,6 @@ final class OnboardingEngine: @unchecked Sendable {
     func run(webPassword: String, agentPassword: String, expectedIdentity: Identity? = nil, expectedIMEI: String? = nil) throws -> SetupResult {
         try locked {
             try require(!fm.fileExists(atPath: diagnosticPending.path), "Сначала завершите включение ADB для диагностики")
-            try require(!webPassword.isEmpty && !webPassword.contains("\0"), "Введите пароль веб-интерфейса")
             try require(!agentPassword.isEmpty && !agentPassword.contains("\0"), "Введите отдельный пароль агента")
             let expected = try DiagnosticDeviceExpectation.load(root: root, identity: expectedIdentity, web: nil, imei: expectedIMEI)
             func validateExpectedDevice(_ device: Identity) throws {
@@ -540,6 +541,8 @@ final class OnboardingEngine: @unchecked Sendable {
                 if let expectedIdentity { try require(device == expectedIdentity, "Прошивка ожидаемого модема изменилась; подготовка остановлена") }
             }
             let hashes = try verifyAssets()
+            if let access = try runExistingUSBAccess(hashes: hashes, webPassword: webPassword, agentPassword: agentPassword, expected: expected, expectedIdentity: expectedIdentity) { return access }
+            try require(!webPassword.isEmpty && !webPassword.contains("\0"), "Для включения ADB через штатный Web нужен его пароль")
             let (identity, encryptedBackup, directory) = try prepareRawBackup(password: webPassword, expectedIMEI: expected.imeis.first)
             var journal: SetupJournal
             if fm.fileExists(atPath: pending.path) {
@@ -572,7 +575,7 @@ final class OnboardingEngine: @unchecked Sendable {
                     }
                     journal.phase = "complete"; try saveJSON(journal, URL(fileURLWithPath: journal.directory).appendingPathComponent("setup-result.json"))
                     try fm.removeItem(at: pending)
-                    update(state == nil ? "SSH и агент доступны. Совместимость NV/EFS на B02 ещё не проверена." : "Доступ уже настроен. Агент работает; можно менять IMEI.", 1)
+                    update("SSH и агент доступны. Совместимость операций с NV проверяется отдельно.", 1)
                     return SetupResult(connection: candidate, state: state, identity: deviceID, firmware: identity.firmware, suffix: "")
                 }
             }
@@ -600,7 +603,7 @@ final class OnboardingEngine: @unchecked Sendable {
                 journal.remoteJournal = remoteJournal
                 try commitIfReady(journal: &journal, connection: connection, password: agentPassword)
                 try saveJSON(journal, URL(fileURLWithPath: journal.directory).appendingPathComponent("setup-result.json")); try fm.removeItem(at: pending)
-                update(state == nil ? "Установка доступа завершена. Совместимость NV/EFS на B02 ещё не проверена." : "Установка завершена; агент и IMEI проверены.", 1)
+                update("Установка доступа завершена. Совместимость операций с NV проверяется отдельно.", 1)
                 return SetupResult(connection: connection, state: state, identity: deviceID, firmware: identity.firmware, suffix: "")
             }
             let installer = try String(contentsOf: assets.appendingPathComponent("setup-agent.sh"), encoding: .utf8)
@@ -640,7 +643,7 @@ final class OnboardingEngine: @unchecked Sendable {
             try saveJSON(journal, URL(fileURLWithPath: journal.directory).appendingPathComponent("setup-result.json")); try fm.removeItem(at: pending)
             // Credentials in this owned staging directory are no longer needed. Device recovery snapshots remain private.
             _ = try? adb.shell(serial, "rm -f " + ["zte-agent","dropbear","setup-agent.sh","start_zte_imei_studio.sh","id_ed25519.pub","start-agent.sh",".owner",".install-requested"].map { shellQuote(stage + "/" + $0) }.joined(separator: " ") + "; rmdir " + shellQuote(stage))
-            update(state == nil ? "SSH и агент настроены. Совместимость NV/EFS на B02 ещё не проверена." : "ADB и агент настроены. Оба IMEI прочитаны; можно менять пару.", 1)
+            update("SSH и агент настроены. Совместимость операций с NV проверяется отдельно.", 1)
             return SetupResult(connection: connection, state: state, identity: deviceID, firmware: identity.firmware, suffix: "")
         }
     }

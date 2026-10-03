@@ -35,6 +35,9 @@ private func rawProof(_ id: String = cid, sim: String = imei, reboot: Bool = fal
     let web = String(decoding: try JSONSerialization.data(withJSONObject: webObject(sim)), as: UTF8.self)
     return Data((firmware + " /firmware/image/modem.b16\n" + ModemEngine.routerHash + " /usr/bin/diag-router\n" + id + "\n" + (reboot ? "ffffffff-ffff-ffff-ffff-ffffffffffff" : boot) + "\n" + web + "\n").utf8)
 }
+private extension Data {
+    func accessProof(includeWeb: Bool) -> Data { includeWeb ? self : Data(String(decoding: self, as: UTF8.self).split(separator: "\n").prefix(4).joined(separator: "\n").utf8) }
+}
 private final class SSH: RemoteTransport {
     var status: Int32 = 255, message = "ssh: connect: Connection refused", cidValue = cid
     var calls = [String](), identityReads = 0, reboot = false, malformed = false, interrupted = false
@@ -45,7 +48,7 @@ private final class SSH: RemoteTransport {
         if interrupted { throw CommandFailure(message: "SSH connection lost", partial: CommandResult(status: 255, stdout: Data(), stderr: Data())) }
         if command.contains(DiagnosticTransportSelector.identityCommand) {
             identityReads += 1
-            return CommandResult(status: 0, stdout: malformed ? Data("invalid".utf8) : try rawProof(cidValue, reboot: reboot && identityReads > 1), stderr: Data())
+            return CommandResult(status: 0, stdout: malformed ? Data("invalid".utf8) : try rawProof(cidValue, reboot: reboot && identityReads > 1).accessProof(includeWeb: command.contains("ubus call zwrt_web")), stderr: Data())
         }
         return CommandResult(status: 1, stdout: Data(), stderr: Data("details unavailable".utf8))
     }
@@ -61,7 +64,7 @@ private final class ADB: HostCommandRunner {
         if arguments == ["-d", "get-serialno"] { return CommandResult(status: physicalSerial == nil ? 1 : 0, stdout: Data((physicalSerial ?? "").utf8), stderr: Data()) }
         try check(arguments.count == 4 && arguments[0] == "-s" && arguments[2] == "shell", "ADB probe mutated device")
         guard let marker = ADBClient.shellMarker(in: arguments[3]) else { throw Failure.assertion("Missing ADB footer") }
-        let result = arguments[3].contains(DiagnosticTransportSelector.identityCommand) ? try rawProof(cids[arguments[1]] ?? otherCID) : Data()
+        let result = arguments[3].contains(DiagnosticTransportSelector.identityCommand) ? try rawProof(cids[arguments[1]] ?? otherCID).accessProof(includeWeb: arguments[3].contains("ubus call zwrt_web")) : Data()
         return CommandResult(status: 0, stdout: result + Data(("\n" + marker + "0\n").utf8), stderr: Data())
     }
 }

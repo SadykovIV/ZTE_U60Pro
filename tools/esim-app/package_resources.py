@@ -49,11 +49,11 @@ def source_archive():
         'ModemAgent/web-app/vite.config.ts','ModemAgent/web-app/tsconfig.json','ModemAgent/web-app/tsconfig.app.json',
         'ModemAgent/web-app/tsconfig.node.json','ModemAgent/web-app/index.html','ModemAgent/web-app/tailwind.config.js',
         'ModemAgent/web-app/postcss.config.js','ModemAgent/web-app/eslint.config.js',
-        'tools/esim-app/fixtures', 'tools/esim-app/build_runtime.py','tools/esim-app/package_resources.py','tools/esim-app/package_permanent.py','tools/esim-app/verify_public_build.py','tools/esim-app/verify_public_release.py','tools/esim-app/test_source_packaging.py',
+        'tools/esim-app/fixtures', 'tools/esim-app/build_runtime.py','tools/esim-app/package_resources.py','tools/esim-app/package_permanent.py','tools/esim-app/verify_public_build.py','tools/esim-app/verify_public_release.py','tools/esim-app/test_source_packaging.py','tools/esim-app/test_discovery_agent_http.py',
         'tools/build.py','tools/fetch_dependencies.py','tools/dependencies.json',
         'MacIMEI/Sources/BundledAgent.swift','MacIMEI/Sources/VPNSettings.swift',
         'Windows_x64/Resources/Onboarding/provenance.json',
-        'docs/ESIM-APP-CONTRACT.md','docs/ESIM-DESKTOP.md','third_party/ESIM-SOURCES.md','LICENSE-SCOPE.md']
+        'docs/ESIM-APP-CONTRACT.md','docs/ESIM-DESKTOP.md','docs/DEVICE-DISCOVERY-CONTRACT.md','third_party/ESIM-SOURCES.md','LICENSE-SCOPE.md']
     # Include local installation recipes and manifests. Pinned baseline binaries
     # are obtained with tools/fetch_dependencies.py before the modem build.
     for group in ['VPN','AgentInstallation','Onboarding','SSHAccounts']:
@@ -93,11 +93,13 @@ def main():
     sources, count = source_archive()
     readme = '''# eSIM для физической eUICC
 
-Версия агента: 2.7.0-esim.8. Приложения: ZTE U60Pro Manager 1.23.2.
+Версия агента: 2.9.0-esim.1. Приложения: ZTE U60Pro Manager 1.24.0.
 
 Нужна съёмная физическая eUICC в SIM-слоте модема. Проверено: 9eSIM V0,
 ZTE MU5250, CN_ZTE_MU5250V1.0.0B31. Обычная SIM и встроенная eSIM ZTE
-этим компонентом не поддерживаются. Другие прошивки блокируются проверкой.
+этим компонентом не поддерживаются. Этот адаптер управления eSIM требует
+проверенной прошивки. Проверка устройства и диагностический доступ работают
+независимо от этого ограничения; режим discovery не разрешает управление SIM.
 
 Откройте eSIM в левом меню, подключитесь по SSH и запросите профили.
 Для установки вставьте LPA-код, выберите изображение QR или переключитесь
@@ -157,7 +159,7 @@ PROVENANCE.json и LICENSE-SCOPE.md уточняют состав и сферу 
         'LICENSE-SCOPE.md': (ROOT / 'LICENSE-SCOPE.md').read_bytes(),
     }
     provenance = {
-        'agent_version': '2.7.0-esim.8', 'agent_sha256': sha(agent),
+        'agent_version': '2.9.0-esim.1', 'agent_sha256': sha(agent),
         'lpac_version': '2.3.0 + pinned stdio backports',
         'lpac_commit': 'c2fcf5e4b21c712d54e35a11da2ad9ad134fb821',
         'lpac_linux_sha256': sha((ROOT/'ModemAgent/agent/resources/esim/lpac').read_bytes()),

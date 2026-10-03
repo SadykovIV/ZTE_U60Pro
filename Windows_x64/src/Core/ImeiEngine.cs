@@ -4,7 +4,7 @@ using ZteImeiStudio.Transport;
 
 namespace ZteImeiStudio.Windows.Core;
 
-public sealed record DeviceIdentity(string Cid, string FirmwareHash, string BootId);
+public sealed record DeviceIdentity(string Cid, string FirmwareHash, string BootId, string RouterHash = ImeiEngine.RouterHash);
 public sealed record ImeiState(DeviceIdentity Identity, byte[][] Nv, string[] Imeis);
 public sealed record ImeiBackupManifest(int Schema, string Id, DateTimeOffset Created, DeviceIdentity Identity, string[] Imeis, Dictionary<string,string> Hashes);
 public sealed record ImeiPending(int Schema, string Id, string BackupId, DeviceIdentity Identity, string[] TargetHex,
@@ -37,6 +37,8 @@ public sealed partial class ImeiEngine(IRemoteShell shell, string storageRoot, s
     private async Task<string> Text(string command, CancellationToken ct = default)
         => Encoding.UTF8.GetString(await Remote(command, ct: ct)).Trim();
 
+    public Task<DeviceIdentity> MeasuredIdentityAsync(CancellationToken ct = default) => AccessIdentity.ReadAsync(shell, ct);
+
     public async Task<DeviceIdentity> IdentityAsync(CancellationToken ct = default)
     {
         var lines = (await Text("sha256sum /firmware/image/modem.b16 /usr/bin/diag-router; cat /sys/block/mmcblk0/device/cid /proc/sys/kernel/random/boot_id", ct)).Split('\n', StringSplitOptions.TrimEntries);
@@ -51,7 +53,7 @@ public sealed partial class ImeiEngine(IRemoteShell shell, string storageRoot, s
         var router = HashLine(lines[1], "/usr/bin/diag-router");
         if (!skipFirmwareCheck && (firmware != FirmwareHash || router != RouterHash)) throw new InvalidDataException("Прошивка отличается от проверенной MU5250 B31. Запись остановлена.");
         if (lines[2].Length != 32 || lines[2].Any(c => !Uri.IsHexDigit(c)) || !Guid.TryParse(lines[3], out _)) throw new InvalidDataException("Неверный CID или boot ID.");
-        return new DeviceIdentity(lines[2].ToLowerInvariant(), firmware, lines[3]);
+        return new DeviceIdentity(lines[2].ToLowerInvariant(), firmware, lines[3], router);
     }
 
     private static bool SameDevice(DeviceIdentity first, DeviceIdentity second) =>

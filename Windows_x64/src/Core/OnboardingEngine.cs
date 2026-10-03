@@ -13,14 +13,15 @@ namespace ZteImeiStudio.Windows.Core;
 
 public sealed record AdbAccessResult(string Serial, DeviceIdentity Identity, WebIdentity WebIdentity, bool AlreadyAvailable);
 
-public sealed record OnboardingResult(string Cid, string FirmwareHash, string Imei,
-    string KeyPath, string KnownHostsPath, bool AlreadyConfigured);
+public sealed record OnboardingResult(string Cid, string FirmwareHash, string? Imei,
+    string KeyPath, string KnownHostsPath, bool AlreadyConfigured, string? Profile = null);
 
 internal sealed class OnboardingPending
 {
     public string Intent { get; set; } = "preparation";
     public string Id { get; set; } = "";
-    public WebIdentity WebIdentity { get; set; } = new("", "", "");
+    public WebIdentity? WebIdentity { get; set; }
+    public string IdentitySource { get; set; } = "web-matched";
     public string BackupDirectory { get; set; } = "";
     public string Phase { get; set; } = "prepared";
     public bool RestoreRequested { get; set; }
@@ -33,6 +34,7 @@ internal sealed class OnboardingPending
     public string? Profile { get; set; }
     public string? FirmwareHash { get; set; }
     public string? RouterHash { get; set; }
+    public string? BootId { get; set; }
     public string? RemoteJournal { get; set; }
     public bool? NewAgent { get; set; }
 
@@ -89,7 +91,7 @@ internal sealed class RestoreDeliveryUncertainException(Exception inner)
     : IOException("Связь прервалась при запросе восстановления; запрос не будет повторён.", inner);
 
 /// <summary>
-/// B31/B02 access preparation with a durable local journal. A restore request
+/// Measured root-access preparation and B31/B02 activation with a durable local journal. A restore request
 /// and an installer request are never automatically repeated after uncertainty.
 /// Passwords and the agent token never enter the journal or ordinary logs.
 /// </summary>
@@ -108,6 +110,7 @@ public sealed class OnboardingEngine
     private readonly Action<string>? _progress;
     private string _lastAdbDiagnostic = "USB ADB не обнаружен.";
     private bool _diagnosticAccess;
+    private bool _genericAccess;
     internal Func<ModemWebClient>? WebFactory { get; init; }
     private string BackupFolder => _diagnosticAccess ? "ADBAccessBackups" : "SetupBackups";
     private string PendingPath => Path.Combine(_storage, _diagnosticAccess ? "adb-access-pending.json" : "setup-pending.json");
@@ -129,8 +132,8 @@ public sealed class OnboardingEngine
     public async Task<OnboardingResult> PrepareAsync(string webPassword,
         string agentPassword, string backupKeySuffix, CancellationToken ct = default)
     {
-        if (string.IsNullOrEmpty(webPassword) || webPassword.Contains('\0'))
-            throw new ArgumentException("Введите пароль штатного веб-интерфейса.", nameof(webPassword));
+        if (webPassword.Contains('\0'))
+            throw new ArgumentException("Недопустимый пароль Web.", nameof(webPassword));
         if (string.IsNullOrEmpty(agentPassword) || agentPassword.Contains('\0'))
             throw new ArgumentException("Введите отдельный пароль агента.", nameof(agentPassword));
         Directory.CreateDirectory(_storage);
@@ -143,22 +146,43 @@ public sealed class OnboardingEngine
             throw new InvalidOperationException("Сначала завершите незавершённую операцию с модемом.");
 
         var hashes = await VerifyAssetsAsync(ct).ConfigureAwait(false);
-        _progress?.Invoke("Вход в Web и сохранение исходного бэкапа настроек.");
+        _progress?.Invoke("Проверка Web и уже доступного root shell.");
         using var web = WebFactory?.Invoke() ?? new ModemWebClient(_host);
-        await web.LoginAsync(webPassword, ct).ConfigureAwait(false);
-        var webIdentity = await web.GetIdentityAsync(_skipFirmwareCheck, ct).ConfigureAwait(false);
-        var encrypted = await web.DownloadFreshBackupAsync(ct).ConfigureAwait(false);
-        if (await web.GetIdentityAsync(_skipFirmwareCheck, ct).ConfigureAwait(false) != webIdentity)
-            throw new InvalidDataException("Устройство изменилось во время подготовки бэкапа.");
+        WebIdentity? webIdentity = null;
+        DeviceIdentity? existing = null;
+        (string Serial, DeviceIdentity Identity)? match;
+        if (string.IsNullOrEmpty(webPassword))
+        {
+            // Explicit root-USB preparation does not contact Web or manufacture
+            // absent vendor identity fields. Each later read repeats USB proof.
+            match = await FindMatchingAdbAsync(null, ct).ConfigureAwait(false);
+            if (match is null) throw new InvalidOperationException("Для установки без Web нужен единственный root USB ADB. Сначала проверьте устройство.");
+        }
+        else
+        {
+            await web.LoginAsync(webPassword, ct).ConfigureAwait(false);
+            webIdentity = await web.GetIdentityAsync(skipFirmwareCheck: true, ct: ct).ConfigureAwait(false);
+            existing = await ProbeExistingSshAsync(webIdentity, ct).ConfigureAwait(false);
+            match = existing is null ? await FindMatchingAdbAsync(webIdentity, ct).ConfigureAwait(false) : null;
+        }
+        var rootAlreadyAvailable = existing is not null || match is not null;
+        // Unknown firmware is accepted only through an already working, matched
+        // root shell. It never inherits the firmware-specific backup activation.
+        if (!rootAlreadyAvailable && (webIdentity is null || !IsB31(webIdentity) && !IsAllowedB02(webIdentity)))
+            throw new InvalidOperationException("Сначала нужен работающий root USB ADB или проверенный SSH. Способ включения доступа этой прошивки не подтверждён.");
+        var genericAccess = rootAlreadyAvailable && InstallerProfile(webIdentity, existing ?? match!.Value.Identity) == "linux-arm64-access";
+        var encrypted = genericAccess ? Array.Empty<byte>() : await web.DownloadFreshBackupAsync(ct).ConfigureAwait(false);
+        if (webIdentity is not null && await web.GetIdentityAsync(skipFirmwareCheck: true, ct: ct).ConfigureAwait(false) != webIdentity)
+            throw new InvalidDataException("Устройство изменилось во время предварительной проверки.");
         var backupDirectory = Path.Combine(_storage, "SetupBackups", Guid.NewGuid().ToString("D"));
         Directory.CreateDirectory(backupDirectory);
-        await WritePrivateAsync(Path.Combine(backupDirectory, "back_parameter.original"), encrypted, ct)
-            .ConfigureAwait(false);
+        if (!genericAccess) await WritePrivateAsync(Path.Combine(backupDirectory, "back_parameter.original"), encrypted, ct).ConfigureAwait(false);
         await WriteJsonAsync(Path.Combine(backupDirectory, "identity.json"), webIdentity, ct).ConfigureAwait(false);
         await WriteJsonAsync(Path.Combine(backupDirectory, "manifest.json"), new
         {
-            encryptedSHA256 = Sha(encrypted), suffixVerified = false,
-            sourceBackupFile = "back_parameter.original",
+            encryptedSHA256 = genericAccess ? null : Sha(encrypted), suffixVerified = false,
+            sourceBackupFile = genericAccess ? null : "back_parameter.original",
+            accessBackup = genericAccess ? "remote-transaction-file-snapshots" : "encrypted-original-and-remote-file-snapshots",
         }, ct).ConfigureAwait(false);
 
         var pending = await LoadPendingAsync(ct).ConfigureAwait(false);
@@ -167,13 +191,18 @@ public sealed class OnboardingEngine
             pending = new OnboardingPending
             {
                 Id = Guid.NewGuid().ToString("D"), WebIdentity = webIdentity,
+                Intent = genericAccess ? "linux-arm64-access" : "preparation",
+                IdentitySource = webIdentity is null ? "single-usb" : "web-matched",
+                Cid = match?.Identity.Cid, BootId = match?.Identity.BootId,
+                FirmwareHash = match?.Identity.FirmwareHash, RouterHash = match?.Identity.RouterHash,
+                Profile = genericAccess ? "linux-arm64-access" : null,
                 BackupDirectory = backupDirectory,
             };
             await SavePendingAsync(pending, ct).ConfigureAwait(false);
         }
         else
         {
-            if (pending.WebIdentity != webIdentity || !Guid.TryParse(pending.Id, out _))
+            if (pending.WebIdentity != webIdentity || pending.IdentitySource != (webIdentity is null ? "single-usb" : "web-matched") || !Guid.TryParse(pending.Id, out _))
                 throw new InvalidDataException("Незавершённая настройка относится к другому устройству.");
             if (!pending.RestoreRequested && !pending.InstallRequested && !pending.DiagnosticRebootRequested)
             {
@@ -183,31 +212,35 @@ public sealed class OnboardingEngine
         }
 
         // An already pinned, verified SSH/agent installation is preserved.
-        var existing = await ProbeExistingSshAsync(webIdentity, ct).ConfigureAwait(false);
         if (existing is not null)
         {
             if (pending.InstallRequested && pending.Phase != "complete")
                 await CommitIfReadyAsync(pending, existing, agentPassword, ct).ConfigureAwait(false);
             await FinishAsync(pending, ct).ConfigureAwait(false);
-            return new OnboardingResult(existing.Cid, existing.FirmwareHash, webIdentity.Imei,
-                KeyPath, KnownHostsPath, true);
+            return new OnboardingResult(existing.Cid, existing.FirmwareHash, webIdentity?.Imei,
+                KeyPath, KnownHostsPath, true, InstallerProfile(webIdentity, existing));
         }
 
         _progress?.Invoke("Проверка уже работающего USB ADB: транспорт, root и идентичность модема.");
-        var match = await FindMatchingAdbAsync(webIdentity, ct).ConfigureAwait(false);
-        match = await EnsureAdbAsync(web, webIdentity, encrypted, pending, match, webPassword, backupKeySuffix, ct).ConfigureAwait(false);
+        if (match is null)
+            match = await EnsureAdbAsync(web, webIdentity ?? throw new InvalidDataException("Web identity is required for activation."), encrypted, pending, match, webPassword, backupKeySuffix, ct).ConfigureAwait(false);
         var (serial, identity) = match.Value;
         _progress?.Invoke("USB ADB подтверждён: root, ARM64 и идентичность модема совпали. Проверяется профиль установщика.");
         var profile = InstallerProfile(webIdentity, identity);
+        _genericAccess = profile == "linux-arm64-access";
+        if (_genericAccess) await VerifySingleUsbAsync(serial, ct).ConfigureAwait(false);
         if (pending.Cid is not null && pending.Cid != identity.Cid ||
             pending.FirmwareHash is not null && pending.FirmwareHash != identity.FirmwareHash ||
-            pending.Profile is not null && pending.Profile != profile)
+            pending.Profile is not null && pending.Profile != profile ||
+            pending.RouterHash is not null && pending.RouterHash != identity.RouterHash ||
+            profile == "linux-arm64-access" && pending.BootId is not null && pending.BootId != identity.BootId)
             throw new InvalidDataException("Устройство или профиль незавершённой установки изменился.");
         pending.Cid = identity.Cid;
         pending.AdbSerial = serial;
         pending.Profile = profile;
         pending.FirmwareHash = identity.FirmwareHash;
-        pending.RouterHash = ImeiEngine.RouterHash;
+        pending.RouterHash = identity.RouterHash;
+        pending.BootId = identity.BootId;
         await SavePendingAsync(pending, ct).ConfigureAwait(false);
 
         if (!pending.CanStartInstallation)
@@ -215,7 +248,7 @@ public sealed class OnboardingEngine
                 .ConfigureAwait(false);
         var installer = StrictUtf8.GetString(await File.ReadAllBytesAsync(
             Path.Combine(_resources, "Onboarding", "setup-agent.sh"), ct).ConfigureAwait(false));
-        var policy = new[] { identity.Cid, profile, identity.FirmwareHash, ImeiEngine.RouterHash };
+        var policy = InstallerPolicy(identity, profile);
         var preflight = await AdbTextAsync(serial,
             "sh -c " + Quote(installer) + " -- " +
             string.Join(' ', new[] { "--preflight" }.Concat(policy).Select(Quote)),
@@ -225,8 +258,7 @@ public sealed class OnboardingEngine
 
         var publicKey = await CreateKeyAsync(ct).ConfigureAwait(false);
         var stage = "/data/local/tmp/zte-imei-setup-" + pending.Id;
-        var owner = string.Join(' ', new[] { pending.Id, identity.Cid, profile,
-            identity.FirmwareHash, ImeiEngine.RouterHash });
+        var owner = string.Join(' ', new[] { pending.Id }.Concat(policy));
         if (await ReadAdbIdentityAsync(serial, webIdentity, ct).ConfigureAwait(false) != identity)
             throw new InvalidDataException("CID изменился перед передачей установщика.");
         if (await AdbTextAsync(serial, StagePreparationCommand(stage, owner),
@@ -235,7 +267,7 @@ public sealed class OnboardingEngine
         var credentialFile = Path.Combine(_storage, "SetupBackups", "credential-" + Guid.NewGuid().ToString("N"));
         try
         {
-            await WritePrivateAsync(credentialFile, AgentStartup(agentPassword), ct).ConfigureAwait(false);
+            await WritePrivateAsync(credentialFile, AgentStartup(agentPassword, profile, _host), ct).ConfigureAwait(false);
             foreach (var name in new[] { "zte-agent", "dropbear", "setup-agent.sh", "start_zte_imei_studio.sh" })
                 await PushStagedAsync(serial, Path.Combine(_resources, "Onboarding", name), stage,
                     name, owner, hashes[name], ct).ConfigureAwait(false);
@@ -253,9 +285,7 @@ public sealed class OnboardingEngine
         await AdbTextAsync(serial, "set -eu; umask 077; set -C; printf '%s\\n' " +
             Quote(owner) + " > " + Quote(stage + "/.install-requested"), TimeSpan.FromSeconds(20), ct)
             .ConfigureAwait(false);
-        var arguments = new[] { stage + "/setup-agent.sh", stage, identity.Cid,
-            hashes["zte-agent"], hashes["dropbear"], Sha(publicKey), profile,
-            identity.FirmwareHash, ImeiEngine.RouterHash };
+        var arguments = new[] { stage + "/setup-agent.sh", stage, identity.Cid, hashes["zte-agent"], hashes["dropbear"], Sha(publicKey) }.Concat(policy.Skip(1)).ToArray();
         var installOutput = await AdbTextAsync(serial, "sh " + string.Join(' ', arguments.Select(Quote)),
             TimeSpan.FromSeconds(100), ct).ConfigureAwait(false);
         await WritePrivateAsync(Path.Combine(pending.BackupDirectory, "installation.log"),
@@ -273,8 +303,8 @@ public sealed class OnboardingEngine
         await CommitIfReadyAsync(pending, verified, agentPassword, ct).ConfigureAwait(false);
         await FinishAsync(pending, ct).ConfigureAwait(false);
         await CleanupStageAsync(serial, stage, ct).ConfigureAwait(false);
-        return new OnboardingResult(identity.Cid, identity.FirmwareHash, webIdentity.Imei,
-            KeyPath, KnownHostsPath, false);
+        return new OnboardingResult(identity.Cid, identity.FirmwareHash, webIdentity?.Imei,
+            KeyPath, KnownHostsPath, false, InstallerProfile(webIdentity, identity));
     }
 
     public Task<AdbAccessResult> EnableDiagnosticAdbAsync(string webPassword, string backupKeySuffix = "",
@@ -307,7 +337,7 @@ public sealed class OnboardingEngine
         {
             // Restore is already committed locally. Resume observation only, even
             // if rebooting firmware has not brought the Web service back yet.
-            webIdentity = pending.WebIdentity;
+            webIdentity = pending.WebIdentity ?? throw new InvalidDataException("Diagnostic journal has no Web identity.");
             _progress?.Invoke("Продолжение проверки ADB после восстановления: повторная отправка не выполняется.");
         }
         else
@@ -505,13 +535,18 @@ public sealed class OnboardingEngine
             identity.Inner == "BD_CNMU5250V1.0.0B" + match.Groups[1].Value;
     }
 
-    private string InstallerProfile(WebIdentity web, DeviceIdentity device)
+    private bool IsAllowedB02(WebIdentity web) => _skipFirmwareCheck && web.Firmware == "STD_PL_MU5250V1.0.0B02" && web.Inner == "BD_STDPLMU5250V1.0.0B02";
+
+    internal static string[] InstallerPolicy(DeviceIdentity device, string profile) =>
+        profile == "linux-arm64-access" ? [device.Cid, profile, device.FirmwareHash, device.RouterHash, device.BootId] : [device.Cid, profile, device.FirmwareHash, device.RouterHash];
+
+    internal string InstallerProfile(WebIdentity? web, DeviceIdentity device)
     {
-        if (IsB31(web) && device.FirmwareHash == ImeiEngine.FirmwareHash) return "b31";
-        if (_skipFirmwareCheck && web.Firmware == "STD_PL_MU5250V1.0.0B02" &&
-            web.Inner == "BD_STDPLMU5250V1.0.0B02" && device.FirmwareHash == B02FirmwareHash)
+        if (web is not null && IsB31(web) && device.FirmwareHash == ImeiEngine.FirmwareHash && device.RouterHash == ImeiEngine.RouterHash) return "b31";
+        if (web is not null && _skipFirmwareCheck && web.Firmware == "STD_PL_MU5250V1.0.0B02" &&
+            web.Inner == "BD_STDPLMU5250V1.0.0B02" && device.FirmwareHash == B02FirmwareHash && device.RouterHash == ImeiEngine.RouterHash)
             return "b02-experimental";
-        throw new InvalidDataException("Установщик поддерживает только проверенную B31 или явно разрешённую B02.");
+        return "linux-arm64-access";
     }
 
     private async Task<Dictionary<string, string>> VerifyAssetsAsync(CancellationToken ct)
@@ -563,21 +598,22 @@ public sealed class OnboardingEngine
         { return null; }
         if (reply.ExitCode is 255 or -1) return null;
         if (!reply.Success) throw new InvalidDataException("SSH отвечает, но не подтвердил root и идентификацию.");
-        var proof = ParseIdentity(reply.Stdout, web);
+        var proof = ParseIdentity(reply.Stdout, web, requireInstallerRouter: false);
         var profile = InstallerProfile(web, proof);
         if (profile == "b31")
         {
             var state = await new ImeiEngine(ssh, _storage, _resources, _skipFirmwareCheck)
                 .InspectAsync(ct).ConfigureAwait(false);
-            if (state.Identity.Cid != proof.Cid || state.Imeis[0] != web.Imei)
+            if (state.Identity.Cid != proof.Cid || state.Imeis[0] != web!.Imei)
                 throw new InvalidDataException("SSH-модем отличается от веб-устройства.");
         }
         await VerifyAgentReadyAsync(ssh, ct).ConfigureAwait(false);
+        if(profile == "linux-arm64-access") await VerifyDiscoveryAgentAsync(ssh, ct).ConfigureAwait(false);
         return proof;
     }
 
-    private async Task<(string Serial, DeviceIdentity Identity)?> FindMatchingAdbAsync(
-        WebIdentity web, CancellationToken ct, bool tolerateDiscoveryFailure = false)
+    internal async Task<(string Serial, DeviceIdentity Identity)?> FindMatchingAdbAsync(
+        WebIdentity? web, CancellationToken ct, bool tolerateDiscoveryFailure = false)
     {
         IReadOnlyList<AdbDevice> devices;
         try
@@ -588,6 +624,8 @@ public sealed class OnboardingEngine
         }
         catch (Exception error) when (tolerateDiscoveryFailure && (error is TimeoutException || error is IOException and not FileNotFoundException))
         { _lastAdbDiagnostic = error.Message; return null; }
+        if (web is null && devices.Count != 1)
+            throw new InvalidOperationException("Для установки без Web оставьте единственное USB ADB-устройство.");
         var matches = new List<(string, DeviceIdentity)>();
         foreach (var device in devices)
         {
@@ -633,41 +671,31 @@ public sealed class OnboardingEngine
     }
 
     private async Task<DeviceIdentity> ReadAdbIdentityAsync(string serial,
-        WebIdentity web, CancellationToken ct)
+        WebIdentity? web, CancellationToken ct)
     {
-        var reply = await _adb.ShellAsync(serial, IdentityCommand(), TimeSpan.FromSeconds(20), ct)
+        if (web is null || _genericAccess) await VerifySingleUsbAsync(serial, ct).ConfigureAwait(false);
+        var reply = await _adb.ShellAsync(serial, web is null ? AccessIdentity.Command : IdentityCommand(), TimeSpan.FromSeconds(20), ct)
             .ConfigureAwait(false);
         if (!reply.Success) throw new InvalidDataException("USB ADB не подтвердил root и идентификацию модема.");
-        return ParseIdentity(reply.Stdout, web, requireInstallerRouter: !_diagnosticAccess);
+        return web is null ? AccessIdentity.Parse(reply.Stdout) : ParseIdentity(reply.Stdout, web, requireInstallerRouter: false);
     }
 
-    private static string IdentityCommand() =>
-        "set -e; test \"$(id -u)\" = 0; test \"$(uname -m)\" = aarch64; " +
-        "sha256sum /firmware/image/modem.b16 /usr/bin/diag-router; " +
-        "cat /sys/block/mmcblk0/device/cid /proc/sys/kernel/random/boot_id; " +
-        "ubus call zwrt_web device_info '{}'";
+    private async Task VerifySingleUsbAsync(string expectedSerial, CancellationToken ct)
+    {
+        var selected = await _adb.SelectSingleUsbSerialAsync(ct).ConfigureAwait(false);
+        var proof = await _adb.RunAsync(["-d", "get-serialno"], TimeSpan.FromSeconds(10), ct).ConfigureAwait(false);
+        if (selected != expectedSerial || !proof.Success || proof.Stdout.Length > 1024 || StrictUtf8.GetString(proof.Stdout).Trim() != expectedSerial)
+            throw new InvalidDataException("Выбранное единственное USB-устройство изменилось.");
+    }
+
+    private static string IdentityCommand() => AccessIdentity.Command + "\nubus call zwrt_web device_info '{}'";
 
     internal static DeviceIdentity ParseIdentity(byte[] bytes, WebIdentity web, bool requireInstallerRouter = true)
     {
         if (bytes.Length > 65536) throw new InvalidDataException("Слишком большой ответ идентификации.");
-        var text = AdbShellOutput.NormalizeText(StrictUtf8.GetString(bytes));
-        var lines = text.Split('\n');
+        var lines = AdbShellOutput.NormalizeText(StrictUtf8.GetString(bytes)).Split('\n');
         if (lines.Length < 5) throw new InvalidDataException("Неполная идентификация модема.");
-        static string HashLine(string line, string path)
-        {
-            var fields = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-            if (fields.Length != 2 || fields[1] != path || !HashLinePattern.IsMatch(fields[0]))
-                throw new InvalidDataException("Неверная контрольная сумма компонента прошивки.");
-            return fields[0];
-        }
-        var firmware = HashLine(lines[0], "/firmware/image/modem.b16");
-        var router = HashLine(lines[1], "/usr/bin/diag-router");
-        var cid = lines[2].Trim();
-        var boot = lines[3].Trim();
-        if (cid.Length != 32 ||
-            cid.Any(c => c is not (>= '0' and <= '9' or >= 'a' and <= 'f')) ||
-            !Guid.TryParse(boot, out _))
-            throw new InvalidDataException("Неверные CID или boot ID.");
+        var measured = AccessIdentity.Parse(Encoding.UTF8.GetBytes(string.Join('\n', lines.Take(4))));
         using var document = JsonDocument.Parse(string.Join('\n', lines.Skip(4)));
         var root = document.RootElement;
         if (root.ValueKind != JsonValueKind.Object ||
@@ -675,9 +703,9 @@ public sealed class OnboardingEngine
             root.GetProperty("integrate_version").GetString() != web.Firmware ||
             root.GetProperty("wa_inner_version").GetString() != web.Inner)
             throw new InvalidDataException("USB/SSH и Web относятся к разным устройствам.");
-        if (requireInstallerRouter && router != ImeiEngine.RouterHash)
-            throw new InvalidOperationException("Модем отвечает через root shell, но версия diag-router не поддерживается установщиком. Автоматическая подготовка остановлена; включать ADB повторно не требуется.");
-        return new DeviceIdentity(cid, firmware, boot);
+        if (requireInstallerRouter && (measured.RouterHash != ImeiEngine.RouterHash || measured.FirmwareHash == "absent"))
+            throw new InvalidOperationException("Этот профиль требует подтверждённый diag-router; допуск к доступу проверяется отдельно.");
+        return measured;
     }
 
     private async Task<string> AdbTextAsync(string serial, string command,
@@ -707,9 +735,11 @@ public sealed class OnboardingEngine
     private static string Quote(string text) => "'" + text.Replace("'", "'\\''", StringComparison.Ordinal) + "'";
     private static string Sha(byte[] data) => Convert.ToHexString(SHA256.HashData(data)).ToLowerInvariant();
 
-    private static byte[] AgentStartup(string password)
+    internal static byte[] AgentStartup(string password, string profile = "b31", string host = "192.168.0.1")
     {
+        WebTransport.ValidateIpv4(host);
         var text = "#!/bin/sh\nexport ZTE_AGENT_PASSWORD=" + Quote(password) +
+            (profile == "linux-arm64-access" ? "\nexport ZTE_AGENT_MODE='discovery'\nexport ZTE_AGENT_BIND=" + Quote(host + ":9090") : "\nunset ZTE_AGENT_MODE\nunset ZTE_AGENT_BIND") +
             "\nunset ZTE_AGENT_PIN\ntrap '' HUP\n" +
             "nohup sh -c '/data/zte-agent 2>&1 | logger -t zte-agent' >/dev/null 2>&1 </dev/null &\n";
         return Encoding.UTF8.GetBytes(text);
@@ -814,7 +844,7 @@ public sealed class OnboardingEngine
     }
 
     private async Task<OnboardingResult> ResumeInstallationAsync(OnboardingPending pending,
-        string serial, DeviceIdentity identity, WebIdentity web, string agentPassword, CancellationToken ct)
+        string serial, DeviceIdentity identity, WebIdentity? web, string agentPassword, CancellationToken ct)
     {
         var journal = "/data/local/tmp/zte-imei-installations/" + pending.Id;
         var state = await AdbTextAsync(serial, "cat " + Quote(journal + "/state"),
@@ -826,12 +856,12 @@ public sealed class OnboardingEngine
         pending.RemoteJournal = journal;
         await CommitIfReadyAsync(pending, verified, agentPassword, ct).ConfigureAwait(false);
         await FinishAsync(pending, ct).ConfigureAwait(false);
-        return new OnboardingResult(identity.Cid, identity.FirmwareHash, web.Imei,
-            KeyPath, KnownHostsPath, false);
+        return new OnboardingResult(identity.Cid, identity.FirmwareHash, web?.Imei,
+            KeyPath, KnownHostsPath, false, InstallerProfile(web, identity));
     }
 
     private async Task<DeviceIdentity> PinAndVerifySshAsync(string serial,
-        DeviceIdentity device, WebIdentity web, string agentPassword, CancellationToken ct)
+        DeviceIdentity device, WebIdentity? web, string agentPassword, CancellationToken ct)
     {
         if (await ReadAdbIdentityAsync(serial, web, ct).ConfigureAwait(false) != device)
             throw new InvalidDataException("CID изменился перед чтением SSH host key.");
@@ -850,19 +880,23 @@ public sealed class OnboardingEngine
             Encoding.ASCII.GetBytes("[" + _host + "]:2222 ssh-ed25519 " + fields[1] + "\n"), ct)
             .ConfigureAwait(false);
         var ssh = new SshTransport(_host, 2222, KeyPath, KnownHostsPath);
-        var reply = await ssh.RunAsync(IdentityCommand(), timeout: TimeSpan.FromSeconds(20), ct: ct)
+        var reply = await ssh.RunAsync(web is null ? AccessIdentity.Command : IdentityCommand(), timeout: TimeSpan.FromSeconds(20), ct: ct)
             .ConfigureAwait(false);
-        if (!reply.Success || ParseIdentity(reply.Stdout, web) != device)
+        if (!reply.Success || (web is null ? AccessIdentity.Parse(reply.Stdout) : ParseIdentity(reply.Stdout, web, requireInstallerRouter: false)) != device)
             throw new InvalidDataException("SSH подключён к другому устройству после установки.");
         await VerifyAgentReadyAsync(ssh, ct).ConfigureAwait(false);
-        if (IsB31(web))
+        if (InstallerProfile(web, device) == "b31")
         {
             var state = await new ImeiEngine(ssh, _storage, _resources, _skipFirmwareCheck)
                 .InspectAsync(ct).ConfigureAwait(false);
-            if (state.Identity.Cid != device.Cid || state.Imeis[0] != web.Imei)
+            if (state.Identity.Cid != device.Cid || state.Imeis[0] != web!.Imei)
                 throw new InvalidDataException("IMEI в NV и веб-интерфейсе различаются.");
         }
-        else await AuthenticateAgentAsync(ssh, agentPassword, ct).ConfigureAwait(false);
+        else
+        {
+            if(InstallerProfile(web,device)=="linux-arm64-access")await VerifyDiscoveryAgentAsync(ssh,ct).ConfigureAwait(false);
+            await AuthenticateAgentAsync(ssh, agentPassword, ct).ConfigureAwait(false);
+        }
         return device;
     }
 
@@ -876,6 +910,33 @@ public sealed class OnboardingEngine
                 data.AsSpan(15, 4).SequenceEqual(new byte[] { 0, 0, 0, 32 });
         }
         catch (FormatException) { return false; }
+    }
+
+    internal string DiscoveryAgentCommand() => """
+        set -eu
+        test "$(sha256sum /data/zte-agent | cut -d ' ' -f1)" = EXPECTED_AGENT
+        found=0
+        for p in $(pidof zte-agent); do
+          case "$p" in ''|*[!0-9]*) exit 71;; esac
+          if test "$(readlink /proc/$p/exe)" = /data/zte-agent; then
+            test "$(sha256sum /proc/$p/exe | cut -d ' ' -f1)" = EXPECTED_AGENT
+            test "$(tr '\000' '\n' < /proc/$p/environ | sed -n '/^ZTE_AGENT_MODE=/p')" = ZTE_AGENT_MODE=discovery
+            test "$(tr '\000' '\n' < /proc/$p/environ | sed -n '/^ZTE_AGENT_BIND=/p')" = EXPECTED_BIND
+            found=$((found+1))
+          fi
+        done
+        test "$found" = 1
+        printf AGENT_DISCOVERY_READY
+        """.Replace("EXPECTED_AGENT",Quote(AgentPackage.Sha256),StringComparison.Ordinal)
+            .Replace("EXPECTED_BIND",Quote("ZTE_AGENT_BIND="+_host+":9090"),StringComparison.Ordinal);
+
+    private async Task VerifyDiscoveryAgentAsync(SshTransport ssh,CancellationToken ct)
+    {
+        // Health is authenticated. Prove the running process mode without an
+        // unauthenticated request; the separate login still verifies readiness.
+        var reply=await ssh.RunAsync(DiscoveryAgentCommand(),timeout:TimeSpan.FromSeconds(20),ct:ct).ConfigureAwait(false);
+        if(!reply.Success || !reply.Stdout.AsSpan().SequenceEqual("AGENT_DISCOVERY_READY"u8))
+            throw new InvalidDataException("Пассивный режим агента не подтверждён; автоматическое продолжение запрещено.");
     }
 
     private static async Task VerifyAgentReadyAsync(SshTransport ssh, CancellationToken ct)
@@ -903,8 +964,8 @@ public sealed class OnboardingEngine
         }
         if (pending.NewAgent == true)
             await AuthenticateAgentAsync(ssh, agentPassword, ct).ConfigureAwait(false);
-        var args = new[] { stage + "/setup-agent.sh", "--commit", journal, device.Cid,
-            pending.Profile ?? "", pending.FirmwareHash ?? "", pending.RouterHash ?? "" };
+        var policy = InstallerPolicy(device, pending.Profile ?? "");
+        var args = new[] { stage + "/setup-agent.sh", "--commit", journal }.Concat(policy).ToArray();
         var result = await ssh.RunAsync("sh " + string.Join(' ', args.Select(Quote)),
             timeout: TimeSpan.FromSeconds(40), ct: ct).ConfigureAwait(false);
         if (!result.Success || !StrictUtf8.GetString(result.Stdout).Contains("INSTALL_COMMITTED " + journal,
@@ -950,8 +1011,10 @@ public sealed class OnboardingEngine
         var pending = JsonSerializer.Deserialize<OnboardingPending>(
             await File.ReadAllBytesAsync(PendingPath, ct).ConfigureAwait(false));
         if (pending is null || !Guid.TryParse(pending.Id, out _) ||
-            pending.WebIdentity is null ||
-            pending.Intent != (_diagnosticAccess ? "diagnostic-adb" : "preparation") ||
+            (pending.IdentitySource is not ("single-usb" or "web-matched")) ||
+            (pending.IdentitySource == "web-matched" && pending.WebIdentity is null) ||
+            (pending.IdentitySource == "single-usb" && (pending.WebIdentity is not null || _diagnosticAccess || pending.RestoreRequested || pending.DirectAdbRequested || pending.DiagnosticRebootRequested || pending.Profile != "linux-arm64-access" || pending.Cid is null || !Regex.IsMatch(pending.Cid,"^[0-9a-f]{32}$") || !Guid.TryParseExact(pending.BootId,"D",out _))) ||
+            pending.Intent != (_diagnosticAccess ? "diagnostic-adb" : pending.Profile == "linux-arm64-access" ? "linux-arm64-access" : "preparation") ||
             (_diagnosticAccess && pending.InstallRequested) ||
             (pending.DiagnosticRebootRequested && (!_diagnosticAccess || pending.RestoreRequested || pending.InstallRequested || pending.Phase != "diagnostic-reboot-requested")) ||
             (!pending.DiagnosticRebootRequested && pending.Phase == "diagnostic-reboot-requested") ||

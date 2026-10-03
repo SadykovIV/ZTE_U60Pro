@@ -9,7 +9,11 @@ using ZteImeiStudio.Windows.Research;
 var passed=0;
 void Check(bool condition,string name) { if(!condition)throw new Exception(name);Console.WriteLine("PASS "+name);passed++; }
 var bundled=Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,"../../../../Resources/FirmwareResearch/probes.json"));
-var productionSpec=ResearchSpec.Load(bundled);Check(productionSpec.Probes.Length==38 && productionSpec.Features.Length==18 && productionSpec.Revision==6 && productionSpec.Sha256==ResearchSpec.ExpectedSpecificationSha256,"production probe contract matches pinned digest");
+var productionSpec=ResearchSpec.Load(bundled);Check(productionSpec.Probes.Length==46 && productionSpec.Observations?.Length==45 && productionSpec.Features.Length==19 && productionSpec.Revision==7 && productionSpec.Sha256==ResearchSpec.ExpectedSpecificationSha256,"production probe contract matches pinned digest");
+var genericAccess=productionSpec.Features.Single(f=>f.Id=="generic-access");
+Check(genericAccess.Profiles.Length==0 && genericAccess.Requirements.All(r=>r.Fact!="tool_ubus" && r.Probe!="ubus-inventory" && r.Probe!="firmware-hashes"),"generic access observation has no firmware or vendor API dependency");
+Check(genericAccess.Requirements.Any(r=>r.Probe=="identity" && r.Fact=="root" && r.Expected=="1") && genericAccess.Requirements.Any(r=>r.Fact=="architecture" && r.Expected=="aarch64"),"generic access retains root and ARM64 prerequisites");
+Check(productionSpec.Features.Single(f=>f.Id=="agent").Profiles.Length>0,"full agent updater remains independently firmware-scoped");
 var tampered=Path.Combine(Path.GetTempPath(),"tampered-research-"+Guid.NewGuid().ToString("N")+".json");
 try {File.WriteAllText(tampered,File.ReadAllText(bundled)+" ");try {ResearchSpec.Load(tampered);throw new Exception("tampered spec accepted");}catch(InvalidDataException) {Check(true,"modified probe commands rejected before execution");}}finally {File.Delete(tampered);}
 var fingerprint=new string('a',64);var boot=new string('b',64);
@@ -43,7 +47,7 @@ Check(factory.Opened==0 && report.Probes.Any(p=>p.Stderr.Contains("not confirmed
 var fingerprints=0;factory=new(new FakeShell("ADB",command=>command=="fingerprint" && ++fingerprints>2?Ok("FR_FACT cid_sha256="+new string('c',64)+"\n"):Baseline(command)));report=await Run(factory);
 Check(report.Outcome=="device_changed" && report.Probes.Single(p=>p.Id=="tools").Status=="skipped" && report.Features.All(p=>p.State!="prerequisites_met"),"identity change stops collection and removes positive conclusions");
 factory=new(new FakeShell("ADB",command=>command=="fingerprint"?new("failed",127,"","sha256sum missing"):Baseline(command)));report=await Run(factory);
-Check(report.Outcome=="partial" && report.Probes.Single(p=>p.Id=="tools").Status=="skipped","missing fingerprint tool retains evidence and stops scoped collection");
+Check(report.Outcome=="partial" && report.Probes.Single(p=>p.Id=="tools").Status=="success" && report.BindingStrength=="transport-only" && report.Features.All(x=>x.State!="prerequisites_met"),"missing fingerprint tool permits observations without authorization");
 factory=new(new FakeShell("ADB",Baseline)) {SshConfigured=true,SshError=new SshTrustException("host key mismatch",new SocketException())};report=await Run(factory,"Автоматически");
 Check(factory.ListCalls==0 && report.Probes.Any(p=>p.Stderr.Contains("host key mismatch")),"host-key mismatch stops before ADB fallback");
 factory=new(new FakeShell("ADB",Baseline)) {SshConfigured=true,SshError=new InvalidDataException("invalid pinned key")};report=await Run(factory,"Автоматически");

@@ -173,6 +173,12 @@ fn handle_request(mut request: Request, state: &AppState) {
         return;
     }
 
+    if !state.mode.permits(&method, &path) {
+        let (status, body) = crate::agent_mode::denied();
+        respond(request, status, body, origin_ref);
+        return;
+    }
+
     // The LAN confirmation nonce authorises only the pending change. It lets
     // the browser prove connectivity without sending its session bearer token
     // to a new IP that might already be occupied by another host.
@@ -315,13 +321,21 @@ pub fn route(
     client_ip: &str,
     user_agent: Option<&str>,
 ) -> (u16, Value) {
+    // Keep this gate in the dispatcher as well: tests and internal callers
+    // must not bypass the HTTP entry point.
+    if !state.mode.permits(method, path) { return crate::agent_mode::denied(); }
     match (method, path) {
         // Auth
         (&Method::Post, "/api/auth/login") => handlers::login(state, body, client_ip, user_agent),
         // Batch — the dashboard's heartbeat; feeds Home, Signal and Modem/Data
         (&Method::Get, "/api/dashboard") => handlers::dashboard(state),
         // Device / system
-        (&Method::Get, "/api/health") => agent_health(),
+        (&Method::Get, "/api/health") => {
+            let (status, mut body) = agent_health();
+            body["data"]["mode"] = json!(state.mode.name());
+            (status, body)
+        },
+        (&Method::Get, "/api/capabilities") => (200, state.mode.capabilities()),
         (&Method::Get, "/api/device") => handlers::device(state),
         (&Method::Get, "/api/cpu") => handlers::cpu(state),
         (&Method::Get, "/api/memory") => handlers::memory(state),
@@ -523,6 +537,25 @@ fn respond(request: Request, status: u16, body: Value, origin: Option<&str>) {
 mod tests {
     use super::{agent_health, is_at_command_allowed};
 
+    #[test]
+    fn direct_dispatch_cannot_bypass_discovery_mode() {
+        let state = crate::handlers::AppState::with_mode(crate::agent_mode::AgentMode::Discovery);
+        // Dispatch must reject these without invoking external tools or sysfs writes.
+        for (method, path) in [(tiny_http::Method::Post,"/api/router/lan/confirm"),
+            (tiny_http::Method::Put,"/api/device/charge-control"),
+            (tiny_http::Method::Get,"/api/dashboard"),
+            (tiny_http::Method::Post,"/api/esim/enable")] {
+            let (status,body)=super::route(&method,path,&state,b"{}","127.0.0.1",None);
+            assert_eq!(status,403);assert_eq!(body["code"],"CAPABILITY_NOT_ASSESSED");
+        }
+        let (status,body)=super::route(&tiny_http::Method::Get,"/api/health",&state,b"","127.0.0.1",None);
+        assert_eq!(status,200);assert_eq!(body["data"]["mode"],"discovery");
+        let (status,body)=super::route(&tiny_http::Method::Get,"/api/capabilities",&state,b"","127.0.0.1",None);
+        assert_eq!(status,200);assert_eq!(body["data"]["read_only"],true);
+        state.auth.set_password("fixture-password");
+        let (status,body)=super::route(&tiny_http::Method::Post,"/api/auth/login",&state,br#"{"password":"fixture-password"}"#,"127.0.0.1",None);
+        assert_eq!(status,200);assert!(body["data"]["token"].as_str().is_some());
+    }
     #[test]
     fn every_esim_job_route_requires_normal_bearer_auth() {
         for path in ["/api/esim/capabilities", "/api/esim/jobs", "/api/esim/jobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"] {

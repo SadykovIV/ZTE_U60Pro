@@ -365,16 +365,16 @@ public sealed partial class WindowsModemService : IModemService
         _ssh = null; _imei = null; _features = null; _serial = null; _adbCid = null;
         _snapshot = new DeviceSnapshot(false, "SSH не подключён; проверьте доступ или выполните предварительную подготовку.", IpAddress: host);
         var ssh = new SshTransport(host,_port,KeyPath,KnownHostsPath);
-        var imei = new ImeiEngine(ssh,_storage,_resources,_skipFirmwareCheck);
-        var identity = await imei.IdentityAsync(ct);
+        var imei = new ImeiEngine(ssh,_storage,_resources);
+        var identity = await imei.MeasuredIdentityAsync(ct);
         _ssh = ssh; _imei = imei; _features = new DeviceFeatureService(ssh,_resources,_storage); _serial = null; _adbCid = null;
-        var supported = identity.FirmwareHash == ImeiEngine.FirmwareHash;
-        _snapshot = new DeviceSnapshot(true,supported ? "Подключено по SSH" : "Подключено по SSH · экспериментальный режим прошивки",
+        var supported = identity.FirmwareHash == ImeiEngine.FirmwareHash && identity.RouterHash == ImeiEngine.RouterHash;
+        _snapshot = new DeviceSnapshot(true,supported ? "Подключено по SSH" : "Подключено по SSH · доступ подтверждён; функции проверяются отдельно",
             IpAddress:host,ConnectionMode:"SSH",Serial:identity.Cid);
-        await HydrateConnectedAsync(supported,ct);
+        await HydrateConnectedAsync(supported && Param(values,"access_only")!="true",ct);
         await File.WriteAllTextAsync(Path.Combine(_storage,"connection.json"),JsonSerializer.Serialize(new { host, port = _port, key_path = _keyPath, known_hosts_path = _knownHostsPath }),ct);
         return supported ? "SSH подключён; CID и прошивка проверены." :
-            "SSH подключён в экспериментальном режиме. Запись IMEI и B31-компонентов заблокирована.";
+            "SSH подключён: root и устройство подтверждены. Установка доступа проверяется отдельно; IMEI и компоненты этой прошивки не разрешены автоматически.";
     }
     private async Task<string> RefreshDeviceAsync(CancellationToken ct)
     {

@@ -6,10 +6,13 @@ struct ResearchProfile: Codable, Sendable { let id: String; let firmwareSHA256: 
 struct ResearchProbe: Codable, Sendable { let id: String; let title: ResearchText; let category: String; let command: String; let timeoutSeconds: Int; let maxBytes: Int }
 struct ResearchRequirement: Codable, Sendable { let probe: String; let fact: String; let equals: String; let label: ResearchText; var platforms: [String]? = nil }
 struct ResearchFeature: Codable, Sendable { let id: String; let title: ResearchText; let profiles: [String]; let platforms: [String]?; let requirements: [ResearchRequirement]; let limitations: ResearchText }
+struct ResearchObservation: Codable, Sendable { let id: String; let title: ResearchText; let probe: String; let fact: String }
+struct ResearchObservationResult: Codable, Sendable, Identifiable { let id: String; let title: ResearchText; let probe: String; let fact: String; let state: String; let value: String?; var sourceStatus: String? = nil; var sourceExitCode: Int32? = nil; var reason: String? = nil }
 struct ResearchSpecification: Codable, Sendable {
     // Updated only when the reviewed, bundled command allowlist changes.
-    static let expectedSHA256 = "c89a709250317d1552ceb73fb3c10583b926ed2b09a5816c3aa3c66a98ee8f3c"
+    static let expectedSHA256 = "86b3e60ef1ac531ee68c6394e23c06fe96f31756162b99a41be704b042e73223"
     let schemaVersion: Int; let revision: Int; let profiles: [ResearchProfile]; let probes: [ResearchProbe]; let features: [ResearchFeature]
+    var observations: [ResearchObservation]? = nil
     static func load(_ resources: URL) throws -> Self {
         let path = resources.appendingPathComponent("FirmwareResearch/probes.json")
         let fd = open(path.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
@@ -24,12 +27,14 @@ struct ResearchSpecification: Codable, Sendable {
         return value
     }
     func validate() throws {
-        try require(schemaVersion == 1 && (1...100).contains(probes.count), "Unsupported research specification")
+        try require(schemaVersion == 1 && (1...64).contains(probes.count), "Unsupported research specification")
         let ids = probes.map(\.id)
         try require(Set(ids).count == ids.count, "Duplicate research probe")
         for item in probes {
             try require(item.id.range(of: #"^[a-z0-9][a-z0-9-]{0,63}$"#, options: .regularExpression) != nil && (1...120).contains(item.timeoutSeconds) && (128...262144).contains(item.maxBytes) && item.command.utf8.count <= 32768, "Invalid research probe")
         }
+        try require(Set((observations ?? []).map(\.id)).count == (observations ?? []).count && (observations ?? []).count <= 256, "Invalid research observations")
+        for item in observations ?? [] { try require(ids.contains(item.probe) && item.fact.range(of: #"^[a-z0-9_]{1,80}$"#, options: .regularExpression) != nil, "Unknown observation source") }
         for feature in features { for requirement in feature.requirements { try require(ids.contains(requirement.probe), "Unknown research prerequisite") } }
     }
 }
@@ -103,6 +108,9 @@ struct ResearchConnectionAttempt: Codable, Sendable { let transport: String; let
 struct FirmwareResearchReport: Codable, Sendable {
     var schemaVersion = 1; var id = UUID().uuidString.lowercased(); var startedAt: String; var finishedAt = ""
     var specificationRevision: Int; var transport = "none"; var outcome = "collecting"; var profile: String?
+    var bindingStrength: String? = nil
+    var authorization: String? = nil
+    var observations: [ResearchObservationResult]? = nil
     var bootstrapCommand = FirmwareResearchCollector.bootstrap
     var binding: [String: String] = [:]; var attempts: [ResearchConnectionAttempt] = []; var warnings: [String] = []
     var probes: [ResearchProbeResult] = []; var features: [ResearchFeatureResult] = []; var application: [String: String]
@@ -127,7 +135,20 @@ struct ResearchRedactor {
 
 final class FirmwareResearchCollector {
     static let totalLimit = 16 * 1024 * 1024
-    static let bootstrap = "printf 'uid='; id -u; printf 'architecture='; uname -m; if command -v sha256sum >/dev/null 2>&1; then printf 'cid='; sha256sum /sys/block/mmcblk0/device/cid 2>/dev/null | cut -d ' ' -f 1; printf '\\nboot='; sha256sum /proc/sys/kernel/random/boot_id 2>/dev/null | cut -d ' ' -f 1; fi; printf '\\n'"
+    static let bootstrap = """
+    printf 'uid='; id -u; printf 'architecture='; uname -m
+    zte_hash=none
+    if command -v sha256sum >/dev/null 2>&1; then zte_hash=sha256sum
+    elif command -v busybox >/dev/null 2>&1 && busybox sha256sum /dev/null >/dev/null 2>&1; then zte_hash=busybox; fi
+    for zte_key in cid boot; do
+      if test "$zte_key" = cid; then zte_file=/sys/block/mmcblk0/device/cid; else zte_file=/proc/sys/kernel/random/boot_id; fi
+      printf '%s=' "$zte_key"
+      if test "$zte_hash" = sha256sum; then sha256sum "$zte_file" 2>/dev/null | cut -d ' ' -f 1
+      elif test "$zte_hash" = busybox; then busybox sha256sum "$zte_file" 2>/dev/null | cut -d ' ' -f 1
+      fi
+      printf '\n'
+    done
+    """
     let specification: ResearchSpecification; let connection: Connection; let mode: ConnectionMode; let resources: URL
     let cancellation: ResearchCancellation; let runner: ResearchProcessRunning; let expectedCID: String?
     var redactor: ResearchRedactor
@@ -139,16 +160,26 @@ final class FirmwareResearchCollector {
          "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes", "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=5", "-o", "ConnectionAttempts=1",
          "-o", "StrictHostKeyChecking=yes", "-o", "GlobalKnownHostsFile=/dev/null", "-o", "UserKnownHostsFile=\"" + connection.knownHostsPath.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\"", "root@" + connection.host]
     }
-    private func execute(_ command: String, transport: String, serial: String, timeout: Int, limit: Int) throws -> ResearchCommandResult {
+    private func execute(_ command: String, transport: String, serial: String, timeout: Int, limit: Int, deadline: Date) throws -> ResearchCommandResult {
+        let commandDeadline = min(deadline, Date().addingTimeInterval(TimeInterval(timeout)))
+        func remaining() throws -> TimeInterval {
+            let value = commandDeadline.timeIntervalSinceNow
+            try require(value > 0 && !cancellation.cancelled, "Research time limit reached or cancelled before the next command.")
+            return value
+        }
         if transport == "ssh" {
-            var result = try runner.run(URL(fileURLWithPath: "/usr/bin/ssh"), arguments: sshArguments + [command], timeout: TimeInterval(timeout), maxBytes: limit, cancellation: cancellation)
+            var result = try runner.run(URL(fileURLWithPath: "/usr/bin/ssh"), arguments: sshArguments + [command], timeout: try remaining(), maxBytes: limit, cancellation: cancellation)
             result.localExitCode = result.localExitCode ?? (result.status >= 0 ? result.status : nil)
             if (result.outcome == "success" || result.outcome == "failed") && result.status != 255 { result.remoteExitCode = result.status }
             return result
         }
+        let physical = try runner.run(resources.appendingPathComponent("Onboarding/adb"), arguments: ["-d", "get-serialno"], timeout: min(try remaining(), 5), maxBytes: 4096, cancellation: cancellation)
+        let physicalSerial = CommandText.decode(physical.stdout).trimmingCharacters(in: .whitespacesAndNewlines)
+        try require(physical.outcome == "success" && physical.status == 0 && physicalSerial == serial,
+                    "Physical USB identity is unavailable or changed; collection stopped without selecting another transport.")
         let marker = "__ZTE_RESULT_" + UUID().uuidString.replacingOccurrences(of: "-", with: "") + "__"
         let wrapped = "(" + command + "); zte_code=$?; printf '\\n" + marker + "%s\\n' \"$zte_code\""
-        var result = try runner.run(resources.appendingPathComponent("Onboarding/adb"), arguments: ["-s", serial, "shell", wrapped], timeout: TimeInterval(timeout), maxBytes: limit, cancellation: cancellation)
+        var result = try runner.run(resources.appendingPathComponent("Onboarding/adb"), arguments: ["-s", serial, "shell", wrapped], timeout: try remaining(), maxBytes: limit, cancellation: cancellation)
         result.localExitCode = result.localExitCode ?? (result.status >= 0 ? result.status : nil)
         if result.outcome == "success" {
             do { let decoded = try ADBClient.decodeShellResult(CommandResult(status: result.status, stdout: result.stdout, stderr: result.stderr), marker: marker); result.status = decoded.status; result.remoteExitCode = decoded.status; result.stdout = decoded.stdout; result.outcome = decoded.status == 0 ? "success" : "failed" }
@@ -157,17 +188,23 @@ final class FirmwareResearchCollector {
         return result
     }
     static func binding(_ data: Data) -> [String: String] {
-        var values = [String: String]()
+        var values = [String: String](), seen = Set<String>(), duplicates = Set<String>()
         for line in CommandText.decode(data).split(whereSeparator: \.isNewline) {
             let pair = line.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
             guard pair.count == 2, ["uid", "architecture", "cid", "boot"].contains(String(pair[0])) else { continue }
             let value = String(pair[1]).trimmingCharacters(in: .whitespacesAndNewlines)
             let key = String(pair[0])
+            if !seen.insert(key).inserted { duplicates.insert(key) }
             if key == "cid" || key == "boot" {
                 if value.range(of: #"^[0-9a-f]{64}$"#, options: .regularExpression) != nil { values[key] = value }
             } else if !value.isEmpty && value.utf8.count <= 128 { values[key] = value }
         }
+        for key in duplicates { values.removeValue(forKey: key) }
         return values
+    }
+    static func bindingStrength(_ value: [String: String]) -> String {
+        let count = ["cid", "boot"].filter { value[$0] != nil }.count
+        return count == 2 ? "full" : count == 1 ? "partial" : "transport-only"
     }
     static func sameDevice(_ initial: [String: String], _ later: [String: String]) -> Bool {
         initial.allSatisfy { later[$0.key] == $0.value }
@@ -176,10 +213,10 @@ final class FirmwareResearchCollector {
         var result = [String: String](), duplicates = Set<String>()
         for line in CommandText.normalize(output).split(whereSeparator: \.isNewline) where line.hasPrefix("FR_FACT ") {
             let pair = line.dropFirst(8).split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
-            guard pair.count == 2, pair[0].range(of: #"^[a-z0-9_]{1,80}$"#, options: .regularExpression) != nil, pair[1].utf8.count <= 256 else { continue }
+            guard pair.count == 2, pair[0].range(of: #"^[a-z0-9_]{1,80}$"#, options: .regularExpression) != nil, pair[1].utf8.count <= 512, pair[1].utf8.allSatisfy({ (32...126).contains($0) }) else { continue }
             let key = String(pair[0]); if result[key] != nil { duplicates.insert(key) }; result[key] = String(pair[1])
         }
-        for duplicate in duplicates { result.removeValue(forKey: duplicate) }
+        for duplicate in duplicates { result[duplicate] = "conflicting" }
         return result
     }
     private static func unavailable(_ value: ResearchCommandResult) -> Bool {
@@ -200,7 +237,7 @@ final class FirmwareResearchCollector {
             if mode != .adb {
                 if FileManager.default.isReadableFile(atPath: connection.keyPath) && FileManager.default.isReadableFile(atPath: connection.knownHostsPath) {
                     try connection.validate()
-                    let value = try execute(Self.bootstrap, transport: "ssh", serial: "", timeout: 12, limit: 16384)
+                    let value = try execute(Self.bootstrap, transport: "ssh", serial: "", timeout: 12, limit: 16384, deadline: deadline)
                     let detail = String(decoding: value.stderr, as: UTF8.self)
                     if DiagnosticTransportSelector.hostTrustFailure(detail) { attempt("ssh", "host_trust_failed", detail); throw IMEIError.message("SSH host trust failed; automatic fallback is stopped.") }
                     if value.outcome == "success" { original = Self.binding(value.stdout); transport = "ssh"; attempt("ssh", "available", "Strict SSH host key verification passed; firmware research does not require a known firmware hash or root.") }
@@ -228,7 +265,7 @@ final class FirmwareResearchCollector {
                 var matches = [(String, [String: String])]()
                 for candidate in serials {
                     try require(!cancellation.cancelled && Date() < deadline, "Research device selection stopped or exceeded its time limit.")
-                    let value = try execute(Self.bootstrap, transport: "adb", serial: candidate, timeout: 12, limit: 16384)
+                    let value = try execute(Self.bootstrap, transport: "adb", serial: candidate, timeout: 12, limit: 16384, deadline: deadline)
                     let identity = Self.binding(value.stdout)
                     if value.outcome != "success" { attempt("adb", value.outcome, redactor.output(value.stderr)); continue }
                     if let expectedCIDHash, let found = identity["cid"], expectedCIDHash != found { attempt("adb", "identity_mismatch", "USB ADB device did not match the expected modem."); continue }
@@ -240,7 +277,8 @@ final class FirmwareResearchCollector {
                 attempt("adb", "available", original["uid"] == "0" ? "USB ADB root shell is available." : "USB ADB is available without confirmed root; privilege-dependent results may be unknown.")
             }
             report.transport = transport; report.binding = original.mapValues(redactor.clean)
-            try require(original["cid"] != nil || original["boot"] != nil, "CID and boot fingerprints are both unavailable. Only bootstrap evidence was retained; the modem cannot be bound for further probes.")
+            report.bindingStrength = Self.bindingStrength(original); report.authorization = "none"
+            if report.bindingStrength == "transport-only" { report.warnings.append("CID and boot fingerprints are unavailable. Read-only observations use the same transport endpoint; device continuity is not proven and no writes are authorized.") }
             if let expectedCIDHash, let found = original["cid"] { try require(expectedCIDHash == found, "Connected modem identity differs from the expected modem.") }
             if original["cid"] == nil || original["boot"] == nil { report.warnings.append("CID or boot ID is unavailable. Device continuity has limited evidence; missing facts are not treated as compatible.") }
             if transport == "adb" && expectedCID == nil { report.warnings.append("The sole USB ADB device was selected. Its relationship to the configured WEB IP address is not established.") }
@@ -248,16 +286,16 @@ final class FirmwareResearchCollector {
                 if cancellation.cancelled { report.outcome = "cancelled"; break }
                 if Date() >= deadline { report.outcome = "partial"; report.warnings.append("The eight-minute research time limit was reached."); break }
                 if total >= Self.totalLimit { report.outcome = "partial"; report.warnings.append("The 16 MiB collection limit was reached."); break }
-                let before = try execute(Self.bootstrap, transport: transport, serial: serial, timeout: min(12, max(1, Int(deadline.timeIntervalSinceNow))), limit: 16384)
+                let before = try execute(Self.bootstrap, transport: transport, serial: serial, timeout: min(12, max(1, Int(deadline.timeIntervalSinceNow))), limit: 16384, deadline: deadline)
                 if before.outcome != "success" || !Self.sameDevice(original, Self.binding(before.stdout)) { continuityLost = true; throw IMEIError.message("Device identity or boot changed, or continuity could no longer be checked; collection stopped.") }
-                let value = try execute(probe.command, transport: transport, serial: serial, timeout: min(probe.timeoutSeconds, max(1, Int(deadline.timeIntervalSinceNow))), limit: min(probe.maxBytes, Self.totalLimit - total))
+                let value = try execute(probe.command, transport: transport, serial: serial, timeout: min(probe.timeoutSeconds, max(1, Int(deadline.timeIntervalSinceNow))), limit: min(probe.maxBytes, Self.totalLimit - total), deadline: deadline)
                 total += value.stdout.count + value.stderr.count
                 if value.outcome != "cancelled" {
-                    let after = try execute(Self.bootstrap, transport: transport, serial: serial, timeout: min(12, max(1, Int(deadline.timeIntervalSinceNow))), limit: 16384)
+                    let after = try execute(Self.bootstrap, transport: transport, serial: serial, timeout: min(12, max(1, Int(deadline.timeIntervalSinceNow))), limit: 16384, deadline: deadline)
                     if after.outcome != "success" || !Self.sameDevice(original, Self.binding(after.stdout)) { continuityLost = true; throw IMEIError.message("Device identity or boot changed after a probe; that probe's output was discarded and collection stopped.") }
                 }
                 let stdout = redactor.output(value.stdout), stderr = redactor.output(value.stderr)
-                report.probes.append(.init(id: probe.id, title: probe.title, category: probe.category, command: probe.command, outcome: value.outcome, exitCode: value.remoteExitCode, stdout: stdout, stderr: stderr, durationSeconds: value.duration, facts: Self.facts(stdout), localExitCode: value.localExitCode, remoteExitCode: value.remoteExitCode))
+                report.probes.append(.init(id: probe.id, title: probe.title, category: probe.category, command: probe.command, outcome: value.outcome, exitCode: value.remoteExitCode, stdout: stdout, stderr: stderr, durationSeconds: value.duration, facts: value.outcome == "success" && value.remoteExitCode == 0 ? Self.facts(stdout) : [:], localExitCode: value.localExitCode, remoteExitCode: value.remoteExitCode))
                 progress(report, Double(index + 1) / Double(specification.probes.count))
                 if value.outcome == "cancelled" { report.outcome = "cancelled"; break }
             }
@@ -267,16 +305,40 @@ final class FirmwareResearchCollector {
         for probe in specification.probes where !collected.contains(probe.id) {
             report.probes.append(.init(id: probe.id, title: probe.title, category: probe.category, command: probe.command, outcome: "skipped", exitCode: nil, stdout: "", stderr: "Not collected; see connection attempts and report warnings.", durationSeconds: 0, facts: [:]))
         }
+        report.authorization = "none"
+        report.bindingStrength = report.bindingStrength ?? "transport-only"
+        report.observations = Self.observe(specification, results: report.probes, continuityLost: continuityLost)
         report.profile = Self.profile(specification, results: report.probes)
-        report.features = Self.assess(specification, results: report.probes, profile: report.profile, continuityLost: continuityLost)
+        report.features = Self.assess(specification, results: report.probes, profile: report.profile, continuityLost: continuityLost, bindingComplete: report.bindingStrength == "full")
         report.finishedAt = ISO8601DateFormatter().string(from: Date()); progress(report, 1)
         return report
+    }
+    static func observe(_ specification: ResearchSpecification, results: [ResearchProbeResult], continuityLost: Bool = false) -> [ResearchObservationResult] {
+        var definitions = specification.observations ?? []
+        let mapped = Set(definitions.map { $0.probe + "." + $0.fact })
+        for result in results {
+            for fact in result.facts.keys.sorted() where !mapped.contains(result.id + "." + fact) {
+                definitions.append(.init(id: "fact:" + result.id + ":" + fact, title: .init(ru: fact, en: fact), probe: result.id, fact: fact))
+            }
+        }
+        return definitions.map { item in
+            let probe = results.first { $0.id == item.probe }
+            let raw = probe?.facts[item.fact]
+            let trusted = !continuityLost && probe?.outcome == "success" && probe?.exitCode == 0
+            let state: String
+            if !trusted || raw == nil || ["", "unknown", "not-assessed", "not-performed", "conflicting"].contains(raw!.lowercased()) { state = "not-assessed" }
+            else if ["missing", "absent"].contains(raw!.lowercased()) { state = "absent" }
+            else { state = "known" }
+            let reason = state != "not-assessed" ? nil : continuityLost ? "continuity-lost" : !trusted ? "source-not-success" : raw == nil ? "fact-unavailable" : "fact-not-assessed"
+            return .init(id: item.id, title: item.title, probe: item.probe, fact: item.fact, state: state, value: state == "known" ? raw : nil,
+                sourceStatus: probe?.outcome ?? "missing", sourceExitCode: probe?.exitCode, reason: reason)
+        }
     }
     static func profile(_ specification: ResearchSpecification, results: [ResearchProbeResult]) -> String? {
         guard let identity = results.first(where: { $0.id == "identity" && $0.outcome == "success" }), let hashes = results.first(where: { $0.id == "firmware-hashes" && $0.outcome == "success" }) else { return nil }
         return specification.profiles.first { hashes.facts["firmware_sha256"] == $0.firmwareSHA256 && hashes.facts["router_sha256"] == $0.routerSHA256 && identity.facts["architecture"] == $0.architecture }?.id
     }
-    static func assess(_ specification: ResearchSpecification, results: [ResearchProbeResult], profile: String?, continuityLost: Bool = false) -> [ResearchFeatureResult] {
+    static func assess(_ specification: ResearchSpecification, results: [ResearchProbeResult], profile: String?, continuityLost: Bool = false, bindingComplete: Bool = true) -> [ResearchFeatureResult] {
         specification.features.filter { $0.platforms == nil || $0.platforms!.contains("macos") }.map { feature in
             var blocked = false, unknown = continuityLost, evidence = [ResearchText]()
             if continuityLost { evidence.append(.init(ru: "Непрерывность идентификации устройства нарушена", en: "Device continuity was lost")) }
@@ -286,10 +348,11 @@ final class FirmwareResearchCollector {
             }
             for requirement in feature.requirements where requirement.platforms == nil || requirement.platforms!.contains("macos") {
                 guard let result = results.first(where: { $0.id == requirement.probe }), result.outcome == "success", let value = result.facts[requirement.fact] else { unknown = true; evidence.append(.init(ru: requirement.label.ru + ": неизвестно", en: requirement.label.en + ": unknown")); continue }
-                if ["unknown", "not-assessed", "not-performed"].contains(value.lowercased()) { unknown = true; evidence.append(.init(ru: requirement.label.ru + ": не проверялось", en: requirement.label.en + ": not assessed")) }
+                if ["unknown", "not-assessed", "not-performed", "conflicting", ""].contains(value.lowercased()) { unknown = true; evidence.append(.init(ru: requirement.label.ru + ": не проверялось", en: requirement.label.en + ": not assessed")) }
                 else if value != requirement.equals { blocked = true; evidence.append(.init(ru: requirement.label.ru + ": не выполнено", en: requirement.label.en + ": not met")) }
                 else { evidence.append(.init(ru: requirement.label.ru + ": выполнено", en: requirement.label.en + ": met")) }
             }
+            if !bindingComplete { unknown = true; evidence.append(.init(ru: "Нет полной привязки CID и загрузки; наблюдения не разрешают запись", en: "Full CID and boot binding is unavailable; observations do not authorize writes")) }
             return ResearchFeatureResult(id: feature.id, title: feature.title, state: continuityLost ? "unknown" : blocked ? "blocked" : unknown ? "unknown" : "prerequisites_met", evidence: evidence, limitations: feature.limitations)
         }
     }
@@ -314,7 +377,7 @@ enum FirmwareResearchArchive {
         return report
     }
     static func export(_ report: FirmwareResearchReport, to destination: URL) throws -> String {
-        try require(UUID(uuidString: report.id) != nil && report.probes.count <= 100 && report.features.count <= 100, "Invalid research export dataset")
+        try require(UUID(uuidString: report.id) != nil && report.probes.count <= 64 && report.features.count <= 100, "Invalid research export dataset")
         try require(report.probes.allSatisfy { $0.id.range(of: #"^[a-z0-9][a-z0-9-]{0,63}$"#, options: .regularExpression) != nil }, "Unsafe research probe filename")
         try require(Set(report.probes.map(\.id)).count == report.probes.count, "Duplicate research export probe")
         let work = FileManager.default.temporaryDirectory.appendingPathComponent("zte-research-" + UUID().uuidString)
@@ -327,6 +390,9 @@ enum FirmwareResearchArchive {
         func write(_ data: Data, _ path: String) throws { let target = snapshot.appendingPathComponent(path); try secureDirectory(target.deletingLastPathComponent()); try savePrivate(data, target); manifest.append(["path": path, "sha256": digest(data), "bytes": String(data.count)]) }
         try write(encodedReport, "report.json"); try write(encoder.encode(report.application), "application.json")
         var markdown = "# Исследование прошивки / Firmware research\n\nCreated: \(report.startedAt)\nFinished: \(report.finishedAt)\nTransport: \(report.transport)\nOutcome: \(report.outcome)\nProfile: \(report.profile ?? "unknown")\n\nRead-only evidence, not write compatibility certification. / Сведения только для чтения; успешная проверка предпосылок не гарантирует безопасность операций записи.\n\n"
+        markdown += "Binding: \(report.bindingStrength ?? "not-assessed")\nWrite authorization: none\n\n"
+        for item in report.observations ?? [] { markdown += "- " + item.title.en + ": " + item.state + (item.value.map { " — " + $0 } ?? "") + " (" + item.probe + "." + item.fact + ")\n" }
+        markdown += "\n"
         for warning in report.warnings { markdown += "- " + warning + "\n" }
         markdown += "\n## Connection attempts / Подключения\n\n"
         for attempt in report.attempts { markdown += "- \(attempt.transport): \(attempt.outcome). \(attempt.detail)\n" }

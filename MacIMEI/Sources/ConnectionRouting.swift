@@ -43,7 +43,7 @@ struct ConnectionDeviceSummary: Codable, Equatable, Sendable {
     var model: String? { fields["model"] }
     func validate() throws {
         if let identity {
-            try require(identity.cid.count == 32 && identity.cid.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) } && DeviceBackups.validHash(identity.firmwareHash), "Некорректная идентификация канала")
+            try require(identity.cid.count == 32 && identity.cid.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) } && (DeviceBackups.validHash(identity.firmwareHash) || identity.firmwareHash == "absent"), "Некорректная идентификация канала")
         }
         if let bootID { try require(UUID(uuidString: bootID) != nil, "Некорректный идентификатор загрузки канала") }
         if let imei { try require(IMEI.valid(imei), "Некорректный IMEI канала") }
@@ -313,7 +313,7 @@ final class ConnectionRouter {
         return ChannelSelection(requestedMode: mode, actualMode: chosen, statuses: ConnectionMode.priority.compactMap { statuses[$0] }, session: chosen.flatMap { sessions[$0] }, reason: reason)
     }
     private static func summary(_ proof: DiagnosticDeviceProof) -> ConnectionDeviceSummary {
-        var fields = ["routerSHA256": proof.routerHash]
+        var fields = ["routerSHA256": proof.routerHash, "accessProfile": AccessIdentity.profile(proof, experimental: false)]
         if let web = proof.webIdentity { fields["firmware"] = web.firmware; fields["innerVersion"] = web.inner }
         return ConnectionDeviceSummary(identity: proof.identity, webIdentity: proof.webIdentity, bootID: proof.bootID, fields: fields)
     }
@@ -338,7 +338,7 @@ final class ConnectionRouter {
     private static func sshSession(engine: ModemEngine, remote: RemoteTransport, expected: DiagnosticDeviceExpectation) throws -> ReadOnlyChannelSession {
         do { try engine.connection.validate() }
         catch { throw ConnectionProbeFailure(state: .authenticationRequired, message: "SSH ещё не настроен: " + ActivityJournal.redact(error.localizedDescription)) }
-        let command = DiagnosticTransportSelector.identityCommand(requireWeb: true)
+        let command = expected.requiresWeb ? DiagnosticTransportSelector.identityCommand(requireWeb: true) : AccessIdentity.optionalWebCommand
         let read: () throws -> DiagnosticDeviceProof = {
             let result = try remote.run(command, input: nil, timeout: 15)
             guard result.status == 0 else {
@@ -347,7 +347,7 @@ final class ConnectionRouter {
                 if result.status != 255 && result.status != -1 { throw ConnectionProbeFailure(state: .trustRejected, message: "SSH отвечает, но полная идентификация устройства не подтверждена") }
                 throw CommandFailure(message: "SSH недоступен: " + ActivityJournal.redact(text), partial: result)
             }
-            do { return try DiagnosticTransportSelector.parseIdentity(result.stdout, requireWeb: true) }
+            do { return try AccessIdentity.parseObservation(result.stdout, requireWeb: expected.requiresWeb) }
             catch { throw ConnectionProbeFailure(state: .trustRejected, message: "SSH вернул неполную или некорректную идентификацию устройства") }
         }
         let proof = try read()
@@ -368,11 +368,11 @@ final class ConnectionRouter {
         let discovery = try adb.discovery(), serials = discovery.readyUSBSerials
         guard !serials.isEmpty else { throw ConnectionProbeFailure(state: .unavailable, message: discovery.explanation + " Проверка не включает ADB автоматически.") }
         guard serials.count == 1 || !expected.cids.isEmpty || !expected.imeis.isEmpty else { throw ConnectionProbeFailure(state: .ambiguous, message: "Подключено несколько USB ADB устройств, ожидаемый модем неизвестен") }
-        let command = DiagnosticTransportSelector.identityCommand(requireWeb: true)
+        let command = expected.requiresWeb ? DiagnosticTransportSelector.identityCommand(requireWeb: true) : AccessIdentity.optionalWebCommand
         var matches: [(String, DiagnosticDeviceProof)] = []
         var mismatch = false
         for serial in serials {
-            guard let result = try? adb.shellResult(serial, command, timeout: 20), result.status == 0, let proof = try? DiagnosticTransportSelector.parseIdentity(result.stdout, requireWeb: true) else { continue }
+            guard let result = try? adb.shellResult(serial, command, timeout: 20), result.status == 0, let proof = try? AccessIdentity.parseObservation(result.stdout, requireWeb: expected.requiresWeb) else { continue }
             if binding(summary(proof), expected: expected) == nil { matches.append((serial, proof)) } else { mismatch = true }
         }
         guard matches.count == 1 else {
@@ -383,7 +383,7 @@ final class ConnectionRouter {
             try require(try physicalSerials(adb).contains(serial), "Выбранный USB ADB отключён")
             let result = try adb.shellResult(serial, command, timeout: 20)
             try require(result.status == 0, "Идентификация выбранного USB ADB недоступна")
-            return try DiagnosticTransportSelector.parseIdentity(result.stdout, requireWeb: true)
+            return try AccessIdentity.parseObservation(result.stdout, requireWeb: expected.requiresWeb)
         }
         let session = DiagnosticSession(transport: "adb", reason: "USB ADB выбран при проверке каналов", proof: proof, readIdentity: read) { command, timeout in
             try adb.shellResult(serial, command, timeout: timeout)
