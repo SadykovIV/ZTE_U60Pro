@@ -5,10 +5,11 @@ private final class AuditRunnerFixture: HostCommandRunner {
     var remote: Int32 = 0
     var malformed = false
     var output = "directory ready\n"
+    var eol = "\n"
     func run(_ executable: URL, _ arguments: [String], timeout: TimeInterval) throws -> CommandResult {
         let marker = ADBClient.shellMarker(in: arguments.last ?? "")!
         return CommandResult(status: local,
-            stdout: Data((output + (malformed ? "" : "\n" + marker + String(remote) + "\n")).utf8),
+            stdout: Data((output + (malformed ? "" : "\n" + marker + String(remote) + "\n")).replacingOccurrences(of: "\n", with: eol).utf8),
             stderr: Data())
     }
 }
@@ -41,6 +42,15 @@ private final class AuditRunnerFixture: HostCommandRunner {
         try require(success.result == "completed" && success.details["remoteExitCode"] == "0", "Remote success not confirmed")
         print("PASS confirmed remote success is completed")
 
+        fixture.eol = "\r\r\n"
+        let legacySuccess = try run("crcrlf-completed")
+        try require(legacySuccess.result == "completed" && legacySuccess.details["localExitCode"] == "0" && legacySuccess.details["remoteExitCode"] == "0", "CRCRLF remote success stayed unconfirmed")
+        print("PASS CRCRLF audit confirms local and remote success separately")
+        fixture.remote = 1; fixture.output = "mkdir: No such file or directory\npassword=private-fixture-value\n"
+        let legacyFailure = try run("crcrlf-failed")
+        try require(legacyFailure.result == "failed" && legacyFailure.details["remoteExitCode"] == "1" && legacyFailure.details["remoteError"]?.contains("No such file") == true && !legacyFailure.details.description.contains("private-fixture-value"), "CRCRLF failure lost or exposed cause")
+        print("PASS CRCRLF audit preserves a rejected command and redacts its cause")
+        fixture.eol = "\n"; fixture.remote = 0
         fixture.malformed = true
         let missing = try run("missing-footer")
         try require(missing.result == "failed" && missing.details["localExitCode"] == "0" && missing.details["remoteExitCode"] == nil && missing.details["remoteStatus"] == "unconfirmed", "Missing footer was reported successful")
@@ -61,6 +71,6 @@ private final class AuditRunnerFixture: HostCommandRunner {
         let preflight = ActivityJournal.diagnosticOutput(Data("INSTALL_ERROR MOUNT_LAYOUT\npassword=private-fixture-value\nINSTALL_ERROR secret-with-spaces private-fixture-value\n".utf8), command: "sh -c 'start_zte_agent.sh' -- --preflight")
         try require(preflight.contains("INSTALL_ERROR MOUNT_LAYOUT") && !preflight.contains("private-fixture-value"), "Inline preflight either hid the error or disclosed unrelated output")
         print("PASS inline preflight retains fixed installer errors without credential output")
-        print("RESULT 6 passed; 0 failed")
+        print("RESULT 8 passed; 0 failed")
     }
 }

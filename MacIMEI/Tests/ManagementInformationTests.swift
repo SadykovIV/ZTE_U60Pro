@@ -74,6 +74,12 @@ private final class Stub: RemoteTransport {
             try check(value.volumes.map(\.mount)==["/","/data","/tmp"] && value.readOnlyMounts==["/"],"Bind files must not count as disks")
             try check(value.agentVersion.contains("2.4.1") && value.batteryPercent==78 && value.identity==identity,"Agent/battery/identity")
         }
+        try test("Text sections normalize ADB CRLF and CRCRLF without changing values") {
+            for eol in ["\n", "\r\n", "\r\r\n"] {
+                let value = try ModemInformationManager.parse(info.replacingOccurrences(of: "\n", with: eol), identity: identity, boot: boot)
+                try check(value.cpuCount == 4 && value.architecture == "aarch64" && value.batteryState == "Charging" && value.memoryAvailableKiB == 1024000, "Line endings changed parsed text")
+            }
+        }
         try test("Missing duplicate unknown or trailing sections never masquerade as complete info"){
             for text in [info.replacingOccurrences(of:"__INFO_CPU__\n4\n",with:""),info+"__INFO_ARCH__\naarch64\n",info.replacingOccurrences(of:"__INFO_CPU__",with:"__INFO_FOREIGN__"),info+"\nextraneous",info.replacingOccurrences(of:"__INFO_END__",with:"")] {try reject{_=try ModemInformationManager.parse(text,identity:identity,boot:boot)}}
         }

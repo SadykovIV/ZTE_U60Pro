@@ -17,7 +17,7 @@ private final class FakeRunner: ResearchProcessRunning {
     var calls: [[String]] = []; var sshFailure = "Connection refused"; var sshOutcome = "failed"; var devices = ["USB-SECRET"]
     var nonroot = false; var mismatch = false; var missingIdentity = false; var changeAfter = false; var probeCalls = 0
     var probeOutcome = "success"; var token: ResearchCancellation?; var cancelAfterFirst = false
-    var remoteCode = 0; var omitFooter = false
+    var remoteCode = 0; var omitFooter = false; var lineEnding = "\n"
     func run(_ executable: URL, arguments: [String], timeout: TimeInterval, maxBytes: Int, cancellation: ResearchCancellation) throws -> ResearchCommandResult {
         calls.append(arguments)
         if executable.lastPathComponent == "ssh" { return .init(status: 255, stdout: Data(), stderr: Data(sshFailure.utf8), outcome: sshOutcome, duration: 0.01) }
@@ -36,7 +36,7 @@ private final class FakeRunner: ResearchProcessRunning {
         }
         let outcome = command.contains(FirmwareResearchCollector.bootstrap) ? "success" : probeOutcome
         let footer = !command.contains(FirmwareResearchCollector.bootstrap) && omitFooter ? "" : "\n" + marker + String(command.contains(FirmwareResearchCollector.bootstrap) ? 0 : remoteCode) + "\n"
-        return .init(status: 0, stdout: Data((output + footer).utf8), stderr: Data(), outcome: outcome, duration: 0.02)
+        return .init(status: 0, stdout: Data((output + footer).replacingOccurrences(of: "\n", with: lineEnding).utf8), stderr: Data(), outcome: outcome, duration: 0.02)
     }
 }
 
@@ -53,6 +53,15 @@ private final class FakeRunner: ResearchProcessRunning {
         func collect(_ fake: FakeRunner, mode: ConnectionMode = .automatic, expected: String? = nil) -> FirmwareResearchReport {
             FirmwareResearchCollector(specification: specification(), connection: config, mode: mode, resources: assets, cancellation: ResearchCancellation(), expectedCID: expected, secrets: ["SUPER-SECRET-WEB"], runner: fake).collect(context: ["appVersion": "test"]) { _, _ in }
         }
+        for eol in ["\n", "\r\n", "\r\r\n"] {
+            let fake = FakeRunner(); fake.lineEnding = eol
+            let value = collect(fake, mode: .adb, expected: cid)
+            try check(value.outcome == "complete" && value.binding["architecture"] == "aarch64" && value.probes.allSatisfy { $0.outcome == "success" && $0.remoteExitCode == 0 && !$0.stdout.contains("\r") }, "Research line endings lost remote result or binding")
+            try check(value.probes.first { $0.id == "identity" }?.facts["root"] == "1", "Research root fact lost")
+            let failed = FakeRunner(); failed.lineEnding = eol; failed.remoteCode = 1
+            try check(collect(failed, mode: .adb).probes.allSatisfy { $0.outcome == "failed" && $0.localExitCode == 0 && $0.remoteExitCode == 1 }, "Research line ending failure became success")
+        }
+        print("PASS research LF/CRLF/CRCRLF bootstrap, facts, remote failures and report text")
         let normal = FakeRunner(), report = collect(normal)
         try check(report.transport == "adb" && report.outcome == "complete", "Unprepared unknown firmware should collect")
         try check(report.features[0].state == "unknown", "Unknown firmware must never certify writes")
@@ -112,7 +121,7 @@ private final class FakeRunner: ResearchProcessRunning {
         try check(unsupported.allSatisfy { $0.state == "blocked" }, "A known firmware profile excluded by current operation is a confirmed blocker")
         let bundledResources = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("Resources")
         let bundled = try ResearchSpecification.load(bundledResources)
-        try check(bundled.probes.count == 38 && bundled.features.count == 18 && bundled.revision == 5, "Bundled reviewed specification")
+        try check(bundled.probes.count == 38 && bundled.features.count == 18 && bundled.revision == 6, "Bundled reviewed specification")
         var values = [String: [String: String]]()
         for feature in bundled.features { for requirement in feature.requirements { values[requirement.probe, default: [:]][requirement.fact] = requirement.equals } }
         values["boot-protection"]?["restore_readiness"] = "not-assessed"

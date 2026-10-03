@@ -29,17 +29,36 @@ public sealed class ResearchCapture(int maxBytes)
     public bool Truncated { get; private set; }
     public bool Incomplete { get; private set; }
     public string? Failure { get; private set; }
-    public async Task<(string Text, string Tail)> ReadAsync(Stream stream, CancellationToken ct)
+    public int MarkerOccurrences { get; private set; }
+    public async Task<(string Text, string Tail)> ReadAsync(Stream stream, CancellationToken ct, string? marker = null)
     {
         using var data = new MemoryStream();
         var tail = new byte[512]; var tailCount = 0;
         var buffer = new byte[8192];
+        var needle = marker is null ? [] : Encoding.ASCII.GetBytes(marker);
+        byte[] markerCarry = [];
         try
         {
             while (true)
             {
                 var count = await stream.ReadAsync(buffer, ct).ConfigureAwait(false);
                 if (count == 0) break;
+                if (needle.Length > 0)
+                {
+                    // Count across chunk boundaries and discarded output too;
+                    // truncation must not hide a duplicate completion nonce.
+                    var window = new byte[markerCarry.Length + count];
+                    markerCarry.CopyTo(window, 0); Buffer.BlockCopy(buffer, 0, window, markerCarry.Length, count);
+                    var position = 0;
+                    while (position < window.Length)
+                    {
+                        var found = window.AsSpan(position).IndexOf(needle);
+                        if (found < 0) break;
+                        MarkerOccurrences = Math.Min(2, MarkerOccurrences + 1);
+                        position += found + needle.Length;
+                    }
+                    markerCarry = window[Math.Max(0, window.Length - needle.Length + 1)..];
+                }
                 var keep = 0;
                 lock (_gate) { keep = Math.Min(count, _remaining); _remaining -= keep; Truncated |= keep != count; }
                 data.Write(buffer, 0, keep);
@@ -73,7 +92,7 @@ public sealed class ResearchAdbShell(string executable, string? serial) : IResea
         if(!process.Start()) throw new IOException("ADB process did not start.");
         process.StandardInput.Close();
         var capture=new ResearchCapture(maxBytes);
-        var stdout=capture.ReadAsync(process.StandardOutput.BaseStream,lifetime.Token);
+        var stdout=capture.ReadAsync(process.StandardOutput.BaseStream,lifetime.Token,marker);
         var stderr=capture.ReadAsync(process.StandardError.BaseStream,lifetime.Token);
         var status="success"; int? code=null; int? localCode=null;
         try { await process.WaitForExitAsync(lifetime.Token).ConfigureAwait(false); localCode=process.ExitCode; }
@@ -87,13 +106,14 @@ public sealed class ResearchAdbShell(string executable, string? serial) : IResea
         }
         if(status=="success" && localCode==0 && marker is not null)
         {
-            var match=Regex.Match(output.Tail,@"\n"+Regex.Escape(marker)+@"([0-9]{1,3})\r?\n$");
-            if(match.Success && int.TryParse(match.Groups[1].Value,out var remoteCode) && remoteCode<=255) code=remoteCode;
+            if(capture.MarkerOccurrences==1 && AdbShellOutput.TryDecodeCompletion(Encoding.UTF8.GetBytes(output.Tail),marker,out var remoteCode,out _)) code=remoteCode;
             else { code=null; status="failed"; error=(error.Text+"\nADB remote exit status is missing.",error.Tail); }
-            output=(Regex.Replace(output.Text,@"\n"+Regex.Escape(marker)+@"[0-9]{1,3}\r?\n$",""),output.Tail);
+            var bytes=Encoding.UTF8.GetBytes(output.Text);
+            if(code is not null && AdbShellOutput.TryDecodeCompletion(bytes,marker,out _,out var length))
+                output=(Encoding.UTF8.GetString(bytes,0,length),output.Tail);
         }
         if(status=="success") status=capture.Truncated?"truncated":(marker is null?localCode==0:code==0)?"success":"failed";
-        return new(status,code,output.Text,error.Text,capture.Truncated,localCode);
+        return new(status,code,AdbShellOutput.NormalizeText(output.Text),AdbShellOutput.NormalizeText(error.Text),capture.Truncated,localCode);
     }
 }
 

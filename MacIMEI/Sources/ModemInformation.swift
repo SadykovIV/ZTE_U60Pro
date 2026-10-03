@@ -117,7 +117,7 @@ final class ModemInformationManager {
         try require(text.utf8.count <= 1024 * 1024, "Ответ со сведениями о модеме слишком большой")
         let expected = ["SCHEMA", "BOARD", "DEVICE", "ARCH", "CPU", "UPTIME", "LOAD", "MEMORY", "DISKS", "MOUNTS", "BATTERY", "AGENT", "END"].map { "__INFO_" + $0 + "__" }
         var sections: [String: String] = [:], current: String?, seen = [String]()
-        for line in text.components(separatedBy: "\n") {
+        for line in CommandText.normalize(text).components(separatedBy: "\n") {
             if line.hasPrefix("__INFO_") && line.hasSuffix("__") {
                 try require(sections[line] == nil, "Повтор раздела сведений о модеме")
                 try require(seen.count < expected.count && line == expected[seen.count], "Неизвестный или пропущенный раздел сведений")
@@ -211,10 +211,18 @@ final class ModemInformationManager {
         let producer = footer.flatMap(Int32.init).flatMap { (0...255).contains($0) ? $0 : nil }
         var status = response.status != 0 ? response.status : producer ?? -2
         var payload = location.map { Data(response.stdout[..<$0.lowerBound]) } ?? response.stdout
+        // The marker starts at LF, so any transport-added CR in its separator
+        // is still in payload. Remove only the CR count shown by the matching
+        // footer EOL; all remaining bytes are interpreted as text below.
+        if location != nil && response.stdout.last == 10 {
+            let suffix = response.stdout.dropLast().suffix(3)
+            let count = suffix.reversed().prefix { $0 == 13 }.count
+            if count <= 2 && payload.suffix(count).allSatisfy({ $0 == 13 }) && payload.count >= count { payload.removeLast(count) }
+        }
         if response.status != 0 || producer == nil {
             if !response.stderr.isEmpty { payload.append(Data("\n".utf8)); payload.append(response.stderr) }
         }
-        let clean = ActivityJournal.sanitize(String(decoding: payload.prefix(diagnosticByteLimit), as: UTF8.self))
+        let clean = ActivityJournal.sanitize(CommandText.decode(Data(payload.prefix(diagnosticByteLimit))))
         let truncated = payload.count > diagnosticByteLimit || clean.utf8.count > diagnosticByteLimit
         // BusyBox reports 128+SIGXFSZ (153) when the intentional file limit
         // stops a large producer such as dmesg. The captured prefix is valid.

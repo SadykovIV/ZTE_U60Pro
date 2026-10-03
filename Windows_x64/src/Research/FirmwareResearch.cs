@@ -16,7 +16,7 @@ public sealed record ResearchRequirement(string Probe,string Fact,[property:Syst
 public sealed record ResearchFeature(string Id,ResearchText Title,string[] Profiles,ResearchRequirement[] Requirements,ResearchText Limitations,string[]? Platforms=null);
 public sealed record ResearchSpec(int SchemaVersion,int Revision,ResearchProfile[] Profiles,ResearchProbe[] Probes,ResearchFeature[] Features)
 {
-    public const string ExpectedSpecificationSha256="f33227f1effbcfa22257739a354451d426015681810fb46f9ae1ebc7531cc939";
+    public const string ExpectedSpecificationSha256="c89a709250317d1552ceb73fb3c10583b926ed2b09a5816c3aa3c66a98ee8f3c";
     public string? Sha256 { get; private set; }
     public static readonly JsonSerializerOptions Json=new() { PropertyNameCaseInsensitive=true,PropertyNamingPolicy=JsonNamingPolicy.CamelCase,WriteIndented=true };
     public static ResearchSpec Load(string path)
@@ -194,7 +194,8 @@ public sealed class FirmwareResearchEngine(ResearchSpec spec,IResearchTransportF
     public static Dictionary<string,string> Facts(ResearchCommandResult value)
     {
         var facts=new Dictionary<string,string>();
-        foreach(Match m in Regex.Matches(value.Stdout,@"(?m)^FR_FACT ([a-z0-9_]+)=([^\r\n]{0,512})\r?$"))
+        if(value.Status!="success" || value.ExitCode!=0 || value.Truncated || value.LocalExitCode is not (null or 0)) return facts;
+        foreach(Match m in Regex.Matches(AdbShellOutput.NormalizeText(value.Stdout),@"(?m)^FR_FACT ([a-z0-9_]+)=([^\r\n]{0,512})$"))
             if(!facts.TryAdd(m.Groups[1].Value,m.Groups[2].Value))facts[m.Groups[1].Value]="conflicting";
         return facts;
     }

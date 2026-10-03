@@ -184,24 +184,9 @@ public sealed class AdbTransport
         if (!local.Success) throw new IOException("Локальный ADB завершился с ошибкой.");
         if (!ResultMarkerPattern.IsMatch(marker))
             throw new ArgumentException("Неверный маркер результата ADB.", nameof(marker));
-        var needle = Encoding.ASCII.GetBytes(marker);
-        var raw = local.Stdout;
-        var offset = raw.AsSpan().IndexOf(needle);
-        if (offset < 1 || raw[offset - 1] != (byte)'\n' ||
-            raw.AsSpan(offset + needle.Length).IndexOf(needle) >= 0)
+        if (!AdbShellOutput.TryDecodeCompletion(local.Stdout, marker, out var code, out var outputLength))
             throw new InvalidDataException("ADB не вернул однозначный код удалённой команды.");
-        var suffix = raw.AsSpan(offset + needle.Length);
-        if (suffix.Length < 2 || suffix[^1] != (byte)'\n')
-            throw new InvalidDataException("ADB вернул незавершённый код удалённой команды.");
-        suffix = suffix[..^1];
-        if (suffix.Length > 0 && suffix[^1] == (byte)'\r') suffix = suffix[..^1];
-        if (suffix.Length is < 1 or > 3 || !AsciiDigits(suffix) ||
-            !int.TryParse(Encoding.ASCII.GetString(suffix), out var code) ||
-            code is < 0 or > 255 || Encoding.ASCII.GetString(suffix) != code.ToString())
-            throw new InvalidDataException("ADB вернул неверный удалённый код завершения.");
-        var outputEnd = offset - 1;
-        if (outputEnd > 0 && raw[outputEnd - 1] == (byte)'\r') outputEnd--;
-        return new RemoteResult(code, raw[..outputEnd], local.Stderr);
+        return new RemoteResult(code, local.Stdout[..outputLength], local.Stderr);
     }
 
     private static void ValidateSerial(string serial)
@@ -209,13 +194,6 @@ public sealed class AdbTransport
         if (string.IsNullOrEmpty(serial) || serial.Length > 256 ||
             serial.Any(c => c < 33 || c > 126))
             throw new ArgumentException("Неверный serial USB ADB-устройства.", nameof(serial));
-    }
-
-    private static bool AsciiDigits(ReadOnlySpan<byte> value)
-    {
-        foreach (var digit in value)
-            if (digit is < (byte)'0' or > (byte)'9') return false;
-        return true;
     }
 
     private static void ValidateRemotePath(string path)

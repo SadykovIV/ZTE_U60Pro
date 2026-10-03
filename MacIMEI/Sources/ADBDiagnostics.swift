@@ -77,7 +77,7 @@ enum DiagnosticTransportSelector {
     }
     static func parseIdentity(_ data: Data, requireWeb: Bool) throws -> DiagnosticDeviceProof {
         try require(data.count <= 65536, "Слишком большой ответ идентификации диагностики")
-        let lines = String(decoding: data, as: UTF8.self).split(separator: "\n").map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+        let lines = CommandText.decode(data).split(separator: "\n").map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
         try require(lines.count >= 4 && (requireWeb || lines.count == 4), "Неполная идентификация модема")
         let firmware = try FirmwareCheck.hash(lines[0], path: "/firmware/image/modem.b16")
         let router = try FirmwareCheck.hash(lines[1], path: "/usr/bin/diag-router")

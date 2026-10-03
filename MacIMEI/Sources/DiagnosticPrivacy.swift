@@ -36,7 +36,7 @@ extension ActivityJournal {
             // protocol; arbitrary output from credential commands stays hidden.
             var markers: [String] = []
             if command.contains("--preflight") || command.contains("setup-agent.sh") {
-                markers = String(decoding: data.prefix(64 * 1024), as: UTF8.self).split(whereSeparator: \.isNewline).map(String.init).filter {
+                markers = CommandText.decode(Data(data.prefix(64 * 1024))).split(whereSeparator: \.isNewline).map(String.init).filter {
                     $0.range(of: #"^INSTALL_ERROR [A-Z][A-Z0-9_]{0,95}$"#, options: .regularExpression) != nil ||
                     $0.range(of: #"^INSTALL_INCOMPLETE /data/local/tmp/zte-imei-installations/[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}$"#, options: .regularExpression) != nil
                 }
@@ -50,7 +50,7 @@ extension ActivityJournal {
         if let json = try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]),
            let bytes = try? JSONSerialization.data(withJSONObject: sanitizeJSON(json), options: [.prettyPrinted, .sortedKeys, .fragmentsAllowed]) {
             clean = boundedText(String(decoding: bytes, as: UTF8.self), limit: 64 * 1024)
-        } else { clean = boundedText(text, limit: 64 * 1024) }
+        } else { clean = boundedText(CommandText.normalize(text), limit: 64 * 1024) }
         if data.count > sample.count { clean += "\n[Вывод сокращён до 64 КиБ; всего \(data.count) байт]" }
         return clean
     }

@@ -9,7 +9,7 @@ using ZteImeiStudio.Windows.Research;
 var passed=0;
 void Check(bool condition,string name) { if(!condition)throw new Exception(name);Console.WriteLine("PASS "+name);passed++; }
 var bundled=Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,"../../../../Resources/FirmwareResearch/probes.json"));
-var productionSpec=ResearchSpec.Load(bundled);Check(productionSpec.Probes.Length==38 && productionSpec.Features.Length==18 && productionSpec.Revision==5 && productionSpec.Sha256==ResearchSpec.ExpectedSpecificationSha256,"production probe contract matches pinned digest");
+var productionSpec=ResearchSpec.Load(bundled);Check(productionSpec.Probes.Length==38 && productionSpec.Features.Length==18 && productionSpec.Revision==6 && productionSpec.Sha256==ResearchSpec.ExpectedSpecificationSha256,"production probe contract matches pinned digest");
 var tampered=Path.Combine(Path.GetTempPath(),"tampered-research-"+Guid.NewGuid().ToString("N")+".json");
 try {File.WriteAllText(tampered,File.ReadAllText(bundled)+" ");try {ResearchSpec.Load(tampered);throw new Exception("tampered spec accepted");}catch(InvalidDataException) {Check(true,"modified probe commands rejected before execution");}}finally {File.Delete(tampered);}
 var fingerprint=new string('a',64);var boot=new string('b',64);

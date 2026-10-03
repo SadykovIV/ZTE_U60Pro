@@ -125,6 +125,7 @@ private final class MockWeb: WebTransport {
 private final class MockHost: HostCommandRunner {
     var calls = [[String]]()
     var status: Int32 = 0, shellCode = "0", includeMarker = true, shellText = "synthetic output"
+    var shellLineEnding: String?
     var deviceList = "List of devices attached\n", identityCID = testCID, identityIMEI = testIMEI
     var deviceListSequence = [String](), identityCIDSequence = [String]()
     var identityHashesValid = true, identityMode = false
@@ -207,6 +208,7 @@ private final class MockHost: HostCommandRunner {
                 else {throw TestFailure.check("Unexpected full installer shell: "+command)}
             }
             if includeMarker { value += "\r\n" + command[range] + shellCode + "\r\n" }
+            if let shellLineEnding { value = value.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\n", with: shellLineEnding) }
         } else { throw TestFailure.check("Unexpected host command: \(arguments)") }
         return CommandResult(status:status,stdout:Data(value.utf8),stderr:Data())
     }
@@ -884,6 +886,13 @@ private struct Fixture {
             try check(try adb.devices()==["ABC"],"ADB device selection")
             host.deviceList = "List of devices attached\nUSB device usb:336592896X\nTCP device transport_id:1\nEMPTY device usb:\nDUP device usb:1 usb:2\n"
             try check(try adb.devices(usbOnly: true) == ["USB"], "Unconfirmed physical USB descriptor accepted")
+        }
+        run("Existing root ADB with CRCRLF completes diagnostic access without enabling or installing again") {
+            let f = try Fixture(); defer { f.remove() }
+            f.host.shellLineEnding = "\r\r\n"; f.host.identityMode = true
+            f.host.deviceList = "List of devices attached\nABC device usb:1\n"
+            _ = try f.engine.enableDiagnosticADB(webPassword: testPassword)
+            try check(f.web.backupCount == 0 && f.web.directCount == 0 && f.web.restoreCount == 0 && f.web.rebootCount == 0 && f.host.installerCalls == 0 && f.host.pushCount == 0, "Working CRCRLF ADB triggered a mutation")
         }
         run("Legacy ADB zero process exit cannot hide failed remote command") {
             let host=MockHost(),adb=ADBClient(binary:URL(fileURLWithPath:"/synthetic/adb"),runner:host)

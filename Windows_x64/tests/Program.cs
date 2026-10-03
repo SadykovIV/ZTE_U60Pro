@@ -3,6 +3,12 @@ using System.Text;
 using System.Text.Json;
 using ZteImeiStudio.Windows.Core;
 
+if (args.Contains("--adb-line-endings-only"))
+{
+    await AdbLineEndingTests.RunAsync(args.SkipWhile(x => x != "--adb-line-endings-only").Skip(1).FirstOrDefault());
+    return;
+}
+
 static void Check(bool condition, string name)
 {
     if (!condition) throw new Exception(name);
@@ -35,6 +41,7 @@ static byte[] Tar(params (string Path, byte[] Bytes)[] entries)
 }
 
 await AdbRegressionTests.RunAsync();
+await AdbLineEndingTests.RunAsync();
 var vector = Convert.FromHexString("53616c7465645f5f0102030405060708dfdd29b2bf3250ec90f326f288ce2986644b9e7978318c0b");
 Check(Encoding.UTF8.GetString(BackupCipher.Decrypt(vector, "synthetic-password")) == "B31 test payload\n",
     "OpenSSL 3DES SHA256 vector");

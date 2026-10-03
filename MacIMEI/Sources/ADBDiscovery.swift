@@ -19,7 +19,7 @@ struct ADBDiscovery {
     static func parse(_ data: Data) throws -> ADBDiscovery {
         try require(data.count <= 65536, "Слишком большой список ADB")
         var records = [ADBDeviceRecord]()
-        for line in String(decoding: data, as: UTF8.self).split(whereSeparator: \.isNewline) {
+        for line in CommandText.decode(data).split(whereSeparator: \.isNewline) {
             let fields = line.split(whereSeparator: \.isWhitespace)
             guard fields.count >= 2, ["device", "offline", "unauthorized", "no", "recovery", "sideload", "bootloader"].contains(String(fields[1])) else { continue }
             let serial = String(fields[0])
@@ -53,7 +53,7 @@ extension ADBClient {
         if !candidates.isEmpty {
             do {
                 let response = try command(["-d", "get-serialno"], timeout: 10)
-                let serial = String(decoding: response, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+                let serial = CommandText.decode(response).trimmingCharacters(in: .whitespacesAndNewlines)
                 if let index = result.records.firstIndex(where: { $0.serial == serial && $0.canResolveUSB && $0.state == "device" }) { result.records[index].usb = true }
                 else { result.usbResolutionError = "USB-селектор ADB не подтвердил устройство из текущего списка." }
             } catch { result.usbResolutionError = ActivityJournal.sanitize(error.localizedDescription) }

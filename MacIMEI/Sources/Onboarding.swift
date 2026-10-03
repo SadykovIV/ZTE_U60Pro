@@ -73,7 +73,7 @@ final class ADBClient {
     func shell(_ serial: String, _ text: String, timeout: TimeInterval = 40) throws -> String {
         let result = try shellResult(serial, text, timeout: timeout)
         try require(result.status == 0, "Модем отклонил операцию ADB (удалённый код \(result.status)). " + Self.errorExcerpt(result.stderr + result.stdout, command: text))
-        return String(decoding: result.stdout, as: UTF8.self).replacingOccurrences(of: "\r\n", with: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        return CommandText.decode(result.stdout).trimmingCharacters(in: .whitespacesAndNewlines)
     }
     static func errorExcerpt(_ data: Data, command: String = "") -> String {
         let safe = ActivityJournal.diagnosticOutput(data, command: command)
@@ -97,12 +97,20 @@ final class ADBClient {
         }
         var suffix = Data(raw[range.upperBound...])
         guard suffix.last == 10 else { throw CommandFailure(message: "ADB вернул незавершённый маркер результата", partial: result) }
-        suffix.removeLast(); if suffix.last == 13 { suffix.removeLast() }
+        suffix.removeLast()
+        var carriageReturns = 0
+        while suffix.last == 13 && carriageReturns < 2 { suffix.removeLast(); carriageReturns += 1 }
         guard !suffix.isEmpty, suffix.count <= 3, suffix.allSatisfy({ (48...57).contains($0) }), let code = Int32(String(decoding: suffix, as: UTF8.self)), (0...255).contains(code), String(code) == String(decoding: suffix, as: UTF8.self) else {
             throw CommandFailure(message: "ADB вернул неверный удалённый код завершения", partial: result)
         }
-        var end = range.lowerBound - 1
-        if end > raw.startIndex && raw[end - 1] == 13 { end -= 1 }
+        // Both separators are emitted by the same printf. Match its observed
+        // LF/CRLF/CRCRLF convention, then remove exactly that framing. Do not
+        // strip a payload's own trailing CR or normalize any payload bytes.
+        let separator = Data(repeating: 13, count: carriageReturns) + Data([10])
+        let end = range.lowerBound - separator.count
+        guard end >= raw.startIndex, Data(raw[end..<range.lowerBound]) == separator else {
+            throw CommandFailure(message: "ADB вернул несогласованный маркер результата", partial: result)
+        }
         return CommandResult(status: code, stdout: Data(raw[..<end]), stderr: result.stderr)
     }
     func shellResult(_ serial: String, _ text: String, timeout: TimeInterval = 40) throws -> CommandResult {

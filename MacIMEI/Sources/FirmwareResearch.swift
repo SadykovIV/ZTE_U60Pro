@@ -8,7 +8,7 @@ struct ResearchRequirement: Codable, Sendable { let probe: String; let fact: Str
 struct ResearchFeature: Codable, Sendable { let id: String; let title: ResearchText; let profiles: [String]; let platforms: [String]?; let requirements: [ResearchRequirement]; let limitations: ResearchText }
 struct ResearchSpecification: Codable, Sendable {
     // Updated only when the reviewed, bundled command allowlist changes.
-    static let expectedSHA256 = "f33227f1effbcfa22257739a354451d426015681810fb46f9ae1ebc7531cc939"
+    static let expectedSHA256 = "c89a709250317d1552ceb73fb3c10583b926ed2b09a5816c3aa3c66a98ee8f3c"
     let schemaVersion: Int; let revision: Int; let profiles: [ResearchProfile]; let probes: [ResearchProbe]; let features: [ResearchFeature]
     static func load(_ resources: URL) throws -> Self {
         let path = resources.appendingPathComponent("FirmwareResearch/probes.json")
@@ -121,7 +121,7 @@ struct ResearchRedactor {
     }
     func output(_ data: Data) -> String {
         guard !data.contains(0) else { return "[binary output omitted]" }
-        return clean(String(decoding: data, as: UTF8.self))
+        return clean(CommandText.decode(data))
     }
 }
 
@@ -158,7 +158,7 @@ final class FirmwareResearchCollector {
     }
     static func binding(_ data: Data) -> [String: String] {
         var values = [String: String]()
-        for line in String(decoding: data, as: UTF8.self).split(whereSeparator: \.isNewline) {
+        for line in CommandText.decode(data).split(whereSeparator: \.isNewline) {
             let pair = line.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
             guard pair.count == 2, ["uid", "architecture", "cid", "boot"].contains(String(pair[0])) else { continue }
             let value = String(pair[1]).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -174,7 +174,7 @@ final class FirmwareResearchCollector {
     }
     static func facts(_ output: String) -> [String: String] {
         var result = [String: String](), duplicates = Set<String>()
-        for line in output.split(whereSeparator: \.isNewline) where line.hasPrefix("FR_FACT ") {
+        for line in CommandText.normalize(output).split(whereSeparator: \.isNewline) where line.hasPrefix("FR_FACT ") {
             let pair = line.dropFirst(8).split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
             guard pair.count == 2, pair[0].range(of: #"^[a-z0-9_]{1,80}$"#, options: .regularExpression) != nil, pair[1].utf8.count <= 256 else { continue }
             let key = String(pair[0]); if result[key] != nil { duplicates.insert(key) }; result[key] = String(pair[1])
@@ -215,7 +215,7 @@ final class FirmwareResearchCollector {
                 attempt("adb", "host_tool_version", redactor.output(version.stdout + version.stderr))
                 let devices = try runner.run(adb, arguments: ["devices", "-l"], timeout: 12, maxBytes: 65536, cancellation: cancellation)
                 try require(devices.outcome == "success", "ADB device enumeration failed: " + redactor.output(devices.stderr))
-                for line in String(decoding: devices.stdout, as: UTF8.self).split(whereSeparator: \.isNewline) {
+                for line in CommandText.decode(devices.stdout).split(whereSeparator: \.isNewline) {
                     let fields = line.split(whereSeparator: \.isWhitespace)
                     if fields.count > 1 && ["device", "offline", "unauthorized", "no"].contains(String(fields[1])) { redactor.secrets.append(String(fields[0])) }
                 }

@@ -650,7 +650,7 @@ public sealed class OnboardingEngine
     internal static DeviceIdentity ParseIdentity(byte[] bytes, WebIdentity web, bool requireInstallerRouter = true)
     {
         if (bytes.Length > 65536) throw new InvalidDataException("Слишком большой ответ идентификации.");
-        var text = StrictUtf8.GetString(bytes).Replace("\r\n", "\n", StringComparison.Ordinal);
+        var text = AdbShellOutput.NormalizeText(StrictUtf8.GetString(bytes));
         var lines = text.Split('\n');
         if (lines.Length < 5) throw new InvalidDataException("Неполная идентификация модема.");
         static string HashLine(string line, string path)
@@ -690,7 +690,7 @@ public sealed class OnboardingEngine
             // Only known, bounded diagnostics are classified for the UI.
             var diagnostic = Encoding.UTF8.GetString(reply.Stderr.AsSpan(0, Math.Min(reply.Stderr.Length, 16 * 1024))) +
                 "\n" + Encoding.UTF8.GetString(reply.Stdout.AsSpan(0, Math.Min(reply.Stdout.Length, 16 * 1024)));
-            var install = InstallErrorPattern.Match(diagnostic);
+            var install = InstallErrorPattern.Match(AdbShellOutput.NormalizeText(diagnostic));
             if (install.Success)
                 throw new IOException("Установщик модема остановлен: " + install.Groups[1].Value +
                     " (код " + reply.ExitCode + ").");
@@ -701,7 +701,7 @@ public sealed class OnboardingEngine
                 throw new IOException("Не удалось создать каталог установки на модеме: отсутствует родительский каталог.");
             throw new IOException("Модем отклонил ADB-команду; код " + reply.ExitCode + ".");
         }
-        return StrictUtf8.GetString(reply.Stdout).Trim();
+        return AdbShellOutput.NormalizeText(StrictUtf8.GetString(reply.Stdout)).Trim();
     }
 
     private static string Quote(string text) => "'" + text.Replace("'", "'\\''", StringComparison.Ordinal) + "'";
