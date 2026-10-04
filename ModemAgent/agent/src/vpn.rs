@@ -10,7 +10,7 @@ use std::{
     time::Duration,
 };
 const HELPER: &str = "/data/zte-vpn/vpnctl";
-const HELPER_SHA: &str = "7a12d8b869d064229270a264e8de9adf64f620337995fb186854c35cadbee068";
+const HELPER_SHA: &str = "7a8b84c3502e711c6b66c943f883a984dd9ed82da41455fc083ed0cc7d44b6fb";
 
 fn error(status: u16, code: &str) -> (u16, Value) {
     (

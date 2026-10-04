@@ -312,12 +312,11 @@ import Foundation
     func refreshConnectedSections() {
         refreshConnectedSections(Set(ConnectionOverviewSection.allCases))
     }
-    private func refreshConnectedSections(_ sections: Set<ConnectionOverviewSection>, checkSIM: Bool = false) {
+    private func refreshConnectedSections(_ sections: Set<ConnectionOverviewSection>) {
         guard !busy, connected else { return }
         let selected = channelSession, mode = activeChannel ?? .ssh
         let config = connection, root = storage, assets = resources
-        let expected = connectedIdentity, expectedIMEI = connectedIMEI, esimTarget = esimTargetKey
-        var refreshed = false
+        let expected = connectedIdentity, expectedIMEI = connectedIMEI
         busy = true; progress = 0
         operationTask = Task { [weak self] in
             guard let self else { return }
@@ -332,7 +331,6 @@ import Foundation
                 }
                 guard let session else { throw IMEIError.message(connectionReason) }
                 try await loadConnectedSections(session, config: config, sections: sections)
-                refreshed = sectionRefreshErrors[.information] == nil
                 if sections == [.information] {
                     append(sectionRefreshErrors[.information] == nil ? "Сведения о модеме обновлены." : "Не удалось обновить сведения о модеме; причина показана в разделе.", progress: 1)
                 } else {
@@ -341,16 +339,11 @@ import Foundation
             } catch { markConnectionUnavailable(error.localizedDescription); append("Подключение потеряно: " + error.localizedDescription) }
             busy = false; refreshActivity(); operationTask = nil
             startConnectionMonitor()
-            // Only the explicit information refresh requests a card read.
-            // Startup, the connection monitor and other section polls do not.
-            if checkSIM && refreshed && esimTargetKey == esimTarget && canReadEsim {
-                performEsim(.list)
-            }
         }
     }
     func refreshChannelInformation() {
         // A page's refresh reads only that page, on the verified transport.
-        refreshConnectedSections([.information], checkSIM: true)
+        refreshConnectedSections([.information])
     }
     func canAcceptConnectionCheck(_ session: ReadOnlyChannelSession, generation: UInt64) -> Bool {
         !busy && connected && channelSession === session && connectionActivityGeneration == generation

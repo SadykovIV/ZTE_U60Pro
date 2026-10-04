@@ -167,7 +167,7 @@ public sealed partial class MainWindow : Window
             Child = new TextBlock { Text = "WINDOWS · X64", Foreground = Secondary, FontSize = 11, FontWeight = FontWeight.SemiBold, LetterSpacing = 1 },
             CornerRadius = new CornerRadius(20), BorderBrush = Elevated, BorderThickness = new Thickness(1), Padding = new Thickness(15, 9),
         });
-        var refresh = ActionButton("↻", async () => await RefreshAsync(checkCard: true), false);
+        var refresh = ActionButton("↻", async () => await RefreshAsync(), false);
         refresh.Name = "RefreshPage";
         ToolTip.SetTip(refresh, Localization.Translate("Обновить"));
         refresh.Margin = new Thickness(0);
@@ -1173,9 +1173,6 @@ public sealed partial class MainWindow : Window
             panel.Children.Add(ValueLine("IP адрес", _snapshot?.IpAddress));
             panel.Children.Add(ValueLine("Канал", _snapshot?.ConnectionMode));
             panel.Children.Add(ValueLine("Батарея", _snapshot?.Battery));
-            var card = Muted(EsimCardLabel());
-            card.Name = "InformationCardType";
-            panel.Children.Add(card);
             if (_snapshot?.Details is { } details)
                 foreach (var detail in details)
                     panel.Children.Add(ValueLine(detail.Key, detail.Value));
@@ -1633,8 +1630,6 @@ public sealed partial class MainWindow : Window
     private async Task ExecuteAsync(ModemOperation operation, IReadOnlyDictionary<string, string>? parameters)
     {
         if (_busy) return;
-        bool checkCard = false;
-        int requestedPage = _page;
         if (operation == ModemOperation.PrepareSsh && _lastResearchInput != ResearchInputKey())
         {
             await CollectFirmwareResearchAsync();
@@ -1688,35 +1683,15 @@ public sealed partial class MainWindow : Window
                 if (_page == 5) await RefreshApplicationsAsync();
                 if (_page == 6 && _sections[6] == 2) await RefreshLogsAsync();
             }
-            checkCard = result.Success && operation == ModemOperation.RefreshDevice;
         }
         catch (OperationCanceledException) { SetStatus("Операция отменена.", true); }
         catch (Exception error) { SetStatus(error.Message, true); await ShowMessageAsync("Ошибка", error.Message); }
         finally { preparationActive = false; preparationTimer.Stop(); if (!preserveSecrets) ClearSecrets(); SetBusy(false); }
-        if (checkCard && _page == requestedPage && CanCheckCard()) await CheckCardForRefreshAsync();
     }
 
-    private bool CanCheckCard() => !_busy && _snapshot?.IsConnected == true &&
-        _snapshot.ConnectionMode == "SSH" && _terminal?.IsConnected != true &&
-        !_terminalOpening && Get("skip_firmware_check") != "true";
-
-    private async Task CheckCardForRefreshAsync()
-    {
-        await RunEsimUiAsync(new EsimRequest { Operation = "list" });
-        if (_page != 8) RenderPage();
-    }
-
-    private async Task RefreshAsync(bool checkCard = false)
+    private async Task RefreshAsync()
     {
         if (_busy) return;
-        int requestedPage = _page;
-        if (checkCard && requestedPage == 8 && CanCheckCard())
-        {
-            await CheckCardForRefreshAsync();
-            return;
-        }
-        bool checkAfterInformation = checkCard && (requestedPage == 7 || requestedPage == 0 && _sections[0] == 0);
-        bool refreshedInformation = false;
         SetBusy(true);
         try
         {
@@ -1725,16 +1700,13 @@ public sealed partial class MainWindow : Window
             {
                 var refreshed = await _service.RunAsync(new OperationRequest(ModemOperation.RefreshDevice), _lifetime.Token);
                 if (!refreshed.Success) refreshError = refreshed.Message;
-                refreshedInformation = refreshed.Success;
             }
             await ReloadSnapshotAsync();
             await LoadPageDataAsync();
             SetStatus(refreshError ?? _snapshot?.Status ?? "Состояние обновлено.", refreshError is not null);
         }
-        catch (Exception error) { refreshedInformation = false; SetStatus(error.Message, true); }
+        catch (Exception error) { SetStatus(error.Message, true); }
         finally { SetBusy(false); }
-        if (checkAfterInformation && refreshedInformation && _page == requestedPage && CanCheckCard())
-            await CheckCardForRefreshAsync();
     }
 
     private async Task ReloadSnapshotAsync()

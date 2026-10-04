@@ -57,10 +57,35 @@ def copy_file(source, destination):
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, destination)
 
+def swift_agent_upgrade_hashes(source):
+    """Read the explicit reviewed Swift registry; reject executable expressions."""
+    pins = re.findall(r'static let sha256 = "([0-9a-f]{64})"', source)
+    registries = re.findall(r'static let supportedUpgradeHashes:\s*Set<String>\s*=\s*\[(.*?)\]', source, re.S)
+    if len(pins) != 1 or len(registries) != 1:
+        raise ValueError('Missing or ambiguous Swift agent registry')
+    tokens = [part.strip() for part in re.sub(r'//[^\n]*', '', registries[0]).split(',')]
+    if tokens and not tokens[-1]: tokens.pop()
+    if tokens.count('sha256') != 1 or any(token != 'sha256' and not re.fullmatch(r'"[0-9a-f]{64}"', token) for token in tokens):
+        raise ValueError('Unsupported Swift agent registry expression')
+    return pins[0], {pins[0]} | {token[1:-1] for token in tokens if token != 'sha256'}
+
+
+def synchronize_agent_upgrade_hashes(source, current, hashes):
+    pins = re.findall(r'const string Sha256\s*=\s*"([0-9a-f]{64})";', source)
+    if pins != [current] or current not in hashes:
+        raise ValueError('Swift/Windows current agent pin mismatch')
+    pattern = r'(SupportedUpgradeHashes\s*=\s*new\[\]\s*\{)(.*?)(\}\.ToFrozenSet\(StringComparer\.Ordinal\);)'
+    body = '\n        Sha256,\n' + ''.join('        "' + value + '",\n' for value in sorted(hashes - {current})) + '    '
+    updated, count = re.subn(pattern, lambda match: match[1] + body + match[3], source, flags=re.S)
+    if count != 1:
+        raise ValueError('Missing or ambiguous Windows agent registry')
+    return updated
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--check', action='store_true', help='Verify mirrored resources and compiled pins without edits')
     args = parser.parse_args()
+    swift_current, upgrade_hashes = swift_agent_upgrade_hashes((ROOT / 'MacIMEI/Sources/BundledAgent.swift').read_text())
     manifests = {name: validate_group(SOURCE / name) for name in GROUPS}
     for name, manifest in manifests.items():
         destination = DEST / name
@@ -84,6 +109,7 @@ def main():
     version = json.loads((DEST / 'Onboarding/provenance.json').read_text())['local_agent_version']
     if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.]+)?', version): raise ValueError('Invalid agent version')
     if sha(DEST / 'Esim/zte-agent-esim') != sha(DEST / 'Onboarding/zte-agent'): raise ValueError('RPC and installed agents differ')
+    if swift_current != sha(DEST / 'Onboarding/zte-agent'): raise ValueError('Swift/current resource agent pin mismatch')
     for relative, fields in PINS.items():
         path = WINDOWS / relative
         text = path.read_text()
@@ -95,6 +121,9 @@ def main():
         if relative == 'src/Core/AgentPackage.cs':
             updated, count = re.subn(r'(const string Version = ")[^"]+(";)', lambda m: m[1] + version + m[2], text)
             if count != 1 or (args.check and updated != text): raise ValueError('Agent version mismatch')
+            text = updated
+            updated = synchronize_agent_upgrade_hashes(text, swift_current, upgrade_hashes)
+            if args.check and updated != text: raise ValueError('Windows agent upgrade registry mismatch')
             text = updated
         if not args.check: path.write_text(text)
     print('PASS public resource identity, exact manifests, helpers and Windows compiled pins')

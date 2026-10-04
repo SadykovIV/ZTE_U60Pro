@@ -16,7 +16,7 @@ public enum VpnPasswordMode { Main, Custom, Preserve }
 public sealed partial class DeviceFeatureService
 {
     private const string VpnRoot = "/data/zte-vpn";
-    private const string VpnHelperHash = "7a12d8b869d064229270a264e8de9adf64f620337995fb186854c35cadbee068";
+    private const string VpnHelperHash = "7a8b84c3502e711c6b66c943f883a984dd9ed82da41455fc083ed0cc7d44b6fb";
     private const string LegacyPublicVpnHelperHash = "f620dab27f951c7de2de77a89376975b51c79f57f8a8a24cec95392c9c61eea4";
     private const string LegacyPagesVpnHelperHash = "3142fb503e64ddba79d523be3c87f0344d6efa78673e30a4b740714d8e9389ca";
     private const string LegacyDirectRadioVpnHelperHash = "cdb01d27775d61bcb3ae14a8d124ccbab683f940f1dcfd2adffa43a6b7b462f0";
@@ -25,7 +25,7 @@ public sealed partial class DeviceFeatureService
     private const string LegacyRecoveryVpnHelperHash = "1cc33e3825a556a825e83392675c254ef22f738660d1016ae1413f7669f88231";
     private const string VpnAgentHash = AgentPackage.Sha256;
     private const string DashboardHash = "45b8b910e3f9521c612b90e68dca7f1c5dbe4a19d81b6747871086e6168b4ead";
-    private const string LauncherHash = "a902b8e405cb6e50d78536b233b8712bfcf25b453850a3091edc2c241f4e5530";
+    private const string LauncherHash = "be95cd58b44c062c618dd4b227022bfb96e196173770e18790d0b59148e40cd9";
     private static readonly string[] VpnInstallNames = ["install.sh", "manager.sh", "firewall.sh", "configure.lua", "nft-guard.nft", "dnsmasq.conf", "service.sh", "vpnctl", "mihomo"];
     private static readonly string[] VpnIntegrationNames = ["upgrade-controller.sh", "vpnctl", "manager.sh", "configure.lua", "update-agent.sh", "dashboard-install.sh", "payload.sha256", "dashboard.tar.gz", "dashboard-uhttpd", "start-dashboard.sh", "dashboard-html.sh", "preserve-dashboard-assets.sh", "stop-owned-listener.sh", "update-rc-local.sh", "launcher.so", "launcher-run.sh", "launcher-watch.sh", "launcher-service.sh", "launcher-start.sh", "launcher.sha256", "install-launcher.sh"];
     private static bool CanReadVpnStatus(string hash) => hash is VpnHelperHash or LegacyRadioVpnHelperHash or

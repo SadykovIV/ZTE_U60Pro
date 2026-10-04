@@ -124,7 +124,6 @@ static int page_count=5;
 static int page_kind(int page){return page>=3&&page<=page_count?page_order.ids[page-3]:-1;}
 static void *mainform,*pages[3],*dots[5],*titles[3];
 static void *info_cards[INFO_MAX_SELECTED],*info_titles[INFO_MAX_SELECTED],*info_values[INFO_MAX_SELECTED],*info_status,*info_scroll;
-static void *info_refresh_label,*info_sim_card,*info_sim_title,*info_sim_value;
 static struct info_layout rendered_layout;static int has_rendered_layout;
 static void *wifi_card,*wifi_title,*wifi_ssid,*wifi_switch,*profile_heading,*profile_cards[3],*profile_labels[3],*profile_marks[3];
 static void *previous,*next,*previous_label,*next_label,*notice,*confirm,*confirm_title,*confirm_name,*confirm_hint,*confirm_yes,*confirm_no;
@@ -200,7 +199,6 @@ static void clicked(void *event){
   else if(id==80&&esim_selected_id[0]){if(!esim_enable(esim_selected_id,esim_selected_generation))esim_refresh();esim_selected_id[0]=0;}
   else if(id==81)esim_selected_id[0]=0;
   else if(id==82){esim_selected_id[0]=0;esim_refresh();}
-  else if(id==83){esim_selected_id[0]=0;backend_refresh();esim_refresh();backend_snapshot(&shown);}
   esim_snapshot(&esim_shown);render();return;
  }
  if(shown.busy)return;
@@ -254,14 +252,12 @@ static void render(void){
  render_esim();
  struct info_text info;format_info(&shown,tr_ru(),&info);
  text(titles[0],tr("О модеме","About modem"));text(info_status,info.status);
- text(info_refresh_label,tr("Обновить","Refresh"));text(info_sim_title,tr("SIM-карта","SIM card"));text(info_sim_value,sim_card_status(&esim_shown,tr_ru()));
  struct info_layout layout=shown.layout;if(!info_layout_valid(&layout))info_layout_default(&layout);
  int changed=!has_rendered_layout||memcmp(&layout,&rendered_layout,sizeof layout);
- struct info_slot slots[INFO_MAX_SELECTED];unsigned count=info_layout_slots(&layout,slots);int bottom=0;
+ struct info_slot slots[INFO_MAX_SELECTED];unsigned count=info_layout_slots(&layout,slots);
  if(changed)F(0x5380bc,void,void*,int,int)(info_scroll,0,0);
  for(unsigned i=0;i<INFO_MAX_SELECTED;i++){
   flag(info_cards[i],HIDDEN,i>=count);if(i>=count)continue;
-  if(slots[i].y+slots[i].height>bottom)bottom=slots[i].y+slots[i].height;
   unsigned id=slots[i].metric;int carrier=id==INFO_CARRIERS;
   int tiles=layout.style==INFO_STYLE_TILES;
   if(changed){
@@ -272,9 +268,6 @@ static void render(void){
   }
   text(info_titles[i],info_title(id,tr_ru(),tiles,&info));text(info_values[i],info.values[id]);
  }
- /* This card is outside the configurable metric grammar and follows the
-  * bottom of the last row, including an odd final row in tile mode. */
- if(changed)pos(info_sim_card,14,bottom+(layout.style==INFO_STYLE_TILES?10:7));
  if(changed){F(0x5380bc,void,void*,int,int)(info_scroll,0,0);rendered_layout=layout;has_rendered_layout=1;}
  char ssid_text[96];int split_ssid=format_wifi_ssid(&shown,tr_ru(),ssid_text,sizeof ssid_text);
  text(wifi_ssid,ssid_text);pos(wifi_ssid,16,split_ssid?47:52);size(wifi_ssid,288,split_ssid?36:26);F(0x52fa04,void,void*,int)(wifi_ssid,split_ssid?14:18);
@@ -321,7 +314,7 @@ static void create(void *form){
  mainform=form;current=1;offset=0;esim_offset=0;esim_selected_id[0]=0;selected_id[0]=0;has_rendered_layout=0;
  void *parent=P(form,88);
  pages[0]=panel(parent,640,0,320,432,0);pages[1]=panel(parent,960,0,320,432,0);pages[2]=panel(parent,1280,0,320,432,0);
- titles[0]=label(pages[0],16,12,144,34,24,"");button(pages[0],178,8,128,38,83,&info_refresh_label);info_status=label(pages[0],16,50,288,20,14,"");
+ titles[0]=label(pages[0],16,12,288,34,24,"");info_status=label(pages[0],16,50,288,20,14,"");
  info_scroll=panel(pages[0],0,INFO_VIEWPORT_Y,320,INFO_VIEWPORT_HEIGHT,0);
  flag(info_scroll,CLICKABLE|SCROLLABLE|CHAIN_HOR,1);flag(info_scroll,CHAIN_VER|BUBBLE,0);
  /* Verified B31 LVGL functions: vertical-only content, horizontal chaining. */
@@ -330,8 +323,6 @@ static void create(void *form){
   info_cards[i]=panel(info_scroll,14,0,292,48,1);flag(info_cards[i],CLICKABLE,0);
   info_titles[i]=label(info_cards[i],12,3,268,19,14,"");info_values[i]=label(info_cards[i],12,23,268,24,19,"");
  }
- info_sim_card=panel(info_scroll,14,0,292,80,1);flag(info_sim_card,CLICKABLE,0);
- info_sim_title=label(info_sim_card,12,8,268,19,14,"");info_sim_value=label(info_sim_card,12,31,268,40,16,"");
  titles[1]=label(pages[1],16,12,288,34,24,"VPN");wifi_ssid=label(pages[1],16,52,288,26,18,"");
  wifi_card=panel(pages[1],14,88,292,62,1);flag(wifi_card,CLICKABLE,0);
  wifi_title=label(wifi_card,12,20,196,30,19,"");

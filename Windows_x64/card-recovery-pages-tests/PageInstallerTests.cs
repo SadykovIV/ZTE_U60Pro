@@ -30,8 +30,18 @@ static class PageInstallerTests
    }
    var alreadyCurrent=new FakeShell{Hash=AgentPackage.Sha256};await Service(alreadyCurrent).InstallAgentAsync();
    check(alreadyCurrent.Events.SequenceEqual(new[]{"vpn_preflight","vpn_controller","vpn_dashboard","vpn_launcher"}),"already-current agent still repairs related VPN components without reinstalling binary");
+   const string previousCardCheckHash="413ba4b0a07540d6901e87e74c9730196eb3373cf35b8914e31a8194bfe5a839";
+   check(AgentPackage.VersionForHash(previousCardCheckHash)=="2.9.0-esim.2"&&AgentPackage.SupportedUpgradeHashes.Contains(previousCardCheckHash),"previous card-check release remains a known upgrade source after repackaging");
+   var previousCardCheck=new FakeShell{Hash=previousCardCheckHash,Pages=new LauncherPages(new[]{"esim","info"}).Encode()};
+   var previousLayout=previousCardCheck.Layout.ToArray();var previousPages=previousCardCheck.Pages.ToArray();
+   var previousUpgraded=await Service(previousCardCheck).InstallAgentAsync();
+   check(previousUpgraded.IsCurrent&&previousUpgraded.Running&&!previousUpgraded.RecoveryPending&&previousUpgraded.BackupHash==previousCardCheckHash,"previous card-check agent upgrades to current with verified running state and original backup");
+   check(previousCardCheck.Events.SequenceEqual(new[]{"vpn_preflight","agent_install","vpn_controller","vpn_dashboard","vpn_launcher"}),"previous card-check agent follows the complete owned component upgrade chain once");
+   check(previousCardCheck.Layout.SequenceEqual(previousLayout)&&previousCardCheck.Pages!.SequenceEqual(previousPages)&&previousCardCheck.StagedPages==0,"previous card-check upgrade preserves saved page order and information layout");
+   check(!previousCardCheck.Requests.Any()&&!previousCardCheck.Commands.Any(c=>c.Contains("set_enabled")||c.Contains("configure_wifi")),"previous card-check upgrade does not activate VPN or change profiles");
    var customBundled=new FakeShell{Hash=new string('f',64)};await Reject(()=>Service(customBundled).InstallAgentAsync(),"unknown installed agent blocks VPN dependency update");
    check(customBundled.Events.Count==0,"unknown agent refuses before modifying any installed component");
+   check(!customBundled.Commands.Any(c=>c.Contains("/manager.sh' install ")||c.Contains("/upgrade-controller.sh' ")||c.Contains("/update-agent.sh' ")||c.Contains("/install-launcher.sh' ")),"unknown installed agent never dispatches an installed component update; temporary staging is permitted");
    foreach(var phase in new[]{"vpn_preflight","vpn_controller","vpn_dashboard","vpn_launcher"})
    {
     var uncertain=new FakeShell{FailPhase=phase,Failure="timeout"};await Reject(()=>Service(uncertain).InstallAgentAsync(),"uncertain bundled dependency update "+phase);

@@ -6,10 +6,36 @@ ROOT=Path(__file__).resolve().parents[2]
 def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()
 def manifest(base):
     (base/'SHA256.json').write_text(json.dumps({str(p.relative_to(base)):sha(p) for p in sorted(base.rglob('*')) if p.is_file() and p.name!='SHA256.json'},indent=2)+'\n')
+def retain_previous_agent_hash(source, new_sha):
+    """Retain the reviewed source pin; never derive upgrade trust from a device."""
+    if not re.fullmatch(r'[0-9a-f]{64}', new_sha):
+        raise ValueError('Invalid new agent hash')
+    pins = re.findall(r'static let sha256 = "([0-9a-f]{64})"', source)
+    registries = list(re.finditer(r'static let supportedUpgradeHashes:\s*Set<String>\s*=\s*\[(.*?)\]', source, re.S))
+    if len(pins) != 1 or len(registries) != 1:
+        raise ValueError('Missing or ambiguous Swift agent registry')
+    registry = registries[0]
+    body = registry[1]
+    tokens = [part.strip() for part in re.sub(r'//[^\n]*', '', body).split(',')]
+    if tokens and not tokens[-1]: tokens.pop()
+    if tokens.count('sha256') != 1 or any(token != 'sha256' and not re.fullmatch(r'"[0-9a-f]{64}"', token) for token in tokens):
+        raise ValueError('Unsupported Swift agent registry expression')
+    previous = pins[0]
+    if previous == new_sha or '"' + previous + '"' in tokens:
+        return source
+    # Keep comments and historical entries intact. The current pin stays first.
+    first = re.match(r'\s*sha256(?=\s*(?:,|$))', body)
+    if not first:
+        raise ValueError('Expected current Swift agent pin first')
+    body = body[:first.end()] + ',\n        "' + previous + '"' + body[first.end():]
+    return source[:registry.start(1)] + body + source[registry.end(1):]
+
 def main():
     ap=argparse.ArgumentParser();ap.add_argument('--agent',type=Path,required=True);ap.add_argument('--sha256',required=True);args=ap.parse_args()
     if sha(args.agent)!=args.sha256:raise SystemExit('Agent SHA mismatch')
-    version='2.9.0-esim.2';mac=ROOT/'MacIMEI/Resources';win=ROOT/'Windows_x64/Resources';dist=ROOT/'ModemAgent/web-app/dist'
+    swift_path=ROOT/'MacIMEI/Sources/BundledAgent.swift'
+    swift_source=retain_previous_agent_hash(swift_path.read_text(),args.sha256)
+    version='2.9.0-esim.3';mac=ROOT/'MacIMEI/Resources';win=ROOT/'Windows_x64/Resources';dist=ROOT/'ModemAgent/web-app/dist'
     if not (dist/'index.html').is_file():raise SystemExit('Build dashboard first')
     helper=ROOT/'ModemAgent/target/aarch64-unknown-linux-musl/release/zte-vpnctl'
     shutil.copy2(helper,mac/'VPN/vpnctl')
@@ -59,7 +85,7 @@ def main():
     for group in ['AgentDashboard','AgentDashboardInstall','AgentInstallation','VPN']:
         if (win/group).exists():shutil.rmtree(win/group)
         shutil.copytree(mac/group,win/group)
-    p=ROOT/'MacIMEI/Sources/BundledAgent.swift';s=p.read_text()
+    p=swift_path;s=swift_source
     for key,value in [('version',version),('sha256',args.sha256),('dashboardInstallerSHA256',sha(bundle/'dashboard.sh'))]:
         s,n=re.subn(r'(static let '+key+r' = ")[^"]+(")',lambda m:m[1]+value+m[2],s)
         if n!=1:raise SystemExit('Missing Swift pin '+key)

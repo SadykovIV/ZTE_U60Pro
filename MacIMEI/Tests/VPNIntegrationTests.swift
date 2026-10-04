@@ -83,6 +83,11 @@ private final class IntegrationRemote: RemoteTransport {
         let legacyPreflight=legacy.commands.firstIndex { $0.hasSuffix(" preflight") }!, legacyAgent=legacy.commands.firstIndex { $0.contains("/manager.sh' install ") }!
         try check(legacyPreflight < legacyAgent && legacyAgent < helper(legacy,"upgrade-controller.sh")! && legacy.backupHash == "e9f3e2170a7a2fa80a4836fd7d0db92c4aa119b4b8cceaa0907450123de29d19" && legacy.installed == BundledAgent.sha256,"Frozen .8 bypassed preflight, backup or ordered update")
         let custom=IntegrationRemote();custom.installed=String(repeating:"0",count:64);try reject(custom);try check(custom.uploaded.isEmpty,"Unknown agent reached upload")
+        for hash in ["413ba4b0a07540d6901e87e74c9730196eb3373cf35b8914e31a8194bfe5a839", "f85bd358b6d2b8d418375d45b52472f13e5a25942ed670d6671c275c33204d68"] {
+            let previous=IntegrationRemote();previous.installed=hash;try run(previous,bundledAgent:true)
+            try check(previous.installed==BundledAgent.sha256 && previous.backupHash==hash && previous.chainFinished,
+                      "Previous bundled build was refused or its coherent upgrade did not finish")
+        }
         let fresh=IntegrationRemote();fresh.preflightFails=true
         do { try run(fresh,fresh:true);throw IMEIError.message("TEST: fresh install accepted failed preflight") }
         catch { if error.localizedDescription.hasPrefix("TEST:") { throw error } }
@@ -98,6 +103,6 @@ private final class IntegrationRemote: RemoteTransport {
             let badFinal=IntegrationRemote();badFinal.badFinalAgentState=state;try reject(badFinal,bundledAgent:true)
             try check(badFinal.chainFinished,"Final agent verification fixture failed before chain completion")
         }
-        print("PASS 15 VPN integration scenarios: ordered updates, refusal/recovery, coherent bundled installation and final-state verification; fake SSH only")
+        print("PASS 17 VPN integration scenarios: ordered updates, previous bundled builds, refusal/recovery, coherent bundled installation and final-state verification; fake SSH only")
     }
 }

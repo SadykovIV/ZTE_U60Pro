@@ -3,12 +3,14 @@ import Foundation
 /// Exact agent shipped by automatic setup, the agent installer and VPN updates.
 /// Resource refresh must update these pins before packaging.
 enum BundledAgent {
-    static let version = "2.9.0-esim.2"
-    static let sha256 = "413ba4b0a07540d6901e87e74c9730196eb3373cf35b8914e31a8194bfe5a839"
-    static let dashboardInstallerSHA256 = "47e7afd03ab54db98eb693e9f4ccaf0f8e5acb7007e4e53a82ebdb9a170b1bb1"
+    static let version = "2.9.0-esim.3"
+    static let sha256 = "b23d57c223e898df9d26574fdfbd01a0b6f4d3835ebe9752ed642b0484625ef7"
+    static let dashboardInstallerSHA256 = "976227353f63f87ef9e3a95421d2082946ad87b59710e8832c5f03d7ddaa8734"
     // Exact released hashes verified against release records and the update path.
     // Keep this host check independent of shell source formatting.
     static let supportedUpgradeHashes: Set<String> = [sha256,
+        "f85bd358b6d2b8d418375d45b52472f13e5a25942ed670d6671c275c33204d68",
+        "413ba4b0a07540d6901e87e74c9730196eb3373cf35b8914e31a8194bfe5a839", // 1.24.3 build 38; preserved source and artifact receipt
         "e9f3e2170a7a2fa80a4836fd7d0db92c4aa119b4b8cceaa0907450123de29d19", // Frozen 2.7.0-esim.8 release + SHA256/build receipt
         "8ee8073b684613f358a5b857f7ed85ac165fc96f0d74980b04be006659ebea67",
         "c50ba6b7ac6f77c581c2b657ba769f976d8d20aca0c6b7d08c9254ef2de9d346", // Public 2.8.0 / app 1.20.0
@@ -34,6 +36,7 @@ enum BundledAgent {
     ]
     static func description(for hash: String) -> String {
         switch hash {
+        case "413ba4b0a07540d6901e87e74c9730196eb3373cf35b8914e31a8194bfe5a839": return "2.9.0-esim.2 · предыдущий агент"
         case "c50ba6b7ac6f77c581c2b657ba769f976d8d20aca0c6b7d08c9254ef2de9d346": return "2.8.0 · предыдущий публичный агент"
         case "6168ae6c539bb3ca7136eb40a1d4cae03d75aa18900be105f2ff2d5016da4b5c": return "2.7.0-esim.7 · eSIM, VPN, дисплей, RU/EN и TTL"
         case "be945c0a7181070aa69be3bb579a1e967a1cf147b2af2987f31ae5d242b10a66": return "2.7.0-esim.6 · eSIM, VPN, дисплей, RU/EN и TTL"
