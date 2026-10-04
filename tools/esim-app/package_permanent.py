@@ -9,7 +9,7 @@ def manifest(base):
 def main():
     ap=argparse.ArgumentParser();ap.add_argument('--agent',type=Path,required=True);ap.add_argument('--sha256',required=True);args=ap.parse_args()
     if sha(args.agent)!=args.sha256:raise SystemExit('Agent SHA mismatch')
-    version='2.9.0-esim.1';mac=ROOT/'MacIMEI/Resources';win=ROOT/'Windows_x64/Resources';dist=ROOT/'ModemAgent/web-app/dist'
+    version='2.9.0-esim.2';mac=ROOT/'MacIMEI/Resources';win=ROOT/'Windows_x64/Resources';dist=ROOT/'ModemAgent/web-app/dist'
     if not (dist/'index.html').is_file():raise SystemExit('Build dashboard first')
     helper=ROOT/'ModemAgent/target/aarch64-unknown-linux-musl/release/zte-vpnctl'
     shutil.copy2(helper,mac/'VPN/vpnctl')

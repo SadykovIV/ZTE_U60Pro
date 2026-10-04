@@ -1,6 +1,6 @@
 import { componentError, safeEsimErrors } from './errors'
 const messages: Record<string, string> = {
-  checking_card: 'Reading the physical eUICC…', reading_profiles: 'Reading all card profiles…',
+  checking_card: 'Checking the SIM card and profiles…', reading_profiles: 'Reading all card profiles…',
   downloading: 'Downloading the profile…', enabling: 'Enabling the selected profile…',
   deleting: 'Deleting the profile…', notifications: 'Sending operator notifications…',
   verifying: 'Verifying card state…', cleanup: 'Closing the card channel…',

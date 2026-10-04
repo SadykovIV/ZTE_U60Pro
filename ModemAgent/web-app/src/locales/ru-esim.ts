@@ -1,4 +1,10 @@
 export const ruEsim: Record<string, string> = {
+  'Check card and profiles': 'Проверить карту и профили',
+  'Checking the SIM card and profiles…': 'Проверяю SIM-карту и профили…',
+  'Card type has not been checked.': 'Тип карты ещё не проверен.',
+  'eUICC confirmed: EID and profiles were read, and the card channel was closed.': 'eUICC подтверждена: EID и профили прочитаны, канал карты закрыт.',
+  'Card type is unknown. This response does not identify an ordinary SIM card.': 'Тип карты не установлен. Этот ответ не означает, что установлена обычная SIM.',
+  'An ordinary operator SIM cannot store downloaded eSIM profiles. A failed check may also mean a busy card, restricted modem access or a communication error.': 'Обычная SIM оператора не хранит загружаемые профили eSIM. Причиной неудачной проверки также могут быть занятая карта, ограничение доступа в модеме или ошибка связи.',
   'The SIM restart is unconfirmed. Read profiles again and check the switch result. No automatic retry was made.': 'Перезапуск SIM не подтверждён. Перечитайте профили и проверьте результат переключения. Автоматического повтора не было.',
   'SIM power restoration is unconfirmed. Restart the modem before trying again, then read profiles again.': 'Включение SIM не подтверждено. Перезагрузите модем перед повторной попыткой, затем перечитайте профили.',
   "The card is busy with another operation. Wait for it to finish, then read profiles again.": "Карта занята другой операцией. Дождитесь её завершения и перечитайте профили.",

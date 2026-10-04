@@ -44,6 +44,7 @@ public static class EsimProtocol
                     await WriteAsync(input, new { type = "http_response", id, rcode = response.Code, rx = response.Hex }, ct); break;
                 case "result":
                     bool ok = root.GetProperty("ok").GetBoolean();
+                    var card = root.TryGetProperty("card", out var rawCard) ? EsimCardStatus.Parse(rawCard, ok) : null;
                     bool hasComponentError = root.TryGetProperty("component_error", out var componentField);
                     var componentError = EsimDiagnostics.SafeComponentError(hasComponentError && componentField.ValueKind == JsonValueKind.String ? componentField.GetString() : null);
                     if (ok && hasComponentError) throw new EsimException();
@@ -62,10 +63,10 @@ public static class EsimProtocol
                         var changed = root.GetProperty("changed").GetBoolean();
                         bool expectedChange = request.Operation != "list" && (request.Operation != "enable" || request.ExpectedSnapshot!.Profiles.Single(p => p.Iccid == request.Iccid).State != "enabled");
                         if (changed != expectedChange || request.Operation == "enable" && (modemVerified != true || radioRestored != true)) throw new EsimException();
-                        result = new(true, snapshot, changed, root.GetProperty("notifications_pending").GetBoolean(), ModemVerified: modemVerified, RadioRestored: radioRestored);
+                        result = new(true, snapshot, changed, root.GetProperty("notifications_pending").GetBoolean(), ModemVerified: modemVerified, RadioRestored: radioRestored, Card: card);
                     }
                     else result = new(false, snapshot, false, false,
-                        EsimDiagnostics.SafeError(root.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.String ? error.GetString() : null), modemVerified, radioRestored, componentError);
+                        EsimDiagnostics.SafeError(root.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.String ? error.GetString() : null), modemVerified, radioRestored, componentError, card);
                     break;
                 default: throw new EsimException();
             }

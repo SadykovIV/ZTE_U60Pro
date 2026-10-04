@@ -135,10 +135,7 @@ impl Jobs {
             })
             .is_err()
         {
-            self.complete(
-                id,
-                json!({"type":"result","ok":false,"error":"job_start_failed"}),
-            );
+            self.complete(id, final_value(Err(Error::new("job_start_failed"))).0);
         }
     }
     fn complete(self: &Arc<Self>, id: &str, value: Value) {
@@ -424,7 +421,7 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::sync_channel::<()>(1);
         jobs.launch(&id, move || {
             rx.recv().unwrap();
-            json!({"type":"result","ok":false,"error":"bridge_cleanup_failed"})
+            final_value(Err(Error::new("bridge_cleanup_failed"))).0
         });
         let status = jobs.status(owner, &id).1;
         assert_eq!(status["data"]["state"], "running");
@@ -436,6 +433,10 @@ mod tests {
             if value["data"]["state"] == "complete" {
                 assert_eq!(value["data"]["result"]["ok"], false);
                 assert_eq!(value["data"]["result"]["error"], "bridge_cleanup_failed");
+                assert_eq!(value["data"]["result"]["card"], json!({
+                    "kind":"unknown", "management":"unknown",
+                    "reason":"cleanup_unknown", "cleanup_confirmed":false
+                }));
                 break;
             }
             assert!(Instant::now() < until);

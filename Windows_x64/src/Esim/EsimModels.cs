@@ -33,7 +33,53 @@ public sealed class EsimRequest
     [JsonPropertyName("iccid"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? Iccid { get; init; }
     [JsonPropertyName("confirm_delete"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] public bool ConfirmDelete { get; init; }
 }
-public sealed record EsimResult(bool Ok, EsimSnapshot? Snapshot, bool Changed, bool NotificationsPending, string Error = "operation_failed", bool? ModemVerified = null, bool? RadioRestored = null, string? ComponentError = null);
+public sealed record EsimResult(bool Ok, EsimSnapshot? Snapshot, bool Changed, bool NotificationsPending, string Error = "operation_failed", bool? ModemVerified = null, bool? RadioRestored = null, string? ComponentError = null, EsimCardStatus? Card = null);
+
+/// <summary>Fixed capability metadata, never a physical ordinary-SIM inference or a write grant.</summary>
+public sealed record EsimCardStatus
+{
+    public string Kind { get; }
+    public string Management { get; }
+    public string Reason { get; }
+    public bool CleanupConfirmed { get; }
+    private EsimCardStatus(string kind, string management, string reason, bool cleanup)
+    { Kind = kind; Management = management; Reason = reason; CleanupConfirmed = cleanup; }
+    private static readonly HashSet<string> FailureReasons = ["busy", "open_rejected", "cleanup_unknown", "not_ready", "unsupported_device", "read_failed", "operation_failed"];
+
+    public static EsimCardStatus Parse(JsonElement value, bool success)
+    {
+        if (value.ValueKind != JsonValueKind.Object) throw new EsimException();
+        var names = new HashSet<string>();
+        foreach (var field in value.EnumerateObject())
+            if (!names.Add(field.Name) || field.Name is not ("kind" or "management" or "reason" or "cleanup_confirmed")) throw new EsimException();
+        if (names.Count != 4) throw new EsimException();
+        string Text(string name) => value.GetProperty(name).ValueKind == JsonValueKind.String ? value.GetProperty(name).GetString()! : throw new EsimException();
+        string kind = Text("kind"), management = Text("management"), reason = Text("reason");
+        var flag = value.GetProperty("cleanup_confirmed");
+        if (flag.ValueKind is not (JsonValueKind.True or JsonValueKind.False)) throw new EsimException();
+        bool cleanup = flag.GetBoolean();
+        bool valid = success
+            ? kind == "euicc_confirmed" && management == "available" && reason == "eid_and_profiles_read" && cleanup
+            : kind == "unknown" && management == "unknown" && FailureReasons.Contains(reason) && !cleanup;
+        // Reserved absent/unavailable states require a future evidence contract.
+        if (!valid) throw new EsimException();
+        return new(kind, management, reason, cleanup);
+    }
+
+    /// <summary>Call only after service completion: process exit, identity and owned cleanup have passed.</summary>
+    public static EsimCardStatus FromAcceptedResult(EsimResult result)
+    {
+        if (!result.Ok || result.Snapshot is null || result.ComponentError is not null) throw new EsimException();
+        EsimValidation.Snapshot(result.Snapshot);
+        if (result.Card is { } card)
+        {
+            if (card.Kind != "euicc_confirmed" || card.Management != "available" || card.Reason != "eid_and_profiles_read" || !card.CleanupConfirmed) throw new EsimException();
+            return card;
+        }
+        // Older agents return the same validated EID/inventory without metadata.
+        return new("euicc_confirmed", "available", "eid_and_profiles_read", true);
+    }
+}
 public sealed class EsimException : Exception
 {
     public string Code { get; }

@@ -133,6 +133,17 @@ final class AgentInstallationManager {
     /// keep their existing dashboard because API compatibility is not established.
     func installBundled(_ candidate: AgentCandidate) throws -> AgentInstallationStatus {
         try require(candidate.sha256 == BundledAgent.sha256, "Повреждён встроенный агент")
+        // A bundled agent pins the installed VPN controller, which pins the
+        // display library. Keep that existing chain compatible during updates.
+        // This path does not configure Wi-Fi or enable a VPN.
+        try require(engine.lockFD >= 0, "Установка агента требует блокировки приложения")
+        try engine.acquireRemoteLock()
+        if try VPNSettingsManager(engine: engine).updateDisplayIntegrationIfNeeded() {
+            let final = try inspect()
+            try require(final.hash == candidate.sha256 && final.running && !final.recoveryPending,
+                        "Агент после обновления компонентов требует проверки. Обновите состояние перед повтором.")
+            return final
+        }
         let payload = try AgentDashboardPayload.load(engine.resources)
         return try installDashboard(payload) { try install(candidate) }
     }

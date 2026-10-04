@@ -554,9 +554,83 @@ fn line_boundaries_and_fixed_error_output() {
     assert_eq!(status, 1);
     assert_eq!(
         value,
-        json!({"type":"result","ok":false,"error":"lpac_failed"})
+        json!({"type":"result","ok":false,"error":"lpac_failed",
+            "card":{"kind":"unknown","management":"unknown",
+                "reason":"operation_failed","cleanup_confirmed":false}})
     );
     assert!(resources::verify().is_ok());
+}
+
+#[test]
+fn card_check_empty_euicc_is_confirmed_without_extra_card_operations() {
+    let before = snapshot(&[]);
+    let r: Request = serde_json::from_value(json!({"protocol":1,"operation":"list"})).unwrap();
+    let mut runtime = FakeRuntime::new(before.clone(), before.clone(), vec![]);
+    let result = perform(&r, &mut runtime, &mut FakeRelay::default()).unwrap();
+    let (value, exit) = final_value(Ok(result));
+    assert_eq!(exit, 0);
+    assert_eq!(value["card"], json!({
+        "kind":"euicc_confirmed", "management":"available",
+        "reason":"eid_and_profiles_read", "cleanup_confirmed":true
+    }));
+    assert_eq!(value["snapshot"], serde_json::to_value(&before).unwrap());
+    assert_eq!(runtime.snapshots.len(), 2, "only the existing snapshot is read");
+    assert!(runtime.commands.is_empty());
+    assert_eq!((runtime.begins, runtime.ends, runtime.radio_calls), (0, 0, 0));
+    assert!(!value["card"].to_string().contains(&before.eid));
+}
+
+#[test]
+fn card_check_failures_never_claim_plain_sim_absence_or_available_management() {
+    for (code, component, reason) in [
+        ("card_busy", Some("lock_unavailable"), "busy"),
+        ("esim_busy", None, "busy"),
+        ("card_open_rejected", Some("qmi_open_rejected"), "open_rejected"),
+        ("card_cleanup_unknown", Some("qmi_open_unknown"), "cleanup_unknown"),
+        ("snapshot_cleanup_failed", Some("channel_close_failed"), "cleanup_unknown"),
+        ("snapshot_failed", Some("qmi_transmit_error"), "read_failed"),
+        ("snapshot_failed", Some("snapshot_card_status_error"), "read_failed"),
+        ("snapshot_failed", Some("eid_parse_error"), "read_failed"),
+        ("snapshot_failed", Some("profiles_parse_error"), "read_failed"),
+        ("card_not_ready", None, "not_ready"),
+        ("job_deadline_exceeded", None, "read_failed"),
+        ("unsupported_firmware", None, "unsupported_device"),
+        ("lpac_failed", None, "operation_failed"),
+        ("PRIVATE_UNRECOGNIZED_CANARY", None, "operation_failed"),
+    ] {
+        let (value, exit) = final_value(Err(Error::new(code).component(component)));
+        assert_eq!(exit, 1);
+        assert_eq!(value["card"], json!({"kind":"unknown", "management":"unknown",
+            "reason":reason, "cleanup_confirmed":false}), "{code}");
+        assert!(!value["card"].to_string().contains("PRIVATE_UNRECOGNIZED_CANARY"));
+    }
+}
+
+#[test]
+fn card_check_cleanup_uncertainty_wins_over_busy_and_preserved_inventory() {
+    let before = snapshot(&[(ONE, "disabled")]);
+    let error = Error::new("card_busy")
+        .component(Some("qmi_open_unknown"))
+        .snapshot(before.clone());
+    let (value, exit) = final_value(Err(error));
+    assert_eq!(exit, 1);
+    assert_eq!(value["card"]["kind"], "unknown");
+    assert_eq!(value["card"]["reason"], "cleanup_unknown");
+    assert_eq!(value["card"]["cleanup_confirmed"], false);
+    assert_eq!(value["snapshot"], serde_json::to_value(before).unwrap());
+}
+
+#[test]
+fn card_check_invalid_success_snapshot_is_not_a_positive_detection() {
+    let mut malformed = snapshot(&[]);
+    malformed.eid = "INVALID_EID".into();
+    let (value, exit) = final_value(Ok(Outcome {
+        snapshot: malformed, changed: false, notifications_pending: false, modem_verified: None,
+    }));
+    assert_eq!(exit, 1);
+    assert_eq!(value["ok"], false);
+    assert_eq!(value["card"]["kind"], "unknown");
+    assert_eq!(value["card"]["cleanup_confirmed"], false);
 }
 
 #[test]

@@ -6,6 +6,12 @@ import Foundation
     }
     var canReadEsim: Bool { canReadModem && !esimPreview && !pendingOperation && !setupPending && !systemRestorePending && !skipFirmwareCheck }
     var canWriteEsim: Bool { canManage && !esimPreview && !skipFirmwareCheck && esimAuthorization == esimTargetKey && esimSnapshot?.writeReady == true }
+    var esimCardStatus: String {
+        if esimOperationActive { return "Тип SIM-карты: проверка…" }
+        if esimSnapshot != nil && esimAuthorization == esimTargetKey { return "Тип SIM-карты: физическая eUICC подтверждена." }
+        if !esimError.isEmpty { return "Тип SIM-карты определить не удалось. Ошибка чтения не означает, что карта обычная." }
+        return "Тип SIM-карты ещё не проверен. Нажмите «Проверить карту и профили»."
+    }
     func clearEsim() { esimSnapshot = nil; esimAuthorization = nil; esimSelectedICCID = nil; esimMessage = ""; esimError = "" }
     func performEsim(_ operation: EsimOperation) {
         guard operation.mutates ? canWriteEsim : canReadEsim else { return }

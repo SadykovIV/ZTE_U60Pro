@@ -21,7 +21,8 @@ import UniformTypeIdentifiers
     private var preparedCode: String? { manualInput ? EsimValidation.manualCode(address: smdpAddress, matchingID: matchingID) : EsimValidation.activationCode(activationCode) }
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
-            StudioNote(symbol: "simcard", text: "Физическая eUICC в SIM-слоте 1. Проверено: 9eSIM V0 и MU5250 B31. Встроенная карта ZTE и обычная SIM не поддерживаются.")
+            StudioNote(symbol: "simcard", text: "Управление eSIM доступно на физической eUICC в SIM-слоте. Обычная SIM-карта оператора не поддерживает установку профилей eSIM. Встроенная карта ZTE не поддерживается. Проверено: 9eSIM V0 и MU5250 B31.")
+            StudioNote(symbol: "simcard", text: model.esimCardStatus)
             if model.activeChannel != .ssh && !model.esimPreview {
                 StudioNote(symbol: "network", text: "Для eSIM требуется SSH. В «Подготовке модема» выберите SSH и проверьте подключение. Web и ADB для этого раздела не используются.")
             }
@@ -33,7 +34,7 @@ import UniformTypeIdentifiers
                         Text(L10n.text("Показываются все профили, включая выключенные")).font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
                     }
                     Spacer()
-                    Button { model.performEsim(.list) } label: { Label(L10n.text("Обновить список"), systemImage: "arrow.clockwise") }
+                    Button { model.performEsim(.list) } label: { Label(L10n.text("Проверить карту и профили"), systemImage: "arrow.clockwise") }
                         .buttonStyle(StudioButtonStyle()).disabled(!model.canReadEsim || qrBusy)
                 }
                 if let snapshot = model.esimSnapshot {
@@ -61,7 +62,7 @@ import UniformTypeIdentifiers
                         }.buttonStyle(StudioButtonStyle()).disabled(!model.canWriteEsim || blocked || selected?.state != "disabled")
                     }
                 } else {
-                    Text(L10n.text("Нажмите «Обновить список», чтобы проверить карту и прочитать профили.")).foregroundStyle(StudioStyle.secondary).padding(.vertical, 14)
+                    Text(L10n.text("Нажмите «Проверить карту и профили», чтобы определить доступность eSIM и прочитать профили.")).foregroundStyle(StudioStyle.secondary).padding(.vertical, 14)
                 }
             }
             EsimLauncherCard(model: model)

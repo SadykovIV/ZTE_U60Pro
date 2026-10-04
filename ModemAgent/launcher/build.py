@@ -26,7 +26,7 @@ def verify_abi():
 if os.environ.get('ZTE_STOCK_UI') and os.environ.get('ZTE_RUSSIAN_UI'): verify_abi()
 else: print('Reference ELF audit skipped; runtime B31 SHA guards remain mandatory')
 OUT.mkdir(parents=True, exist_ok=True)
-subprocess.run([os.environ.get('ZTE_CROSS_CC') or shutil.which('aarch64-linux-musl-gcc'),'-s',f'-ffile-prefix-map={ROOT}=.',f'-ffile-prefix-map={Path.home()}=/build','-shared','-fPIC','-O2','-Wall','-Wextra','-Werror','-Wno-misleading-indentation','-fvisibility=hidden','-pthread','-Wl,-z,relro,-z,now','-o',str(OUT/'launcher.so'),str(SRC/'launcher.c'),str(SRC/'backend.c'),str(SRC/'esim-model.c'),str(SRC/'esim-backend.c'),str(SRC/'esim-process.c'),str(SRC/'page-layout.c'),str(SRC/'telemetry.c'),str(SRC/'info-layout.c')],check=True)
+subprocess.run([os.environ.get('ZTE_CROSS_CC') or shutil.which('aarch64-linux-musl-gcc'),'-s',f'-ffile-prefix-map={ROOT}=.',f'-ffile-prefix-map={Path.home()}=/build','-shared','-fPIC','-O2','-Wall','-Wextra','-Werror','-Wno-misleading-indentation','-fvisibility=hidden','-pthread','-Wl,-z,relro,-z,now','-o',str(OUT/'launcher.so'),str(SRC/'launcher.c'),str(SRC/'backend.c'),str(SRC/'vpn-process.c'),str(SRC/'vpn-model.c'),str(SRC/'esim-model.c'),str(SRC/'esim-backend.c'),str(SRC/'esim-process.c'),str(SRC/'page-layout.c'),str(SRC/'telemetry.c'),str(SRC/'info-layout.c')],check=True)
 names = ['launcher.so','launcher-run.sh','launcher-watch.sh','launcher-service.sh','launcher-start.sh']
 for name in names[1:]:
     source=SRC/'scripts'/name

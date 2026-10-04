@@ -125,5 +125,13 @@
   "Обновляются агент и пакет Launcher. eSIM добавляется в конец, если её нет среди выбранных страниц. Прежний порядок, раскладка и настройки VPN сохраняются. Экран может перезапуститься.": "The agent and Launcher bundle are updated. eSIM is appended if it is not selected yet. Existing page order, layout and VPN settings are preserved. The screen may restart.",
   "Выбор и порядок страниц сохранены на модеме. Лаунчер применит их без перезапуска экрана.": "Page selection and order are saved on the modem. The launcher applies them without restarting the screen.",
   "Файл страниц не прошёл проверку типа, владельца, прав или размера. Запись заблокирована.": "The pages file failed type, ownership, permission or size checks. Writing is blocked.",
-  "Сохранённый список страниц повреждён. Установка и запись остановлены; требуется проверка файла на модеме.": "The saved page list is invalid. Installation and writing are blocked; the modem file needs inspection."
+  "Сохранённый список страниц повреждён. Установка и запись остановлены; требуется проверка файла на модеме.": "The saved page list is invalid. Installation and writing are blocked; the modem file needs inspection.",
+  "Проверить карту и профили": "Check card and profiles",
+  "Управление eSIM доступно на физической eUICC в SIM-слоте. Обычная SIM-карта оператора не поддерживает установку профилей eSIM. Проверено: 9eSIM V0 и MU5250 B31.": "eSIM management requires a removable eUICC in the SIM slot. An ordinary operator SIM does not support installing eSIM profiles. Tested with 9eSIM V0 and MU5250 B31.",
+  "Тип SIM-карты: проверка…": "SIM card type: checking…",
+  "Тип SIM-карты: физическая eUICC подтверждена.": "SIM card type: removable eUICC confirmed.",
+  "Тип SIM-карты определить не удалось. Ошибка чтения не означает, что карта обычная.": "SIM card type could not be determined. A read error does not identify an ordinary SIM.",
+  "Тип SIM-карты ещё не проверен. Нажмите «Проверить карту и профили».": "SIM card type has not been checked. Click “Check card and profiles”.",
+  "Управление eSIM доступно на физической eUICC в SIM-слоте. Обычная SIM-карта оператора не поддерживает установку профилей eSIM. Встроенная карта ZTE не поддерживается. Проверено: 9eSIM V0 и MU5250 B31.": "eSIM management requires a physical eUICC in the SIM slot. An ordinary operator SIM cannot install eSIM profiles. The built-in ZTE card is not supported. Tested with 9eSIM V0 and MU5250 B31.",
+  "Нажмите «Проверить карту и профили», чтобы определить доступность eSIM и прочитать профили.": "Click Check card and profiles to check eSIM management and read the profiles."
 }

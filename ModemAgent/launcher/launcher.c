@@ -2,6 +2,7 @@
  * run on the stock LVGL thread; the worker only exchanges plain snapshots. */
 #define _GNU_SOURCE
 #include "backend.h"
+#include "vpn-model.h"
 #include "esim-backend.h"
 #include "page-layout.h"
 #include <stdint.h>
@@ -123,6 +124,7 @@ static int page_count=5;
 static int page_kind(int page){return page>=3&&page<=page_count?page_order.ids[page-3]:-1;}
 static void *mainform,*pages[3],*dots[5],*titles[3];
 static void *info_cards[INFO_MAX_SELECTED],*info_titles[INFO_MAX_SELECTED],*info_values[INFO_MAX_SELECTED],*info_status,*info_scroll;
+static void *info_refresh_label,*info_sim_card,*info_sim_title,*info_sim_value;
 static struct info_layout rendered_layout;static int has_rendered_layout;
 static void *wifi_card,*wifi_title,*wifi_ssid,*wifi_switch,*profile_heading,*profile_cards[3],*profile_labels[3],*profile_marks[3];
 static void *previous,*next,*previous_label,*next_label,*notice,*confirm,*confirm_title,*confirm_name,*confirm_hint,*confirm_yes,*confirm_no;
@@ -198,6 +200,7 @@ static void clicked(void *event){
   else if(id==80&&esim_selected_id[0]){if(!esim_enable(esim_selected_id,esim_selected_generation))esim_refresh();esim_selected_id[0]=0;}
   else if(id==81)esim_selected_id[0]=0;
   else if(id==82){esim_selected_id[0]=0;esim_refresh();}
+  else if(id==83){esim_selected_id[0]=0;backend_refresh();esim_refresh();backend_snapshot(&shown);}
   esim_snapshot(&esim_shown);render();return;
  }
  if(shown.busy)return;
@@ -221,8 +224,14 @@ static const char *esim_stage(void){
  if(!strcmp(s,"enabling_profile")||!strcmp(s,"enabling"))return tr("Переключение профиля...","Switching profile...");
  return tr("Чтение карты / проверка...","Reading card / checking...");
 }
+static const char *sim_card_status(const struct esim_snapshot *s,int ru){
+ if(s->busy)return ru?"Проверка SIM-карты...":"Checking SIM card...";
+ if(s->valid)return ru?"Физическая eUICC подтверждена":"Physical eUICC confirmed";
+ if(s->error)return ru?"Тип SIM-карты не определён":"SIM card type unknown";
+ return ru?"Проверьте SIM-карту":"Check the SIM card";
+}
 static void render_esim(void){
- text(titles[2],"eSIM");text(esim_scope,tr("Физическая eUICC в SIM-слоте","Removable eUICC in SIM slot"));
+ text(titles[2],"eSIM");text(esim_scope,sim_card_status(&esim_shown,tr_ru()));
  if(esim_offset>=esim_shown.count)esim_offset=0;
  for(int i=0;i<3;i++){
   int idx=esim_offset+i;flag(esim_cards[i],HIDDEN,!esim_shown.cached||idx>=esim_shown.count);
@@ -245,12 +254,14 @@ static void render(void){
  render_esim();
  struct info_text info;format_info(&shown,tr_ru(),&info);
  text(titles[0],tr("О модеме","About modem"));text(info_status,info.status);
+ text(info_refresh_label,tr("Обновить","Refresh"));text(info_sim_title,tr("SIM-карта","SIM card"));text(info_sim_value,sim_card_status(&esim_shown,tr_ru()));
  struct info_layout layout=shown.layout;if(!info_layout_valid(&layout))info_layout_default(&layout);
  int changed=!has_rendered_layout||memcmp(&layout,&rendered_layout,sizeof layout);
- struct info_slot slots[INFO_MAX_SELECTED];unsigned count=info_layout_slots(&layout,slots);
+ struct info_slot slots[INFO_MAX_SELECTED];unsigned count=info_layout_slots(&layout,slots);int bottom=0;
  if(changed)F(0x5380bc,void,void*,int,int)(info_scroll,0,0);
  for(unsigned i=0;i<INFO_MAX_SELECTED;i++){
   flag(info_cards[i],HIDDEN,i>=count);if(i>=count)continue;
+  if(slots[i].y+slots[i].height>bottom)bottom=slots[i].y+slots[i].height;
   unsigned id=slots[i].metric;int carrier=id==INFO_CARRIERS;
   int tiles=layout.style==INFO_STYLE_TILES;
   if(changed){
@@ -261,6 +272,9 @@ static void render(void){
   }
   text(info_titles[i],info_title(id,tr_ru(),tiles,&info));text(info_values[i],info.values[id]);
  }
+ /* This card is outside the configurable metric grammar and follows the
+  * bottom of the last row, including an odd final row in tile mode. */
+ if(changed)pos(info_sim_card,14,bottom+(layout.style==INFO_STYLE_TILES?10:7));
  if(changed){F(0x5380bc,void,void*,int,int)(info_scroll,0,0);rendered_layout=layout;has_rendered_layout=1;}
  char ssid_text[96];int split_ssid=format_wifi_ssid(&shown,tr_ru(),ssid_text,sizeof ssid_text);
  text(wifi_ssid,ssid_text);pos(wifi_ssid,16,split_ssid?47:52);size(wifi_ssid,288,split_ssid?36:26);F(0x52fa04,void,void*,int)(wifi_ssid,split_ssid?14:18);
@@ -272,7 +286,7 @@ static void render(void){
  if(offset>=shown.count)offset=0;
  for(int i=0;i<3;i++){int idx=offset+i;flag(profile_cards[i],HIDDEN,idx>=shown.count);if(idx<shown.count){text(profile_labels[i],shown.profiles[idx].name);flag(profile_marks[i],HIDDEN,!shown.profiles[idx].active);}}
  flag(previous,HIDDEN,shown.count<=3);flag(next,HIDDEN,shown.count<=3);text(previous_label,tr("Назад","Previous"));text(next_label,tr("Далее","Next"));
- text(notice,shown.busy?tr("Применение...","Applying..."):shown.error?tr("Ошибка. Откройте агент","Error. Open the agent"):!shown.valid?tr("Получение данных...","Loading..."):!shown.count?tr("Добавьте профиль в агенте","Import a profile in the agent"):shown.enabled?(shown.network_ok&&shown.running?tr("VPN работает","VPN is running"):tr("Проверьте VPN в агенте","Check VPN in the agent")):tr("WiFi с VPN выключен","WiFi with VPN is off"));
+ text(notice,shown.busy?tr("Применение...","Applying..."):shown.error?vpn_error_text(shown.error_code[0]?shown.error_code:shown.operation_error,tr_ru()):!shown.valid?tr("Получение данных...","Loading..."):!shown.count?tr("Добавьте профиль в агенте","Import a profile in the agent"):shown.enabled?(shown.network_ok&&shown.running?tr("VPN работает","VPN is running"):tr("Проверьте VPN в агенте","Check VPN in the agent")):tr("WiFi с VPN выключен","WiFi with VPN is off"));
  flag(confirm,HIDDEN,!selected_id[0]);text(confirm_title,tr("Подключить профиль?","Connect this profile?"));text(confirm_name,selected_name);text(confirm_hint,tr("VPN переподключится","VPN will reconnect"));text(confirm_yes,tr("Подключить","Connect"));text(confirm_no,tr("Отмена","Cancel"));
  last_generation=shown.generation;last_language=tr_ru();
 }
@@ -290,7 +304,9 @@ static void tick(void *unused){
  }
  unsigned old_stale=shown.telemetry.stale,old_valid=shown.telemetry.valid;
  esim_snapshot(&esim_shown);backend_snapshot(&shown);if(esim_shown.generation!=esim_generation||shown.generation!=last_generation||shown.telemetry.stale!=old_stale||shown.telemetry.valid!=old_valid||tr_ru()!=last_language)render();
- static unsigned ticks;if(++ticks%10==0&&current>=3&& !*(unsigned char*)0x2287598&&F(0x538658,int,void*)(mainform)){if(page_kind(current)==PAGE_ESIM){if(!esim_selected_id[0])esim_poll();}else backend_refresh();}
+ /* Periodic updates read telemetry/VPN only. Card reads are explicit:
+  * eSIM entry, a refresh button, or the existing post-mutation verification. */
+ static unsigned ticks;if(++ticks%10==0&&current>=3&&page_kind(current)!=PAGE_ESIM&& !*(unsigned char*)0x2287598&&F(0x538658,int,void*)(mainform))backend_refresh();
 }
 static void destroy(void *form){
  if(form==mainform){
@@ -305,7 +321,7 @@ static void create(void *form){
  mainform=form;current=1;offset=0;esim_offset=0;esim_selected_id[0]=0;selected_id[0]=0;has_rendered_layout=0;
  void *parent=P(form,88);
  pages[0]=panel(parent,640,0,320,432,0);pages[1]=panel(parent,960,0,320,432,0);pages[2]=panel(parent,1280,0,320,432,0);
- titles[0]=label(pages[0],16,12,288,34,24,"");info_status=label(pages[0],16,50,288,20,14,"");
+ titles[0]=label(pages[0],16,12,144,34,24,"");button(pages[0],178,8,128,38,83,&info_refresh_label);info_status=label(pages[0],16,50,288,20,14,"");
  info_scroll=panel(pages[0],0,INFO_VIEWPORT_Y,320,INFO_VIEWPORT_HEIGHT,0);
  flag(info_scroll,CLICKABLE|SCROLLABLE|CHAIN_HOR,1);flag(info_scroll,CHAIN_VER|BUBBLE,0);
  /* Verified B31 LVGL functions: vertical-only content, horizontal chaining. */
@@ -314,6 +330,8 @@ static void create(void *form){
   info_cards[i]=panel(info_scroll,14,0,292,48,1);flag(info_cards[i],CLICKABLE,0);
   info_titles[i]=label(info_cards[i],12,3,268,19,14,"");info_values[i]=label(info_cards[i],12,23,268,24,19,"");
  }
+ info_sim_card=panel(info_scroll,14,0,292,80,1);flag(info_sim_card,CLICKABLE,0);
+ info_sim_title=label(info_sim_card,12,8,268,19,14,"");info_sim_value=label(info_sim_card,12,31,268,40,16,"");
  titles[1]=label(pages[1],16,12,288,34,24,"VPN");wifi_ssid=label(pages[1],16,52,288,26,18,"");
  wifi_card=panel(pages[1],14,88,292,62,1);flag(wifi_card,CLICKABLE,0);
  wifi_title=label(wifi_card,12,20,196,30,19,"");
@@ -322,8 +340,8 @@ static void create(void *form){
  F(0x534c08,void,void*,void(*)(int,void*),void*)(wifi_switch,wifi_changed,NULL);
  profile_heading=label(pages[1],16,163,288,24,16,"");
  for(int i=0;i<3;i++){profile_cards[i]=button(pages[1],14,194+54*i,292,48,10+i,&profile_labels[i]);pos(profile_labels[i],18,7);size(profile_labels[i],262,39);F(0x52fa04,void,void*,int)(profile_labels[i],17);F(0x52f73c,void,void*,int)(profile_labels[i],1);profile_marks[i]=panel(profile_cards[i],0,8,5,32,0);color(profile_marks[i],100,0);}
- previous=button(pages[1],14,360,140,40,20,&previous_label);next=button(pages[1],166,360,140,40,21,&next_label);
- notice=label(pages[1],16,405,288,25,16,"");
+ previous=button(pages[1],14,355,140,34,20,&previous_label);next=button(pages[1],166,355,140,34,21,&next_label);
+ notice=label(pages[1],16,394,288,36,14,"");
  confirm=panel(pages[1],8,156,304,247,0);confirm_title=label(confirm,8,14,288,32,22,"");confirm_name=label(confirm,8,57,288,70,20,"");confirm_hint=label(confirm,8,132,288,28,17,"");
  button(confirm,6,186,146,48,30,&confirm_yes);button(confirm,158,186,140,48,31,&confirm_no);
  titles[2]=label(pages[2],16,12,144,34,24,"eSIM");button(pages[2],178,8,128,38,82,&esim_refresh_label);esim_scope=label(pages[2],16,52,288,40,16,"");

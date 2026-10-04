@@ -6,8 +6,8 @@ namespace ZteImeiStudio.Windows.Core;
 /// <summary>The same pinned build is installed permanently and used by private desktop RPC.</summary>
 public static class AgentPackage
 {
-    public const string Version = "2.9.0-esim.1";
-    public const string Sha256 = "110f1144e7c0bd044b81cc37a1f5925cdae721043139bb46459a40f1db649deb";
+    public const string Version = "2.9.0-esim.2";
+    public const string Sha256 = "413ba4b0a07540d6901e87e74c9730196eb3373cf35b8914e31a8194bfe5a839";
     public const string LegacyPublicSha256 = "c50ba6b7ac6f77c581c2b657ba769f976d8d20aca0c6b7d08c9254ef2de9d346";
     public const string LegacyVpnSha256 = "3da0915669ca101fe8b2faef3d683405957a2fbd49000a58257d28868321b3df";
     public const string LegacyEsimSha256 = "7a2d1a517d564a3d66dfe98e6622be6ca2428635aa9cbd83cbf02c179dd7703e";

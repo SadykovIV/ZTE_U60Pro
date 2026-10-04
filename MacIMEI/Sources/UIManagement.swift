@@ -10,6 +10,7 @@ extension ContentView {
                 Button(action: model.refreshModemInformation) { Label(L10n.text("Обновить сведения"), systemImage: "arrow.clockwise") }
                     .buttonStyle(StudioButtonStyle()).disabled(!model.canCollectDiagnostics)
             }
+            informationRow("SIM-карта", model.esimCardStatus)
             if let info = model.modemInformation {
                 informationRow("Модель", info.model)
                 informationRow("Прошивка", info.firmware)

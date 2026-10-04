@@ -28,7 +28,7 @@ if (args.Contains("--tls-smoke"))
 }
 var passed = new List<string>();
 void Pass(string name) { passed.Add(name); Console.WriteLine("PASS " + name); }
-void Check(bool value, string name) { if (!value) throw new Exception(name); }
+void Check(bool value, string name) { if (!value) { Console.WriteLine("FAIL " + name); throw new Exception(name); } }
 void Reject(Action action, string name) { try { action(); } catch { return; } throw new Exception("accepted " + name); }
 async Task RejectAsync(Func<Task> action, string name) { try { await action(); } catch { return; } throw new Exception("accepted " + name); }
 var before = Fixture.Snapshot;
@@ -142,9 +142,21 @@ await session.Dispatch(() =>
     foreach (var language in new[] { "ru", "en" })
     {
         Localization.SetLanguage(language, persist:false);
-        var fake = new FakeModem(); var window = new MainWindow(fake, persistPreferences:false); window.Show(); Pump();
+        var fake = new FakeModem(); var window = new MainWindow(fake, persistPreferences:false);
+        try
+        {
+        window.Show(); Pump();
+        Check(fake.Requests.Count == 0, "startup never checks the card");
+        Click(window,"Navigation1");
+        Click(window,"RefreshPage");
+        Check(fake.Requests.Count == 0, "header refresh outside information/eSIM never checks the card");
         Click(window,"Navigation8"); Check(!Find<Button>(window,"EsimDelete").IsEnabled, "writes require fresh read");
-        Click(window,"EsimRead");
+        Check(fake.Requests.Count == 0, "opening the page never issues a background card request");
+        Check(Find<TextBlock>(window,"EsimCardType").Text == Localization.Translate("Карта ещё не проверена."), "card starts unassessed");
+        Check(Find<Button>(window,"EsimRead").Content?.ToString() == Localization.Translate("Проверить карту и профили"), "explicit card-check action");
+        Click(window,"RefreshPage");
+        Check(fake.Requests.Count == 1 && fake.Requests[0].Operation == "list", "explicit eSIM header refresh checks card and profiles once");
+        Check(Find<TextBlock>(window,"EsimCardType").Text == Localization.Translate("Карта: eUICC подтверждена"), "accepted legacy snapshot confirms type");
         Check(Label(window, Localization.Translate("Физическая eUICC")), "localized eSIM heading");
         if(language=="en") Check(Label(window,"Physical eUICC profiles"),"English page subtitle");
         var profiles = Find<ListBox>(window,"EsimProfiles");
@@ -176,15 +188,39 @@ await session.Dispatch(() =>
         code.Text="LPA:1$ignored.example$hidden-input"; confirmation.Text="synthetic-confirmation"; Pump();
         Click(window,"EsimDownload");
         Check(code.Text=="" && confirmation.Text=="" && address.Text=="" && matching.Text=="" && !Find<Button>(window,"EsimRead").IsEnabled,"all secrets clear immediately and busy disables operations");
+        Check(!Find<Button>(window,"RefreshPage").IsEnabled,"busy disables header refresh");
+        int requestsWhileBusy = fake.Requests.Count;
+        Find<Button>(window,"RefreshPage").RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); Pump();
+        Check(fake.Requests.Count == requestsWhileBusy,"busy header handler cannot add a card request");
         Check(fake.Requests.Last().ActivationCode=="LPA:1$example.com$manual-synthetic","manual selection determines exact request; hidden full code ignored");
         fake.Pending.SetResult(new(false,null,false,false));
         for(int i=0;i<20;i++){ Thread.Sleep(10); Pump(); }
         Check(!Find<Button>(window,"EsimEnable").IsEnabled && !Find<Button>(window,"EsimDelete").IsEnabled,"uncertain result clears authorization");
+        Check(Find<TextBlock>(window,"EsimCardType").Text == Localization.Translate("Карта: тип не определён. Повторите проверку."), "failure clears positive card type");
+        Check(Find<ListBox>(window,"EsimProfiles").ItemCount == 0, "failed operation clears stale profile snapshot");
         Check(Find<Button>(window,"EsimRead").IsEnabled,"read available after uncertainty");
+        fake.Pending = null;
+        int requestsBeforeInformation = fake.Requests.Count;
+        Click(window,"Navigation7");
+        Check(fake.Requests.Count == requestsBeforeInformation,"opening information never checks the card");
+        Check(Find<TextBlock>(window,"InformationCardType").Text == Localization.Translate("Карта: тип не определён. Повторите проверку."),"information reflects failed card check as unknown");
+        Click(window,"RefreshPage");
+        Check(fake.Requests.Count == requestsBeforeInformation + 1 && fake.Requests.Last().Operation == "list","explicit information header refresh checks card once");
+        Check(Find<TextBlock>(window,"InformationCardType").Text == Localization.Translate("Карта: eUICC подтверждена"),"information shows validated card type");
+        window.GetLogicalDescendants().OfType<Button>().Single(b => b.Content?.ToString() == Localization.Translate("Память")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); Pump();
+        window.GetLogicalDescendants().OfType<Button>().Single(b => b.Content?.ToString() == Localization.Translate("Обновить")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); Pump();
+        Check(fake.Requests.Count == requestsBeforeInformation + 2,"explicit RefreshDevice action checks card once after success");
+        fake.RefreshSuccess = false;
+        window.GetLogicalDescendants().OfType<Button>().Single(b => b.Content?.ToString() == Localization.Translate("Обновить")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); Pump();
+        Check(fake.Requests.Count == requestsBeforeInformation + 2,"failed information refresh never starts a card check");
+        fake.RefreshSuccess = true;
+        Click(window,"Navigation8");
         var closingAddress=Find<TextBox>(window,"EsimSmdpAddress"); var closingMatching=Find<TextBox>(window,"EsimMatchingId"); var closingConfirmation=Find<TextBox>(window,"EsimConfirmationCode");
         closingAddress.Text="example.com"; closingMatching.Text="unsubmitted-test"; closingConfirmation.Text="confirmation-test";
         window.Close(); Pump();
         Check(closingAddress.Text=="" && closingMatching.Text=="" && closingConfirmation.Text=="","window close clears unsubmitted eSIM fields");
+        }
+        finally { window.Close(); Pump(); }
     }
     Localization.SetLanguage("ru",persist:false);
 },CancellationToken.None);
@@ -209,6 +245,7 @@ sealed class FakeModem : IModemService
 {
     public EsimSnapshot Current=Fixture.Snapshot;
     public List<EsimRequest> Requests=[];
+    public bool RefreshSuccess = true;
     public TaskCompletionSource<EsimResult>? Pending;
     public Task<EsimResult> RunEsimAsync(EsimRequest request,IProgress<string>? progress,CancellationToken ct=default)
     {
@@ -219,7 +256,7 @@ sealed class FakeModem : IModemService
         return Task.FromResult(new EsimResult(true,Current,request.Operation!="list",false, ModemVerified:request.Operation=="enable", RadioRestored:request.Operation=="enable"));
     }
     public Task<DeviceSnapshot> GetDeviceSnapshotAsync(CancellationToken ct=default)=>Task.FromResult(new DeviceSnapshot(true,"Подключено",Model:"ZTE U60 Pro",Firmware:"MU5250 B31",Serial:"synthetic-device",IpAddress:"192.168.0.1",ConnectionMode:"SSH"));
-    public Task<OperationResult> RunAsync(OperationRequest request,CancellationToken ct=default)=>Task.FromResult(new OperationResult(true,"Состояние обновлено."));
+    public Task<OperationResult> RunAsync(OperationRequest request,CancellationToken ct=default)=>Task.FromResult(new OperationResult(RefreshSuccess,"Состояние обновлено."));
     public Task<IReadOnlyList<BackupInfo>> ListBackupsAsync(CancellationToken ct=default)=>Task.FromResult<IReadOnlyList<BackupInfo>>([]);
     public Task<IReadOnlyList<ModemAppInfo>> ListApplicationsAsync(CancellationToken ct=default)=>Task.FromResult<IReadOnlyList<ModemAppInfo>>([]);
     public Task<IReadOnlyList<LogEntry>> GetLogsAsync(CancellationToken ct=default)=>Task.FromResult<IReadOnlyList<LogEntry>>([]);

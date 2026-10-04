@@ -1,11 +1,11 @@
 import { req } from '../../data/client'
-import { verifiedResult, type EsimRequest, type EsimResult, type Snapshot } from './model'
+import { EsimOperationError, parsedCard, unknownCard, verifiedCard, type CardStatus, type EsimRequest, type EsimResult, type Snapshot } from './model'
 import { journalEntry, resultDiagnostic } from './journal'
 import { safeEsimErrors } from './errors'
 
 interface Job { job_id: string; state: 'running' | 'complete'; stage?: string; result?: EsimResult | null; logs?: unknown[] }
 export const capabilities = () => req('GET', '/api/esim/capabilities')
-export async function runOperation(request: EsimRequest, progress: (stage: string, safeLog?: string) => void, signal: AbortSignal): Promise<{ snapshot: Snapshot; pending: boolean }> {
+export async function runOperation(request: EsimRequest, progress: (stage: string, safeLog?: string) => void, signal: AbortSignal): Promise<{ snapshot: Snapshot; card: CardStatus; pending: boolean }> {
   // Never retry POST after an ambiguous network outcome.
   const bytes = new Uint8Array(16)
   window.crypto.getRandomValues(bytes)
@@ -38,6 +38,10 @@ export async function runOperation(request: EsimRequest, progress: (stage: strin
   if (job.state !== 'complete' || !job.result) throw new Error('unconfirmed')
   const diagnostic = resultDiagnostic(job.result)
   if (diagnostic) progress('cleanup', diagnostic)
-  if (!job.result.ok && typeof job.result.error === 'string' && safeEsimErrors.has(job.result.error)) throw new Error(job.result.error)
-  return { snapshot: verifiedResult(request, job.result), pending: job.result.notifications_pending === true }
+  if (job.result.ok === false) {
+    const card = parsedCard(job.result.card, false) ?? unknownCard('operation_failed')
+    const code = typeof job.result.error === 'string' && safeEsimErrors.has(job.result.error) ? job.result.error : 'unconfirmed'
+    throw new EsimOperationError(code, card)
+  }
+  return { ...verifiedCard(request, job.result), pending: job.result.notifications_pending === true }
 }

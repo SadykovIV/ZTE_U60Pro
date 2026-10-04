@@ -10,6 +10,7 @@ using Avalonia.LogicalTree;
 using Avalonia.Threading;
 using ZteImeiStudio.Windows;
 using ZteImeiStudio.Windows.Features;
+using ZteImeiStudio.Windows.Research;
 
 var root=Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,"../../../../../"));
 var results=Path.Combine(root,"card-recovery-pages-tests/results");Directory.CreateDirectory(results);
@@ -24,7 +25,7 @@ Check(Encoding.ASCII.GetString(new LauncherPages([]).Encode())=="ZTE_LAUNCHER_PA
 foreach(var bad in new[]{"","ZTE_LAUNCHER_PAGES_V1","ZTE_LAUNCHER_PAGES_V1\ninfo","ZTE_LAUNCHER_PAGES_V1\ninfo\ninfo\n","ZTE_LAUNCHER_PAGES_V1\nunknown\n","ZTE_LAUNCHER_PAGES_V1\n\n","ZTE_LAUNCHER_PAGES_V1\r\ninfo\r\n","ZTE_LAUNCHER_PAGES_V1\ninfo \n","ZTE_LAUNCHER_PAGES_V1\nINFO\n","ZTE_LAUNCHER_PAGES_V1\ninfo\0\n",new string('a',129)})Reject(()=>LauncherPages.Decode(Encoding.UTF8.GetBytes(bad)),"malformed page grammar rejected #"+passed.Count);
 Reject(()=>new LauncherPages(new[]{"info","vpn","esim","info"}).Encode(),"duplicate/too many outbound pages refused");
 Reject(()=>new LauncherPages(new[]{"info;reboot"}).Encode(),"shell-shaped outbound page refused");
-Check(ZteImeiStudio.Windows.Core.AgentPackage.Version == "2.7.0-esim.8" && Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(Path.Combine(root,"Resources/Onboarding/zte-agent")))) == ZteImeiStudio.Windows.Core.AgentPackage.Sha256, "public rebuilt agent matches packaged bytes");
+Check(ZteImeiStudio.Windows.Core.AgentPackage.Version == JsonDocument.Parse(File.ReadAllBytes(Path.Combine(root,"Resources/Onboarding/provenance.json"))).RootElement.GetProperty("local_agent_version").GetString() && Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(Path.Combine(root,"Resources/Onboarding/zte-agent")))) == ZteImeiStudio.Windows.Core.AgentPackage.Sha256, "public rebuilt agent matches packaged bytes");
 Check(ZteImeiStudio.Windows.Core.AgentPackage.VersionForHash("6168ae6c539bb3ca7136eb40a1d4cae03d75aa18900be105f2ff2d5016da4b5c") == "2.7.0-esim.7", "previous released .7 remains recognized");
 await PageInstallerTests.Run(root,Check);
 using var session=HeadlessUnitTestSession.StartNew(typeof(SmokeApp));
@@ -54,12 +55,13 @@ await session.Dispatch(()=>
   window.Close();Pump();Check(!window.IsVisible,"headless window shutdown: "+language);
  }
  Localization.SetLanguage("ru",persist:false);
- var setupFake=new FakeModem{Connected=false};var setup=new MainWindow(setupFake,persistPreferences:false);setup.Show();Pump();
+ var setupFake=new FakeModem{Connected=false,ResearchSpecPath=Path.Combine(root,"Resources/FirmwareResearch/probes.json")};var setup=new MainWindow(setupFake,persistPreferences:false);setup.Show();Pump();
  var secrets=(Dictionary<string,TextBox>)typeof(MainWindow).GetField("_secretFields",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(setup)!;
  var setupForm=(Dictionary<string,string>)typeof(MainWindow).GetField("_form",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(setup)!;
  var suffix=secrets["backup_key_suffix"];Check(suffix.PasswordChar=='●'&&!setupForm.ContainsKey("backup_key_suffix"),"public backup suffix is masked and absent from saved form");
  secrets["web_password"].Text="synthetic-web";secrets["agent_password"].Text="synthetic-agent";suffix.Text="test-only-backup-key-suffix";
  setup.GetLogicalDescendants().OfType<Button>().Single(b=>b.Content?.ToString()=="Выполнить предварительную подготовку модема").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();
+ Check(setupFake.PreparationEvents.SequenceEqual(new[]{"research","prepare"}),"public preparation first collects research through the actual UI path");
  Check(setupFake.Operations.Single(r=>r.Operation==ModemOperation.PrepareSsh).Parameters!["backup_key_suffix"]=="test-only-backup-key-suffix","public preparation sends exact test-only suffix");
  Check(suffix.Text==""&&!setupForm.ContainsKey("backup_key_suffix"),"public preparation clears suffix without persisting it");setup.Close();Pump();
 },CancellationToken.None);
@@ -70,8 +72,19 @@ public sealed class SmokeApp:Application{public static AppBuilder BuildAvaloniaA
 sealed class FakeModem:IModemService
 {
  public bool Connected=true;public List<OperationRequest> Operations=[];public string Pages="vpn,info";
+ public string? ResearchSpecPath;public List<string> PreparationEvents=[];
+ public Task<ResearchReport> CollectFirmwareResearchAsync(IReadOnlyDictionary<string,string> parameters,IProgress<ResearchProgress>? progress,CancellationToken ct=default)
+ {
+  if(ResearchSpecPath is null)throw new NotSupportedException();
+  var spec=ResearchSpec.Load(ResearchSpecPath);var profile=spec.Profiles.Single(p=>p.Id=="b31");
+  PreparationEvents.Add("research");
+  var now=DateTimeOffset.UtcNow;
+  // This fake supplies the public report shape only. Real per-probe collection
+  // and installation guards have their own tests and are not simulated here.
+  return Task.FromResult(new ResearchReport(1,"synthetic-ui-research",now,now,"partial","adb",profile.Id,"synthetic-ui-fixture",spec.Revision,[],[],["Synthetic UI fixture; no device probes were run."],spec.Sha256));
+ }
  public Task<DeviceSnapshot> GetDeviceSnapshotAsync(CancellationToken ct=default)=>Task.FromResult(new DeviceSnapshot(Connected,"Подключено",Serial:"synthetic-device",IpAddress:"192.0.2.1",ConnectionMode:"SSH",Launcher:"ready",LauncherStyle:"list",LauncherMetrics:"cpu",LauncherMetricOrder:"cpu,battery",LauncherPages:Pages));
- public Task<OperationResult> RunAsync(OperationRequest r,CancellationToken ct=default){Operations.Add(r);if(r.Operation is ModemOperation.InstallLauncher or ModemOperation.ApplyLauncherPages)Pages=r.Parameters!["pages"];if(r.Operation==ModemOperation.InstallEsimLauncher)Pages=string.Join(',',Pages.Split(',',StringSplitOptions.RemoveEmptyEntries).Append("esim").Distinct());return Task.FromResult(new OperationResult(true,"Состояние обновлено."));}
+ public Task<OperationResult> RunAsync(OperationRequest r,CancellationToken ct=default){Operations.Add(r);if(r.Operation==ModemOperation.PrepareSsh)PreparationEvents.Add("prepare");if(r.Operation is ModemOperation.InstallLauncher or ModemOperation.ApplyLauncherPages)Pages=r.Parameters!["pages"];if(r.Operation==ModemOperation.InstallEsimLauncher)Pages=string.Join(',',Pages.Split(',',StringSplitOptions.RemoveEmptyEntries).Append("esim").Distinct());return Task.FromResult(new OperationResult(true,"Состояние обновлено."));}
  public Task<IReadOnlyList<BackupInfo>> ListBackupsAsync(CancellationToken ct=default)=>Task.FromResult<IReadOnlyList<BackupInfo>>([]);
  public Task<IReadOnlyList<ModemAppInfo>> ListApplicationsAsync(CancellationToken ct=default)=>Task.FromResult<IReadOnlyList<ModemAppInfo>>([]);
  public Task<IReadOnlyList<LogEntry>> GetLogsAsync(CancellationToken ct=default)=>Task.FromResult<IReadOnlyList<LogEntry>>([]);

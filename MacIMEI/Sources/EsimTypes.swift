@@ -113,9 +113,30 @@ enum EsimOperation: Sendable {
     }
 }
 
+struct EsimCardCheck: Decodable, Sendable {
+    let kind: String
+    let management: String
+    let reason: String
+    let cleanupConfirmed: Bool
+    enum CodingKeys: String, CodingKey { case kind, management, reason, cleanupConfirmed = "cleanup_confirmed" }
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try values.decode(String.self, forKey: .kind)
+        management = try values.decode(String.self, forKey: .management)
+        reason = try values.decode(String.self, forKey: .reason)
+        cleanupConfirmed = try values.decode(Bool.self, forKey: .cleanupConfirmed)
+        guard ["euicc_confirmed", "unknown", "absent"].contains(kind),
+              ["available", "unavailable", "unknown"].contains(management),
+              ["eid_and_profiles_read", "busy", "open_rejected", "cleanup_unknown", "not_ready", "unsupported_device", "read_failed", "operation_failed"].contains(reason),
+              kind != "euicc_confirmed" || (management == "available" && reason == "eid_and_profiles_read" && cleanupConfirmed),
+              management != "available" || kind == "euicc_confirmed" else { throw EsimFailure.protocolError }
+    }
+}
+
 struct EsimRPCResult: Decodable, Sendable {
     var type: String
     var ok: Bool
+    var card: EsimCardCheck?
     var snapshot: EsimSnapshot?
     var changed: Bool?
     var notificationsPending: Bool?
@@ -123,11 +144,12 @@ struct EsimRPCResult: Decodable, Sendable {
     var radioRestored: Bool?
     var error: String?
     var componentError: String?
-    enum CodingKeys: String, CodingKey { case type, ok, snapshot, changed, notificationsPending = "notifications_pending", modemVerified = "modem_verified", radioRestored = "radio_restored", error, componentError = "component_error" }
+    enum CodingKeys: String, CodingKey { case type, ok, card, snapshot, changed, notificationsPending = "notifications_pending", modemVerified = "modem_verified", radioRestored = "radio_restored", error, componentError = "component_error" }
     init(from decoder: Decoder) throws {
         let fields = try decoder.container(keyedBy: CodingKeys.self)
         type = try fields.decode(String.self, forKey: .type)
         ok = try fields.decode(Bool.self, forKey: .ok)
+        card = try fields.decodeIfPresent(EsimCardCheck.self, forKey: .card)
         snapshot = try fields.decodeIfPresent(EsimSnapshot.self, forKey: .snapshot)
         changed = try fields.decodeIfPresent(Bool.self, forKey: .changed)
         notificationsPending = try fields.decodeIfPresent(Bool.self, forKey: .notificationsPending)
@@ -142,6 +164,7 @@ struct EsimRPCResult: Decodable, Sendable {
         guard componentError == nil else { throw EsimFailure.protocolError }
         guard let current = snapshot, let changed, notificationsPending != nil else { throw EsimFailure.protocolError }
         try current.validate()
+        if let card { guard card.kind == "euicc_confirmed", card.management == "available", card.cleanupConfirmed else { throw EsimFailure.protocolError } }
         if !operation.mutates { guard !changed else { throw EsimFailure.protocolError }; return current }
         guard let before, current.eid == before.eid, current.writeReady else { throw EsimFailure.targetChanged }
         switch operation {

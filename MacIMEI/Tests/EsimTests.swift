@@ -72,6 +72,21 @@ private func resultLine(_ s: EsimSnapshot, changed: Bool = false, modemVerified:
             _ = try d.consume(resultLine(snapshot())); _ = try d.finish(exitCode:0,operation:.list,before:nil)
             try rejects { _ = try d.finish(exitCode:1,operation:.list,before:nil) }
         }
+        try test("card evidence requires complete verified eUICC state") {
+            let base = try JSONSerialization.jsonObject(with: resultLine(snapshot())) as! [String: Any]
+            var complete = base
+            complete["card"] = ["kind":"euicc_confirmed", "management":"available", "reason":"eid_and_profiles_read", "cleanup_confirmed":true]
+            var decoder = EsimRPCDecoder(); _ = try decoder.consume(JSONSerialization.data(withJSONObject: complete))
+            _ = try decoder.finish(exitCode:0, operation:.list, before:nil)
+            for card: [String: Any] in [
+                ["kind":"ordinary_sim", "management":"available", "reason":"eid_and_profiles_read", "cleanup_confirmed":true],
+                ["kind":"euicc_confirmed", "management":"available", "reason":"eid_and_profiles_read", "cleanup_confirmed":false],
+                ["kind":"unknown", "management":"unknown", "reason":"read_failed", "cleanup_confirmed":false]
+            ] {
+                var invalid = base; invalid["card"] = card
+                try rejects { var d = EsimRPCDecoder(); _ = try d.consume(JSONSerialization.data(withJSONObject: invalid)); _ = try d.finish(exitCode:0, operation:.list, before:nil) }
+            }
+        }
         try test("duplicate final and progress after final rejected") {
             var d = EsimRPCDecoder(); _ = try d.consume(resultLine(snapshot()))
             try rejects { _ = try d.consume(resultLine(snapshot())) }

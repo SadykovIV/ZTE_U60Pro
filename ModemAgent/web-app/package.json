@@ -1,7 +1,7 @@
 {
   "name": "dashboard",
   "private": true,
-  "version": "2.7.0-esim.8",
+  "version": "2.9.0-esim.2",
   "license": "MIT",
   "type": "module",
   "engines": {

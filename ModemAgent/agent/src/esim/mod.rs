@@ -1,4 +1,5 @@
 //! One private NDJSON request; no HTTP server, startup migration or persistent config.
+mod card;
 mod children;
 mod model;
 mod operation_lock;
@@ -382,8 +383,12 @@ fn run_rpc(input: &mut impl BufRead, output: &mut (impl Write + Send)) -> Result
 fn final_value(result: Result<Outcome>) -> (Value, i32) {
     match result {
         Ok(outcome) => {
+            if let Err(error) = outcome.snapshot.validate() {
+                return final_value(Err(error));
+            }
             let mut value = json!({"type":"result","ok":true,"snapshot":outcome.snapshot,
-                "changed":outcome.changed,"notifications_pending":outcome.notifications_pending});
+                "changed":outcome.changed,"notifications_pending":outcome.notifications_pending,
+                "card":card::Status::confirmed()});
             if let Some(verified) = outcome.modem_verified {
                 value["modem_verified"] = json!(verified);
                 value["radio_restored"] = json!(true);
@@ -391,7 +396,8 @@ fn final_value(result: Result<Outcome>) -> (Value, i32) {
             (value, 0)
         }
         Err(error) => {
-            let mut value = json!({"type":"result","ok":false,"error":error.code});
+            let mut value = json!({"type":"result","ok":false,"error":error.code,
+                "card":card::Status::failed(&error)});
             if let Some(code) = error.component_error {
                 value["component_error"] = json!(code);
             }
@@ -421,10 +427,8 @@ pub fn early_entry() -> Option<i32> {
         // SSH channel loss becomes EOF/EPIPE, allowing owned card cleanup and
         // radio recovery. Normal permanent-server signal behavior is unchanged.
         if unsafe { libc::signal(libc::SIGHUP, libc::SIG_IGN) } == libc::SIG_ERR {
-            let _ = emit(
-                &mut output,
-                &json!({"type":"result","ok":false,"error":"unsupported_device"}),
-            );
+            let (value, _) = final_value(Err(Error::new("unsupported_device")));
+            let _ = emit(&mut output, &value);
             return Some(1);
         }
     }

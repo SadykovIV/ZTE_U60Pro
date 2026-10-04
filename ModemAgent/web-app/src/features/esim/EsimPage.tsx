@@ -4,7 +4,7 @@ import { Button, Field, Input, Select } from '../../ui/controls'
 import { Card, Chip } from '../../ui/primitives'
 import { confirm } from '../../ui/feedback'
 import { capabilities, runOperation } from './api'
-import { activation, compose, mask, profileName, type EsimRequest, type Snapshot } from './model'
+import { activation, cardMessage, compose, EsimOperationError, mask, profileName, unknownCard, type CardStatus, type EsimRequest, type Snapshot } from './model'
 import { decodeImage } from './qr'
 import { stageMessage } from './journal'
 import { failureMessage, safeEsimErrors } from './errors'
@@ -13,6 +13,7 @@ export default function EsimPage() {
   const { t } = useI18n()
   const [ready, setReady] = useState(false), [busy, setBusy] = useState(false)
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null), [selected, setSelected] = useState('')
+  const [card, setCard] = useState<CardStatus | null>(null)
   const [mode, setMode] = useState('manual'), [address, setAddress] = useState(''), [matching, setMatching] = useState('')
   const [lpa, setLpa] = useState(''), [confirmation, setConfirmation] = useState(''), [message, setMessage] = useState('')
   const [failed, setFailed] = useState(false), [decoding, setDecoding] = useState(false)
@@ -39,7 +40,7 @@ export default function EsimPage() {
   function clearInputs() { inputRevision.current++; setAddress(''); setMatching(''); setLpa(''); setConfirmation('') }
   async function run(request: EsimRequest) {
     if (working.current || !ready || !lifetime.current || lifetime.current.signal.aborted) return
-    working.current = true; setBusy(true); setFailed(false); clearInputs(); setSnapshot(null); setMessage('Reading the physical eUICC…')
+    working.current = true; setBusy(true); setFailed(false); clearInputs(); setSnapshot(null); setCard(null); setMessage('Checking the SIM card and profiles…')
     const started = Date.now()
     const append = (text: string) => setJournal(lines => [...lines, text].slice(-2000))
     append(`${new Date().toISOString()} · ${request.operation} · start`)
@@ -47,6 +48,7 @@ export default function EsimPage() {
       const result = await runOperation(request, (stage, line) => { if (!lifetime.current?.signal.aborted) { setMessage(stageMessage(stage)); if (line) append(line) } }, lifetime.current.signal)
       if (lifetime.current.signal.aborted) return
       setSnapshot(result.snapshot)
+      setCard(result.card)
       append(`${((Date.now()-started)/1000).toFixed(1)}s · ${request.operation} · verified${result.pending ? ' · notifications_pending' : ''}`)
       setSelected(result.snapshot.profiles.some(p => p.iccid === selected) ? selected : '')
       setMessage(result.pending ? 'Profiles verified. Operator notifications are pending; refresh before another operation.' : request.operation === 'list' ? 'Profiles read from the physical eUICC.' : request.operation === 'enable' ? 'The profile is active, the SIM was reread and normal radio mode was verified. Check mobile network registration separately.' : 'The profile change was verified on the card. Check mobile network registration separately.')
@@ -54,7 +56,7 @@ export default function EsimPage() {
       if (!lifetime.current?.signal.aborted) {
         const code = error instanceof Error && safeEsimErrors.has(error.message) ? error.message : ''
         append(`${((Date.now()-started)/1000).toFixed(1)}s · ${request.operation} · unconfirmed${code ? ` · error=${code}` : ''}`)
-        setSnapshot(null); setSelected(''); setFailed(true)
+        setSnapshot(null); setSelected(''); setCard(error instanceof EsimOperationError ? error.card : unknownCard()); setFailed(true)
         setMessage(failureMessage(code))
       }
     } finally { working.current = false; if (!lifetime.current?.signal.aborted) setBusy(false) }
@@ -89,7 +91,11 @@ export default function EsimPage() {
       <p className="text-sm text-ink2">{t('Requires a removable eUICC in the physical SIM slot. Tested: 9eSIM V0 on MU5250 B31. Ordinary SIM cards and built-in ZTE eSIM are not supported.')}</p>
       <p className="mt-2 text-sm text-ink2">{t('Web downloads use the modem internet connection. If the card is empty and the modem is offline, use the macOS or Windows app with computer internet access.')}</p>
     </Card>
-    <Card title={t('Profiles on the card')} action={<Button onClick={() => void run({ protocol: 1, operation: 'list' })} disabled={!ready || busy || decoding} loading={busy}>{t('Read profiles')}</Button>}>
+    <Card title={t('Profiles on the card')} action={<Button onClick={() => void run({ protocol: 1, operation: 'list' })} disabled={!ready || busy || decoding} loading={busy}>{t('Check card and profiles')}</Button>}>
+      <div role="status" className={`mb-3 rounded-lg border p-3 text-sm ${card?.kind === 'euicc_confirmed' && !busy ? 'border-line/10 text-ink' : 'border-line/10 text-ink2'}`}>
+        <p>{t(cardMessage(card, busy))}</p>
+        {(card?.kind === 'unknown' || !card && !busy) && <p className="mt-2 text-xs">{t('An ordinary operator SIM cannot store downloaded eSIM profiles. A failed check may also mean a busy card, restricted modem access or a communication error.')}</p>}
+      </div>
       {snapshot && <p className="mb-3 text-xs text-ink3">{t('Card EID')}: {mask(snapshot.eid)}</p>}
       {!snapshot && <p className="text-sm text-ink3">{t('Read profiles to enable installation and profile selection.')}</p>}
       {snapshot?.profiles.length === 0 && <p className="text-sm text-ink3">{t('No profiles installed.')}</p>}

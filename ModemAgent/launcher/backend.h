@@ -6,7 +6,7 @@
 #include "info-layout.h"
 #define MAX_PROFILES 32
 struct profile_summary {char id[37],name[257];int active;};
-struct snapshot {int valid,enabled,running,network_ok,count,busy,error;unsigned generation;char ssid[33],ssid_2g[33],ssid_5g[33];struct profile_summary profiles[MAX_PROFILES];struct modem_telemetry telemetry;struct info_layout layout;};
+struct snapshot {int valid,enabled,running,network_ok,count,busy,error;unsigned generation;char error_code[64],operation_error[64];char ssid[33],ssid_2g[33],ssid_5g[33];struct profile_summary profiles[MAX_PROFILES];struct modem_telemetry telemetry;struct info_layout layout;};
 void backend_start(void);
 void backend_refresh(void);
 void backend_snapshot(struct snapshot *out);

@@ -14,6 +14,29 @@ static class PageInstallerTests
   async Task Reject(Func<Task> action,string label){try{await action();}catch(Exception e){check(!e.Message.Contains("PRIVATE"),"installer errors remain fixed: "+label);check(true,label);return;}throw new Exception("accepted "+label);}
   try
   {
+   foreach(var absent in new[]{false,true})
+   {
+    var shell=new FakeShell{FreshVpn=absent,Pages=new LauncherPages(new[]{"vpn","info"}).Encode()};
+    var oldHash=shell.Hash;var layout=shell.Layout.ToArray();var pages=shell.Pages.ToArray();
+    var installed=await Service(shell).InstallAgentAsync();
+    check(installed.IsCurrent&&installed.Running&&installed.BackupHash==oldHash,"bundled agent update confirms current binary and preserved backup, VPN absent="+absent);
+    check(shell.Events.SequenceEqual(absent?new[]{"dashboard_preflight","agent_install","dashboard_install"}:new[]{"vpn_preflight","agent_install","vpn_controller","vpn_dashboard","vpn_launcher"}),"bundled agent update keeps controller/launcher dependency chain coherent, VPN absent="+absent);
+    check(shell.Layout.SequenceEqual(layout)&&shell.Pages!.SequenceEqual(pages)&&shell.StagedPages==0,"bundled agent update preserves exact page selection and information layout");
+    check(!shell.Events.Contains("vpn_components")&&!shell.Requests.Any()&&!shell.Commands.Any(c=>c.Contains("set_enabled")||c.Contains("configure_wifi")),"bundled update never installs absent VPN, enables it or changes profiles");
+    check(shell.Commands.Count(c=>c.Contains("mkdir /tmp/zte-imei-app.lock"))==1,"bundled dependency update uses one shared device lock");
+    shell=new FakeShell{FreshVpn=absent,FailPhase=absent?"dashboard_preflight":"vpn_preflight",Failure="exit1"};
+    await Reject(()=>Service(shell).InstallAgentAsync(),"bundled update preflight refusal, VPN absent="+absent);
+    check(shell.Events.SequenceEqual(new[]{shell.FailPhase}),"bundled preflight refusal happens before installed component writes");
+   }
+   var alreadyCurrent=new FakeShell{Hash=AgentPackage.Sha256};await Service(alreadyCurrent).InstallAgentAsync();
+   check(alreadyCurrent.Events.SequenceEqual(new[]{"vpn_preflight","vpn_controller","vpn_dashboard","vpn_launcher"}),"already-current agent still repairs related VPN components without reinstalling binary");
+   var customBundled=new FakeShell{Hash=new string('f',64)};await Reject(()=>Service(customBundled).InstallAgentAsync(),"unknown installed agent blocks VPN dependency update");
+   check(customBundled.Events.Count==0,"unknown agent refuses before modifying any installed component");
+   foreach(var phase in new[]{"vpn_preflight","vpn_controller","vpn_dashboard","vpn_launcher"})
+   {
+    var uncertain=new FakeShell{FailPhase=phase,Failure="timeout"};await Reject(()=>Service(uncertain).InstallAgentAsync(),"uncertain bundled dependency update "+phase);
+    check(!uncertain.Cleanup.Contains("zte-vpn-agent")&&uncertain.Events.Count(e=>e==phase)==1,"uncertain dependency update retains its own rollback stage and never retries");
+   }
    foreach(var wanted in new[]{Array.Empty<string>(),new[]{"esim","info"},new[]{"vpn","info","esim"}})
    {
     var shell=new FakeShell{FreshVpn=true,LauncherApplied=true};var result=await Service(shell).ApplyLauncherPagesAsync(new LauncherPages(wanted));

@@ -1,7 +1,7 @@
 local uci = require('uci')
 local root = '/data/zte-vpn'
 local c = uci.cursor('/etc/config', root .. '/uci')
-local fields = {'ssid','key','encryption','network','bridge','disabled','isolate','wps_state','ieee80211w','sae'}
+local fields = {'ssid','key','encryption','network','bridge','disabled','isolate','wps_state','ieee80211w','sae','guest_active_time','guest_remaining'}
 local function set(pkg, section, key, value)
     assert(c:set(pkg,section,key,value), 'UCI set failed')
 end
@@ -11,6 +11,15 @@ local function section(pkg, kind, name, values)
 end
 local function fail(code)
     io.stderr:write(code .. '\n'); os.exit(1)
+end
+local function guest_sections(owned)
+    -- Validate both sections before changing either one.
+    for _,name in ipairs({'guest_2g','guest_5g'}) do
+        if c:get('wireless',name)~='wifi-iface' then fail('VPN_WIFI_CONFIGURATION_CHANGED') end
+        if owned and (c:get('wireless',name,'network')~='vpn' or c:get('wireless',name,'bridge')~='br-vpn') then
+            fail('VPN_WIFI_CONFIGURATION_CHANGED')
+        end
+    end
 end
 local function valid_password(key, ascii_only)
     local forbidden=ascii_only and '[%z\1-\31\127-\255]' or '[%z\1-\31\127]'
@@ -74,6 +83,7 @@ if mode == 'status' then
 elseif mode == 'apply' then
     assert(not c:get('network','vpn') and not c:get('network','br_vpn'), 'VPN network already exists')
     assert(not c:get('firewall','zte_vpn_zone') and not c:get('firewall','zte_vpn_rules'), 'VPN firewall already exists')
+    guest_sections(false)
     local desired,security=wifi_values(false)
     section('network','device','br_vpn',{name='br-vpn',type='bridge',ports={'wlan1','wlan3'},bridge_empty='1',ipv6='0'})
     section('network','interface','vpn',{device='br-vpn',type='bridge',ifname='wlan1 wlan3',bridge_empty='1',force_link='1',proto='static',ipaddr='192.168.50.1',netmask='255.255.255.0',delegate='0'})
@@ -84,6 +94,8 @@ elseif mode == 'apply' then
         set('wireless',section,'network','vpn'); set('wireless',section,'bridge','br-vpn')
         set('wireless',section,'isolate','1')
         set('wireless',section,'wps_state','0'); set('wireless',section,'disabled','1')
+        -- Stock B31 "Free" maps to zero minutes. Leave the runtime countdown alone.
+        set('wireless',section,'guest_active_time','0')
     end
     change_names_and_security(desired,security)
 elseif mode == 'wifi-settings' then
@@ -99,8 +111,10 @@ elseif mode == 'enable' or mode == 'disable' then
     if mode == 'enable' then
         local pending=io.open(root..'/wifi-settings.pending','r')
         if pending then pending:close();fail('VPN_WIFI_SETTINGS_PENDING') end
+        guest_sections(true)
     end
     for _,section in ipairs({'guest_2g','guest_5g'}) do
+        if mode == 'enable' then set('wireless',section,'guest_active_time','0') end
         set('wireless',section,'disabled',mode=='enable' and '0' or '1')
     end
 elseif mode == 'restore' then
