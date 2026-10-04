@@ -6,9 +6,10 @@ enum BundledAgent {
     static let version = "2.9.0-esim.1"
     static let sha256 = "110f1144e7c0bd044b81cc37a1f5925cdae721043139bb46459a40f1db649deb"
     static let dashboardInstallerSHA256 = "79d10ff95a4aa9cfdb5b3b4f3d923dfe9cf350f640898fccc26a2b16e79c696c"
-    // Exact released hashes previously allowed by the signed update helper.
+    // Exact released hashes verified against release records and the update path.
     // Keep this host check independent of shell source formatting.
     static let supportedUpgradeHashes: Set<String> = [sha256,
+        "e9f3e2170a7a2fa80a4836fd7d0db92c4aa119b4b8cceaa0907450123de29d19", // Frozen 2.7.0-esim.8 release + SHA256/build receipt
         "8ee8073b684613f358a5b857f7ed85ac165fc96f0d74980b04be006659ebea67",
         "c50ba6b7ac6f77c581c2b657ba769f976d8d20aca0c6b7d08c9254ef2de9d346", // Public 2.8.0 / app 1.20.0
         "6168ae6c539bb3ca7136eb40a1d4cae03d75aa18900be105f2ff2d5016da4b5c",
@@ -36,7 +37,7 @@ enum BundledAgent {
         case "c50ba6b7ac6f77c581c2b657ba769f976d8d20aca0c6b7d08c9254ef2de9d346": return "2.8.0 · предыдущий публичный агент"
         case "6168ae6c539bb3ca7136eb40a1d4cae03d75aa18900be105f2ff2d5016da4b5c": return "2.7.0-esim.7 · eSIM, VPN, дисплей, RU/EN и TTL"
         case "be945c0a7181070aa69be3bb579a1e967a1cf147b2af2987f31ae5d242b10a66": return "2.7.0-esim.6 · eSIM, VPN, дисплей, RU/EN и TTL"
-        case "8ee8073b684613f358a5b857f7ed85ac165fc96f0d74980b04be006659ebea67": return "2.7.0-esim.8 · предыдущий агент"
+        case "e9f3e2170a7a2fa80a4836fd7d0db92c4aa119b4b8cceaa0907450123de29d19", "8ee8073b684613f358a5b857f7ed85ac165fc96f0d74980b04be006659ebea67": return "2.7.0-esim.8 · предыдущий агент"
         case sha256: return version + " · режим зависит от проверенных возможностей устройства"
         case "66c3fb83f3db5b194a39db563a453d421f6a4f3ccb9228cf360883ce2fed1629": return "2.7.0-esim.4 · eSIM, VPN, дисплей, RU/EN и TTL"
         case "52324f0c99f13a3445c08431f8b4ed15b468352f5b20709e3304cf4d32577b48": return "2.7.0-esim.3 · eSIM, VPN, дисплей, RU/EN и TTL"

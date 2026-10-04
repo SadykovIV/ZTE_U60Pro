@@ -16,9 +16,12 @@ public static class AgentPackage
     public const string LegacyEsimRootsSha256 = "66c3fb83f3db5b194a39db563a453d421f6a4f3ccb9228cf360883ce2fed1629";
     public const string LegacyEsimRadioSha256 = "be945c0a7181070aa69be3bb579a1e967a1cf147b2af2987f31ae5d242b10a66";
     public const string LegacyEsimPagesSha256 = "6168ae6c539bb3ca7136eb40a1d4cae03d75aa18900be105f2ff2d5016da4b5c";
+    // Preserved 2.7.0-esim.8 binary and release manifest; never learned from a device.
+    public const string LegacyLocalEsimRecoverySha256 = "e9f3e2170a7a2fa80a4836fd7d0db92c4aa119b4b8cceaa0907450123de29d19";
     public static string? VersionForHash(string hash) => hash == Sha256 ? Version : hash switch
     {
         "8ee8073b684613f358a5b857f7ed85ac165fc96f0d74980b04be006659ebea67" => "2.7.0-esim.8",
+        LegacyLocalEsimRecoverySha256 => "2.7.0-esim.8",
         LegacyPublicSha256 => "2.8.0",
         LegacyVpnSha256 => "2.7.0-vpn.1",
         LegacyEsimSha256 => "2.7.0-esim.1",
@@ -29,7 +32,7 @@ public static class AgentPackage
         LegacyEsimPagesSha256 => "2.7.0-esim.7",
         _ => null
     };
-    public static readonly IReadOnlySet<string> SupportedUpgradeHashes = new[] { Sha256,
+    public static readonly IReadOnlySet<string> SupportedUpgradeHashes = new[] { Sha256, LegacyLocalEsimRecoverySha256,
         "8ee8073b684613f358a5b857f7ed85ac165fc96f0d74980b04be006659ebea67",
         "c50ba6b7ac6f77c581c2b657ba769f976d8d20aca0c6b7d08c9254ef2de9d346",
         "6168ae6c539bb3ca7136eb40a1d4cae03d75aa18900be105f2ff2d5016da4b5c",

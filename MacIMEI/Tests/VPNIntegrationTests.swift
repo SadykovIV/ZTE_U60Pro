@@ -3,6 +3,7 @@ private func check(_ condition: @autoclosure () throws -> Bool, _ text: String) 
 private final class IntegrationRemote: RemoteTransport {
     var commands = [String](), uploaded = [String: Data]()
     var preflightFails = false, invalidReceipt = false, lostAt = "", failedAt = "", installed = BundledAgent.sha256
+    var backupHash: String?
     let cid = String(repeating:"a",count:32), boot = "11111111-2222-3333-4444-555555555555"
     func output(_ text: String = "", _ code: Int32 = 0) -> CommandResult { .init(status:code,stdout:Data(text.utf8),stderr:Data()) }
     func run(_ command: String, input: Data?, timeout: TimeInterval) throws -> CommandResult {
@@ -13,13 +14,14 @@ private final class IntegrationRemote: RemoteTransport {
         if command.hasPrefix("for c in lua nft") { return output("AGENT:" + BundledAgent.sha256 + "\n") }
         if command.hasPrefix("test -d /data/zte-launcher") { return output() }
         if command == "sha256sum /data/zte-agent | awk '{print $1}'" { return output(installed) }
-        if command.hasPrefix("sha256sum /firmware/image/modem.b16") { return output(ModemEngine.firmwareHash + " /firmware/image/modem.b16\n" + ModemEngine.routerHash + " /usr/bin/diag-router\n" + cid + "\n" + boot) }
+        if command.hasPrefix("sha256sum /firmware/image/modem.b16") || command == AccessIdentity.command { return output(ModemEngine.firmwareHash + " /firmware/image/modem.b16\n" + ModemEngine.routerHash + " /usr/bin/diag-router\n" + cid + "\n" + boot) }
         if command.hasPrefix("umask 077; mkdir ") || command.hasPrefix("rm -f ") { return output() }
         if command.hasPrefix("umask 077; cat > "), let bytes = input {
             let path = command.components(separatedBy:"'")[1]; uploaded[path] = bytes
             return output(digest(bytes) + "  " + path)
         }
-        if command.contains("/manager.sh' status") { return output("AGENT_SHA " + BundledAgent.sha256 + "\nAGENT_RUNNING yes\nAGENT_STARTUP yes\n") }
+        if command.contains("/manager.sh' status") { return output("AGENT_SHA " + installed + "\nAGENT_RUNNING yes\nAGENT_STARTUP yes\n" + (backupHash.map { "AGENT_BACKUP " + $0 + "\n" } ?? "")) }
+        if command.contains("/manager.sh' install ") { backupHash=installed; installed=BundledAgent.sha256; return output("AGENT_INSTALLED " + installed + "\n") }
         if command.hasPrefix("sh '/tmp/zte-vpn-agent-") {
             let name = URL(fileURLWithPath:command.components(separatedBy:"'")[1]).lastPathComponent
             if command.hasSuffix(" preflight") { return output(invalidReceipt ? "WRONG" : "VPN_AGENT_PREFLIGHT_OK",preflightFails ? 1 : 0) }
@@ -58,11 +60,18 @@ private final class IntegrationRemote: RemoteTransport {
             let cleanup=r.commands.contains { $0.hasPrefix("rm -f ") && $0.contains("zte-vpn-agent-") }
             try check(cleanup != unknown && helper(r,"install-launcher.sh") == nil,"Unknown process lost recovery tools or failed update continued")
         }
+        let previous=IntegrationRemote(); previous.installed="e9f3e2170a7a2fa80a4836fd7d0db92c4aa119b4b8cceaa0907450123de29d19"; previous.preflightFails=true
+        try reject(previous)
+        try check(previous.commands.contains { $0.hasSuffix(" preflight") } && !previous.commands.contains { $0.contains("/manager.sh' status") } && helper(previous,"upgrade-controller.sh") == nil,"Frozen .8 did not reach preflight or bypassed failure")
+        try check(BundledAgent.description(for: previous.installed).hasPrefix("2.7.0-esim.8"),"Frozen .8 version not recognized")
+        let legacy=IntegrationRemote(); legacy.installed="e9f3e2170a7a2fa80a4836fd7d0db92c4aa119b4b8cceaa0907450123de29d19"; try run(legacy)
+        let legacyPreflight=legacy.commands.firstIndex { $0.hasSuffix(" preflight") }!, legacyAgent=legacy.commands.firstIndex { $0.contains("/manager.sh' install ") }!
+        try check(legacyPreflight < legacyAgent && legacyAgent < helper(legacy,"upgrade-controller.sh")! && legacy.backupHash == "e9f3e2170a7a2fa80a4836fd7d0db92c4aa119b4b8cceaa0907450123de29d19" && legacy.installed == BundledAgent.sha256,"Frozen .8 bypassed preflight, backup or ordered update")
         let custom=IntegrationRemote();custom.installed=String(repeating:"0",count:64);try reject(custom);try check(custom.uploaded.isEmpty,"Unknown agent reached upload")
         let fresh=IntegrationRemote();fresh.preflightFails=true
         do { try run(fresh,fresh:true);throw IMEIError.message("TEST: fresh install accepted failed preflight") }
         catch { if error.localizedDescription.hasPrefix("TEST:") { throw error } }
         try check(fresh.commands.contains { $0.hasSuffix(" preflight") } && !fresh.commands.contains { $0.hasPrefix("sh '") && $0.contains("/install.sh'") },"Initial VPN install preceded failed preflight")
-        print("PASS 7 VPN integration scenarios: preflight, ordered agent/controller/panel, known failure cleanup, unknown retention, custom refusal, initial install preflight; fake SSH only")
+        print("PASS 9 VPN integration scenarios: preflight, ordered agent/controller/panel, known failure cleanup, unknown retention, custom refusal, initial install preflight; fake SSH only")
     }
 }

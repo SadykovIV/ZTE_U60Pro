@@ -16,6 +16,8 @@ private final class Remote: RemoteTransport {
     var commands: [String] = [], requests: [[String: Any]] = []
     var locked = false, installed = true, helperReady = true
     var installedHelperHash: String?
+    var installedAgentHash = VPNSettingsManager.agentHash
+    var requestOverride: CommandResult?
     var badReceipt = false, enabledReceipt = false, mutateSSIDReceipt = false, bad2GReceipt = false
     var identityCalls = 0, swappedAt = 0, mutationError: String?
     var payload: [String: Any] = [
@@ -36,26 +38,29 @@ private final class Remote: RemoteTransport {
         if command.contains("if mkdir /tmp/zte-imei-app.lock") { locked = true; return result() }
         if command.contains("&& rm /tmp/zte-imei-app.lock/owner") { locked = false; return result() }
         if command.hasPrefix("for c in lua nft") {
-            return result((installed ? "VPN\nHELPER:" + (helperReady ? VPNSettingsManager.helperHash : String(repeating: "0", count: 64)) + "\n" : "") + "AGENT:" + VPNSettingsManager.agentHash + "\nDASHBOARD:" + VPNSettingsManager.dashboardIndexHash + "\n")
+            return result((installed ? "VPN\nHELPER:" + (installedHelperHash ?? (helperReady ? VPNSettingsManager.helperHash : String(repeating: "0", count: 64))) + "\n" : "") + "AGENT:" + installedAgentHash + "\nDASHBOARD:" + VPNSettingsManager.dashboardIndexHash + "\n")
         }
         if command.hasPrefix("test -d /data/zte-launcher") { return result(VPNSettingsManager.launcherHash) }
         if command.contains("exec /data/zte-vpn/vpnctl request") {
             let request = try JSONSerialization.jsonObject(with: input ?? Data()) as! [String: Any]
             requests.append(request)
             let action = request["action"] as? String
+            if let requestOverride { return requestOverride }
             if let installedHelperHash {
                 // Execute the actual emitted case-pattern locally. The guard
                 // stays before the fake helper response and any fixture write.
                 let marker = "| cut -d ' ' -f1)\" in "
                 guard let start = command.range(of: marker),
-                      let end = command.range(of: ") ;; *) exit 1;; esac;", range: start.upperBound..<command.endIndex) else {
+                      let end = command.range(of: "; exec /data/zte-vpn/vpnctl request", range: start.upperBound..<command.endIndex) else {
                     throw IMEIError.message("TEST: Missing helper hash guard")
                 }
-                let pattern = String(command[start.upperBound..<end.lowerBound])
+                let caseBody = String(command[start.upperBound..<end.lowerBound])
                 let process = Process(); process.executableURL = URL(fileURLWithPath: "/bin/sh")
-                process.arguments = ["-c", "case \"$1\" in " + pattern + ") exit 0;; *) exit 1;; esac", "--", installedHelperHash]
-                try process.run(); process.waitUntilExit()
-                if process.terminationStatus != 0 { return result(status: 1) }
+                process.arguments = ["-c", "case \"$1\" in " + caseBody, "--", installedHelperHash]
+                let errors = Pipe(); process.standardError = errors
+                try process.run(); try? errors.fileHandleForWriting.close(); process.waitUntilExit()
+                let stderr = errors.fileHandleForReading.readDataToEndOfFile()
+                if process.terminationStatus != 0 { return .init(status: process.terminationStatus, stdout: Data(), stderr: stderr) }
             }
             if action == "configure_wifi" {
                 try check(locked, "Mutation has no common remote lock")
@@ -102,6 +107,26 @@ private final class Fixture {
             try check(status.actualSSID == "Guest 5G" && status.editableSSID == "Guest 5G" && status.initialPasswordMode == .preserve && status.settingsSupported == nil, "Legacy guest would be renamed")
             try check(VPNStatus().editableSSID == "ZTE-VPN" && VPNStatus().actualSSID.isEmpty, "Absent default pretends to be a live SSID")
         }
+        try test("Frozen .8 controller status is readable but mutation stays current-only") {
+            let f = try Fixture()
+            f.remote.installedHelperHash = "1cc33e3825a556a825e83392675c254ef22f738660d1016ae1413f7669f88231"
+            f.remote.installedAgentHash = "e9f3e2170a7a2fa80a4836fd7d0db92c4aa119b4b8cceaa0907450123de29d19"
+            let inspection = try f.manager.inspect()
+            try check(inspection.status.installed && !inspection.helperReady && !inspection.agentReady && inspection.missingCapabilities.isEmpty, "Old components falsely ready or unreadable")
+            let before = try JSONSerialization.data(withJSONObject: f.remote.payload, options: .sortedKeys)
+            try rejects { _ = try f.manager.request(["action": "configure_wifi"]) }
+            try check(try JSONSerialization.data(withJSONObject: f.remote.payload, options: .sortedKeys) == before, "Old controller mutation reached helper")
+        }
+        try test("Nonzero empty or malformed command reply retains exit cause without raw output") {
+            for status: Int32 in [1, 78, 255] {
+                for body in ["", "PRIVATE_CANARY"] {
+                    let f = try Fixture(); f.remote.requestOverride = .init(status: status, stdout: Data(body.utf8), stderr: Data("PRIVATE_STDERR".utf8))
+                    do { _ = try f.manager.request(["action": "status"]); throw IMEIError.message("TEST: Failed command accepted") }
+                    catch { try check(error.localizedDescription.contains("exit " + String(status)) && !error.localizedDescription.contains("PRIVATE"), "Failure lost exit or exposed raw output") }
+                    try check(f.remote.requests.count == 1, "Failure retried")
+                }
+            }
+        }
         try test("Previous .7 helper is accepted only for status, never mutation") {
             let f = try Fixture()
             f.remote.installedHelperHash = "3142fb503e64ddba79d523be3c87f0344d6efa78673e30a4b740714d8e9389ca"
@@ -123,6 +148,45 @@ private final class Fixture {
         try test("Unknown helper remains rejected even for status") {
             let f = try Fixture(); f.remote.installedHelperHash = String(repeating: "0", count: 64)
             try rejects { _ = try f.manager.request(["action": "status"]) }
+        }
+        try test("Guard refusal is typed and never confused with invalid JSON") {
+            let f = try Fixture(); f.remote.installedHelperHash = String(repeating: "0", count: 64)
+            do { _ = try f.manager.request(["action": "status"]); throw IMEIError.message("TEST: Unknown helper accepted") }
+            catch let error as VPNRequestFailure { try check(error == .unrecognizedController, "Hash refusal lost") }
+            let layout = try Fixture(); layout.remote.requestOverride = .init(status: 78, stdout: Data(), stderr: Data("VPN_REQUEST_GUARD unsafe_layout\n".utf8))
+            do { _ = try layout.manager.request(["action": "status"]); throw IMEIError.message("TEST: Unsafe layout accepted") }
+            catch let error as VPNRequestFailure { try check(error == .unsafeControllerLayout, "Layout refusal lost") }
+            let malformed = try Fixture(); malformed.remote.requestOverride = .init(status: 0, stdout: Data("not-json".utf8), stderr: Data())
+            do { _ = try malformed.manager.request(["action": "status"]); throw IMEIError.message("TEST: Malformed success accepted") }
+            catch let error as VPNRequestFailure { try check(error == .invalidResponse, "Malformed success classification") }
+        }
+        try test("Unknown helper codes never expose private or multiline values") {
+            for (exitCode, code): (Int32, String) in [(1, "VPN_PRIVATE_CANARY"), (0, "PRIVATE_SECRET\nsecond line"), (0, "VPN_PRIVATE_CANARY")] {
+                let f = try Fixture()
+                let reply = try JSONSerialization.data(withJSONObject: ["ok": false, "code": code])
+                f.remote.requestOverride = .init(status: exitCode, stdout: reply, stderr: Data("PRIVATE_STDERR".utf8))
+                do { _ = try f.manager.request(["action": "status"]); throw IMEIError.message("TEST: Refusal accepted") }
+                catch { try check(error.localizedDescription == "Не удалось завершить настройку VPN. Обновите состояние (VPN_OPERATION_FAILED).", "Unknown helper code escaped") }
+                try check(f.remote.requests.count == 1, "Refusal retried")
+            }
+        }
+        try test("Actual shell refuses unsafe layout before executing the helper") {
+            let f = try Fixture(); _ = try f.manager.request(["action": "status"])
+            guard let emitted = f.remote.commands.last(where: { $0.contains("exec /data/zte-vpn/vpnctl request") }) else { throw IMEIError.message("TEST: missing command") }
+            let dir = f.root.appendingPathComponent("controller"); try secureDirectory(dir)
+            let binary = dir.appendingPathComponent("vpnctl"); try savePrivate(Data("#!/bin/sh\necho EXECUTED\n".utf8), binary)
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: binary.path)
+            for metadata in ["0:777", "1000:700", "0:700"] {
+                let process = Process(), out = Pipe(), err = Pipe()
+                process.executableURL = URL(fileURLWithPath: "/bin/sh")
+                let functions = "stat() { printf '%s\\n' " + shellQuote(metadata) + "; }; sha256sum() { printf '%s  fixture\\n' " + shellQuote(VPNSettingsManager.helperHash) + "; }; "
+                process.arguments = ["-c", functions + emitted.replacingOccurrences(of: "/data/zte-vpn", with: dir.path)]
+                process.standardOutput = out; process.standardError = err
+                try process.run(); try? out.fileHandleForWriting.close(); try? err.fileHandleForWriting.close(); process.waitUntilExit()
+                let stdout = out.fileHandleForReading.readDataToEndOfFile(), stderr = err.fileHandleForReading.readDataToEndOfFile()
+                if metadata == "0:700" { try check(process.terminationStatus == 0 && String(decoding: stdout, as: UTF8.self) == "EXECUTED\n", "Safe layout refused") }
+                else { try check(process.terminationStatus == 78 && stdout.isEmpty && String(decoding: stderr, as: UTF8.self) == "VPN_REQUEST_GUARD unsafe_layout\n", "Unsafe layout executed or lost marker") }
+            }
         }
         try test("SSID validation uses UTF8 bytes and rejects controls without shell interpolation") {
             try VPNWiFiConfiguration(ssid: String(repeating: "я", count: 16), passwordMode: .main).validate(configured: false)

@@ -106,6 +106,26 @@ struct VPNInspection: Sendable {
     var launcherReady: Bool = false
 }
 
+enum VPNRequestFailure: LocalizedError, Equatable {
+    case unsafeControllerLayout
+    case unrecognizedController
+    case commandFailed(Int32)
+    case invalidResponse
+
+    var errorDescription: String? {
+        switch self {
+        case .unsafeControllerLayout:
+            return "Файлы менеджера VPN не прошли проверку типа и прав доступа. Команда не запускалась; проверьте установку компонентов."
+        case .unrecognizedController:
+            return "Сборка менеджера VPN не распознана. Команда не запускалась; проверьте установленный компонент перед обновлением."
+        case .commandFailed(let code):
+            return "Команда менеджера VPN завершилась с ошибкой (exit \(code)). Обновите состояние; подробности — в журнале."
+        case .invalidResponse:
+            return "Не удалось проверить ответ менеджера VPN. Обновите состояние."
+        }
+    }
+}
+
 /// Both the desktop and agent send private JSON on stdin to the same modem helper.
 final class VPNSettingsManager {
     static let root = "/data/zte-vpn"
@@ -152,7 +172,7 @@ final class VPNSettingsManager {
             "VPN_WIFI_SETTINGS_ENABLED": "Сначала выключите Wi-Fi с VPN на модеме или в агенте. Настройки сети можно менять только после выключения.",
             "VPN_WIFI_NOT_READY": "VPN-сеть не запустилась вовремя и была выключена. Настройки сохранены для проверки."
         ]
-        return messages[code] ?? "Не удалось завершить настройку VPN. Обновите состояние. Код: \(code)"
+        return messages[code] ?? "Не удалось завершить настройку VPN. Обновите состояние (VPN_OPERATION_FAILED)."
     }
     func inspect() throws -> VPNInspection {
         _ = try engine.identity()
@@ -169,16 +189,36 @@ final class VPNSettingsManager {
         if let expectedTarget { try require(current.0 == expectedTarget.0 && current.1 == expectedTarget.1, "Модем изменился или перезагрузился. Проверьте подключение заново.") }
         let data = try JSONSerialization.data(withJSONObject: value)
         try require(data.count <= 65536, "Ссылка профиля слишком длинная")
-        let accepted = value["action"] as? String == "status" ? [Self.helperHash, "f620dab27f951c7de2de77a89376975b51c79f57f8a8a24cec95392c9c61eea4", "3142fb503e64ddba79d523be3c87f0344d6efa78673e30a4b740714d8e9389ca", "cdb01d27775d61bcb3ae14a8d124ccbab683f940f1dcfd2adffa43a6b7b462f0", "9e8b1a737888468a4be6a010a915524b84440037802c6cfc6a5e251abf0e81ce", "9c2e3c21eecace7031c4029c969efdec44241f000716447df805f3020dfce95e", "8f9e82ca45177fc19ffd4d7663764fa44750e05eed86ef83567ed2dec5ce7827", "96a4717fe085a80479675486d23b260c3254084638d195d933d4d9d944b98e88", "48b9af93098b4b1b31754a48707ac066a39977bcc0db0cc438ead64c62322bd4", "572e2e1133cebb690584bda8b5ac047336451bc26c6a5e37522a756b6254fac5", "80f16fafe203d661d6a90686c90a25c61eea38cf9e83e002c1cdffea85d02f23", "3c8a139d9ba6f3372b009e9e0fb5ed9ff27faf1675dcb654f09eedec851661f3"].joined(separator: "|") : Self.helperHash
+        let accepted = value["action"] as? String == "status" ? [Self.helperHash, "1cc33e3825a556a825e83392675c254ef22f738660d1016ae1413f7669f88231", "f620dab27f951c7de2de77a89376975b51c79f57f8a8a24cec95392c9c61eea4", "3142fb503e64ddba79d523be3c87f0344d6efa78673e30a4b740714d8e9389ca", "cdb01d27775d61bcb3ae14a8d124ccbab683f940f1dcfd2adffa43a6b7b462f0", "9e8b1a737888468a4be6a010a915524b84440037802c6cfc6a5e251abf0e81ce", "9c2e3c21eecace7031c4029c969efdec44241f000716447df805f3020dfce95e", "8f9e82ca45177fc19ffd4d7663764fa44750e05eed86ef83567ed2dec5ce7827", "96a4717fe085a80479675486d23b260c3254084638d195d933d4d9d944b98e88", "48b9af93098b4b1b31754a48707ac066a39977bcc0db0cc438ead64c62322bd4", "572e2e1133cebb690584bda8b5ac047336451bc26c6a5e37522a756b6254fac5", "80f16fafe203d661d6a90686c90a25c61eea38cf9e83e002c1cdffea85d02f23", "3c8a139d9ba6f3372b009e9e0fb5ed9ff27faf1675dcb654f09eedec851661f3"].joined(separator: "|") : Self.helperHash
         let targetGuard = expectedTarget.map { target in
             "test \"$(cat /sys/block/mmcblk0/device/cid)\" = " + shellQuote(target.0.cid) + "; test \"$(cat /proc/sys/kernel/random/boot_id)\" = " + shellQuote(target.1) + "; "
         } ?? ""
-        let command = "set -eu; " + targetGuard + "test -d /data/zte-vpn; test ! -L /data/zte-vpn; test \"$(stat -c '%u:%a' /data/zte-vpn)\" = 0:700; test ! -L /data/zte-vpn/vpnctl; case \"$(sha256sum /data/zte-vpn/vpnctl | cut -d ' ' -f1)\" in " + accepted + ") ;; *) exit 1;; esac; exec /data/zte-vpn/vpnctl request"
+        let command = "set -eu; " + targetGuard +
+            "test -d /data/zte-vpn && test ! -L /data/zte-vpn && test \"$(stat -c '%u:%a' /data/zte-vpn)\" = 0:700 && test ! -L /data/zte-vpn/vpnctl || { printf 'VPN_REQUEST_GUARD unsafe_layout\\n' >&2; exit 78; }; " +
+            "case \"$(sha256sum /data/zte-vpn/vpnctl | cut -d ' ' -f1)\" in " + accepted +
+            ") ;; *) printf 'VPN_REQUEST_GUARD controller_hash\\n' >&2; exit 78;; esac; exec /data/zte-vpn/vpnctl request"
         let result = try engine.transport.run(command, input: data, timeout: 240)
-        guard let reply = try? JSONSerialization.jsonObject(with: result.stdout) as? [String: Any] else {
-            throw IMEIError.message("Не удалось проверить ответ менеджера VPN. Обновите состояние.")
+        if result.status == 78 {
+            switch CommandText.decode(result.stderr).trimmingCharacters(in: .whitespacesAndNewlines) {
+            case "VPN_REQUEST_GUARD unsafe_layout": throw VPNRequestFailure.unsafeControllerLayout
+            case "VPN_REQUEST_GUARD controller_hash": throw VPNRequestFailure.unrecognizedController
+            default: break
+            }
         }
-        guard result.status == 0, reply["ok"] as? Bool == true, let payload = reply["data"] else {
+        if result.status != 0 {
+            // A helper may return a structured refusal with a nonzero exit.
+            // Preserve that fixed VPN code; never expose arbitrary output.
+            if let reply = try? JSONSerialization.jsonObject(with: result.stdout) as? [String: Any],
+               reply["ok"] as? Bool == false, let code = reply["code"] as? String,
+               code.range(of: #"^VPN_[A-Z0-9_]{1,64}$"#, options: .regularExpression) != nil {
+                throw IMEIError.message(Self.message(code))
+            }
+            throw VPNRequestFailure.commandFailed(result.status)
+        }
+        guard let reply = try? JSONSerialization.jsonObject(with: result.stdout) as? [String: Any] else {
+            throw VPNRequestFailure.invalidResponse
+        }
+        guard reply["ok"] as? Bool == true, let payload = reply["data"] else {
             throw IMEIError.message(Self.message(reply["code"] as? String ?? "VPN_OPERATION_FAILED"))
         }
         let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase
