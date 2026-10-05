@@ -30,12 +30,9 @@ public sealed partial class MainWindow
         AddCard(Localization.IsEnglish ? "1. Check device" : "1. Проверить устройство", Localization.IsEnglish ? "First collect technical information over available USB ADB or SSH. Unknown firmware and missing CID do not stop the survey. Installation prerequisites are checked again before each operation." : "Сначала собираются технические сведения через работающий USB ADB или SSH. Неизвестная прошивка и отсутствие CID не прекращают диагностику. Возможности установки проверяются отдельно перед каждой операцией.",panel=>
         {
             panel.Children.Add(Muted("Только чтение. Исследование не включает ADB, не устанавливает компоненты и не подтверждает безопасность изменяющих операций. В ручном режиме используется только выбранный канал."));
-            var mode = new ComboBox { ItemsSource = new[] { "Автоматически", "SSH", "ADB" }.Select(Localization.Translate).ToArray(),
-                SelectedIndex = Get("mode") switch { "SSH" => 1, "ADB" => 2, _ => 0 }, MinWidth = 220, HorizontalAlignment = HorizontalAlignment.Left };
-            mode.SelectionChanged += (_, _) => _form["mode"] = mode.SelectedIndex switch { 1 => "SSH", 2 => "ADB", _ => "Автоматически" };
-            panel.Children.Add(Muted("Канал исследования")); panel.Children.Add(mode);
             var row=new WrapPanel {Orientation=Orientation.Horizontal};
             var collect=ActionButton(Localization.IsEnglish ? "Check device" : "Проверить устройство",CollectFirmwareResearchAsync,true);
+            _researchCollectButton = collect;
             collect.Name="CollectFirmwareResearch";collect.IsEnabled=!_busy && _terminal?.IsConnected!=true && !_terminalOpening;
             row.Children.Add(collect);
             if(_researchCancellation is not null)
@@ -76,10 +73,11 @@ public sealed partial class MainWindow
         var inspectedInput=ResearchInputKey();
         _lastResearchInput=null;
         _researchCancellation=CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+        var parameters=_form.ToDictionary(x=>x.Key,x=>x.Value);
+        foreach (var secret in _secretFields) parameters[secret.Key] = secret.Value.Text ?? "";
         SetBusy(true);_researchProgressText=Localization.Translate("Определение доступного канала…");RenderPage();
         try
         {
-            var parameters=_form.ToDictionary(x=>x.Key,x=>x.Value);
             var progress=new Progress<ResearchProgress>(value=>Dispatcher.UIThread.Post(()=>
             {
                 _researchProgressText=$"{value.Completed}/{value.Total} · {value.Title.Text(Localization.IsEnglish)}";

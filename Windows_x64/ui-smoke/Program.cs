@@ -22,14 +22,14 @@ await session.Dispatch(() =>
     Assert(window.Title == "ZTE U60Pro Manager", "new product name");
     var pages = new (string Title, string[] Sections)[]
     {
-        ("Подготовка модема", ["Настройка подключения", "Установка агента", "Русификация"]),
+        ("Подготовка модема", ["Настройка подключения", "Диагностика", "Установка агента", "Русификация"]),
         ("Launcher", ["Информация о модеме", "Управление VPN"]),
         ("IMEI", ["Смена IMEI", "Бэкапы IMEI"]),
         ("TTL", ["Настройки TTL"]),
         ("VPN", ["Состояние VPN"]),
         ("Приложения", ["Установлено", "Каталог", "Terminal"]),
         ("Администрирование", ["Доступы", "Бэкапы", "Журнал действий"]),
-        ("О модеме", ["Об устройстве", "Память", "Диагностика"]),
+        ("О модеме", ["Об устройстве", "Память"]),
     };
     for (var index = 0; index < pages.Length; index++)
     {
@@ -125,17 +125,19 @@ await session.Dispatch(() =>
     var researchModem = new FakeModem { Connected = false };
     var researchWindow = new MainWindow(researchModem, persistPreferences: false);
     researchWindow.Show(); Pump();
+    Click(researchWindow, b => b.Name == "Section0-1");
+    Click(researchWindow, b => b.Name == "DiagnosticsGroup1");
     var collect = researchWindow.GetLogicalDescendants().OfType<Button>().Single(b => b.Name == "CollectFirmwareResearch");
     Assert(collect.IsEnabled, "research is enabled on an unprepared/disconnected modem");
     var labels = researchWindow.GetLogicalDescendants().OfType<TextBlock>().Select(t => t.Text).ToArray();
-    Assert(Array.IndexOf(labels, "Исследование прошивки") > Array.IndexOf(labels, "Подключение к модему") && Array.IndexOf(labels, "Исследование прошивки") < Array.IndexOf(labels, "Состояние устройства"), "research card follows access and precedes device snapshot");
+    Assert(labels.Contains("1. Проверить устройство") && !labels.Contains("Подключение к модему"), "research is isolated in preparation diagnostics");
     collect.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); Pump();
     Assert(researchModem.ResearchCollections == 1 && researchWindow.GetLogicalDescendants().OfType<Button>().Any(b => b.Content?.ToString() == "Экспортировать ZIP"), "research returns exportable result without a connection");
     researchWindow.GetLogicalDescendants().OfType<Expander>().Single(e => e.Header?.ToString() == "Результаты исследования").IsExpanded = true;
     var researchScroll = researchWindow.GetLogicalDescendants().OfType<ScrollViewer>().First(sv => sv.Content is StackPanel panel && panel.Children.OfType<Border>().Any());
     researchScroll.Offset = new Vector(0, 735); Pump(); Capture(researchWindow, "ru-firmware-research.png");
     researchWindow.GetLogicalDescendants().OfType<ComboBox>().Single(box => box.Name == "LanguagePicker").SelectedIndex = 1; Pump();
-    Assert(Label(researchWindow, "Firmware research"), "research heading translated");
+    Assert(Label(researchWindow, "1. Check device"), "research heading translated");
     researchWindow.GetLogicalDescendants().OfType<Expander>().Single(e => e.Header?.ToString() == "Research results").IsExpanded = true;
     researchScroll = researchWindow.GetLogicalDescendants().OfType<ScrollViewer>().First(sv => sv.Content is StackPanel panel && panel.Children.OfType<Border>().Any());
     researchScroll.Offset = new Vector(0, 735); Pump(); Capture(researchWindow, "en-firmware-research.png");

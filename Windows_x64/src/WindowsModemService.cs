@@ -4,16 +4,19 @@ using System.Text.Json;
 using ZteImeiStudio.Transport;
 using ZteImeiStudio.Windows.Core;
 using ZteImeiStudio.Windows.Features;
+using ZteImeiStudio.Windows.Diagnostics;
 
 namespace ZteImeiStudio.Windows;
 
 /// <summary>Local application state. Device writes are delegated to verified feature managers.</summary>
 public sealed partial class WindowsModemService : IModemService
 {
-    private readonly string _storage = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ZTE IMEI Studio");
-    private readonly string _resources = Path.Combine(AppContext.BaseDirectory, "Resources");
+    private readonly string _storage;
+    private readonly string _resources;
     private readonly SemaphoreSlim _operation = new(1,1);
     private readonly List<LogEntry> _logs = [];
+    private readonly DiagnosticPrivacy _diagnosticPrivacy = new();
+    private bool _diagnosticJournalWriteFailed;
     private IReadOnlyDictionary<string,string>? _operationValues;
     private readonly AdbTransport _adb = new();
     private SshTransport? _ssh;
@@ -30,8 +33,14 @@ public sealed partial class WindowsModemService : IModemService
     private string KeyPath => _keyPath;
     private string KnownHostsPath => _knownHostsPath;
 
-    public WindowsModemService()
+    public WindowsModemService() : this(
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ZTE IMEI Studio"),
+        Path.Combine(AppContext.BaseDirectory, "Resources")) { }
+
+    internal WindowsModemService(string storage, string resources)
     {
+        _storage = Path.GetFullPath(storage);
+        _resources = Path.GetFullPath(resources);
         _keyPath = Path.Combine(_storage,"SSH","id_ed25519");
         _knownHostsPath = Path.Combine(_storage,"SSH","known_hosts");
         Directory.CreateDirectory(_storage);
@@ -55,9 +64,23 @@ public sealed partial class WindowsModemService : IModemService
     {
         lock (_logs)
         {
-            _logs.Add(new LogEntry(DateTimeOffset.Now,level,message));
+            var entry = new LogEntry(DateTimeOffset.Now,level,_diagnosticPrivacy.Clean(message));
+            _logs.Add(entry);
             if (_logs.Count > 2000) _logs.RemoveRange(0,_logs.Count-2000);
+            PersistDiagnosticActivity(new(entry.Timestamp, entry.Level, entry.Message));
         }
+    }
+    private void PersistDiagnosticActivity(DiagnosticActivity entry)
+    {
+        try { DiagnosticsExporter.Append(_storage, entry, _diagnosticPrivacy); }
+        catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or ArgumentException or System.Security.SecurityException)
+        { _diagnosticJournalWriteFailed = true; }
+    }
+    private void TraceDiagnosticOperation(ModemOperation operation, string outcome, long? duration = null)
+    {
+        lock (_logs) PersistDiagnosticActivity(new(DateTimeOffset.Now,
+            outcome == "failed" ? "error" : "info", operation + ": " + outcome,
+            "operation", operation.ToString(), outcome, duration));
     }
     public Task<DeviceSnapshot> GetDeviceSnapshotAsync(CancellationToken cancellationToken = default) => Task.FromResult(_snapshot with { AdbActivationPending = File.Exists(Path.Combine(_storage, "adb-access-pending.json")), PreparationPending = File.Exists(Path.Combine(_storage, "setup-pending.json")) });
     public Task<IReadOnlyList<LogEntry>> GetLogsAsync(CancellationToken cancellationToken = default)
@@ -106,8 +129,12 @@ public sealed partial class WindowsModemService : IModemService
     public async Task<OperationResult> RunAsync(OperationRequest request,CancellationToken cancellationToken = default)
     {
         if (!await _operation.WaitAsync(0,cancellationToken)) return new OperationResult(false,"Другая операция уже выполняется.");
+        var diagnosticStarted = System.Diagnostics.Stopwatch.StartNew();
+        var diagnosticOutcome = "failed";
         try
         {
+            _diagnosticPrivacy.RememberParameters(request.Parameters);
+            TraceDiagnosticOperation(request.Operation, "started");
             _operationValues = null;
             var p = request.Parameters;
             string result;
@@ -237,15 +264,21 @@ public sealed partial class WindowsModemService : IModemService
                 default: result = await RunExtendedAsync(request,cancellationToken); break;
             }
             Log("ok",request.Operation + ": " + result);
+            diagnosticOutcome = "completed";
             return new OperationResult(true,result,Values:_operationValues);
         }
         catch (Exception error)
         {
+            diagnosticOutcome = error is OperationCanceledException ? "cancelled" : "failed";
             var message = error is OperationCanceledException ? "Операция отменена. Проверьте состояние модема перед повтором." : error.Message;
             Log("error",request.Operation + ": " + message);
             return new OperationResult(false,message);
         }
-        finally { _operation.Release(); }
+        finally
+        {
+            try { TraceDiagnosticOperation(request.Operation, diagnosticOutcome, diagnosticStarted.ElapsedMilliseconds); }
+            finally { _operation.Release(); }
+        }
     }
 
     private async Task<string> DiscoverAsync(IReadOnlyDictionary<string,string>? parameters,CancellationToken ct)

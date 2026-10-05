@@ -15,8 +15,8 @@
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
     <DebugType>embedded</DebugType>
     <SatelliteResourceLanguages>ru;en</SatelliteResourceLanguages>
-    <Version>1.24.3</Version>
-    <FileVersion>1.24.3.2</FileVersion>
+    <Version>1.24.4</Version>
+    <FileVersion>1.24.4.0</FileVersion>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <UsedAvaloniaProducts></UsedAvaloniaProducts>
   </PropertyGroup>

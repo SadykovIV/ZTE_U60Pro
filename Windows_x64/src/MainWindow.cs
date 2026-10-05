@@ -37,14 +37,14 @@ public sealed partial class MainWindow : Window
 
     private static readonly Page[] Pages =
     [
-        new("Подготовка модема", "Подключение, агент и русский интерфейс", "⌁", ["Настройка подключения", "Установка агента", "Русификация"]),
+        new("Подготовка модема", "Подключение, агент и русский интерфейс", "⌁", ["Настройка подключения", "Диагностика", "Установка агента", "Русификация"]),
         new("Launcher", "Экран модема и его плитки", "▣", ["Информация о модеме", "Управление VPN"]),
         new("IMEI", "Чтение, смена и резервные копии", "◈", ["Смена IMEI", "Бэкапы IMEI"]),
         new("TTL", "Правила исходящего и входящего TTL", "⇄", ["Настройки TTL"]),
         new("VPN", "Компоненты VPN на модеме", "◇", ["Состояние VPN"]),
         new("Приложения", "Установленные пакеты и каталог", "▦", ["Установлено", "Каталог", "Terminal"]),
         new("Администрирование", "Доступы, бэкапы и журнал", "⚙", ["Доступы", "Бэкапы", "Журнал действий"]),
-        new("О модеме", "Устройство, память и диагностика", "ⓘ", ["Об устройстве", "Память", "Диагностика"]),
+        new("О модеме", "Устройство и память", "ⓘ", ["Об устройстве", "Память"]),
         new("eSIM", "Профили физической eUICC", "▣", ["Профили"]),
     ];
 
@@ -288,6 +288,11 @@ public sealed partial class MainWindow : Window
         _actionButtons.Clear();
         _preparationButton = null;
         _diagnosticAdbButton = null;
+        _researchCollectButton = null;
+        _diagnosticAccessButton = null;
+        _diagnosticConnectionStatus = null;
+        _diagnosticAccessStatus = null;
+        _researchProgress = null;
         if (_refreshButton is not null) _actionButtons.Add(_refreshButton);
         var page = Pages[_page];
         _pageTitle.Text = Localization.Translate(page.Title);
@@ -300,6 +305,7 @@ public sealed partial class MainWindow : Window
                 var section = i;
                 var tab = new Button
                 {
+                    Name = "Section" + _page + "-" + i,
                     Content = Localization.Translate(page.Sections[i]),
                     CornerRadius = new CornerRadius(8),
                     Background = i == _sections[_page] ? Accent : Surface,
@@ -338,7 +344,6 @@ public sealed partial class MainWindow : Window
         switch (_sections[0])
         {
             case 0:
-                BuildFirmwareResearch();
                 AddCard("Подключение к модему", "Обычная работа — по SSH. Для нового модема: Web → USB ADB → агент и SSH. ADB используется для подготовки и диагностики.", panel =>
                 {
                     panel.Children.Add(FieldPair(Field("Адрес модема", "host", "192.168.0.1"), Field("Пользователь SSH", "username", "root")));
@@ -347,6 +352,7 @@ public sealed partial class MainWindow : Window
                     panel.Children.Add(Field("Backup-key suffix вашей прошивки", "backup_key_suffix", "Только для проверки бэкапа B31", secret: true));
                     panel.Children.Add(FileField("Приватный ключ SSH", "key_path", "Использовать локальный ключ"));
                     panel.Children.Add(FileField("Файл known_hosts", "known_hosts_path", "Использовать локальный known_hosts"));
+                    panel.Children.Add(ConnectionModePicker());
                     var skipCheck = new CheckBox
                     {
                         Content = Localization.Translate("Пропустить проверку прошивки"),
@@ -356,7 +362,6 @@ public sealed partial class MainWindow : Window
                     skipCheck.IsCheckedChanged += (_, _) => _form["skip_firmware_check"] = skipCheck.IsChecked == true ? "true" : "false";
                     panel.Children.Add(skipCheck);
                     panel.Children.Add(Actions(
-                        ("Проверить подключения", ModemOperation.DiscoverConnections, ["host", "web_password", "agent_password", "key_path", "known_hosts_path"]),
                         ("Подключиться", ModemOperation.Connect, ["host", "username", "web_password", "agent_password", "mode", "skip_firmware_check", "key_path", "known_hosts_path"])));
                     var preparation = new WrapPanel { Orientation = Orientation.Horizontal };
                     _preparationButton = ActionButton("Выполнить предварительную подготовку модема", async () =>
@@ -365,20 +370,13 @@ public sealed partial class MainWindow : Window
                     preparation.Children.Add(_preparationButton);
                     preparation.Children.Add(OperationInfoButton(OperationHelpContent.Preparation));
                     panel.Children.Add(preparation);
-                    var diagnostics = new WrapPanel();
-                    _diagnosticAdbButton = ActionButton(_snapshot?.AdbActivationPending == true ? "Продолжить включение ADB" : "Принудительно включить ADB", async () =>
-                        await ExecuteAsync(ModemOperation.EnableDiagnosticAdb, ["host", "web_password", "backup_key_suffix", "skip_firmware_check"]), false);
-                    _diagnosticAdbButton.Name = "EnableDiagnosticAdb";
-                    _diagnosticAdbButton.IsEnabled = !_busy && _terminal?.IsConnected != true && !_terminalOpening && _snapshot?.PreparationPending != true;
-                    diagnostics.Children.Add(_diagnosticAdbButton);
-                    diagnostics.Children.Add(OperationInfoButton(OperationHelpContent.DiagnosticAdb));
-                    panel.Children.Add(diagnostics);
-                    panel.Children.Add(Muted("Для диагностического ADB нужны USB-кабель и пароль Web выше. Пароль агента не нужен. Доступ можно включить при работающем SSH; возможна перезагрузка модема."));
-                    if (_terminal?.IsConnected == true || _terminalOpening) panel.Children.Add(Muted("Перед включением ADB отключите интерактивный терминал."));
                 });
                 AddSnapshotCard();
                 break;
             case 1:
+                BuildDiagnostics();
+                break;
+            case 2:
                 AddCard("Агент модема", "Постоянная установка агента eSIM и веб-панели.", panel =>
                 {
                     panel.Children.Add(Actions(
@@ -390,7 +388,7 @@ public sealed partial class MainWindow : Window
                     panel.Children.Add(ValueLine("Состояние", _snapshot?.Agent));
                 });
                 break;
-            case 2:
+            case 3:
                 AddCard("Русский интерфейс", "Пакет русификации экрана устанавливается на модем.", panel =>
                 {
                     panel.Children.Add(Actions(
@@ -1000,7 +998,8 @@ public sealed partial class MainWindow : Window
             "Каждое приложение показывает текущий статус на модеме и доступное действие.", panel =>
         {
             var catalog = VerifiedCatalogStore.Shared;
-            panel.Children.Add(Actions(("Обновить список", ModemOperation.RefreshApplications, null)));
+            panel.Children.Add(Actions(("Обновить список", ModemOperation.RefreshApplications, null),
+                ("Проверить утилиты", ModemOperation.RefreshDiagnostics, null)));
             if (_sections[5] == 1)
             {
                 panel.Children.Add(Muted("В каталоге только приложения, проверенные на модеме. Список обновляется отдельно от программы через GitHub."));
@@ -1089,7 +1088,6 @@ public sealed partial class MainWindow : Window
             case 0:
                 AddCard("Доступы", "Управление SSH пользователями и службами доступа.", panel =>
                 {
-                    panel.Children.Add(Actions(("Проверить доступы", ModemOperation.RefreshAccess, null)));
                     panel.Children.Add(Field("Новый пользователь", "account_username", "Имя пользователя"));
                     panel.Children.Add(Field("Пароль", "account_password", "Пароль", secret: true));
                     panel.Children.Add(ActionButton("Создать пользователя", async () =>
@@ -1144,19 +1142,6 @@ public sealed partial class MainWindow : Window
                 {
                     panel.Children.Add(ValueLine("Память", _snapshot?.Storage));
                     panel.Children.Add(Actions(("Обновить", ModemOperation.RefreshDevice, null)));
-                });
-                break;
-            case 2:
-                AddCard("Диагностика", "Сбор состояния устройства и экспорт диагностических данных.", panel =>
-                {
-                    panel.Children.Add(Actions(
-                        ("Проверить", ModemOperation.RefreshDiagnostics, null),
-                        ("Экспортировать журнал", ModemOperation.ExportDiagnostics, null)));
-                    panel.Children.Add(ActionButton("Перезагрузить модем", async () =>
-                    {
-                        if (await ConfirmAsync("Перезагрузить модем?", "Соединение будет временно потеряно."))
-                            await ExecuteAsync(ModemOperation.RebootDevice, (string[]?)null);
-                    }, false));
                 });
                 break;
         }
@@ -1408,7 +1393,11 @@ public sealed partial class MainWindow : Window
             input.MaxWidth = 700;
         }
         if (secret) _secretFields[key] = input;
-        else input.TextChanged += (_, _) => _form[key] = input.Text ?? "";
+        else input.TextChanged += (_, _) =>
+        {
+            _form[key] = input.Text ?? "";
+            if (key is "host" or "key_path" or "known_hosts_path") UpdateDiagnosticConnectionStatus();
+        };
         stack.Children.Add(input);
         return stack;
     }
@@ -1423,7 +1412,11 @@ public sealed partial class MainWindow : Window
             Text = Get(key), Watermark = Localization.Translate(watermark), Background = Elevated, Foreground = Foreground,
             MinWidth = 220, MinHeight = 36, Padding = new Thickness(10, 7), HorizontalAlignment = HorizontalAlignment.Stretch,
         };
-        input.TextChanged += (_, _) => _form[key] = input.Text ?? "";
+        input.TextChanged += (_, _) =>
+        {
+            _form[key] = input.Text ?? "";
+            if (key is "key_path" or "known_hosts_path") UpdateDiagnosticConnectionStatus();
+        };
         row.Children.Add(input);
         var browse = ActionButton("▱", async () =>
         {
@@ -1669,6 +1662,7 @@ public sealed partial class MainWindow : Window
             preparationTimer.Stop();
             if (!preserveSecrets) ClearSecrets();
             SetStatus(result.Message, !result.Success);
+            RecordDiagnosticResult(operation, result, parameters);
             if (result.Values is { } values)
             {
                 foreach (var item in values)
@@ -1792,6 +1786,7 @@ public sealed partial class MainWindow : Window
             _diagnosticAdbButton.IsEnabled = !busy && _terminal?.IsConnected != true && !_terminalOpening && _snapshot?.PreparationPending != true;
         if (!busy && _page == 5 && _sections[5] == 2 && !_terminalAutoAttempted)
             _ = LoadPageDataAsync();
+        UpdateDiagnosticAvailability();
         UpdateEsimAvailability();
     }
 

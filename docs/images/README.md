@@ -1,4 +1,19 @@
-# Скриншоты интерфейса 1.23.2
+# Скриншоты интерфейса
+
+## Диагностика 1.24.4
+
+Новые снимки показывают «Подготовка модема → Диагностика» на синтетических
+данных. macOS использует нативный SwiftUI, Windows UI — Avalonia на macOS.
+Модем не подключался; эти снимки не подтверждают запуск в Windows.
+Остальные иллюстрации ниже сохранены от 1.23.2.
+Хеши и источники восьми новых PNG: [manifest.json](diagnostics-1.24.4/manifest.json).
+
+| Экран | macOS · RU | macOS · EN | Windows UI · RU | Windows UI · EN |
+| --- | --- | --- | --- | --- |
+| Подключение и ADB | [PNG](diagnostics-1.24.4/macos-connection-ru.png) | [PNG](diagnostics-1.24.4/macos-connection-en.png) | [PNG](diagnostics-1.24.4/windows-connection-ru.png) | [PNG](diagnostics-1.24.4/windows-connection-en.png) |
+| Сбор и экспорт | [PNG](diagnostics-1.24.4/macos-reports-ru.png) | [PNG](diagnostics-1.24.4/macos-reports-en.png) | [PNG](diagnostics-1.24.4/windows-reports-ru.png) | [PNG](diagnostics-1.24.4/windows-reports-en.png) |
+
+## История: скриншоты интерфейса 1.23.2
 
 Свежие снимки настоящих компонентов интерфейса с **синтетическими данными**, без подключения к модему. Это иллюстрации функций, а не квитанции аппаратных испытаний.
 

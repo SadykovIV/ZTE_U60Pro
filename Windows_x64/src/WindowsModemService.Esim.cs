@@ -9,6 +9,7 @@ public sealed partial class WindowsModemService
 {
     public async Task<EsimResult> RunEsimAsync(EsimRequest request, IProgress<string>? progress, CancellationToken ct = default)
     {
+        _diagnosticPrivacy.Remember([request.ActivationCode, request.ConfirmationCode, request.Iccid]);
         var journal = new EsimJournal(request.Operation, Log);
         if (!await _operation.WaitAsync(0, ct)) { journal.Finish(false, "operation_busy", true); throw new EsimException("operation_busy"); }
         string? directory = null;

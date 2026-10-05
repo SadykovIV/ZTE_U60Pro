@@ -6,13 +6,14 @@ and a temporary .app. No existing connection profile or catalog cache is used.
 """
 from pathlib import Path
 import json
+import os
 import plistlib
 import shutil
 import subprocess
 import tempfile
 
 root = Path(__file__).resolve().parents[1]
-output = root / 'dist/ui-preview'
+output = Path(os.environ.get('ZTE_UI_PREVIEW_OUTPUT', str(root / 'dist/ui-preview')))
 output.mkdir(parents=True, exist_ok=True)
 (root / '.build').mkdir(exist_ok=True)
 with tempfile.TemporaryDirectory(prefix='manager-ui-', dir=root / '.build') as directory:
@@ -42,7 +43,7 @@ with tempfile.TemporaryDirectory(prefix='manager-ui-', dir=root / '.build') as d
     with (app / 'Info.plist').open('wb') as handle:
         plistlib.dump({'CFBundleIdentifier': 'local.zte.manager-ui-preview',
                       'CFBundleExecutable': 'ManagerUIPreview', 'CFBundleName': 'Manager UI Preview',
-                      'CFBundleVersion': '35', 'CFBundleShortVersionString': '1.24.0',
+                      'CFBundleVersion': '41', 'CFBundleShortVersionString': '1.24.4',
                       'NSHighResolutionCapable': False, 'LSUIElement': True}, handle)
     binary = app / 'MacOS/ManagerUIPreview'
     sources = [str(p) for p in sorted((root / 'Sources').glob('*.swift')) if p.name not in ['AppModel.swift', 'AppModelConnections.swift', 'Main.swift']]

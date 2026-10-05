@@ -1,0 +1,109 @@
+{
+  "schemaVersion": 1,
+  "version": "1.24.4",
+  "createdAt": "2026-10-05T06:02:37.579939+00:00",
+  "syntheticData": true,
+  "deviceAccess": false,
+  "macos": "Native SwiftUI on macOS ARM64, disconnected isolated model; discovery fails closed in preview",
+  "windows": "Production Avalonia views in a macOS ARM64 headless fixture; physical Windows execution unverified",
+  "pixelEditing": false,
+  "sources": {
+    "MacIMEI/Sources/UI.swift": "ad2fdca2430c741515c20b16e3ad447eb550bbf74c0637961cdaddf763f0b4db",
+    "MacIMEI/Sources/UIConnections.swift": "84c90b0b91828b197d3845e7089474b005eac54848a2a4cb385bb0a16d048b5f",
+    "MacIMEI/Sources/UIDiagnostics.swift": "c69452fc7c82cd89d3d3304ff1026ea317560af228113debda03310b487d92b7",
+    "MacIMEI/Sources/UIManagement.swift": "d9ae42f48f99689821de8d130dff1c3296952dffb69cdddce4de052835f89258",
+    "Windows_x64/src/MainWindow.cs": "3b19bba107f8dccfad1c36a65bc95485807f427db28ad3d0436af2e9c8898884",
+    "Windows_x64/src/MainWindow.Diagnostics.cs": "9663ca44eef9638bda9a85726774ac39b05b5d3d476ee90bc2ee6643db1fc731",
+    "Windows_x64/src/MainWindow.Research.cs": "18d4b57ec9d3e54208d1bf3b557c9261a15700dca3359c6c8e115df54b1d4552"
+  },
+  "images": [
+    {
+      "path": "macos-connection-ru.png",
+      "sha256": "1261eecb339274472fbcd68dacb73fba02aded3cb69b1b246c82cb9a0c691917",
+      "pixels": [
+        1280,
+        900
+      ],
+      "platform": "macos",
+      "language": "ru",
+      "group": "connection"
+    },
+    {
+      "path": "windows-connection-ru.png",
+      "sha256": "98b7d34f85bc27ec168aff71a015da2249c2a656e6063cba37ad868457607d90",
+      "pixels": [
+        1220,
+        860
+      ],
+      "platform": "windows",
+      "language": "ru",
+      "group": "connection"
+    },
+    {
+      "path": "macos-reports-ru.png",
+      "sha256": "600afaa8f62d9c40baaff1e93154f8e6a62a132a5a482eb9e8dd7f399a1d3c4b",
+      "pixels": [
+        1280,
+        900
+      ],
+      "platform": "macos",
+      "language": "ru",
+      "group": "reports"
+    },
+    {
+      "path": "windows-reports-ru.png",
+      "sha256": "3882ab6f21df1752f0aec8e376e1880ffcb77ea8715259dc00e11ee907a4d44c",
+      "pixels": [
+        1220,
+        860
+      ],
+      "platform": "windows",
+      "language": "ru",
+      "group": "reports"
+    },
+    {
+      "path": "macos-connection-en.png",
+      "sha256": "e1fa00de7df89d2c68a07fc190a748455b2786aa7e63ed7846150fb99fa5a1d9",
+      "pixels": [
+        1280,
+        900
+      ],
+      "platform": "macos",
+      "language": "en",
+      "group": "connection"
+    },
+    {
+      "path": "windows-connection-en.png",
+      "sha256": "8b3b241ee303d4aa6744855d5548458546ec53f816e6fcf3a4cf809e37438aad",
+      "pixels": [
+        1220,
+        860
+      ],
+      "platform": "windows",
+      "language": "en",
+      "group": "connection"
+    },
+    {
+      "path": "macos-reports-en.png",
+      "sha256": "088edae57dec454847eb03128994b58ebe676b417f874215489e17713c679d44",
+      "pixels": [
+        1280,
+        900
+      ],
+      "platform": "macos",
+      "language": "en",
+      "group": "reports"
+    },
+    {
+      "path": "windows-reports-en.png",
+      "sha256": "cb6b9892bc0dfea6e05dbaec9a61fe69a7ea4e6bc36dd3f44c1f7840bec442d6",
+      "pixels": [
+        1220,
+        860
+      ],
+      "platform": "windows",
+      "language": "en",
+      "group": "reports"
+    }
+  ]
+}

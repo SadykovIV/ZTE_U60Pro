@@ -41,8 +41,8 @@ enum StudioPage: String, CaseIterable, Identifiable {
     }
     var subtitle: String {
         switch self {
-        case .modem: return "Устройство, система, память и диагностика"
-        case .preparation: return "Подключение, ADB, агент и русский интерфейс"
+        case .modem: return "Устройство, система и память"
+        case .preparation: return "Подключение, диагностика, агент и русский интерфейс"
         case .display: return "Показатели модема, VPN и профили eSIM на экране"
         case .imei: return "Чтение, смена и резервные копии IMEI"
         case .esim: return "Профили физической eUICC: QR, активация и удаление"
@@ -56,11 +56,11 @@ enum StudioPage: String, CaseIterable, Identifiable {
 enum ModemSection: String, CaseIterable, Identifiable {
     case overview = "Об устройстве"
     case memory = "Память"
-    case diagnostics = "Диагностика"
     var id: String { rawValue }
 }
 enum PreparationSection: String, CaseIterable, Identifiable {
     case connection = "Настройка подключения"
+    case diagnostics = "Диагностика"
     case agent = "Установка агента"
     case localization = "Русификация"
     var id: String { rawValue }
@@ -90,6 +90,8 @@ struct ContentView: View {
     @StudioState var page: StudioPage = CommandLine.arguments.contains("--esim-ui-fixture") ? .esim : .preparation
     @StudioState var modemSection: ModemSection = .overview
     @StudioState var preparationSection: PreparationSection = .connection
+    @StudioState var diagnosticsSection: DiagnosticsSection = .connection
+    @StudioState var diagnosticSettingsExpanded = false
     @StudioState var launcherSection: LauncherSection = .information
     @StudioState var imeiSection: IMEISection = .imei
     @StudioState var administrationSection: AdministrationSection = .access
@@ -305,7 +307,7 @@ struct ContentView: View {
     }
 
     @ViewBuilder var connectionSectionNotice: some View {
-        if page != .preparation || preparationSection != .connection {
+        if page != .preparation || (preparationSection != .connection && preparationSection != .diagnostics) {
             if !model.connected {
                 StudioNote(symbol: "cable.connector", text: "Нет подключения. Откройте «Подготовку модема» и подключитесь по SSH или USB ADB. Управление станет доступно после подключения по SSH.")
             } else if model.activeChannel == .adb {
@@ -331,7 +333,7 @@ struct ContentView: View {
         case .applications: sections = model.applicationInventory == nil ? [.applications] : []
         case .preparation:
             switch preparationSection {
-            case .connection: sections = []
+            case .connection, .diagnostics: sections = []
             case .agent: sections = model.agentInstallationStatus == nil ? [.agent] : []
             case .localization: sections = model.screenLocalizationStatus == nil ? [.screen] : []
             }
@@ -352,7 +354,6 @@ struct ContentView: View {
             switch modemSection {
             case .overview: modemOverview
             case .memory: memoryPage
-            case .diagnostics: diagnosticsPage
             }
         }
     }
@@ -378,6 +379,7 @@ struct ContentView: View {
             }.pickerStyle(.segmented)
             switch preparationSection {
             case .connection: connectionPage
+            case .diagnostics: preparationDiagnosticsPage
             case .agent: agentPreparationPage
             case .localization: localizationPage
             }
@@ -386,51 +388,55 @@ struct ContentView: View {
 
     var connectionPage: some View {
         VStack(alignment: .leading, spacing: 18) {
-            StudioCard {
-                HStack {
-                    Label(L10n.text("Параметры подключения"), systemImage: "wifi.router")
-                        .font(.system(size: 16, weight: .semibold))
-                    Spacer()
-                    Text(L10n.text("MU5250 / U60 Pro")).font(.system(size: 11)).foregroundStyle(StudioStyle.secondary)
-                }
-                HStack(alignment: .bottom, spacing: 14) {
-                    StudioField(label: "АДРЕС МОДЕМА", placeholder: "192.168.0.1", text: $model.host)
-                        .onChange(of: model.host) { _ in model.invalidateChannelConnection() }
-                    StudioField(label: "SSH-ПОРТ", placeholder: "2222", text: $model.port)
-                        .frame(width: 100)
-                        .onChange(of: model.port) { _ in model.invalidateChannelConnection() }
-                }.disabled(model.busy)
-                HStack(alignment: .top, spacing: 14) {
-                    connectionPasswordField("ПАРОЛЬ WEB", placeholder: "Пароль штатной панели", text: $model.webPassword)
-                    connectionPasswordField("ПАРОЛЬ АГЕНТА", placeholder: "Текущий или новый пароль", text: $model.agentPassword)
-                }.disabled(model.busy)
-                Text(L10n.text("Если Web недоступен, оставьте его пароль пустым и подключите один root USB ADB модем. Введённый пароль Web включает обязательную проверку совпадения IP и USB-устройства.", "If Web is unavailable, leave its password empty and connect one root USB ADB modem. Entering a Web password requires matching the IP and USB device."))
-                    .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
-                connectionPasswordField("КЛЮЧ БЭКАПА (BACKUP-KEY SUFFIX)", placeholder: "Ключ для вашей прошивки", text: $model.backupSuffix).disabled(model.busy)
-                HStack(alignment: .center, spacing: 14) {
-                    Toggle(L10n.text("Не проверять прошивку"), isOn: Binding(get: { model.skipFirmwareCheck }, set: { model.setFirmwareCheckSkipped($0) }))
-                        .toggleStyle(.checkbox).font(.system(size: 12, weight: .medium)).disabled(model.busy)
-                        .help(L10n.text("Отключает общую сверку версии и хэшей с B31 и разрешает повторную предварительную подготовку при доступном SSH. Проверки устройства, бэкапов, NV/EFS и ограничения установщиков сохраняются. При перезапуске приложения проверка включается снова."))
-                    Spacer(minLength: 0)
-                    Text(L10n.text("Пароли не сохраняются на Mac"))
-                        .font(.system(size: 10)).foregroundStyle(StudioStyle.secondary)
-                }
-                DisclosureGroup(isExpanded: $settingsExpanded) {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text(L10n.text("При подготовке ключ и доверие SSH создаются автоматически. Здесь можно выбрать файлы для уже подготовленного модема."))
-                            .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
-                        pathSetting(label: "ПРИВАТНЫЙ SSH-КЛЮЧ", placeholder: "Путь к id_ed25519", text: $model.keyPath, action: model.chooseKey)
-                        pathSetting(label: "ИЗВЕСТНЫЕ SSH-ХОСТЫ", placeholder: "Путь к known_hosts", text: $model.knownHostsPath, action: model.chooseKnownHosts)
-                    }.padding(.top, 10).disabled(model.busy)
-                } label: {
-                    Label(L10n.text("Параметры SSH"), systemImage: "key.horizontal")
-                        .font(.system(size: 11, weight: .medium)).foregroundStyle(StudioStyle.secondary)
-                }
-            }
-            firmwareResearchCard
+            connectionParametersCard(forDiagnostics: false)
             connectionRoutingCard
         }.onAppear {
             if !model.connectionsChecked && !model.busy { model.discoverConnectionsPassively() }
+        }
+    }
+    func connectionParametersCard(forDiagnostics: Bool) -> some View {
+        StudioCard {
+            HStack {
+                Label(L10n.text("Параметры подключения"), systemImage: "wifi.router")
+                    .font(.system(size: 16, weight: .semibold))
+                Spacer()
+                Text(L10n.text("MU5250 / U60 Pro")).font(.system(size: 11)).foregroundStyle(StudioStyle.secondary)
+            }
+            HStack(alignment: .bottom, spacing: 14) {
+                StudioField(label: "АДРЕС МОДЕМА", placeholder: "192.168.0.1", text: $model.host)
+                    .onChange(of: model.host) { _ in model.invalidateChannelConnection() }
+                StudioField(label: "SSH-ПОРТ", placeholder: "2222", text: $model.port)
+                    .frame(width: 100)
+                    .onChange(of: model.port) { _ in model.invalidateChannelConnection() }
+            }.disabled(model.busy)
+            HStack(alignment: .top, spacing: 14) {
+                connectionPasswordField("ПАРОЛЬ WEB", placeholder: "Пароль штатной панели", text: $model.webPassword)
+                connectionPasswordField("ПАРОЛЬ АГЕНТА", placeholder: "Текущий или новый пароль", text: $model.agentPassword)
+            }.disabled(model.busy)
+            Text(L10n.text("Если Web недоступен, оставьте его пароль пустым и подключите один root USB ADB модем. Введённый пароль Web включает обязательную проверку совпадения IP и USB-устройства.", "If Web is unavailable, leave its password empty and connect one root USB ADB modem. Entering a Web password requires matching the IP and USB device."))
+                .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
+            connectionPasswordField("КЛЮЧ БЭКАПА (BACKUP-KEY SUFFIX)", placeholder: "Ключ для вашей прошивки", text: $model.backupSuffix).disabled(model.busy)
+            HStack(alignment: .center, spacing: 14) {
+                if !forDiagnostics {
+                    Toggle(L10n.text("Не проверять прошивку"), isOn: Binding(get: { model.skipFirmwareCheck }, set: { model.setFirmwareCheckSkipped($0) }))
+                        .toggleStyle(.checkbox).font(.system(size: 12, weight: .medium)).disabled(model.busy)
+                        .help(L10n.text("Отключает общую сверку версии и хэшей с B31 и разрешает повторную предварительную подготовку при доступном SSH. Проверки устройства, бэкапов, NV/EFS и ограничения установщиков сохраняются. При перезапуске приложения проверка включается снова."))
+                }
+                Spacer(minLength: 0)
+                Text(L10n.text("Пароли не сохраняются на Mac"))
+                    .font(.system(size: 10)).foregroundStyle(StudioStyle.secondary)
+            }
+            DisclosureGroup(isExpanded: $settingsExpanded) {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(L10n.text("При подготовке ключ и доверие SSH создаются автоматически. Здесь можно выбрать файлы для уже подготовленного модема."))
+                        .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
+                    pathSetting(label: "ПРИВАТНЫЙ SSH-КЛЮЧ", placeholder: "Путь к id_ed25519", text: $model.keyPath, action: model.chooseKey)
+                    pathSetting(label: "ИЗВЕСТНЫЕ SSH-ХОСТЫ", placeholder: "Путь к known_hosts", text: $model.knownHostsPath, action: model.chooseKnownHosts)
+                }.padding(.top, 10).disabled(model.busy)
+            } label: {
+                Label(L10n.text("Параметры SSH"), systemImage: "key.horizontal")
+                    .font(.system(size: 11, weight: .medium)).foregroundStyle(StudioStyle.secondary)
+            }
         }
     }
     func connectionPasswordField(_ label: String, placeholder: String, text: Binding<String>) -> some View {

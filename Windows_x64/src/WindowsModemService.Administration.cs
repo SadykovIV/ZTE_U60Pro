@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using ZteImeiStudio.Windows.Core;
 using ZteImeiStudio.Windows.Features;
+using ZteImeiStudio.Windows.Diagnostics;
 
 namespace ZteImeiStudio.Windows;
 
@@ -263,22 +264,15 @@ public sealed partial class WindowsModemService
     private async Task<string> ExportLocalDiagnosticsAsync(CancellationToken ct)
     {
         var directory = Path.Combine(_storage,"Diagnostics");
-        Directory.CreateDirectory(directory);
-        var path = Path.Combine(directory,"report-" + DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N") + ".json");
+        var path = Path.Combine(directory,"report-" + DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N") + ".zip");
         var logs = await GetLogsAsync(ct);
-        var document = new {
-            schema = 1,
-            createdAt = DateTimeOffset.UtcNow,
-            application = "ZTE IMEI Studio Windows x64",
-            connectionMode = _snapshot.ConnectionMode,
-            model = _snapshot.Model,
-            firmware = _snapshot.Firmware,
-            operations = logs.Select(x => new { x.Timestamp, x.Level, operation = x.Message.StartsWith("eSIM[", StringComparison.Ordinal) ? x.Message : x.Message.Split(':',2)[0] }).ToArray(),
-            note = "Пароли, команды, ответы модема, IMEI и CID в этот отчёт не включены."
-        };
-        await using var output = new FileStream(path,FileMode.CreateNew,FileAccess.Write,FileShare.None,4096,FileOptions.WriteThrough);
-        await JsonSerializer.SerializeAsync(output,document,new JsonSerializerOptions { WriteIndented = true },ct);
-        await output.FlushAsync(ct);
-        return "Диагностический журнал приложения сохранён: " + path;
+        var system = new DiagnosticSystemSnapshot(_snapshot.ConnectionMode, _snapshot.Model, _snapshot.Firmware,
+            typeof(WindowsModemService).Assembly.GetName().Version?.ToString() ?? "unknown");
+        var result = DiagnosticsExporter.Export(_storage, path, system,
+            logs.Select(x => new DiagnosticActivity(x.Timestamp, x.Level, x.Message)),
+            _diagnosticPrivacy, _diagnosticJournalWriteFailed, ct);
+        return "Диагностический ZIP приложения сохранён: " + result.Path +
+            ". Включены действия программы и очищенные трассировки операций. Свежий сбор с модема не выполнялся." +
+            (result.Omissions == 0 ? "" : " Часть сохранённых данных пропущена; причины указаны в manifest.json.");
     }
 }

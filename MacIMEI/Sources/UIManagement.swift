@@ -169,12 +169,10 @@ extension ContentView {
             HStack {
                 Text(L10n.text("Службы и способы входа")).font(.system(size: 18, weight: .semibold))
                 Spacer()
-                Button(action: model.refreshAccess) { Label(L10n.text("Проверить доступы"), systemImage: "arrow.clockwise") }
-                    .buttonStyle(StudioButtonStyle()).disabled(!model.canManage)
             }
             if let state = model.accessState {
                 ForEach(state.services) { service in accessCard(service) }
-            } else { StudioNote(symbol: "network", text: "Проверьте доступы, чтобы увидеть состояние WEB, SSH, ADB и агента и доступные действия.") }
+            } else { StudioNote(symbol: "network", text: "Проверка доступов находится в «Подготовка модема» → «Диагностика» → «Подключение и ADB».") }
             sshPage
         }
     }
@@ -253,7 +251,6 @@ extension ContentView {
     }
     var activityPage: some View {
         VStack(alignment: .leading, spacing: 18) {
-            diagnosticExportCard
             StudioCard {
                 Text(L10n.text("Постоянный журнал действий")).font(.system(size: 18, weight: .semibold))
                 Text(L10n.text("Сохраняется между запусками: этапы, проверки прошивки, SSH, USB/ADB и HTTP, длительность, коды завершения, ошибки и очищенный вывод. Запросы связаны с операциями и сеансом приложения. Секретный ввод не сохраняется; известные конфиденциальные поля скрываются."))

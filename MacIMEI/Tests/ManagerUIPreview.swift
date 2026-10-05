@@ -24,6 +24,9 @@ import SwiftUI
             ConnectionChannelStatus(mode: $0, state: .notChecked, message: "")
         }
         precondition(!model.connected && !model.canManage)
+        precondition(PreparationSection.allCases.map(\.rawValue) == ["Настройка подключения", "Диагностика", "Установка агента", "Русификация"])
+        precondition(ModemSection.allCases.map(\.rawValue) == ["Об устройстве", "Память"])
+        precondition(AdministrationSection.allCases.last == .activity)
         model.loadEsimPreview(force: true)
         model.agentInstallationStatus = AgentInstallationStatus(hash: BundledAgent.sha256, running: true, startupReady: true)
         model.applicationInventory = .init(storage: [], memoryTotalKiB: 1048576,
@@ -57,13 +60,19 @@ import SwiftUI
             precondition(L10n.language == language)
             let screens: [(String, AnyView)] = [
                 ("preparation", AnyView(ContentView(model: model, verifiedCatalog: catalog))),
+                ("diagnostics-connection", AnyView(ContentView(model: model, verifiedCatalog: catalog, preparationSection: .diagnostics))),
+                ("diagnostics-firmware", AnyView(ContentView(model: model, verifiedCatalog: catalog, preparationSection: .diagnostics, diagnosticsSection: .firmware))),
+                ("diagnostics-export", AnyView(ContentView(model: model, verifiedCatalog: catalog, preparationSection: .diagnostics, diagnosticsSection: .reports))),
+                ("journal", AnyView(ContentView(model: model, verifiedCatalog: catalog, page: .administration, administrationSection: .activity))),
+                ("administration", AnyView(ContentView(model: model, verifiedCatalog: catalog, page: .administration))),
+                ("modem", AnyView(ContentView(model: model, verifiedCatalog: catalog, page: .modem))),
                 ("agent-esim", AnyView(ContentView(model: model, verifiedCatalog: catalog, preparationSection: .agent))),
                 ("esim", AnyView(ContentView(model: model, verifiedCatalog: catalog, page: .esim))),
                 ("launcher-esim", AnyView(ContentView(model: model, verifiedCatalog: catalog, page: .display, launcherSection: .esim))),
                 ("esim-progress", AnyView(ContentView(model: model, verifiedCatalog: catalog, page: .esim))),
                 ("catalog", AnyView(ContentView(model: model, verifiedCatalog: catalog, page: .applications, applicationSection: .available))),
                 ("terminal", AnyView(ContentView(model: model, verifiedCatalog: catalog, page: .applications, applicationSection: .opkg))),
-                ("firmware-research-empty", AnyView(ZStack { StudioStyle.canvas; VStack(alignment: .leading, spacing: 18) { Text(L10n.text("Подготовка модема · Настройка подключения", "Modem preparation · Connection settings")).font(.title2); ContentView(model: model, verifiedCatalog: catalog).firmwareResearchCard; Spacer() }.padding(36) })),
+                ("firmware-research-empty", AnyView(ZStack { StudioStyle.canvas; VStack(alignment: .leading, spacing: 18) { Text(L10n.text("Подготовка модема · Диагностика", "Modem preparation · Diagnostics")).font(.title2); ContentView(model: model, verifiedCatalog: catalog).firmwareResearchCard; Spacer() }.padding(36) })),
                 ("firmware-research-result", AnyView(ZStack { StudioStyle.canvas; VStack(alignment: .leading, spacing: 18) { Text(L10n.text("Исследование прошивки · Пример отчёта", "Firmware research · Sample report")).font(.title2); ContentView(model: model, verifiedCatalog: catalog).firmwareResearchCard; Spacer() }.padding(36) })),
                 ("about", AnyView(ZStack {
                     StudioStyle.canvas
@@ -88,7 +97,7 @@ import SwiftUI
                 if screen.hasPrefix("firmware-research-") {
                     // Construct after the fixture change: a computed card is a value snapshot.
                     currentView = AnyView(ZStack { StudioStyle.canvas; VStack(alignment: .leading, spacing: 18) {
-                        Text(screen.hasSuffix("result") ? L10n.text("Исследование прошивки · Пример отчёта", "Firmware research · Sample report") : L10n.text("Подготовка модема · Настройка подключения", "Modem preparation · Connection settings")).font(.title2)
+                        Text(screen.hasSuffix("result") ? L10n.text("Исследование прошивки · Пример отчёта", "Firmware research · Sample report") : L10n.text("Подготовка модема · Диагностика", "Modem preparation · Diagnostics")).font(.title2)
                         ContentView(model: model, verifiedCatalog: catalog).firmwareResearchCard
                         Spacer()
                     }.padding(36) })

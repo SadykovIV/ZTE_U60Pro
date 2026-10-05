@@ -18,6 +18,8 @@ public sealed partial class WindowsModemService
         if(!await _operation.WaitAsync(0,ct))throw new InvalidOperationException("Другая операция уже выполняется.");
         try
         {
+            _diagnosticPrivacy.RememberParameters(parameters);
+            Log("research", "Firmware research: started");
             var host=Param(parameters,"host",_host);if(string.IsNullOrWhiteSpace(host))host=_host;
             var key=Param(parameters,"key_path",KeyPath);if(string.IsNullOrWhiteSpace(key))key=KeyPath;
             var known=Param(parameters,"known_hosts_path",KnownHostsPath);if(string.IsNullOrWhiteSpace(known))known=KnownHostsPath;
@@ -37,6 +39,8 @@ public sealed partial class WindowsModemService
             Log("research","Firmware research snapshot saved: "+report.Outcome);
             return report;
         }
+        catch (OperationCanceledException) { Log("research", "Firmware research: cancelled"); throw; }
+        catch (Exception) { Log("error", "Firmware research: failed"); throw; }
         finally { _operation.Release(); }
     }
     private string? ReadPendingResearchCid(string? connectedCid)
@@ -59,6 +63,15 @@ public sealed partial class WindowsModemService
 
     public Task ExportFirmwareResearchAsync(ResearchReport report,string destination,CancellationToken ct=default)
     {
-        ct.ThrowIfCancellationRequested();ResearchReportFiles.Export(report,destination);return Task.CompletedTask;
+        try
+        {
+            ct.ThrowIfCancellationRequested();
+            Log("research", "Firmware research export: started");
+            ResearchReportFiles.Export(report,destination);
+            Log("research", "Firmware research export: completed");
+            return Task.CompletedTask;
+        }
+        catch (OperationCanceledException) { Log("research", "Firmware research export: cancelled"); throw; }
+        catch (Exception) { Log("error", "Firmware research export: failed"); throw; }
     }
 }
