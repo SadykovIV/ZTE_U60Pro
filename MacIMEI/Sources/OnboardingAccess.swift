@@ -33,7 +33,8 @@ extension OnboardingEngine {
     /// Caller holds the host operation lock. A responding root USB device is
     /// evaluated before any web login, backup activation or installer mutation.
     func runExistingUSBAccess(hashes: [String: String], webPassword: String, agentPassword: String,
-                              expected: DiagnosticDeviceExpectation, expectedIdentity: Identity?) throws -> SetupResult? {
+                              expected: DiagnosticDeviceExpectation, expectedIdentity: Identity?, completedBootstrapID: String? = nil) throws -> SetupResult? {
+        var bootstrap: SetupJournal?
         var saved: AccessSetupJournal?
         if fm.fileExists(atPath: pending.path) {
             let raw = try Data(contentsOf: pending)
@@ -45,17 +46,28 @@ extension OnboardingEngine {
                 // backup flow. Only a decodable legacy journal may use it.
                 try require(object["bootID"] == nil && (try? JSONDecoder().decode(SetupJournal.self, from: raw)) != nil,
                             "Некорректный журнал доступа; транспорт не запускался")
-                return nil
+                guard let completedBootstrapID else { return nil }
+                let prior = try JSONDecoder().decode(SetupJournal.self, from: raw)
+                let directory = URL(fileURLWithPath: prior.directory).standardizedFileURL
+                try require(prior.id == completedBootstrapID && UUID(uuidString: prior.id) != nil &&
+                            prior.phase == "adb-ready" && !prior.installRequested && prior.intent == nil &&
+                            directory.deletingLastPathComponent() == root.appendingPathComponent("SetupBackups").standardizedFileURL &&
+                            UUID(uuidString: directory.lastPathComponent) != nil,
+                            "Некорректный журнал подтверждённого ADB; установка не запускалась")
+                bootstrap = prior
+            } else {
+                try require(completedBootstrapID == nil, "Журнал подготовки изменился; установка не запускалась")
+                saved = try JSONDecoder().decode(AccessSetupJournal.self, from: raw)
+                try saved!.validate(root: root)
             }
-            saved = try JSONDecoder().decode(AccessSetupJournal.self, from: raw)
-            try saved!.validate(root: root)
         }
+        try require(completedBootstrapID == nil || bootstrap != nil, "Журнал подтверждённого ADB отсутствует; установка не запускалась")
         let adb = ADBClient(binary: assets.appendingPathComponent("adb"), runner: runner)
         let serials: [String]
         do { serials = try adb.discovery().readyUSBSerials }
         catch { throw IMEIError.message("Не удалось проверить USB ADB. " + ActivityJournal.sanitize(error.localizedDescription) + " Включение ADB и восстановление не запускались.") }
         if serials.isEmpty {
-            try require(saved == nil, "Для продолжения установки нужен тот же USB ADB; новая установка не запускалась")
+            try require(saved == nil && bootstrap == nil, "Для продолжения установки нужен тот же USB ADB; новая установка не запускалась")
             return nil
         }
         try require(serials.count <= 16 && (serials.count == 1 || !expected.cids.isEmpty), "Выберите один USB модем; автоматический выбор неоднозначен")
@@ -76,6 +88,11 @@ extension OnboardingEngine {
         }
         try require(matches.count == 1, "USB ADB уже обнаружен, но root/Linux ARM64, CID и загрузка ожидаемого устройства не подтверждены. Включение ADB и восстановление не запускались.")
         let (serial, proof) = matches[0]
+        if let bootstrap {
+            try require(bootstrap.cid == proof.identity.cid && bootstrap.firmwareHash == proof.identity.firmwareHash &&
+                        bootstrap.routerHash == proof.routerHash && bootstrap.adbSerial == serial && bootstrap.identity == proof.webIdentity,
+                        "Подтверждённый ADB относится к другому устройству; установка не запускалась")
+        }
         if let expectedIdentity { try require(proof.identity == expectedIdentity, "Устройство или прошивка изменились") }
         let profile = AccessIdentity.profile(proof, experimental: currentConnection.skipFirmwareCheck)
         if profile == "linux-arm64-access" { try require(serials.count == 1, "Для generic подготовки нужен единственный USB-модем") }
@@ -112,6 +129,11 @@ extension OnboardingEngine {
                 let fresh = try AccessIdentity.parse(response.stdout)
                 try require(fresh.identity == proof.identity && fresh.routerHash == proof.routerHash && fresh.bootID == proof.bootID, "SSH и USB относятся к разным устройствам")
                 try verify()
+                if var bootstrap {
+                    bootstrap.phase = "complete"
+                    try saveJSON(bootstrap, URL(fileURLWithPath: bootstrap.directory).appendingPathComponent("bootstrap-result.json"))
+                    try fm.removeItem(at: pending)
+                }
                 update("SSH проверен. Готовность агента и IMEI проверяются отдельно.", 1)
                 return SetupResult(connection: connection, state: nil, identity: proof.identity, firmware: proof.webIdentity?.firmware ?? "unknown", suffix: "")
             }
@@ -157,7 +179,11 @@ extension OnboardingEngine {
             let answer = try adb.shell(serial, "sh -c " + shellQuote(installer) + " -- " + (["--preflight"] + policy).map(shellQuote).joined(separator: " "), timeout: 60)
             try require(answer == "INSTALL_PREFLIGHT " + profile + " imei_config=unknown", "Условия установки не подтверждены")
             try verify()
-            try secureDirectory(directory); try saveJSON(journal, pending)
+            try secureDirectory(directory)
+            if let bootstrap { try saveJSON(bootstrap, URL(fileURLWithPath: bootstrap.directory).appendingPathComponent("bootstrap-result.json")) }
+            // Replace the old activation journal only after preflight succeeds.
+            // Until this atomic save, restore/direct intents still prevent replay.
+            try saveJSON(journal, pending)
             key = try createKey()
             try require(try adb.shell(serial, Self.stagePreparationCommand(stage: stage, owner: owner)) == "INSTALL_STAGE_READY", "Не подтверждён приватный каталог установки")
             let temporary = fm.temporaryDirectory.appendingPathComponent("zte-access-" + UUID().uuidString)

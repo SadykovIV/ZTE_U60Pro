@@ -51,7 +51,7 @@ enum BackupPatch {
     static func inspect(_ outerGzip: Data) throws -> (outer: BackupTar, inner: BackupTar) {
         let outer = try BackupTar(BackupGzip.decompress(outerGzip))
         try require(outer.members.map(\.path) == [innerPath, md5Path] && outer.members.allSatisfy(\.isFile),
-                    "Неизвестная структура внешнего архива B31")
+                    "Неизвестная структура внешнего архива")
         let compressedInner = outer.members[0].bytes
         let expectedMD5 = Data((BackupCipher.md5(compressedInner) + "\n").utf8)
         try require(outer.members[1].bytes == expectedMD5, "Контрольная сумма MD5 внутреннего архива не совпадает")
@@ -72,15 +72,38 @@ enum BackupPatch {
         // Stock B31 places two comments and an empty line before the shebang.
         // Commands before it would make the insertion point ambiguous.
         try require(text[..<heading.lowerBound].split(separator: "\n", omittingEmptySubsequences: false).allSatisfy {
-            let line = $0.trimmingCharacters(in: .whitespaces)
+            let line = $0.trimmingCharacters(in: CharacterSet(charactersIn: " \t"))
             return line.isEmpty || line.hasPrefix("#")
         }, "Команды перед заголовком rc.local не поддерживаются")
-        let expression = try NSRegularExpression(pattern: #"/sys/[^\s`"']*usb_op[^\s`"']*"#)
-        let nodes = Set(expression.matches(in: text, range: NSRange(text.startIndex..., in: text)).map {
-            String(text[Range($0.range, in: text)!])
-        })
-        try require(nodes == [usbNode], "USB-путь в rc.local отличается от проверенного B31")
-        if text[heading.lowerBound...].hasPrefix(shebang + enableLine) { return data }
+        // This adapter recognizes the actual stock mode 1/2 flash-protection
+        // block. Merely mentioning usb_op in text cannot authorize a boot write.
+        let expectedBlock = #"""
+if [ x`cat /sys/class/android_usb/android0/usb_op` != x"1" ] && [ x`cat /sys/class/android_usb/android0/usb_op` != x"2" ]; then
+if [ -f /tmp/fota_install_processing ]; then
+echo "[Flash Protect]User mode,Fota flag exist,Flash Protect Mode not change!" > /dev/kmsg
+else
+cat /proc/driver/codec_id
+echo "[Flash Protect]User mode,Flash Protect On!" > /dev/kmsg
+fi
+else
+cat /proc/driver/sensor_id
+echo "[Flash Protect]Not User mode,Flash Protect Off!" > /dev/kmsg
+fi
+"""#.components(separatedBy: "\n")
+        let markers: Set<String> = ["/*add by bsp for user mode flash protect begin*/", "/*add by bsp for user mode flash protect end*/"]
+        func normalized(_ line: Substring) -> String {
+            line.trimmingCharacters(in: CharacterSet(charactersIn: " \t")).replacingOccurrences(of: "[ \t]+", with: " ", options: .regularExpression)
+        }
+        var commands = text[heading.upperBound...].split(separator: "\n", omittingEmptySubsequences: false).map(normalized).filter {
+            !$0.isEmpty && !$0.hasPrefix("#") && !markers.contains($0)
+        }
+        let alreadyEnabled = text[heading.lowerBound...].hasPrefix(shebang + enableLine)
+        if alreadyEnabled { commands.removeFirst() }
+        try require(Array(commands.prefix(expectedBlock.count)) == expectedBlock,
+                    "Не подтверждён штатный USB-блок rc.local; восстановление не запускалось")
+        try require(commands.dropFirst(expectedBlock.count).allSatisfy { !$0.contains("usb_op") },
+                    "Дополнительные обращения к USB в rc.local не поддерживаются")
+        if alreadyEnabled { return data }
         try require(!text.contains(enableLine), "Строка включения ADB найдена в неоднозначном месте rc.local")
         var patched = text
         patched.insert(contentsOf: enableLine, at: heading.upperBound)
@@ -116,7 +139,7 @@ enum BackupCipher {
                 }
             }
         }
-        try require(status == kCCSuccess, "Не удалось расшифровать резервную копию: ключ или файл не соответствует B31")
+        try require(status == kCCSuccess, "Не удалось расшифровать резервную копию: ключ или формат файла не совпадает")
         output.removeSubrange(written..<output.count)
         return output
     }

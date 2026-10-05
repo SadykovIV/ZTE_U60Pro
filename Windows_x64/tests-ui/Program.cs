@@ -69,11 +69,19 @@ await session.Dispatch(()=> {
   Check(!window.GetLogicalDescendants().OfType<ComboBox>().Any(b=>b.Name=="ConnectionMode"),language+" normal connection exposes no ADB or Web management mode");
   Check(!FindButton(window,"Выполнить предварительную подготовку модема").IsEnabled,language+" new preparation disabled on working SSH");
   Check(!window.GetLogicalDescendants().OfType<Button>().Any(b=>b.Name=="EnableDiagnosticAdb"),language+" ADB has one checkbox and no legacy force button");
+  Check(!window.GetLogicalDescendants().OfType<CheckBox>().Any(c=>c.Content?.ToString()==Localization.Translate("Пропустить проверку прошивки")),language+" universal initial access has no firmware-skip checkbox");
   using(var frame=window.CaptureRenderedFrame()??throw new Exception("Missing diagnostic frame"))frame.Save(Path.Combine(screenshots,language+"-diagnostic-connection.png"));
   var methods=window.GetLogicalDescendants().OfType<Expander>().Single(e=>e.Name=="ConnectionMethods");methods.IsExpanded=true;Pump();
   using(var frame=window.CaptureRenderedFrame()??throw new Exception("Missing methods frame"))frame.Save(Path.Combine(screenshots,language+"-connection-methods-expanded.png"));
   var secretFields=(Dictionary<string,TextBox>)Get(window,"_secretFields")!;
   Check(secretFields.TryGetValue("backup_key_suffix",out var suffixField) && suffixField.PasswordChar!='\0',language+" public backup suffix remains a hidden input");
+  Check(suffixField!.Watermark==(language=="en"?"Leave empty to try the known format key":"Пусто — известный ключ формата"),language+" backup override clearly documents automatic B31 format");
+  foreach(var topic in new[]{OperationHelpContent.DiagnosticAdb,OperationHelpContent.Preparation})
+  {
+   var body=Localization.Translate(topic.Sections.Single(section=>section.Body.StartsWith("Известный ключ формата используется как кандидат при пустом Backup-key suffix",StringComparison.Ordinal)).Body);
+   Check(body.StartsWith(language=="en"?"The known format key is used as a candidate when Backup-key suffix is empty.":"Известный ключ формата используется как кандидат при пустом Backup-key suffix.",StringComparison.Ordinal),language+" runtime help documents automatic B31 suffix");
+   Check(body.Contains(language=="en"?"without a fallback attempt":"без резервной попытки",StringComparison.Ordinal),language+" runtime help preserves explicit override failure boundary");
+  }
   suffixField!.Text="synthetic-ui-backup-suffix";
   var adbState=window.GetLogicalDescendants().OfType<CheckBox>().Single(c=>c.Name=="AdbEnabled");
   Check(adbState.StyleKey==typeof(CheckBox),language+" ADB intent checkbox preserves standard checkbox indicator theme");
@@ -140,6 +148,36 @@ await session.Dispatch(()=> {
   input.BringIntoView();Pump();
   using(var frame=window.CaptureRenderedFrame()??throw new Exception("Missing frame"))frame.Save(Path.Combine(screenshots,language+"-terminal.png"));
   Check(modem.Operations==0,"UI checks performed without modem operations");window.Close();Pump();
+ }
+ foreach(var language in new[]{"ru","en"}) {
+  Localization.SetLanguage(language,persist:false);
+  var checkModem=new FakeModem {AllowBackupCheck=true};var checkWindow=new MainWindow(checkModem,persistPreferences:false);checkWindow.Show();Pump();
+  var checkButton=checkWindow.GetLogicalDescendants().OfType<Button>().Single(b=>b.Name=="VerifyBackupKey");
+  Check(checkButton.Content?.ToString()==(language=="en"?"Check backup key":"Проверить ключ бэкапа"),language+" backup key action is localized");
+  Check(!checkButton.IsEnabled&&checkModem.Operations==0,language+" backup check requires password and never runs on entry");
+  var checkSecrets=(Dictionary<string,TextBox>)Get(checkWindow,"_secretFields")!;
+  checkSecrets["web_password"].Text="synthetic-password";Pump();
+  Check(checkButton.IsEnabled&&checkSecrets["agent_password"].Text=="",language+" Web password alone enables read-only key check");
+  Set(checkWindow,"_snapshot",new DeviceSnapshot(false,"Нет подключения",PreparationPending:true,AdbActivationPending:true));
+  typeof(MainWindow).GetMethod("UpdateDiagnosticAvailability",BindingFlags.NonPublic|BindingFlags.Instance)!.Invoke(checkWindow,null);
+  Check(checkButton.IsEnabled,language+" saved pending operations do not block separate read-only backup verification");
+  Set(checkWindow,"_snapshot",new DeviceSnapshot(false,"Нет подключения"));
+  NamedClick(checkWindow,"VerifyBackupKey");
+  var request=checkModem.Requests.Single();
+  Check(request.Operation==ModemOperation.VerifyBackupKey&&request.Parameters!.Keys.Order().SequenceEqual(new[]{"backup_key_suffix","host","web_password"}),language+" key check dispatches only its dedicated read-only request");
+  Check(checkModem.Events.Count==0&&!((DeviceSnapshot)Get(checkWindow,"_snapshot")!).IsConnected,language+" key success creates no research/preparation/connection readiness");
+  var checkStatus=checkWindow.GetLogicalDescendants().OfType<TextBlock>().Single(t=>t.Name=="BackupKeyCheckStatus").Text!;
+  Check(checkStatus.Contains("FLY_CN_MU5250V1.0.0B13")&&checkStatus.Contains("BD_FLYMODEMMU5250V1.0.0B28")&&checkStatus.Contains(language=="en"?"does not authorize":"не разрешает"),language+" separate result shows observed versions and write boundary");
+  Check(((Dictionary<string,TextBox>)Get(checkWindow,"_secretFields")!).Values.All(t=>string.IsNullOrEmpty(t.Text)),language+" read-only key check clears all password inputs");
+  var help=Localization.Translate(OperationHelpContent.Preparation.Sections.Single(s=>s.Title=="Проверка ключа без подготовки доступа").Body);
+  Check(help.Contains(language=="en"?"regardless of the firmware name":"независимо от имени прошивки")&& (language!="en"||!help.Any(c=>c is >= '\u0400' and <= '\u04ff')),language+" key-check help explains firmware-neutral candidate without restoring");
+  var secretsAfter=(Dictionary<string,TextBox>)Get(checkWindow,"_secretFields")!;
+  secretsAfter["backup_key_suffix"].Text="new-synthetic-override";Pump();
+  Check(checkWindow.GetLogicalDescendants().OfType<TextBlock>().Single(t=>t.Name=="BackupKeyCheckStatus").Text==Localization.Translate("Ключ бэкапа ещё не проверен."),language+" changing manual override invalidates displayed key proof");
+  secretsAfter["web_password"].Text="pw";checkModem.BackupCheckSuccess=false;NamedClick(checkWindow,"VerifyBackupKey");
+  Check(checkWindow.GetLogicalDescendants().OfType<TextBlock>().Single(t=>t.Name=="BackupKeyCheckStatus").Text==Localization.Translate("Не удалось подтвердить ключ или формат архива бэкапа."),language+" failed check replaces previous success with neutral key/format error");
+  Check(checkModem.Requests.All(r=>r.Operation==ModemOperation.VerifyBackupKey),language+" backup check never triggers ADB or install operations");
+  checkWindow.Close();Pump();
  }
  Localization.SetLanguage("ru",persist:false);
  var discovery=new FakeModem {AllowPreparation=true};var first=new MainWindow(discovery,persistPreferences:false);first.Show();Pump();
@@ -263,9 +301,9 @@ internal sealed class FakeTerminal:ITerminalSession {
 }
 internal sealed class FakeModem:IModemService {
  public ConnectionSettingsSnapshot Settings=new(); public ConnectionSettingsSnapshot GetConnectionSettings()=>Settings;
- public int Operations{get;private set;} public bool AllowPreparation,AllowDiagnostics;public List<string> Events=[];public List<OperationRequest> Requests=[];public IReadOnlyDictionary<string,string>? ResearchParameters;
+ public int Operations{get;private set;} public bool AllowPreparation,AllowDiagnostics,AllowBackupCheck,BackupCheckSuccess=true;public List<string> Events=[];public List<OperationRequest> Requests=[];public IReadOnlyDictionary<string,string>? ResearchParameters;
  public Task<DeviceSnapshot> GetDeviceSnapshotAsync(CancellationToken ct=default)=>Task.FromResult(new DeviceSnapshot(false,"Нет подключения"));
- public Task<OperationResult> RunAsync(OperationRequest request,CancellationToken ct=default){Operations++;Requests.Add(request);if(AllowDiagnostics&&request.Operation is ModemOperation.DiscoverConnections or ModemOperation.EnableDiagnosticAdb or ModemOperation.RefreshAccess or ModemOperation.ExportDiagnostics or ModemOperation.SetAdbEnabled or ModemOperation.RefreshAdbState or ModemOperation.Connect)return Task.FromResult(new OperationResult(false,"Synthetic diagnostic response; no device."));if(AllowPreparation&&request.Operation==ModemOperation.PrepareSsh){Events.Add("prepare");return Task.FromResult(new OperationResult(false,"Synthetic preflight refused; no writes."));}throw new Exception("Unexpected modem operation");}
+ public Task<OperationResult> RunAsync(OperationRequest request,CancellationToken ct=default){Operations++;Requests.Add(request);if(AllowBackupCheck&&request.Operation==ModemOperation.VerifyBackupKey)return Task.FromResult(new OperationResult(BackupCheckSuccess,BackupCheckSuccess?"Ключ и формат бэкапа подтверждены. Это не разрешает восстановление или установку компонентов.":"Не удалось подтвердить ключ или формат архива бэкапа.",Values:BackupCheckSuccess?new Dictionary<string,string>{{"backup_firmware","FLY_CN_MU5250V1.0.0B13"},{"backup_inner","BD_FLYMODEMMU5250V1.0.0B28"},{"backup_entries","1"},{"backup_sha256",new string('a',64)}}:null));if(AllowDiagnostics&&request.Operation is ModemOperation.DiscoverConnections or ModemOperation.EnableDiagnosticAdb or ModemOperation.RefreshAccess or ModemOperation.ExportDiagnostics or ModemOperation.SetAdbEnabled or ModemOperation.RefreshAdbState or ModemOperation.Connect)return Task.FromResult(new OperationResult(false,"Synthetic diagnostic response; no device."));if(AllowPreparation&&request.Operation==ModemOperation.PrepareSsh){Events.Add("prepare");return Task.FromResult(new OperationResult(false,"Synthetic preflight refused; no writes."));}throw new Exception("Unexpected modem operation");}
  public Task<ResearchReport> CollectFirmwareResearchAsync(IReadOnlyDictionary<string,string> parameters,IProgress<ResearchProgress>? progress,CancellationToken ct=default){if(!AllowPreparation&&!AllowDiagnostics)throw new Exception("Unexpected research");ResearchParameters=parameters;Events.Add("research");return Task.FromResult(new ResearchReport(1,"fixture",DateTimeOffset.UtcNow,DateTimeOffset.UtcNow,"partial","ADB",null,"test",7,[],[],[],BindingStrength:"transport-only"));}
  public Task<ResearchReport> CollectPreparationResearchAsync(IReadOnlyDictionary<string,string> parameters,IProgress<ResearchProgress>? progress,CancellationToken ct=default){ResearchParameters=parameters;Events.Add("bootstrap-research");return Task.FromResult(new ResearchReport(1,"fixture",DateTimeOffset.UtcNow,DateTimeOffset.UtcNow,"partial","ADB",null,"test",7,[],[],[],BindingStrength:"transport-only"));}
  public Task<IReadOnlyList<BackupInfo>> ListBackupsAsync(CancellationToken ct=default)=>Task.FromResult<IReadOnlyList<BackupInfo>>([]);

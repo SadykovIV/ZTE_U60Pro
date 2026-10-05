@@ -11,6 +11,8 @@ using ZteImeiStudio.Transport;
 
 namespace ZteImeiStudio.Windows.Core;
 
+public sealed record BackupKeyVerification(string Firmware, string InnerVersion, int Entries, string EncryptedSha256, string Directory);
+
 public sealed record AdbAccessResult(string Serial, DeviceIdentity Identity, WebIdentity WebIdentity, bool AlreadyAvailable);
 
 public sealed record OnboardingResult(string? Cid, string? FirmwareHash, string? Imei,
@@ -135,6 +137,47 @@ public sealed class OnboardingEngine
         _progress = progress;
     }
 
+    public async Task<BackupKeyVerification> VerifyBackupKeyAsync(string webPassword, string manualOverride = "", CancellationToken ct = default)
+    {
+        if (string.IsNullOrEmpty(webPassword) || webPassword.Contains('\0'))
+            throw new ArgumentException("Для проверки ключа бэкапа введите пароль Web.");
+        var suffix = string.IsNullOrEmpty(manualOverride) ? KnownB31BackupSuffix : manualOverride;
+        if (Encoding.UTF8.GetByteCount(suffix) > 128 || suffix.Contains('\0'))
+            throw new ArgumentException("Некорректный Backup-key suffix.");
+        Directory.CreateDirectory(_storage);
+        using var localLock = new FileStream(Path.Combine(_storage,"operation.lock"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None);
+        using var web = WebFactory?.Invoke() ?? new ModemWebClient(_host);
+        await web.LoginAsync(webPassword,ct).ConfigureAwait(false);
+        var identity = await web.GetIdentityAsync(skipFirmwareCheck:true,ct:ct).ConfigureAwait(false);
+        var encrypted = await web.DownloadFreshBackupAsync(ct).ConfigureAwait(false);
+        if (await web.GetIdentityAsync(skipFirmwareCheck:true,ct:ct).ConfigureAwait(false) != identity)
+            throw new InvalidDataException("Устройство изменилось во время проверки бэкапа.");
+        var directory = Path.Combine(_storage,"BackupKeyChecks",Guid.NewGuid().ToString("D"));
+        Directory.CreateDirectory(directory);
+        if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(directory,UnixFileMode.UserRead|UnixFileMode.UserWrite|UnixFileMode.UserExecute);
+        await WritePrivateAsync(Path.Combine(directory,"back_parameter.original"),encrypted,ct).ConfigureAwait(false);
+        await WriteJsonAsync(Path.Combine(directory,"identity.json"),identity,ct).ConfigureAwait(false);
+        var hash = Sha(encrypted);
+        await WriteJsonAsync(Path.Combine(directory,"manifest.json"),new { encryptedSHA256=hash,readOnly=true,formatVerified=false },ct).ConfigureAwait(false);
+        int entries;
+        try
+        {
+            var plain = BackupCipher.Decrypt(encrypted,identity.Imei+suffix);
+            entries = BackupPatch.Inspect(plain).Inner.Members.Count;
+        }
+        catch (InvalidDataException)
+        {
+            // A format/key mismatch is not proof of firmware incompatibility.
+            throw new InvalidDataException("Не удалось подтвердить ключ или формат архива бэкапа.");
+        }
+        var result = new BackupKeyVerification(ReportVersion(identity.Firmware),ReportVersion(identity.Inner),entries,hash,directory);
+        await WriteJsonAsync(Path.Combine(directory,"manifest.json"),new { encryptedSHA256=hash,readOnly=true,formatVerified=true,entries=result.Entries },ct).ConfigureAwait(false);
+        _progress?.Invoke($"Проверка бэкапа: {result.Firmware} / {result.InnerVersion}; entries={result.Entries}; SHA256={hash}");
+        return result;
+    }
+
+    private static string ReportVersion(string value) => new(value.Select(c => char.IsControl(c) ? ' ' : c).ToArray());
+
     public async Task<OnboardingResult> PrepareAsync(string webPassword,
         string agentPassword, string backupKeySuffix, CancellationToken ct = default)
     {
@@ -187,23 +230,16 @@ public sealed class OnboardingEngine
         if (string.IsNullOrEmpty(agentPassword) || agentPassword.Contains('\0'))
             throw new ArgumentException("Введите отдельный пароль агента для установки.", nameof(agentPassword));
         var rootAlreadyAvailable = existing is not null || match is not null;
-        // Unknown firmware is accepted only through an already working, matched
-        // root shell. It never inherits the firmware-specific backup activation.
-        if (!rootAlreadyAvailable && (webIdentity is null || !IsB31(webIdentity) && !IsAllowedB02(webIdentity)))
-            throw new InvalidOperationException("Сначала нужен работающий root USB ADB или проверенный SSH. Способ включения доступа этой прошивки не подтверждён.");
         var genericAccess = rootAlreadyAvailable && InstallerProfile(webIdentity, existing ?? match!.Value.Identity) == "linux-arm64-access";
-        var encrypted = genericAccess ? Array.Empty<byte>() : await web.DownloadFreshBackupAsync(ct).ConfigureAwait(false);
+        var encrypted = Array.Empty<byte>();
         if (webIdentity is not null && await web.GetIdentityAsync(skipFirmwareCheck: true, ct: ct).ConfigureAwait(false) != webIdentity)
             throw new InvalidDataException("Устройство изменилось во время предварительной проверки.");
         var backupDirectory = Path.Combine(_storage, "SetupBackups", Guid.NewGuid().ToString("D"));
         Directory.CreateDirectory(backupDirectory);
-        if (!genericAccess) await WritePrivateAsync(Path.Combine(backupDirectory, "back_parameter.original"), encrypted, ct).ConfigureAwait(false);
         await WriteJsonAsync(Path.Combine(backupDirectory, "identity.json"), webIdentity, ct).ConfigureAwait(false);
         await WriteJsonAsync(Path.Combine(backupDirectory, "manifest.json"), new
         {
-            encryptedSHA256 = genericAccess ? null : Sha(encrypted), suffixVerified = false,
-            sourceBackupFile = genericAccess ? null : "back_parameter.original",
-            accessBackup = genericAccess ? "remote-transaction-file-snapshots" : "encrypted-original-and-remote-file-snapshots",
+            suffixVerified = false, accessBackup = "fresh-encrypted-backup-if-restore-required",
         }, ct).ConfigureAwait(false);
 
         var pending = await LoadPendingAsync(ct).ConfigureAwait(false);
@@ -248,6 +284,7 @@ public sealed class OnboardingEngine
             throw new InvalidDataException("Устройство или профиль незавершённой установки изменился.");
         pending.Cid = identity.Cid;
         pending.AdbSerial = serial;
+        pending.Intent = _genericAccess ? "linux-arm64-access" : "preparation";
         pending.Profile = profile;
         pending.FirmwareHash = identity.FirmwareHash;
         pending.RouterHash = identity.RouterHash;
@@ -413,8 +450,6 @@ public sealed class OnboardingEngine
             if (await web.GetIdentityAsync(true, ct).ConfigureAwait(false) != webIdentity)
                 throw new InvalidDataException("Устройство изменилось после переключения USB.");
         }
-        if (!_skipFirmwareCheck && !IsB31(webIdentity))
-            throw new InvalidOperationException("Для включения ADB на этой прошивке включите «Пропустить проверку прошивки». Это не разрешает восстановление бэкапа B31 на другой прошивке.");
         if (expectedIdentity is not null && expectedImei is null)
             throw new InvalidDataException("Для включения ADB сначала подтвердите связь ожидаемого CID и IMEI через SSH.");
         if (pending is null)
@@ -424,20 +459,10 @@ public sealed class OnboardingEngine
             pending = new OnboardingPending { Intent = "diagnostic-adb", Id = Guid.NewGuid().ToString("D"),
                 WebIdentity = webIdentity, BackupDirectory = directory, Cid = expectedIdentity?.Cid, FirmwareHash = expectedIdentity?.FirmwareHash };
         }
-        _progress?.Invoke("Диагностический ADB: сохраняется свежий бэкап перед включением доступа.");
-        var encrypted = await web.DownloadFreshBackupAsync(ct).ConfigureAwait(false);
-        if (await web.GetIdentityAsync(skipFirmwareCheck: true, ct).ConfigureAwait(false) != webIdentity)
-            throw new InvalidDataException("Устройство изменилось во время подготовки бэкапа.");
-        // A resumed request retains its original evidence; only verification is resumed.
-        if (!pending.DirectAdbRequested && !pending.RestoreRequested)
-        {
-            await WritePrivateAsync(Path.Combine(pending.BackupDirectory, "back_parameter.original"), encrypted, ct).ConfigureAwait(false);
-            await WriteJsonAsync(Path.Combine(pending.BackupDirectory, "identity.json"), webIdentity, ct).ConfigureAwait(false);
-            await WriteJsonAsync(Path.Combine(pending.BackupDirectory, "manifest.json"), new
-            { encryptedSHA256 = Sha(encrypted), suffixVerified = false, sourceBackupFile = "back_parameter.original" }, ct).ConfigureAwait(false);
-        }
+        var encrypted = Array.Empty<byte>();
+        await WriteJsonAsync(Path.Combine(pending.BackupDirectory, "identity.json"), webIdentity, ct).ConfigureAwait(false);
         await SavePendingAsync(pending, ct).ConfigureAwait(false);
-        // Legacy methods still require their advertised capability; backup restore remains B31-only.
+        // One known USB method precedes backup-template validation; neither method depends on a version name.
         match = await EnsureAdbAsync(web, webIdentity, encrypted, pending, match, webPassword, backupKeySuffix, ct, directAlreadyWaited).ConfigureAwait(false);
         await ConfirmAsync(match.Value).ConfigureAwait(false);
         _progress?.Invoke("Диагностический root ADB подтверждён. Агент и SSH не изменялись.");
@@ -453,11 +478,11 @@ public sealed class OnboardingEngine
             bool? advertised = null;
             try { advertised = await web.AdvertisesUsbDebugAsync(ct).ConfigureAwait(false); }
             catch (Exception error) when (error is HttpRequestException or IOException or TimeoutException)
-            { _progress?.Invoke("Список штатных USB-команд недоступен; проверяется известный профиль прошивки."); }
-            if (advertised == true || advertised is null && IsLegacyUsbDebugFirmware(webIdentity))
+            { _progress?.Invoke("Список штатных USB-команд недоступен; будет проверена одна известная команда USB debug."); }
+            if (advertised != false)
             {
                 _progress?.Invoke("Способ 1: штатное переключение USB в debug; запрос отправляется один раз.");
-                if (await web.GetIdentityAsync(_diagnosticAccess || _skipFirmwareCheck, ct).ConfigureAwait(false) != webIdentity)
+                if (await web.GetIdentityAsync(true, ct).ConfigureAwait(false) != webIdentity)
                     throw new InvalidDataException("Устройство изменилось перед переключением USB.");
                 await pending.RequestDirectAdbOnceAsync(value => SavePendingAsync(value, ct),
                     () => web.RequestUsbDebugAsync(ct)).ConfigureAwait(false);
@@ -472,31 +497,28 @@ public sealed class OnboardingEngine
         }
         if (match is null && !directAlreadyWaited && pending.DirectAdbRequested && !pending.RestoreRequested && !pending.InstallRequested && !pending.DiagnosticRebootRequested)
             match = await TryWaitForAdbAsync(webIdentity, TimeSpan.FromSeconds(90), ct).ConfigureAwait(false);
-        // Decryption is needed only for the B31 restore method. An existing ADB
-        // channel or a successful legacy debug switch does not depend on its key.
-        if (match is null && IsB31(webIdentity) && !pending.RestoreRequested && !pending.InstallRequested && !pending.DiagnosticRebootRequested)
+        // Only a fully validated archive/template may reach restore. A working ADB
+        // channel or successful debug switch does not depend on a backup key.
+        if (match is null && !pending.RestoreRequested && !pending.InstallRequested && !pending.DiagnosticRebootRequested)
         {
-            _progress?.Invoke("Способ 2: проверка бэкапа B31 для включения USB ADB через rc.local.");
-            // A debug request can temporarily disconnect USB networking. Only a
-            // fresh authenticated identity and backup authorize the next method.
-            if (pending.DirectAdbRequested)
+            _progress?.Invoke("Способ 2: проверка ключа, структуры бэкапа и шаблона rc.local для включения USB ADB.");
+            // A fresh authenticated identity and encrypted backup are needed only
+            // when the previous methods did not produce a bound root channel.
+            if (pending.DirectAdbRequested) await web.LoginAsync(webPassword, ct).ConfigureAwait(false);
+            if (await web.GetIdentityAsync(true, ct).ConfigureAwait(false) != webIdentity)
+                throw new InvalidDataException("Устройство изменилось перед получением бэкапа.");
+            encrypted = await web.DownloadFreshBackupAsync(ct).ConfigureAwait(false);
+            if (await web.GetIdentityAsync(true, ct).ConfigureAwait(false) != webIdentity)
+                throw new InvalidDataException("Устройство изменилось при обновлении бэкапа.");
+            var sourceBackup = pending.DirectAdbRequested ? "back_parameter.after-direct.original" : "back_parameter.original";
+            await WritePrivateAsync(Path.Combine(pending.BackupDirectory, sourceBackup), encrypted, ct).ConfigureAwait(false);
+            await WriteJsonAsync(Path.Combine(pending.BackupDirectory, "manifest.json"), new
             {
-                await web.LoginAsync(webPassword, ct).ConfigureAwait(false);
-                if (await web.GetIdentityAsync(_skipFirmwareCheck, ct).ConfigureAwait(false) != webIdentity)
-                    throw new InvalidDataException("Устройство изменилось после переключения USB.");
-                encrypted = await web.DownloadFreshBackupAsync(ct).ConfigureAwait(false);
-                if (await web.GetIdentityAsync(_skipFirmwareCheck, ct).ConfigureAwait(false) != webIdentity)
-                    throw new InvalidDataException("Устройство изменилось при обновлении бэкапа.");
-                await WritePrivateAsync(Path.Combine(pending.BackupDirectory, "back_parameter.after-direct.original"), encrypted, ct).ConfigureAwait(false);
-                await WriteJsonAsync(Path.Combine(pending.BackupDirectory, "manifest.json"), new
-                {
-                    encryptedSHA256 = Sha(encrypted), suffixVerified = false,
-                    sourceBackupFile = "back_parameter.after-direct.original",
-                }, ct).ConfigureAwait(false);
-            }
-            if (string.IsNullOrEmpty(backupKeySuffix) || Encoding.UTF8.GetByteCount(backupKeySuffix) > 128 || backupKeySuffix.Contains('\0'))
-                throw new ArgumentException("Для проверки бэкапа B31 введите Backup-key suffix вашей прошивки. В публичную сборку он не включён.", nameof(backupKeySuffix));
-            var patch = BackupPatch.Prepare(encrypted, webIdentity.Imei, backupKeySuffix);
+                encryptedSHA256 = Sha(encrypted), suffixVerified = false,
+                sourceBackupFile = sourceBackup,
+            }, ct).ConfigureAwait(false);
+            var resolvedSuffix = ResolveBackupKeySuffix(webIdentity, backupKeySuffix);
+            var patch = BackupPatch.Prepare(encrypted, webIdentity.Imei, resolvedSuffix);
             await WriteJsonAsync(Path.Combine(pending.BackupDirectory, "manifest.json"), new
             {
                 encryptedSHA256 = patch.OriginalHash, patchedSHA256 = patch.PatchedHash,
@@ -505,16 +527,16 @@ public sealed class OnboardingEngine
             }, ct).ConfigureAwait(false);
             if (pending.CanRequestRestore(false, patch.AlreadyEnabled))
             {
-                if (await web.GetIdentityAsync(_skipFirmwareCheck, ct).ConfigureAwait(false) != webIdentity)
+                if (await web.GetIdentityAsync(true, ct).ConfigureAwait(false) != webIdentity)
                     throw new InvalidDataException("Устройство изменилось перед включением ADB.");
                 await WritePrivateAsync(Path.Combine(pending.BackupDirectory, "back_parameter.adb-only"),
                     patch.PatchedEncrypted, ct).ConfigureAwait(false);
                 await web.UploadBackupAsync(patch.PatchedEncrypted, ct).ConfigureAwait(false);
-                if (await web.GetIdentityAsync(_skipFirmwareCheck, ct).ConfigureAwait(false) != webIdentity)
+                if (await web.GetIdentityAsync(true, ct).ConfigureAwait(false) != webIdentity)
                     throw new InvalidDataException("Устройство изменилось перед восстановлением веб-бэкапа.");
                 try
                 {
-                    _progress?.Invoke("Восстановление ADB-only бэкапа B31: модем может перезагрузиться. Ожидается root USB ADB.");
+                    _progress?.Invoke("Восстановление проверенного ADB-only бэкапа: модем может перезагрузиться. Ожидается root USB ADB.");
                     await pending.RequestRestoreOnceAsync(
                         value => SavePendingAsync(value, ct),
                         () => web.RestoreBackupAsync(ct)).ConfigureAwait(false);
@@ -529,28 +551,25 @@ public sealed class OnboardingEngine
             {
                 if (await web.GetIdentityAsync(true, ct).ConfigureAwait(false) != webIdentity)
                     throw new InvalidDataException("Устройство изменилось перед диагностической перезагрузкой.");
-                _progress?.Invoke("В бэкапе B31 уже есть включение ADB. Запрашивается одна штатная перезагрузка без восстановления бэкапа.");
+                _progress?.Invoke("В проверенном бэкапе уже есть включение ADB. Запрашивается одна штатная перезагрузка без восстановления бэкапа.");
                 await pending.RequestDiagnosticRebootOnceAsync(value => SavePendingAsync(value, ct),
                     () => web.RebootDeviceAsync(ct)).ConfigureAwait(false);
             }
             else _progress?.Invoke("В rc.local уже есть включение ADB. Повторное восстановление не требуется; проверяются USB и драйвер.");
         }
-        if (match is null && !IsB31(webIdentity) && !pending.DirectAdbRequested)
-            throw new InvalidOperationException("Прошивка не объявляет штатный способ включения ADB; B31-восстановление к ней неприменимо. " + _lastAdbDiagnostic);
         return match ?? await WaitForAdbAsync(webIdentity, ct).ConfigureAwait(false);
+    }
+
+    // Known firmware-family candidate; only full archive/template validation authorizes a restore.
+    private const string KnownB31BackupSuffix = "zteSDX75*11Mbb2@1";
+    internal static string ResolveBackupKeySuffix(WebIdentity identity, string supplied)
+    {
+        if (!string.IsNullOrEmpty(supplied)) return supplied;
+        return KnownB31BackupSuffix;
     }
 
     private static bool IsB31(WebIdentity identity) => identity.Firmware == "CN_ZTE_MU5250V1.0.0B31" &&
         identity.Inner == "BD_CNMU5250V1.0.0B31";
-
-    internal static bool IsLegacyUsbDebugFirmware(WebIdentity identity)
-    {
-        var match = Regex.Match(identity.Firmware, @"^CN_ZTE_MU5250V1\.0\.0B(\d{2})$", RegexOptions.CultureInvariant);
-        return match.Success && int.TryParse(match.Groups[1].Value, out var version) && version is > 0 and <= 27 &&
-            identity.Inner == "BD_CNMU5250V1.0.0B" + match.Groups[1].Value;
-    }
-
-    private bool IsAllowedB02(WebIdentity web) => _skipFirmwareCheck && web.Firmware == "STD_PL_MU5250V1.0.0B02" && web.Inner == "BD_STDPLMU5250V1.0.0B02";
 
     internal static string[] InstallerPolicy(DeviceIdentity device, string profile) =>
         profile == "linux-arm64-access" ? [device.Cid, profile, device.FirmwareHash, device.RouterHash, device.BootId] : [device.Cid, profile, device.FirmwareHash, device.RouterHash];

@@ -287,12 +287,14 @@ public sealed partial class MainWindow : Window
         _metricRows = null;
         _previewRows = null;
         _metricCount = null;
-        ClearSecrets();
+        ClearSecrets(discardFields: true);
         _actionButtons.Clear();
         _preparationButton = null;
         _researchCollectButton = null;
         _diagnosticAccessButton = null;
         _refreshAdbButton = null;
+        _verifyBackupKeyButton = null;
+        _backupKeyCheckStatus = null;
         _adbEnabledCheckbox = null;
         _diagnosticConnectionStatus = null;
         _diagnosticAccessStatus = null;
@@ -1392,13 +1394,19 @@ public sealed partial class MainWindow : Window
         if (secret)
         {
             _secretFields[key] = input;
-            if (key == "web_password") input.TextChanged += (_, _) => UpdateDiagnosticAvailability();
+            if (key is "web_password" or "backup_key_suffix") input.TextChanged += (_, _) =>
+            {
+                if (_secretFields.TryGetValue(key,out var current) && ReferenceEquals(current,input) && !string.IsNullOrEmpty(input.Text))
+                    InvalidateBackupKeyCheck();
+                UpdateDiagnosticAvailability();
+            };
         }
         else input.TextChanged += (_, _) =>
         {
+            var changed = Get(key) != (input.Text ?? "");
             _form[key] = input.Text ?? "";
             if (key is "host" or "key_path" or "known_hosts_path") UpdateDiagnosticConnectionStatus();
-            if (key == "host") UpdateDiagnosticAvailability();
+            if (key == "host") { if(changed) InvalidateBackupKeyCheck(); UpdateDiagnosticAvailability(); }
         };
         stack.Children.Add(input);
         return stack;
@@ -1795,11 +1803,11 @@ public sealed partial class MainWindow : Window
         UpdateEsimAvailability();
     }
 
-    private void ClearSecrets()
+    private void ClearSecrets(bool discardFields = false)
     {
         ClearEsimSecrets();
         foreach (var input in _secretFields.Values) input.Text = "";
-        _secretFields.Clear();
+        if (discardFields) _secretFields.Clear();
     }
 
     private void SetStatus(string message, bool error = false)

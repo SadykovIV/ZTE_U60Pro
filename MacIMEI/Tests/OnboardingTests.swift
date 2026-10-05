@@ -43,8 +43,8 @@ private func tar(_ files: [(String, Data)]) -> Data {
     return output + Data(repeating:0,count:1024)
 }
 private let testBackupSuffix = "synthetic-public-fixture-key"
-private func backup(suffix: String = testBackupSuffix) throws -> Data {
-    let inner = try BackupGzip.compress(tar([("etc/rc.local",Data("#!/bin/sh\ncat /sys/class/android_usb/android0/usb_op\nexit 0\n".utf8))]))
+private func backup(suffix: String = testBackupSuffix, rc: Data? = nil) throws -> Data {
+    let inner = try BackupGzip.compress(tar([("etc/rc.local",try rc ?? Data(contentsOf:URL(fileURLWithPath:"Tests/Fixtures/stock-usb-mode.synthetic.rc.local")))]))
     let outer = try BackupGzip.compress(tar([(BackupPatch.innerPath,inner),(BackupPatch.md5Path,Data((BackupCipher.md5(inner)+"\n").utf8))]))
     return try BackupCipher.encrypt(outer,password:testIMEI+suffix)
 }
@@ -459,11 +459,93 @@ private struct Fixture {
                 try check(f.web.directCount == (alreadyReady ? 0 : 1) && f.web.restoreCount == 0, "Absent key blocked a path that never decrypts backups")
             }
         }
-        run("Public B31 restore requires user backup key before upload restore or reboot") {
-            let f = try Fixture(); defer { f.remove() }
-            let manager = try OnboardingEngine(root: f.root, resources: f.resources, connection: f.engine.currentConnection, web: f.engine.web, runner: f.host, adbWaitAttempts: 1, directADBWaitAttempts: 1, adbPollDelay: 0, researchRunner: MockResearch())
-            try rejects("Введите ключ расшифровки") { _ = try manager.enableDiagnosticADB(webPassword: testPassword) }
-            try check(f.web.uploadedData == nil && f.web.restoreCount == 0 && f.web.rebootCount == 0, "Missing public key allowed backup restore")
+        run("Known B31 automatic key validates an independent synthetic backup") {
+            let bytes = try Data(contentsOf: URL(fileURLWithPath: "Tests/Fixtures/b31-auto-backup.synthetic.bin"))
+            let f = try Fixture(data: bytes); defer { f.remove() }
+            let manager = try OnboardingEngine(root:f.root, resources:f.resources, connection:f.engine.currentConnection, web:f.engine.web, runner:f.host)
+            let (_, patch, _) = try manager.prepare(password:testPassword)
+            try check(patch.originalHash == digest(bytes) && !patch.alreadyEnabled && patch.patchedHash != patch.originalHash, "Automatic key failed independent archive validation")
+            try check(f.web.uploadedData == nil && f.web.restoreCount == 0, "Offline preparation changed device")
+        }
+        run("Known B31 automatic key reaches exactly one diagnostic restore") {
+            let bytes = try Data(contentsOf: URL(fileURLWithPath: "Tests/Fixtures/b31-auto-backup.synthetic.bin"))
+            let f = try Fixture(data:bytes); defer { f.remove() }
+            f.host.identityMode=true; f.host.deviceList="List of devices attached\nABC device usb:1\n"
+            f.host.deviceListSequence=["List of devices attached\n",f.host.deviceList]
+            let manager = try OnboardingEngine(root:f.root, resources:f.resources, connection:f.engine.currentConnection, web:f.engine.web, runner:f.host, adbWaitAttempts:1, directADBWaitAttempts:1, adbPollDelay:0, researchRunner:MockResearch())
+            _ = try manager.enableDiagnosticADB(webPassword:testPassword)
+            try check(f.web.uploadedData != nil && f.web.restoreCount==1 && f.web.rebootCount==0, "Automatic path did not preserve exactly-once restore")
+        }
+        run("Explicit wrong or malformed override never falls back to the known key") {
+            let bytes = try Data(contentsOf: URL(fileURLWithPath: "Tests/Fixtures/b31-auto-backup.synthetic.bin"))
+            for override in ["synthetic-wrong", "\0", String(repeating:"a",count:129)] {
+                let f = try Fixture(data:bytes); defer { f.remove() }
+                let manager=try OnboardingEngine(root:f.root,resources:f.resources,connection:f.engine.currentConnection,backupSuffix:override,web:f.engine.web,runner:f.host,adbWaitAttempts:1,directADBWaitAttempts:1,adbPollDelay:0,researchRunner:MockResearch())
+                try rejects { _ = try manager.enableDiagnosticADB(webPassword:testPassword) }
+                try check(f.web.uploadedData==nil && f.web.restoreCount==0 && f.web.rebootCount==0,"Invalid explicit key fell back or mutated")
+            }
+        }
+        run("Automatic key validates format independently of firmware labels and refuses malformed backup") {
+            for otherFirmware in [false,true] {
+                let bytes = otherFirmware ? try Data(contentsOf:URL(fileURLWithPath:"Tests/Fixtures/b31-auto-backup.synthetic.bin")) : Data("invalid encrypted fixture".utf8)
+                let f=try Fixture(data:bytes);defer{f.remove()}
+                var connection=f.engine.currentConnection;connection.skipFirmwareCheck=true
+                if otherFirmware { f.web.info["integrate_version"]="CN_ZTE_MU5250V1.0.0B32";f.web.info["wa_inner_version"]="BD_CNMU5250V1.0.0B32" }
+                let manager=try OnboardingEngine(root:f.root,resources:f.resources,connection:connection,web:f.engine.web,runner:f.host)
+                if otherFirmware { _ = try manager.prepare(password:testPassword) } else { try rejects { _ = try manager.prepare(password:testPassword) } }
+                try check(f.web.uploadedData==nil && f.web.restoreCount==0,"Invalid archive or profile mutated device")
+            }
+        }
+        run("Read-only key check accepts matching archives on B31 FLY B28 and unknown firmware without resources") {
+            let bytes = try Data(contentsOf: URL(fileURLWithPath: "Tests/Fixtures/b31-auto-backup.synthetic.bin"))
+            for pair in [("CN_ZTE_MU5250V1.0.0B31","BD_CNMU5250V1.0.0B31"), ("FLY_CN_MU5250V1.0.0B13","BD_FLYMODEMMU5250V1.0.0B28"), ("fixture-unknown-outer","fixture-unknown-inner")] {
+                let f = try Fixture(data:bytes); defer { f.remove() }
+                f.web.info["integrate_version"] = pair.0; f.web.info["wa_inner_version"] = pair.1
+                try FileManager.default.removeItem(at: f.resources)
+                let engine = try OnboardingEngine(root:f.root, resources:f.resources, connection:f.engine.currentConnection, web:f.engine.web, runner:f.host)
+                let result = try engine.verifyBackupKey(password:testPassword)
+                try check(result.firmware == pair.0 && result.inner == pair.1 && result.entryCount == 1 && result.encryptedSHA256 == digest(bytes), "Read-only metadata mismatch")
+                try check(try Data(contentsOf:result.directory.appendingPathComponent("back_parameter.original")) == bytes, "Original encrypted backup was not preserved")
+                let names = try FileManager.default.contentsOfDirectory(atPath:result.directory.path).sorted()
+                try check(names == ["back_parameter.original","identity.json","manifest.json","verification.json"], "Unexpected plaintext or patched artifact")
+                let report = try String(contentsOf:result.directory.appendingPathComponent("verification.json"))
+                let manifest = try readJSON([String:String].self,result.directory.appendingPathComponent("manifest.json"))
+                try check(manifest["suffixVerified"] == "true" && manifest["formatVerified"] == "true" && manifest["operation"] == "read-only-key-check", "Verified read-only manifest is inconsistent")
+                try check(!report.contains(testIMEI) && !report.contains(testPassword) && !report.contains("#!/bin/sh"), "Verification metadata contains private material")
+                try check(f.host.calls.isEmpty && f.ssh.calls.isEmpty && f.web.identityCalls == 2 && f.web.backupCount == 1, "Read-only check invoked host helpers or skipped identity binding")
+                try check(f.web.uploadedData == nil && f.web.restoreCount == 0 && f.web.rebootCount == 0 && f.web.directCount == 0, "Read-only check authorized mutation")
+                try check(!FileManager.default.fileExists(atPath:engine.pending.path) && !FileManager.default.fileExists(atPath:engine.diagnosticPending.path), "Read-only check created mutation intent")
+                let allowed: Set<String> = ["web_login_info","web_login","device_info","device_backup_proc"]
+                try check(Set(f.web.methods).isSubset(of:allowed), "Read-only check invoked an unapproved Web method")
+            }
+        }
+        run("Read-only key check preserves manual precedence and rejects corrupt or unknown format with zero writes") {
+            let known = try Data(contentsOf:URL(fileURLWithPath:"Tests/Fixtures/b31-auto-backup.synthetic.bin"))
+            var corrupt = known; corrupt[corrupt.count-1] ^= 1
+            let wrongFormat = try BackupCipher.encrypt(Data("not a valid gzip archive".utf8),password:testIMEI+testBackupSuffix)
+            for (bytes, suffix) in [(known,"wrong-synthetic"),(known,"\0"),(known,String(repeating:"x",count:129)),(corrupt,""),(wrongFormat,testBackupSuffix)] {
+                let f = try Fixture(data:bytes);defer { f.remove() }
+                let engine = try OnboardingEngine(root:f.root,resources:f.resources,connection:f.engine.currentConnection,backupSuffix:suffix,web:f.engine.web,runner:f.host)
+                try rejects(suffix.contains("\0") || suffix.utf8.count > 128 ? "Некорректный Backup-key" : "Не удалось подтвердить ключ и формат") { _ = try engine.verifyBackupKey(password:testPassword) }
+                try check(f.host.calls.isEmpty && f.web.uploadedData == nil && f.web.restoreCount == 0 && f.web.rebootCount == 0 && f.web.directCount == 0, "Failed key check changed device")
+            }
+            let f = try Fixture();defer {f.remove()}
+            f.web.info["integrate_version"] = "arbitrary-firmware";f.web.info["wa_inner_version"] = "arbitrary-inner"
+            let result = try f.engine.verifyBackupKey(password:testPassword)
+            try check(result.entryCount == 1 && f.web.uploadedData == nil && f.host.calls.isEmpty,"Valid manual override lost authority")
+        }
+        run("Read-only key check rejects changed identity without enabling access") {
+            let f = try Fixture();defer {f.remove()};f.web.identityChangeAfter=2
+            try rejects("Устройство изменилось") { _ = try f.engine.verifyBackupKey(password:testPassword) }
+            try check(f.web.uploadedData == nil && f.web.restoreCount == 0 && f.web.rebootCount == 0 && f.host.calls.isEmpty,"Changed identity changed access")
+        }
+        run("Read-only key validation never skips executable-template validation for restore") {
+            let bytes = try backup(rc:Data("#!/bin/sh\n# /sys/class/android_usb/android0/usb_op\nexit 0\n".utf8))
+            let f = try Fixture(data:bytes);defer {f.remove()}
+            f.web.info["integrate_version"]="FLY_CN_MU5250V1.0.0B13";f.web.info["wa_inner_version"]="BD_FLYMODEMMU5250V1.0.0B28"
+            _ = try f.engine.verifyBackupKey(password:testPassword)
+            try rejects("штатный USB-блок") { _ = try f.engine.prepare(password:testPassword) }
+            try check(f.web.uploadedData == nil && f.web.restoreCount == 0 && f.web.rebootCount == 0,"Read verification granted write permission")
         }
         run("Existing SSH preparation needs no HTTP credentials backup agent or NV mutation") {
             let f = try Fixture(data: Data("invalid archive must not be read".utf8)); defer { f.remove() }
@@ -645,14 +727,11 @@ private struct Fixture {
             catch let error as URLError { try check(error.code == .cannotConnectToHost, "Transport error changed") }
             try check(mock.requests.count == 1 && mock.methods.isEmpty, "Transport failure retried or sent password")
         }
-        run("Wrong firmware and invalid web IMEI stop before fresh backup") {
-            for choice in 0..<2 {
-                let f=try Fixture(); defer {f.remove()}
-                if choice == 0 {f.web.info["integrate_version"]="CN_ZTE_MU5250V1.0.0B32"}
-                else {f.web.info["imei"]="353490068701223"}
-                try rejects {_ = try f.engine.run(password:testPassword)}
-                try check(f.web.backupCount == 0 && f.web.uploadedData == nil && f.web.restoreCount == 0 && f.host.calls.allSatisfy { $0 == ["devices", "-l"] || $0 == ["-d", "get-serialno"] }, "Unknown identity cannot progress")
-            }
+        run("Invalid Web IMEI stops before fresh backup regardless of firmware name") {
+            let f=try Fixture(); defer {f.remove()}
+            f.web.info["integrate_version"]="unknown-firmware";f.web.info["imei"]="353490068701223"
+            try rejects {_ = try f.engine.run(password:testPassword)}
+            try check(f.web.backupCount == 0 && f.web.uploadedData == nil && f.web.restoreCount == 0,"Invalid identity cannot progress")
         }
         run("Fresh backup preparation verifies suffix and saves originals privately") {
             let f=try Fixture(); defer {f.remove()}
@@ -807,7 +886,7 @@ private struct Fixture {
         run("Changed web target after direct USB blocks fallback restore") {
             let f = try Fixture(); defer { f.remove() }
             f.web.directAdvertised = true
-            f.web.onDirect = { [weak web = f.web] in web?.identityChangeAfter = 4 }
+            f.web.onDirect = { [weak web = f.web] in web?.identityChangeAfter = 3 }
             try rejects("после USB debug") { _ = try f.engine.run(password: testPassword) }
             try check(f.web.directCount == 1 && f.web.uploadedData == nil && f.web.restoreCount == 0 && f.host.installerCalls == 0, "Uncertain target reached restore")
         }
@@ -817,23 +896,61 @@ private struct Fixture {
             f.web.onDirect = { [weak web = f.web] in web?.backupData = fresh }
             try rejects("Работающий ADB") { _ = try f.engine.run(password: testPassword) }
             let pending = try readJSON(SetupJournal.self, f.engine.pending)
-            try check(f.web.backupCount == 2 && f.web.directCount == 1 && f.web.restoreCount == 1 && pending.directADBOutcome == "rejected", "Rejected direct method skipped controlled fallback")
+            try check(f.web.backupCount == 1 && f.web.directCount == 1 && f.web.restoreCount == 1 && pending.directADBOutcome == "rejected", "Rejected direct method skipped controlled fallback")
             try check(try Data(contentsOf: URL(fileURLWithPath: pending.directory).appendingPathComponent("back_parameter.original")) == fresh, "Fallback paired patch with a stale original")
             let manifest = try readJSON([String: String].self, URL(fileURLWithPath: pending.directory).appendingPathComponent("manifest.json"))
             try check(manifest["encryptedSHA256"] == digest(fresh), "Fallback patched an earlier backup")
         }
-        run("Legacy direct fallback needs unavailable introspection and a known CN version") {
-            for choice in 0..<3 {
-                let f = try Fixture(); defer { f.remove() }
-                let version = choice == 2 ? "28" : "27"
-                f.web.info["integrate_version"] = "CN_ZTE_MU5250V1.0.0B" + version
-                f.web.info["wa_inner_version"] = "BD_CNMU5250V1.0.0B" + version
-                f.web.listUnavailable = choice != 0
-                var connection = f.engine.currentConnection; connection.skipFirmwareCheck = true
-                let manager = try OnboardingEngine(root: f.root, resources: f.resources, connection: connection, backupSuffix: testBackupSuffix, web: f.engine.web, runner: f.host, sshFactory: { _ in f.ssh }, adbWaitAttempts: 1, directADBWaitAttempts: 1, adbPollDelay: 0, researchRunner: MockResearch())
-                try rejects("B31") { _ = try manager.run(password: testPassword) }
-                try check(f.web.directCount == (choice == 1 ? 1 : 0) && f.web.restoreCount == 0 && f.web.uploadedData == nil, "Legacy fallback ignored capability or firmware gate")
+        run("Unknown introspection tries the one known USB method and explicit absence skips it on any firmware") {
+            for advertised in [false,true] {
+                let f=try Fixture();defer {f.remove()}
+                f.web.info["integrate_version"]="FLY_CN_MU5250V1.0.0B13";f.web.info["wa_inner_version"]="BD_FLYMODEMMU5250V1.0.0B28"
+                f.web.listUnavailable=advertised
+                try rejects("Работающий ADB") { _ = try f.engine.run(password:testPassword) }
+                try check(f.web.directCount == (advertised ? 1 : 0) && f.web.backupCount == 1 && f.web.restoreCount == 1,"Known method chain did not follow introspection")
+                try rejects("Работающий ADB") { _ = try f.engine.run(password:testPassword) }
+                try check(f.web.directCount == (advertised ? 1 : 0) && f.web.restoreCount == 1,"Uncertain restore was replayed")
             }
+        }
+        run("FLY B28 direct success needs no backup support key or firmware override") {
+            let f=try Fixture(data:Data("backup endpoint unsupported".utf8));defer {f.remove()}
+            f.web.info["integrate_version"]="FLY_CN_MU5250V1.0.0B13";f.web.info["wa_inner_version"]="BD_FLYMODEMMU5250V1.0.0B28"
+            f.host.identityMode=true;f.host.identityInfo=f.web.info;f.web.listUnavailable=true
+            f.web.onDirect={ [weak host=f.host] in host?.deviceList="List of devices attached\nABC device usb:1\n" }
+            let result=try f.engine.enableDiagnosticADB(webPassword:testPassword)
+            try check(result.webIdentity.firmware.hasPrefix("FLY_") && f.web.directCount == 1 && f.web.backupCount == 0 && f.web.restoreCount == 0,"Direct success required backup or version gate")
+        }
+        run("FLY B28 verified fallback continues through measured generic installer") {
+            let f=try Fixture();defer {f.remove()}
+            f.web.info["integrate_version"]="FLY_CN_MU5250V1.0.0B13";f.web.info["wa_inner_version"]="BD_FLYMODEMMU5250V1.0.0B28"
+            f.host.identityInfo=f.web.info;f.host.identityMode=true;f.host.fullInstaller=true
+            f.host.identityFirmware=String(repeating:"a",count:64);f.host.identityRouter=String(repeating:"b",count:64)
+            f.ssh.firmware=f.host.identityFirmware;f.ssh.accessRouter=f.host.identityRouter
+            f.host.deviceList="List of devices attached\nABC device usb:1\n"
+            f.host.deviceListSequence=["List of devices attached\n","List of devices attached\n",f.host.deviceList]
+            f.host.onInstall={ [weak host=f.host,weak ssh=f.ssh] in ssh?.ready=true;ssh?.installedJournal=host?.remoteJournal ?? "" }
+            let result=try f.engine.run(password:testPassword)
+            try check(result.identity?.firmwareHash==f.host.identityFirmware && result.state==nil && f.web.restoreCount==1 && f.host.installerCalls==1,"Verified fallback did not reach generic installation")
+            let startup=String(decoding:f.host.uploads[f.host.stage+"/start-agent.sh"]!,as:UTF8.self)
+            try check(startup.contains("ZTE_AGENT_MODE='discovery'") && !FileManager.default.fileExists(atPath:f.engine.pending.path),"Generic state or transaction completion lost")
+        }
+        run("Generic handoff preserves restore intent through preflight failure and missing ADB") {
+            let f=try Fixture();defer {f.remove()}
+            f.web.info["integrate_version"]="FLY_CN_MU5250V1.0.0B13";f.web.info["wa_inner_version"]="BD_FLYMODEMMU5250V1.0.0B28"
+            f.host.identityInfo=f.web.info;f.host.identityMode=true;f.host.fullInstaller=true;f.host.preflightError=true
+            f.host.identityFirmware=String(repeating:"a",count:64);f.host.identityRouter=String(repeating:"b",count:64)
+            f.ssh.firmware=f.host.identityFirmware;f.ssh.accessRouter=f.host.identityRouter
+            f.host.deviceList="List of devices attached\nABC device usb:1\n"
+            f.host.deviceListSequence=["List of devices attached\n","List of devices attached\n",f.host.deviceList]
+            try rejects { _ = try f.engine.run(password:testPassword) }
+            try check(f.web.restoreCount==1 && f.host.installerCalls==0,"First failure occurred outside post-restore preflight")
+            let pending=try readJSON(SetupJournal.self,f.engine.pending)
+            try check(pending.phase=="adb-ready" && pending.restoreRequested && !pending.installRequested,"Bootstrap intent was lost before generic preflight completed")
+            let previousUploads=f.web.requests.filter{$0.path=="/cgi-bin/cgi-upload"}.count
+            f.host.deviceList="List of devices attached\n";f.host.shellCode="0";f.host.preflightError=false
+            try rejects { _ = try f.engine.run(password:testPassword) }
+            let retained=try readJSON(SetupJournal.self,f.engine.pending)
+            try check(retained.restoreRequested && f.web.restoreCount==1 && f.web.directCount==0 && f.web.requests.filter{$0.path=="/cgi-bin/cgi-upload"}.count==previousUploads && f.host.installerCalls==0,"Retry repeated activation or restore after handoff failure")
         }
         run("Offline and unauthorized ADB are explained without claiming access") {
             let f = try Fixture(); defer { f.remove() }
@@ -1037,22 +1154,22 @@ private struct Fixture {
             try rejects { _ = try OnboardingEngine.installerProfile(web: web, device: device, experimental: false) }
             try rejects { _ = try OnboardingEngine.installerProfile(web: web, device: Identity(cid: testCID, firmwareHash: String(repeating: "0", count: 64)), experimental: true) }
         }
-        run("B02 without existing ADB cannot upload or restore a bootstrap backup") {
-            let f = try Fixture(); defer { f.remove() }
+        run("B02 incompatible backup template refuses restore without a firmware-name gate") {
+            let f = try Fixture(data:backup(rc:Data("#!/bin/sh\n# no recognized USB code\nexit 0\n".utf8))); defer { f.remove() }
             f.web.info["integrate_version"] = "STD_PL_MU5250V1.0.0B02"; f.web.info["wa_inner_version"] = "BD_STDPLMU5250V1.0.0B02"
             var connection = f.engine.currentConnection; connection.skipFirmwareCheck = true
             let manager = try OnboardingEngine(root: f.root, resources: f.resources, connection: connection, backupSuffix: testBackupSuffix, web: f.engine.web, runner: f.host, sshFactory: { _ in f.ssh }, researchRunner: MockResearch())
-            try rejects("уже работающий root ADB") { _ = try manager.run(password: testPassword) }
+            try rejects("штатный USB-блок") { _ = try manager.run(password: testPassword) }
             try check(f.web.uploadedData == nil && f.web.restoreCount == 0 && f.host.installerCalls == 0, "B02 bootstrap mutated device")
         }
         run("TCP-only B02 ADB cannot substitute for required physical USB") {
-            let f = try Fixture(); defer { f.remove() }
+            let f = try Fixture(data:backup(rc:Data("#!/bin/sh\n# no recognized USB code\nexit 0\n".utf8))); defer { f.remove() }
             f.web.info["integrate_version"] = "STD_PL_MU5250V1.0.0B02"; f.web.info["wa_inner_version"] = "BD_STDPLMU5250V1.0.0B02"
             f.host.identityMode = true; f.host.fullInstaller = true; f.host.deviceList = "List of devices attached\n192.0.2.10:5555 device product:MU5250 transport_id:1\n"
             f.host.identityInfo = f.web.info; f.host.identityFirmware = OnboardingEngine.b02FirmwareHash
             var connection = f.engine.currentConnection; connection.skipFirmwareCheck = true
             let manager = try OnboardingEngine(root: f.root, resources: f.resources, connection: connection, backupSuffix: testBackupSuffix, web: f.engine.web, runner: f.host, sshFactory: { _ in f.ssh }, researchRunner: MockResearch())
-            try rejects("ADB по USB") { _ = try manager.run(password: testPassword) }
+            try rejects("штатный USB-блок") { _ = try manager.run(password: testPassword) }
             try check(f.host.calls.allSatisfy { $0 == ["devices", "-l"] } && f.host.pushCount == 0 && f.host.installerCalls == 0 && f.web.restoreCount == 0 && f.web.uploadedData == nil, "TCP-only B02 triggered setup actions")
         }
         run("B02 access setup binds exact hashes and never invokes NV helpers") {

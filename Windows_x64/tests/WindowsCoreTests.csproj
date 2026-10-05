@@ -8,6 +8,8 @@
     <NuGetAudit>false</NuGetAudit>
   </PropertyGroup>
   <ItemGroup>
+    <!-- Standalone export fixture is compiled by its dedicated source-linked harness. -->
+    <Compile Remove="DiagnosticExportTests.cs" />
     <PackageReference Include="SSH.NET" Version="2025.0.0" />
     <Compile Include="../src/Research/*.cs" Link="Research/%(Filename)%(Extension)" />
     <Compile Include="../src/Transport/*.cs" Link="Transport/%(Filename)%(Extension)" />
@@ -20,5 +22,7 @@
     <Compile Include="../src/Core/OnboardingEngine.cs" Link="Core/OnboardingEngine.cs" />
     <Compile Include="../src/Core/SystemBackupManager.cs" Link="Core/SystemBackupManager.cs" />
     <Compile Include="../src/Features/FeatureCore.cs" Link="Features/FeatureCore.cs" />
+    <Compile Include="../src/Features/AdbControl.cs" Link="Features/AdbControl.cs" />
+    <Compile Include="../src/Features/AdbToggleTransaction.cs" Link="Features/AdbToggleTransaction.cs" />
   </ItemGroup>
 </Project>

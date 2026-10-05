@@ -44,7 +44,7 @@ private func pax(_ key: String, _ value: String) -> Data {
 
 private let imei = "490154203237518"
 private let suffix = "synthetic-backup-suffix"
-private let rc = Data(("#!/bin/sh\n# synthetic configuration\ncat " + BackupPatch.usbNode + "\nexit 0\n").utf8)
+private let rc = try! Data(contentsOf:URL(fileURLWithPath:"Tests/Fixtures/stock-usb-mode.synthetic.rc.local"))
 private func entries(_ replacement: Data = rc) -> [Entry] {
     [Entry(name: "etc/config/test", bytes: Data("synthetic value\n".utf8)),
      Entry(name: BackupPatch.rcPath, bytes: replacement),
@@ -67,6 +67,25 @@ private func encrypted(_ entries: [Entry] = entries(), badMD5: Bool = false) thr
         func run(_ name: String, _ operation: () throws -> Void) {
             do { try operation(); passed += 1; print("PASS \(name)") }
             catch { failed += 1; print("FAIL \(name): \(error)") }
+        }
+        run("Executable stock USB block required before enabling the boot adapter") {
+            let body = String(decoding:rc,as:UTF8.self).replacingOccurrences(of:"#!/bin/sh\n",with:"")
+            for fake in ["#!/bin/sh\n# " + BackupPatch.usbNode + "\nexit 0\n", "#!/bin/sh\necho '" + BackupPatch.usbNode + "'\nexit 0\n", "#!/bin/sh\ncat <<'EOF'\n" + body + "EOF\n", "#!/bin/sh\nnode='" + BackupPatch.usbNode + "'\n" + body, String(decoding:rc,as:UTF8.self)+"echo 0 > " + BackupPatch.usbNode + "\n", String(decoding:rc,as:UTF8.self).replacingOccurrences(of:"if [ -f /tmp/fota_install_processing ]; then",with:"if false; then")] {
+                try rejects { _ = try BackupPatch.prepare(encrypted:encrypted(entries(Data(fake.utf8))),imei:imei,suffix:suffix) }
+            }
+            let patched = try BackupPatch.enableADB(rc)
+            try check(patched == Data(("#!/bin/sh\n"+BackupPatch.enableLine).utf8) + rc.dropFirst("#!/bin/sh\n".utf8.count), "Stock tail or block was changed")
+            try check(try BackupPatch.enableADB(patched) == patched,"Recognized prefix was not idempotent")
+        }
+        run("Stock grammar uses shell ASCII whitespace only") {
+            let text=String(decoding:rc,as:UTF8.self)
+            for prefix in ["\u{00a0}","\u{000c}","\r"] {
+                let altered=text.replacingOccurrences(of:"if [ x`cat",with:prefix+"if [ x`cat")
+                try rejects { _ = try BackupPatch.enableADB(Data(altered.utf8)) }
+            }
+            let spaced=text.replacingOccurrences(of:"if [ x`cat",with:" \tif  [ x`cat")
+            let modified=try BackupPatch.enableADB(Data(spaced.utf8))
+            try check(modified == Data(("#!/bin/sh\n"+BackupPatch.enableLine).utf8)+Data(spaced.utf8).dropFirst("#!/bin/sh\n".utf8.count),"ASCII whitespace changed the preserved block")
         }
         run("OpenSSL 3DES SHA256 known vector") {
             let vector = try Data(hex: "53616c7465645f5f0102030405060708dfdd29b2bf3250ec90f326f288ce2986644b9e7978318c0b")

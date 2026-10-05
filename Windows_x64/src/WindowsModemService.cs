@@ -143,13 +143,14 @@ public sealed partial class WindowsModemService : IModemService
             _operationValues = null;
             var p = request.Parameters;
             if (File.Exists(Path.Combine(_storage, AdbToggleTransaction.PendingName)) && request.Operation is not
-                (ModemOperation.RefreshAdbState or ModemOperation.Connect or ModemOperation.DiscoverConnections or ModemOperation.ExportDiagnostics))
+                (ModemOperation.RefreshAdbState or ModemOperation.Connect or ModemOperation.DiscoverConnections or ModemOperation.ExportDiagnostics or ModemOperation.VerifyBackupKey))
                 throw new InvalidOperationException(AdbToggleTransaction.Unknown);
             string result;
             switch (request.Operation)
             {
                 case ModemOperation.DiscoverConnections: result = await DiscoverAsync(p,cancellationToken); break;
                 case ModemOperation.Connect: result = await ConnectAsync(p,cancellationToken); break;
+                case ModemOperation.VerifyBackupKey: result = await VerifyBackupKeyAsync(p,cancellationToken); break;
                 case ModemOperation.PrepareSsh: result = await PrepareSshAsync(p,cancellationToken); break;
                 case ModemOperation.EnableDiagnosticAdb: result = await EnableDiagnosticAdbAsync(p,cancellationToken); break;
                 case ModemOperation.RefreshAdbState: result = await RefreshAdbStateAsync(cancellationToken); break;

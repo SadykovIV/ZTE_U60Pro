@@ -9,6 +9,10 @@ public sealed partial class MainWindow
     private Button? _researchCollectButton;
     private Button? _diagnosticAccessButton;
     private Button? _refreshAdbButton;
+    private Button? _verifyBackupKeyButton;
+    private TextBlock? _backupKeyCheckStatus;
+    private string _backupKeyCheckResult = "";
+    private string _backupKeyCheckHost = "";
     private CheckBox? _adbEnabledCheckbox;
     private bool _updatingAdbCheckbox;
     private TextBlock? _diagnosticConnectionStatus;
@@ -74,10 +78,13 @@ public sealed partial class MainWindow
             ? "These credentials are only for preparing SSH. With working root USB ADB, the Web password can be left empty."
             : "Эти пароли используются только для подготовки SSH. При работающем root USB ADB пароль Web можно оставить пустым."));
         setup.Children.Add(FieldPair(Field("Пароль веб-интерфейса", "web_password", "Введите пароль", secret: true), Field("Пароль агента / SSH", "agent_password", "Введите пароль", secret: true)));
-        setup.Children.Add(Field("Backup-key suffix вашей прошивки", "backup_key_suffix", "Только для проверки бэкапа B31", secret: true));
-        var skip = new CheckBox { Content = Localization.Translate("Пропустить проверку прошивки"), IsChecked = Get("skip_firmware_check") == "true", Foreground = Warn };
-        skip.IsCheckedChanged += (_, _) => _form["skip_firmware_check"] = skip.IsChecked == true ? "true" : "false";
-        setup.Children.Add(skip);
+        setup.Children.Add(Field("Backup-key suffix (необязательный)", "backup_key_suffix", "Пусто — известный ключ формата", secret: true));
+        _verifyBackupKeyButton = ActionButton("Проверить ключ бэкапа", () => ExecuteAsync(ModemOperation.VerifyBackupKey,
+            ["host","web_password","backup_key_suffix"]),false);
+        _verifyBackupKeyButton.Name = "VerifyBackupKey"; setup.Children.Add(_verifyBackupKeyButton);
+        setup.Children.Add(Muted("Только свежий бэкап и проверка расшифровки/формата. ADB, SSH и настройки модема не изменяются."));
+        _backupKeyCheckStatus = Muted(_backupKeyCheckHost==Get("host") && _backupKeyCheckResult.Length>0 ? _backupKeyCheckResult : "Ключ бэкапа ещё не проверен.");
+        _backupKeyCheckStatus.Name = "BackupKeyCheckStatus";setup.Children.Add(_backupKeyCheckStatus);
         methods.Children.Add(new Expander { Header = Localization.IsEnglish ? "Prepare SSH access" : "Подготовка доступа SSH", Content = setup, HorizontalAlignment = HorizontalAlignment.Stretch });
         panel.Children.Add(new Expander { Name = "ConnectionMethods", Header = Localization.IsEnglish ? "Available connection methods" : "Доступные способы подключения", Content = methods, HorizontalAlignment = HorizontalAlignment.Stretch });
         UpdateDiagnosticAvailability();
@@ -116,6 +123,9 @@ public sealed partial class MainWindow
         var idle = !_busy && _terminal?.IsConnected != true && !_terminalOpening;
         var ssh = _snapshot?.IsConnected == true && _snapshot.ConnectionMode == "SSH";
         var noPending = _snapshot?.PreparationPending != true && _snapshot?.AdbActivationPending != true;
+        if (_verifyBackupKeyButton is not null) _verifyBackupKeyButton.IsEnabled = idle &&
+            System.Net.IPAddress.TryParse(Get("host"),out var keyCheckHost) && keyCheckHost.AddressFamily==System.Net.Sockets.AddressFamily.InterNetwork &&
+            Get("web_password").Length>0 && !Get("web_password").Contains('\0');
         if (_researchCollectButton is not null) _researchCollectButton.IsEnabled = idle;
         if (_diagnosticAccessButton is not null) _diagnosticAccessButton.IsEnabled = idle && ssh;
         if (_refreshAdbButton is not null) _refreshAdbButton.IsEnabled = idle && ssh;
@@ -157,9 +167,24 @@ public sealed partial class MainWindow
                 ? _diagnosticConnectionResult : "Состояние не проверено");
     }
 
+    private void InvalidateBackupKeyCheck()
+    {
+        _backupKeyCheckResult="";_backupKeyCheckHost="";
+        if(_backupKeyCheckStatus is not null) _backupKeyCheckStatus.Text=Localization.Translate("Ключ бэкапа ещё не проверен.");
+    }
+
     private void RecordDiagnosticResult(ModemOperation operation, OperationResult result, IReadOnlyDictionary<string, string>? parameters)
     {
-        if (operation == ModemOperation.DiscoverConnections)
+        if (operation == ModemOperation.VerifyBackupKey)
+        {
+            _backupKeyCheckHost=parameters?.GetValueOrDefault("host") ?? "";
+            _backupKeyCheckResult=Localization.Translate(result.Message);
+            if(result.Success && result.Values is { } values)
+                _backupKeyCheckResult+="\n"+values.GetValueOrDefault("backup_firmware")+" / "+values.GetValueOrDefault("backup_inner")+
+                    "\n"+Localization.Translate("Записей в архиве:")+" "+values.GetValueOrDefault("backup_entries")+"; SHA-256: "+values.GetValueOrDefault("backup_sha256");
+            if(_backupKeyCheckStatus is not null) _backupKeyCheckStatus.Text=_backupKeyCheckHost==Get("host") ? _backupKeyCheckResult : Localization.Translate("Ключ бэкапа ещё не проверен.");
+        }
+        else if (operation == ModemOperation.DiscoverConnections)
         {
             _diagnosticConnectionInput = string.Join('\n', new[] { "host", "key_path", "known_hosts_path" }.Select(key => parameters?.GetValueOrDefault(key) ?? ""));
             _diagnosticConnectionResult = result.Message;

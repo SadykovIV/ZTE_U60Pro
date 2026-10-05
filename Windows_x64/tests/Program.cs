@@ -3,6 +3,10 @@ using System.Text;
 using System.Text.Json;
 using ZteImeiStudio.Windows.Core;
 
+if (args.Contains("--template-guard-only")) { BackupTemplateTests.Run(); return; }
+
+if (args.Contains("--backup-key-only")) { await BackupKeyVerificationTests.RunAsync(); return; }
+
 if (args.Contains("--access-reuse-only")) { await AccessAgentReuseTests.RunAsync(); return; }
 
 if (args.Contains("--adb-stream-only")) { await AdbStreamingTests.RunAsync(); return; }
@@ -46,13 +50,15 @@ static byte[] Tar(params (string Path, byte[] Bytes)[] entries)
     return output.ToArray();
 }
 
+BackupTemplateTests.Run();
+await BackupKeyVerificationTests.RunAsync();
 await AdbRegressionTests.RunAsync();
 await AdbLineEndingTests.RunAsync();
 var vector = Convert.FromHexString("53616c7465645f5f0102030405060708dfdd29b2bf3250ec90f326f288ce2986644b9e7978318c0b");
 Check(Encoding.UTF8.GetString(BackupCipher.Decrypt(vector, "synthetic-password")) == "B31 test payload\n",
     "OpenSSL 3DES SHA256 vector");
 
-var rc = Encoding.UTF8.GetBytes("#!/bin/sh\n# synthetic\ncat /sys/class/android_usb/android0/usb_op\nexit 0\n");
+var rc = File.ReadAllBytes("Windows_x64/tests/fixtures/stock-usb-mode.synthetic.rc.local");
 var inner = BackupGzip.Compress(Tar(("etc/config/test", Encoding.UTF8.GetBytes("safe\n")),
     ("etc/rc.local", rc)));
 var md5 = Encoding.ASCII.GetBytes(Convert.ToHexString(MD5.HashData(inner)).ToLowerInvariant() + "\n");
@@ -68,6 +74,7 @@ var after = BackupPatch.Inspect(BackupCipher.Decrypt(patched.PatchedEncrypted,
     imei + testSuffix));
 Check(Encoding.UTF8.GetString(after.Inner.Members.Single(m => m.Path == BackupPatch.RcPath).Bytes)
     .StartsWith("#!/bin/sh\n" + BackupPatch.EnableLine, StringComparison.Ordinal), "Only expected rc.local line inserted");
+if (args.Contains("--backup-suffix-only")) { await DiagnosticAdbTests.RunAsync(encrypted,patched.PatchedEncrypted,testSuffix,true); return; }
 await DiagnosticAdbTests.RunAsync(encrypted, patched.PatchedEncrypted, testSuffix);
 var repeated = BackupPatch.Prepare(patched.PatchedEncrypted, imei, testSuffix);
 Check(repeated.AlreadyEnabled && repeated.PatchedEncrypted.AsSpan().SequenceEqual(patched.PatchedEncrypted),
@@ -165,6 +172,6 @@ finally { Directory.Delete(tempRoot, recursive: true); }
 Console.WriteLine("ALL SYNTHETIC CHECKS PASSED");
 
 Check(AgentPackage.VersionForHash(AgentPackage.LegacyPublicSha256) == "2.8.0" && AgentPackage.SupportsVpn(AgentPackage.LegacyPublicSha256), "Previous public agent 2.8.0 remains recognized");
-Reject(() => BackupPatch.Prepare(encrypted, imei, ""), "Missing public backup suffix refused");
+Reject(() => BackupPatch.Prepare(encrypted, imei, ""), "Low-level backup codec still requires an explicit suffix");
 
 Check(AgentPackage.SupportedUpgradeHashes.Contains(AgentPackage.LegacyPublicSha256) && !AgentPackage.SupportedUpgradeHashes.Contains(new string('f',64)), "Public legacy agent accepted; unknown upgrade hash rejected");

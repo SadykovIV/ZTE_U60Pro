@@ -473,6 +473,36 @@ import AppKit
             startConnectionMonitor()
         }
     }
+    var canVerifyBackupKey: Bool {
+        !busy && !terminalActive && !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !webPassword.isEmpty
+    }
+    func verifyBackupKey() {
+        guard canVerifyBackupKey else { return }
+        let config = connection, root = storage, assets = resources, password = webPassword, suffix = backupSuffix
+        webPassword = ""; backupSuffix = ""
+        preparationError = ""; busy = true; progress = 0
+        append("Проверяю ключ и формат свежего бэкапа без изменения настроек…")
+        operationTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let result = try await Task.detached(priority: .userInitiated) { [weak self] in
+                    let engine = try OnboardingEngine(root: root, resources: assets, connection: config, backupSuffix: suffix, update: { [weak self] message, value in
+                        Task { @MainActor [weak self] in self?.append(message, progress: value) }
+                    })
+                    return try engine.verifyBackupKey(password: password)
+                }.value
+                // Only format metadata is reported. It never updates a connected
+                // identity, access state or preparation/mutation permissions.
+                append("Ключ и формат бэкапа подтверждены. Восстановление, ADB и установка не запускались.", progress: 1)
+                append("Версия прошивки: " + ActivityJournal.redact(result.firmware) + " / " + ActivityJournal.redact(result.inner))
+                append("Записей в архиве: " + String(result.entryCount) + ". SHA-256: " + result.encryptedSHA256)
+            } catch {
+                preparationError = ActivityJournal.redact(error.localizedDescription)
+                append("Проверка ключа бэкапа: " + preparationError)
+            }
+            busy = false; operationTask = nil; refreshActivity()
+        }
+    }
     func preparePreferredSSH() {
         guard canPrepareModem else { return }
         preparationError = ""

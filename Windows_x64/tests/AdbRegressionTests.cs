@@ -84,12 +84,10 @@ internal static class AdbRegressionTests
             "[{\"result\":[0,{\"zwrt_bsp.usb\":{\"set\":{\"mode\":\"String\"}}}]}]",
         })
             Check(!ModemWebClient.AdvertisesUsbDebug(Encoding.UTF8.GetBytes(response)), "Unsupported USB introspection cannot enable debug");
-        Check(OnboardingEngine.IsLegacyUsbDebugFirmware(new("", "CN_ZTE_MU5250V1.0.0B27", "BD_CNMU5250V1.0.0B27")),
-            "Legacy CN B27 USB method fallback recognized");
-        Check(!OnboardingEngine.IsLegacyUsbDebugFirmware(new("", "CN_ZTE_MU5250V1.0.0B31", "BD_CNMU5250V1.0.0B31")) &&
-            !OnboardingEngine.IsLegacyUsbDebugFirmware(new("", "STD_PL_MU5250V1.0.0B02", "BD_STDPLMU5250V1.0.0B02")) &&
-            !OnboardingEngine.IsLegacyUsbDebugFirmware(new("", "CN_ZTE_MU5250V1.0.0B27", "BD_CNMU5250V1.0.0B26")),
-            "Unknown, B31 and mismatched firmware cannot use unconditional legacy fallback");
+        Check(ModemWebClient.ReadUsbDebugCapability(Encoding.UTF8.GetBytes("[{\"error\":{\"code\":-32601}}]")) is null,
+            "Unavailable introspection remains unknown for one fixed USB method");
+        Check(ModemWebClient.ReadUsbDebugCapability(Encoding.UTF8.GetBytes("[{\"result\":{\"zwrt_bsp.usb\":{\"list\":{}}}}]")) == false,
+            "Explicit missing USB setter skips direct activation");
         var identity = new WebIdentity("353490068701222", "CN_ZTE_MU5250V1.0.0B27", "BD_CNMU5250V1.0.0B27");
         var proofBytes = Encoding.UTF8.GetBytes(ImeiEngine.FirmwareHash + "  /firmware/image/modem.b16\n" +
             new string('e', 64) + "  /usr/bin/diag-router\n" + new string('a', 32) + "\n" + Guid.NewGuid() + "\n" +

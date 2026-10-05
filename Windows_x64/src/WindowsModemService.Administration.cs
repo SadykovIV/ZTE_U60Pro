@@ -53,6 +53,17 @@ public sealed partial class WindowsModemService
         return "Предварительная подготовка завершена. " + message;
     }
 
+    private async Task<string> VerifyBackupKeyAsync(IReadOnlyDictionary<string,string>? parameters,CancellationToken ct)
+    {
+        var onboarding = new OnboardingEngine(Param(parameters,"host",_host),_storage,_resources,_adb,
+            progress: message => Log("info",message));
+        var result = await onboarding.VerifyBackupKeyAsync(parameters?.GetValueOrDefault("web_password") ?? "",
+            parameters?.GetValueOrDefault("backup_key_suffix") ?? "",ct);
+        _operationValues = new Dictionary<string,string> { ["backup_firmware"]=result.Firmware,["backup_inner"]=result.InnerVersion,
+            ["backup_entries"]=result.Entries.ToString(System.Globalization.CultureInfo.InvariantCulture),["backup_sha256"]=result.EncryptedSha256 };
+        return "Ключ и формат бэкапа подтверждены. Это не разрешает восстановление или установку компонентов.";
+    }
+
     private async Task<string> EnableDiagnosticAdbAsync(IReadOnlyDictionary<string,string>? parameters, CancellationToken ct)
     {
         // An existing SSH connection must never fall back to Web backup/restore,

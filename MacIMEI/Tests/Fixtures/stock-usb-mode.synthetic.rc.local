@@ -1,0 +1,17 @@
+#!/bin/sh
+# Synthetic fixture of the observed stock USB mode block.
+/*add by bsp for user mode flash protect begin*/
+if [ x`cat /sys/class/android_usb/android0/usb_op` != x"1" ] && [ x`cat /sys/class/android_usb/android0/usb_op` != x"2" ]; then
+if [ -f /tmp/fota_install_processing ]; then
+echo "[Flash Protect]User mode,Fota flag exist,Flash Protect Mode not change!" > /dev/kmsg
+else
+cat /proc/driver/codec_id
+echo "[Flash Protect]User mode,Flash Protect On!" > /dev/kmsg
+fi
+else
+cat /proc/driver/sensor_id
+echo "[Flash Protect]Not User mode,Flash Protect Off!" > /dev/kmsg
+fi
+/*add by bsp for user mode flash protect end*/
+# Synthetic tail must remain byte-for-byte intact.
+exit 0

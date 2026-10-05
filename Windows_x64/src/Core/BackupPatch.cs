@@ -10,7 +10,7 @@ public sealed record BackupPatchResult(byte[] OriginalOuter, byte[] PatchedEncry
     bool AlreadyEnabled, string OriginalHash, string PatchedHash);
 
 /// <summary>
-/// The verified B31 web-backup format. No tar entry is ever extracted to the
+/// The verified web-backup format and stock USB boot adapter. No tar entry is ever extracted to the
 /// Windows file system. Only etc/rc.local is changed, then both archive layers
 /// are reparsed and compared before returning upload bytes.
 /// </summary>
@@ -22,8 +22,7 @@ public static class BackupPatch
     private const string InnerPath = "tmp/back_parameter_r1.tgz";
     private const string Md5Path = "tmp/back_parameter_r.md5";
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
-    private static readonly Regex UsbNodePattern = new(
-        "/sys/[^\\s`\"']*usb_op[^\\s`\"']*", RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
 
     public static BackupPatchResult Prepare(byte[] encrypted, string imei,
         string suffix)
@@ -90,12 +89,34 @@ public static class BackupPatch
             throw new InvalidDataException("Неизвестный заголовок rc.local.");
         var heading = text.IndexOf(shebang, StringComparison.Ordinal);
         if (heading < 0 || text[..heading].Split('\n').Any(line =>
-                line.Trim().Length > 0 && !line.Trim().StartsWith('#')))
+                line.Trim(' ', '\t').Length > 0 && !line.Trim(' ', '\t').StartsWith('#')))
             throw new InvalidDataException("Команды перед заголовком rc.local не поддерживаются.");
-        var nodes = UsbNodePattern.Matches(text).Select(m => m.Value).ToHashSet(StringComparer.Ordinal);
-        if (nodes.Count != 1 || !nodes.Contains(UsbNode))
-            throw new InvalidDataException("USB-путь rc.local отличается от проверенного B31.");
-        if (text.AsSpan(heading).StartsWith(shebang + EnableLine, StringComparison.Ordinal)) return rcLocal;
+        // The first executable block must be the observed stock mode/FOTA
+        // adapter. A path in a comment or unrelated script is not enough.
+        var expectedBlock = """
+if [ x`cat /sys/class/android_usb/android0/usb_op` != x"1" ] && [ x`cat /sys/class/android_usb/android0/usb_op` != x"2" ]; then
+if [ -f /tmp/fota_install_processing ]; then
+echo "[Flash Protect]User mode,Fota flag exist,Flash Protect Mode not change!" > /dev/kmsg
+else
+cat /proc/driver/codec_id
+echo "[Flash Protect]User mode,Flash Protect On!" > /dev/kmsg
+fi
+else
+cat /proc/driver/sensor_id
+echo "[Flash Protect]Not User mode,Flash Protect Off!" > /dev/kmsg
+fi
+""".Split('\n');
+        var markers = new[] { "/*add by bsp for user mode flash protect begin*/", "/*add by bsp for user mode flash protect end*/" };
+        var commands = text[(heading + shebang.Length)..].Split('\n')
+            .Select(line => Regex.Replace(line.Trim(' ', '\t'), "[ \t]+", " "))
+            .Where(line => line.Length > 0 && !line.StartsWith('#') && !markers.Contains(line)).ToList();
+        var alreadyEnabled = text.AsSpan(heading).StartsWith(shebang + EnableLine, StringComparison.Ordinal);
+        if (alreadyEnabled) commands.RemoveAt(0);
+        if (!commands.Take(expectedBlock.Length).SequenceEqual(expectedBlock))
+            throw new InvalidDataException("Не подтверждён штатный USB-блок rc.local; восстановление не запускалось.");
+        if (commands.Skip(expectedBlock.Length).Any(line => line.Contains("usb_op", StringComparison.Ordinal)))
+            throw new InvalidDataException("Дополнительные обращения к USB в rc.local не поддерживаются.");
+        if (alreadyEnabled) return rcLocal;
         if (text.Contains(EnableLine, StringComparison.Ordinal))
             throw new InvalidDataException("Строка включения ADB расположена неоднозначно.");
         return StrictUtf8.GetBytes(text.Insert(heading + shebang.Length, EnableLine));

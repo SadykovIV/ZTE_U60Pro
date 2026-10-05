@@ -54,6 +54,7 @@ public enum ModemOperation
     RebootDevice,
     InstallEsimLauncher,
     ApplyLauncherPages,
+    VerifyBackupKey,
 }
 
 public sealed record OperationRequest(

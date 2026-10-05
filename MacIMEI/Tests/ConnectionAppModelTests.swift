@@ -51,6 +51,15 @@ private func snapshot() -> ConnectionOverviewSnapshot {
             let m = try model()
             try check(!m.connected && m.connectionLabel == "Нет подключения" && !m.canManage && !m.canCollectDiagnostics, "Fresh connection state is misleading")
         }
+        try test("Backup key test needs only host Web password and idle UI without granting write access") {
+            let m = try model()
+            try check(!m.canVerifyBackupKey, "Empty password permits key check")
+            m.host="192.0.2.9";m.webPassword="synthetic-web-password";m.agentPassword=""
+            try check(m.canVerifyBackupKey && !m.connected && !m.accessReady && !m.canApply && !m.canManage, "Key check requires unrelated access or authorizes writes")
+            m.busy=true;try check(!m.canVerifyBackupKey,"Key check concurrent with operation")
+            m.busy=false;m.terminalActive=true;try check(!m.canVerifyBackupKey,"Key check concurrent with terminal")
+            m.terminalActive=false;m.host=" ";try check(!m.canVerifyBackupKey,"Empty host permits key check")
+        }
         try test("SSH acceptance enables connected sidebar and management after busy ends") {
             let m = try model(); m.busy = true; m.acceptChannelSelection(selection(.ssh))
             try check(m.connected && m.accessReady && m.activeChannel == .ssh && m.connectionLabel.contains("Подключено") && m.connectionLabel.contains("SSH"), "SSH not reflected as connected")
