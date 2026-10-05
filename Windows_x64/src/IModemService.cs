@@ -55,6 +55,7 @@ public enum ModemOperation
     InstallEsimLauncher,
     ApplyLauncherPages,
     VerifyBackupKey,
+    CancelComponentCleanup,
 }
 
 public sealed record OperationRequest(
@@ -94,7 +95,8 @@ public sealed record DeviceSnapshot(
     bool PreparationPending = false,
     bool? AdbEnabled = null,
     bool AdbControlSupported = false,
-    string? AdbStatus = null);
+    string? AdbStatus = null,
+    bool ComponentCleanupPending = false);
 
 public sealed record VpnPageSnapshot(
     bool Installed,

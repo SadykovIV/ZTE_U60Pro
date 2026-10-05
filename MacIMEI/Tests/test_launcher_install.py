@@ -20,7 +20,7 @@ class LauncherInstallTests(unittest.TestCase):
  %u) echo {os.getuid()};; %a) /usr/bin/stat -f %Lp "$3";; %u:%a) printf '{os.getuid()}:';/usr/bin/stat -f %Lp "$3";; %u:%a:%h) printf '{os.getuid()}:';/usr/bin/stat -f %Lp:%l "$3";; *) exit 1;; esac\n''')
   self.command('sha256sum','exec /usr/bin/shasum -a 256 "$@"\n')
   self.command('sync',':\n')
-  self.command('sh','''case "$1" in */launcher-start.sh) [ "${FAIL_START:-0}" = 0 ];exit $?;; *) exec /bin/sh "$@";; esac\n''')
+  self.command('sh','''case "$1" in */launcher-start.sh) if [ -n "${START_CALL_LOG:-}" ]; then printf 'start\\n' >> "$START_CALL_LOG";fi; [ "${FAIL_START:-0}" = 0 ];exit $?;; *) exec /bin/sh "$@";; esac\n''')
   for name in ['launcher.so','launcher-run.sh','launcher-watch.sh','launcher-service.sh','launcher-start.sh','launcher.sha256']:
    shutil.copyfile(SRC/name,self.stage/name)
   script=(SRC/'install-launcher.sh').read_text()
@@ -28,7 +28,7 @@ class LauncherInstallTests(unittest.TestCase):
   script=script.replace('= 0:700',f'= {os.getuid()}:700').replace('= 0:600',f'= {os.getuid()}:600').replace('stat -c %u \"$dir\")\" = 0',f'stat -c %u \"$dir\")\" = {os.getuid()}').replace('stat -c %u '+str(self.rc)+')\" = 0',f'stat -c %u {self.rc})\" = {os.getuid()}')
   script=script.replace('604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263',sha(self.firmware)).replace('a30da6481637f1fd94e037373d406e574be7e722937a4965325086740be67e35',sha(self.stock))
   # Service command execution is stubbed, its installed bytes still match the signed payload.
-  script=script.replace(str(self.etc)+'/init.d/zte_launcher stop', 'true')
+  script=script.replace(str(self.etc)+'/init.d/zte_launcher stop', 'test -f '+str(self.etc)+'/init.d/zte_launcher')
   self.script=self.base/'install.sh';self.script.write_text(script)
  def command(self,name,body):
   p=self.bin/name;p.write_text('#!/bin/sh\n'+body);p.chmod(0o700)
@@ -61,6 +61,34 @@ class LauncherInstallTests(unittest.TestCase):
   self.assert_success(self.run_install());before=self.rc.read_bytes();(self.root/'sentinel').write_text('old installation')
   self.assertNotEqual(self.run_install(FAIL_START='1').returncode,0)
   self.assertEqual((self.root/'sentinel').read_text(),'old installation');self.assertEqual(self.rc.read_bytes(),before)
+ def reset_service(self):
+  self.assert_success(self.run_install())
+  (self.etc/'init.d/zte_launcher').unlink();self.rc.write_bytes(self.before)
+  layout=self.root/'info-layout.conf';layout.write_text('preserved user layout\n');layout.chmod(0o600)
+  pages=self.root/'page-layout.conf';pages.write_text('ZTE_LAUNCHER_PAGES_V1\nesim\ninfo\n');pages.chmod(0o600)
+  return layout.read_bytes(),pages.read_bytes()
+ def test_missing_service_reset_preflight_and_reinstall_preserve_settings(self):
+  layout,pages=self.reset_service();before=self.tree()
+  self.assert_success(self.run_install('preflight'));self.assertEqual(self.tree(),before)
+  self.assert_success(self.run_install())
+  self.assertEqual((self.etc/'init.d/zte_launcher').read_bytes(),(SRC/'launcher-service.sh').read_bytes())
+  self.assertEqual((self.root/'info-layout.conf').read_bytes(),layout);self.assertEqual((self.root/'page-layout.conf').read_bytes(),pages)
+  self.assertEqual(self.rc.read_text().count('/launcher-start.sh'),1)
+  self.assert_success(self.run_install());self.assertEqual(self.rc.read_text().count('/launcher-start.sh'),1)
+ def test_missing_service_reset_failure_rolls_back_to_absence(self):
+  layout,pages=self.reset_service();before=self.rc.read_bytes();trace=self.base/'start-calls'
+  self.assertNotEqual(self.run_install(FAIL_START='1',START_CALL_LOG=str(trace)).returncode,0)
+  self.assertTrue(trace.exists(),'Failed before installation was attempted')
+  self.assertFalse((self.etc/'init.d/zte_launcher').exists());self.assertEqual(self.rc.read_bytes(),before)
+  self.assertEqual((self.root/'info-layout.conf').read_bytes(),layout);self.assertEqual((self.root/'page-layout.conf').read_bytes(),pages)
+  self.assertFalse(self.transaction.exists())
+ def test_missing_service_never_executes_unrecognized_owned_service(self):
+  self.reset_service();service=self.root/'launcher-service.sh';service.write_text('#!/bin/sh\nexit 0\n')
+  manifest=self.root/'launcher.sha256';manifest.write_text(''.join(f'{sha(self.root/line.split()[1])}  {line.split()[1]}\n' for line in manifest.read_text().splitlines()))
+  before=self.tree();self.assertEqual(self.run_install().returncode,73);self.assertEqual(self.tree(),before)
+ def test_present_foreign_service_stays_refused(self):
+  self.reset_service();(self.etc/'init.d/zte_launcher').write_text('#!/bin/sh\n# foreign service\nexit 0\n')
+  before=self.tree();self.assertEqual(self.run_install().returncode,73);self.assertEqual(self.tree(),before)
  def test_interrupted_directory_swap_recovers_on_retry(self):
   self.assert_success(self.run_install())
   self.command('mv',f'''if [ "$2" = "{self.transaction}/old" ] && [ ! -f "{self.base}/killed" ]; then

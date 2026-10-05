@@ -85,7 +85,7 @@ public sealed partial class WindowsModemService : IModemService
             "operation", operation.ToString(), outcome, duration));
     }
     public ConnectionSettingsSnapshot GetConnectionSettings() => new(_host, _port, "root", _keyPath, _knownHostsPath);
-    public Task<DeviceSnapshot> GetDeviceSnapshotAsync(CancellationToken cancellationToken = default) => Task.FromResult(_snapshot with { AdbActivationPending = File.Exists(Path.Combine(_storage, "adb-access-pending.json")) || File.Exists(Path.Combine(_storage, AdbToggleTransaction.PendingName)), PreparationPending = File.Exists(Path.Combine(_storage, "setup-pending.json")) });
+    public Task<DeviceSnapshot> GetDeviceSnapshotAsync(CancellationToken cancellationToken = default) => Task.FromResult(_snapshot with { AdbActivationPending = File.Exists(Path.Combine(_storage, "adb-access-pending.json")) || File.Exists(Path.Combine(_storage, AdbToggleTransaction.PendingName)), PreparationPending = File.Exists(Path.Combine(_storage, "setup-pending.json")) || File.Exists(Path.Combine(_storage, OnboardingEngine.CleanupPendingName)), ComponentCleanupPending = OnboardingEngine.HasComponentCleanupPending(_storage) });
     public Task<IReadOnlyList<LogEntry>> GetLogsAsync(CancellationToken cancellationToken = default)
     {
         lock (_logs) return Task.FromResult<IReadOnlyList<LogEntry>>(_logs.ToArray());
@@ -152,6 +152,14 @@ public sealed partial class WindowsModemService : IModemService
                 case ModemOperation.Connect: result = await ConnectAsync(p,cancellationToken); break;
                 case ModemOperation.VerifyBackupKey: result = await VerifyBackupKeyAsync(p,cancellationToken); break;
                 case ModemOperation.PrepareSsh: result = await PrepareSshAsync(p,cancellationToken); break;
+                case ModemOperation.CancelComponentCleanup:
+                {
+                    var host = Param(p,"host",_host);
+                    var cancelled = await new OnboardingEngine(host,_storage,_resources,_adb).CancelComponentCleanupAsync(cancellationToken);
+                    AdoptCancelledCleanupConnection(host, cancelled);
+                    result = "Очистка отменена до удаления. Агент, SSH и резервные копии сохранены.";
+                    break;
+                }
                 case ModemOperation.EnableDiagnosticAdb: result = await EnableDiagnosticAdbAsync(p,cancellationToken); break;
                 case ModemOperation.RefreshAdbState: result = await RefreshAdbStateAsync(cancellationToken); break;
                 case ModemOperation.SetAdbEnabled: result = await SetAdbEnabledAsync(p,cancellationToken); break;

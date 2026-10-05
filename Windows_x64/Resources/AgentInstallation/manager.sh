@@ -44,11 +44,25 @@ start_agent() {
     test -n "$(pids)"
 }
 valid_snapshot() {
-    owned_dir "$base" && plain "$base/previous.bin" && plain "$base/previous.sha256" && plain "$base/cid" || return 1
-    test "$(cat "$base/cid")" = "$cid" && test "$(hash "$base/previous.bin")" = "$(cat "$base/previous.sha256")"
+    owned_dir "$base" && plain "$base/previous.sha256" && plain "$base/cid" || return 1
+    test "$(cat "$base/cid")" = "$cid" || return 1
+    if test "$(cat "$base/previous.sha256")" = absent; then
+        test ! -e "$base/previous.bin" && test ! -L "$base/previous.bin"
+    else
+        plain "$base/previous.bin" && test "$(hash "$base/previous.bin")" = "$(cat "$base/previous.sha256")"
+    fi
 }
 restore_previous() {
     valid_snapshot || return 1
+    if test "$(cat "$base/previous.sha256")" = absent; then
+        if test -e "$binary" || test -L "$binary"; then
+            plain "$binary" && plain "$base/pending" && test "$(hash "$binary")" = "$(cat "$base/pending")" || return 1
+        fi
+        stop_agent || return 1
+        rm -f "$binary" "$base/pending"
+        sync
+        return
+    fi
     cp "$base/previous.bin" "$base/restore.bin" || return 1
     chmod 700 "$base/restore.bin" || return 1
     test "$(hash "$base/restore.bin")" = "$(cat "$base/previous.sha256")" || return 1
@@ -66,7 +80,7 @@ status)
     if plain "$startup" && sh -n "$startup"; then printf 'AGENT_STARTUP yes\n'; fi
     test ! -e "$base/pending" || printf 'AGENT_PENDING yes\n'
     if test -e "$base"; then
-        if valid_snapshot; then printf 'AGENT_BACKUP %s\n' "$(cat "$base/previous.sha256")"; fi
+        if valid_snapshot && test "$(cat "$base/previous.sha256")" != absent; then printf 'AGENT_BACKUP %s\n' "$(cat "$base/previous.sha256")"; fi
     fi
     ;;
 install)
@@ -75,7 +89,15 @@ install)
     case "$expected" in ''|*[!0-9a-f]*) fail HASH;; esac
     test "$(printf %s "$expected" | wc -c)" -eq 64 || fail HASH
     owned_dir "$(dirname "$source")" && plain "$source" && test "$(hash "$source")" = "$expected" || fail SOURCE_HASH
-    plain "$binary" && test -x "$binary" && plain "$startup" && sh -n "$startup" || fail PREPARE_FIRST
+    plain "$startup" && sh -n "$startup" || fail PREPARE_FIRST
+    if test -e "$binary" || test -L "$binary"; then
+        plain "$binary" && test -x "$binary" || fail BINARY
+        old=$(hash "$binary")
+    else
+        old=absent
+        if test -n "$root"; then test ! -e "$root/running" || fail RUNNING_WITHOUT_BINARY
+        else test -z "$(pids)" || fail RUNNING_WITHOUT_BINARY; fi
+    fi
     test ! -e "$root/data/local/tmp/open-u60-transactions/active" || fail OTHER_DEPLOYMENT
     test ! -e "$root/data/zte-vpn/controller-upgrade" || fail VPN_UPGRADE
     if test ! -e "$base"; then
@@ -84,10 +106,14 @@ install)
     test ! -e "$base/pending" || fail RECOVERY_REQUIRED
     cp "$source" "$base/candidate.bin"; chmod 700 "$base/candidate.bin"
     test "$(hash "$base/candidate.bin")" = "$expected" || fail CANDIDATE_HASH
-    cp "$binary" "$base/previous.new"; chmod 700 "$base/previous.new"
-    old=$(hash "$binary")
-    test "$(hash "$base/previous.new")" = "$old" || fail BACKUP_HASH
-    mv -f "$base/previous.new" "$base/previous.bin"
+    if test "$old" = absent; then
+        if test -e "$base/previous.bin" || test -L "$base/previous.bin"; then plain "$base/previous.bin" || fail BACKUP_INVALID; fi
+        rm -f "$base/previous.bin"
+    else
+        cp "$binary" "$base/previous.new"; chmod 700 "$base/previous.new"
+        test "$(hash "$base/previous.new")" = "$old" || fail BACKUP_HASH
+        mv -f "$base/previous.new" "$base/previous.bin"
+    fi
     printf '%s\n' "$old" > "$base/previous.sha256"
     printf '%s\n' "$cid" > "$base/cid"
     printf '%s\n' "$expected" > "$base/pending"
@@ -112,13 +138,13 @@ install)
     rm -f "$base/pending"; sync
     committed=1
     printf 'AGENT_INSTALLED %s\n' "$expected"
-    printf 'AGENT_BACKUP %s\n' "$old"
+    test "$old" = absent || printf 'AGENT_BACKUP %s\n' "$old"
     ;;
 restore)
     test ! -e "$root/data/local/tmp/open-u60-transactions/active" || fail OTHER_DEPLOYMENT
     test ! -e "$root/data/zte-vpn/controller-upgrade" || fail VPN_UPGRADE
     plain "$startup" && sh -n "$startup" || fail STARTUP
-    valid_snapshot || fail BACKUP_INVALID
+    valid_snapshot && test "$(cat "$base/previous.sha256")" != absent || fail BACKUP_INVALID
     printf 'restore\n' > "$base/pending"; sync
     restore_previous || fail RESTORE
     printf 'AGENT_RESTORED %s\n' "$(hash "$binary")"

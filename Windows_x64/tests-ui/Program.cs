@@ -54,6 +54,30 @@ try
  }
 }
 finally{if(Directory.Exists(serviceRoot))Directory.Delete(serviceRoot,true);}
+// A confirmed cancellation must retain the already prepared SSH endpoint.
+foreach(var operation in new[]{ModemOperation.CancelComponentCleanup,ModemOperation.PrepareSsh})
+{
+ var storage=Path.Combine(Path.GetTempPath(),"zte-cancel-connection-"+Guid.NewGuid());Directory.CreateDirectory(storage);
+ try
+ {
+  var id=Guid.NewGuid().ToString();var boot=Guid.NewGuid().ToString();var cid=new string('a',32);
+  var backup=Path.Combine(storage,"SetupBackups",id);Directory.CreateDirectory(backup);
+  var key=Path.Combine(storage,"SSH/id_ed25519");var known=Path.Combine(storage,"SSH/known_hosts");
+  var setup=new ZteImeiStudio.Windows.Core.OnboardingPending{Id=id,BackupDirectory=backup,IdentitySource="single-usb",Intent="linux-arm64-access",Cid=cid,BootId=boot,FirmwareHash=ZteImeiStudio.Windows.Core.ImeiEngine.FirmwareHash,RouterHash=ZteImeiStudio.Windows.Core.ImeiEngine.RouterHash,Profile="linux-arm64-access",ForceReinstall=true,CleanComponents=true,InstallRequested=true,Phase="complete",RemoteStage="/data/zte-imei-studio/stage-"+id,RemoteJournal="/data/zte-imei-studio/installations/"+id};
+  var pending=new ZteImeiStudio.Windows.Core.ComponentCleanupPending{Id=id,Cid=cid,BootId=boot,FirmwareHash=setup.FirmwareHash!,RouterHash=setup.RouterHash!,Host="192.0.2.1",KeyPath=key,KnownHostsPath=known,BackupDirectory=backup,SetupReceipt=Path.Combine(backup,"setup-result.json"),Profile="linux-arm64-access",Token=Guid.NewGuid().ToString(),Phase="cancelled",CancelledFromPhase="prepared",CancellationStatus="CLEAN_ABSENT"};
+  File.WriteAllText(Path.Combine(storage,"setup-pending.json"),System.Text.Json.JsonSerializer.Serialize(setup));
+  File.WriteAllText(Path.Combine(storage,"component-cleanup-pending.json"),System.Text.Json.JsonSerializer.Serialize(pending));
+  File.WriteAllText(Path.Combine(storage,"connection.json"),System.Text.Json.JsonSerializer.Serialize(new{host="192.0.2.1",port=22,key_path=Path.Combine(storage,"legacy-key"),known_hosts_path=Path.Combine(storage,"legacy-hosts")}));
+  var service=new WindowsModemService(storage,Path.Combine(windowsRoot,"Resources")){SshFactory=()=>throw new Exception("Cancellation must not connect")};
+  var result=await service.RunAsync(new OperationRequest(operation,new Dictionary<string,string>{{"host","192.0.2.1"}}));
+  Check(result.Success,"confirmed cancellation completes locally through "+operation);
+  var saved=service.GetConnectionSettings();
+  Check(saved.Port==2222&&saved.KeyPath==key&&saved.KnownHostsPath==known,"cancellation adopts prepared SSH metadata instead of legacy port/key: "+operation);
+  Check(new WindowsModemService(storage,Path.Combine(windowsRoot,"Resources")).GetConnectionSettings()==saved,"cancellation persists prepared metadata for restart: "+operation);
+  Check(!(await service.GetDeviceSnapshotAsync()).IsConnected&&Get(service,"_ssh")==null,"cancellation metadata does not claim or initiate SSH readiness: "+operation);
+ }
+ finally {Directory.Delete(storage,true);}
+}
 Check(MainWindow.ConnectionBrowserUri("192.0.2.2",true).AbsoluteUri=="http://192.0.2.2:8080/","agent browser link targets dashboard8080, not API9090");
 Check(MainWindow.ConnectionBrowserUri("192.0.2.2",false).AbsoluteUri=="http://192.0.2.2/","stock browser link targets HTTP root only");
 try{_=MainWindow.ConnectionBrowserUri("192.0.2.2/secret?x=1",true);Check(false,"invalid browser host rejected");}catch(ArgumentException){Check(true,"invalid browser host rejected");}
@@ -230,25 +254,59 @@ await session.Dispatch(()=> {
   if(!editDuringPrepare){FindButton(preparedWindow,"↻").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();Check(preparedModem.Requests.Last().Operation==ModemOperation.RefreshDevice,"refresh after preparation uses the confirmed SSH connection rather than obsolete form keys");}
   preparedWindow.Close();Pump();
  }
+ foreach(var editDuringCancel in new[]{false,true})
+ {
+  var generated=new ConnectionSettingsSnapshot("192.168.0.1",2222,"root","synthetic-generated-key","synthetic-generated-hosts");
+  var cancelModem=new FakeModem{AllowPreparation=true,AllowRefresh=true,PreparedSettings=generated,Settings=new("192.168.0.1",22,"root","synthetic-legacy-key","synthetic-legacy-hosts"),Snapshot=new(false,"Synthetic cleanup pending",PreparationPending:true,ComponentCleanupPending:true)};
+  var cancelWindow=new MainWindow(cancelModem,persistPreferences:false);cancelWindow.Show();Pump();
+  var cancelForm=(Dictionary<string,string>)Get(cancelWindow,"_form")!;
+  if(editDuringCancel)cancelModem.OnPrepare=()=>cancelForm["key_path"]="synthetic-user-changed-key";
+  FindButton(cancelWindow,"Отменить очистку").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();
+  Check(editDuringCancel?cancelForm["key_path"]=="synthetic-user-changed-key":cancelForm["port"]=="2222"&&cancelForm["key_path"]==generated.KeyPath&&cancelForm["known_hosts_path"]==generated.KnownHostsPath,editDuringCancel?"cancellation preserves concurrent connection edits":"cancellation updates the active form to prepared SSH metadata");
+  Check(cancelModem.Requests.Count==1&&cancelModem.Requests[0].Operation==ModemOperation.CancelComponentCleanup&&!((DeviceSnapshot)Get(cancelWindow,"_snapshot")!).IsConnected,"cancellation does not auto-connect or replay preparation");
+  cancelWindow.Close();Pump();
+ }
  foreach(var language in new[]{"ru","en"})
  {
   Localization.SetLanguage(language,persist:false);
   var forced=new FakeModem{AllowPreparation=true,Snapshot=new(true,"Synthetic SSH",ConnectionMode:"SSH",IpAddress:"192.168.0.1")};
   var forcedWindow=new MainWindow(forced,persistPreferences:false);forcedWindow.Show();Pump();
+  var cleanBox=forcedWindow.GetLogicalDescendants().OfType<CheckBox>().SingleOrDefault(b=>b.Name=="CleanPreparation");
+  Check(cleanBox is not null&&cleanBox.IsChecked==false&&cleanBox.IsEnabled,language+" explicit clean preparation defaults off on connected SSH");
   var forceBox=forcedWindow.GetLogicalDescendants().OfType<CheckBox>().SingleOrDefault(b=>b.Name=="ForcePreparation");
   Check(forceBox is not null&&forceBox.IsChecked==false&&forceBox.IsEnabled&&forceBox.Content?.ToString()==Localization.Translate("Принудительная подготовка: переустановить агент и SSH"),language+" explicit force option is available but defaults off on connected SSH");
   Check(!FindButton(forcedWindow,"Выполнить предварительную подготовку модема").IsEnabled,language+" normal preparation does not reinstall an existing SSH connection");
+  var cleanInfo=forcedWindow.GetLogicalDescendants().OfType<Button>().Single(b=>b.Name=="CleanPreparationInfo");
+  var beforeHelp=forced.Requests.Count;cleanInfo.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();var cleanDialog=forcedWindow.OwnedWindows.Single();
+  Check(cleanDialog.GetLogicalDescendants().OfType<TextBlock>().Any(t=>t.Text==Localization.Translate(OperationHelpContent.CleanPreparation.Introduction))&&forced.Requests.Count==beforeHelp,language+" clean information explains staged backup and cleanup without launching an operation");
+  if(language=="en")Check(!string.Join(" ",cleanDialog.GetLogicalDescendants().OfType<TextBlock>().Select(t=>t.Text)).Any(c=>c>='\u0400'&&c<='\u04ff'),"clean installation help is fully English");
+  cleanDialog.Close();Pump();
   Toggle(forceBox!);
   Check(FindButton(forcedWindow,"Выполнить предварительную подготовку модема").IsEnabled,language+" explicit force enables preparation despite existing SSH");
+  Toggle(forceBox!);Toggle(cleanBox!);
+  Check(forceBox!.IsChecked==true&&cleanBox!.IsChecked==true,language+" clean selection implies forced preparation");
+  Toggle(forceBox!);Check(cleanBox!.IsChecked==false,language+" disabling force also clears the dependent clean intent");Toggle(cleanBox!);
   ((Dictionary<string,TextBox>)Get(forcedWindow,"_secretFields")!)["agent_password"].Text="synthetic-new-agent-password";Pump();
   FindButton(forcedWindow,"Выполнить предварительную подготовку модема").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();
-  Check(forced.Requests.Last().Operation==ModemOperation.PrepareSsh&&forced.Requests.Last().Parameters!["force_reinstall"]=="true"&&forced.Requests.Last().Parameters!["agent_password"]=="synthetic-new-agent-password",language+" force handler passes deliberate intent with the current RAM password");
+  Check(forced.Requests.Last().Operation==ModemOperation.PrepareSsh&&forced.Requests.Last().Parameters!["force_reinstall"]=="true"&&forced.Requests.Last().Parameters!["clean_components"]=="true"&&forced.Requests.Last().Parameters!["agent_password"]=="synthetic-new-agent-password",language+" force handler passes deliberate intent with the current RAM password");
+  Check(!forcedWindow.GetLogicalDescendants().OfType<CheckBox>().Single(b=>b.Name=="CleanPreparation").IsEnabled&&forcedWindow.GetLogicalDescendants().OfType<CheckBox>().Single(b=>b.Name=="CleanPreparation").IsChecked==true,language+" pending operation freezes and retains clean intent");
   Check(!forcedWindow.GetLogicalDescendants().OfType<CheckBox>().Single(b=>b.Name=="ForcePreparation").IsEnabled,language+" pending preparation freezes the original mode instead of reconfiguring it");
   Check(forcedWindow.GetLogicalDescendants().OfType<CheckBox>().Single(b=>b.Name=="ForcePreparation").IsChecked==true&&((Dictionary<string,TextBox>)Get(forcedWindow,"_secretFields")!)["agent_password"].Text=="synthetic-new-agent-password",language+" failed force keeps the selected intent and password in RAM");
   forced.PrepareSuccess=true;
   FindButton(forcedWindow,"Выполнить предварительную подготовку модема").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();
+  Check(forcedWindow.GetLogicalDescendants().OfType<CheckBox>().Single(b=>b.Name=="CleanPreparation").IsChecked==false,language+" successful completion clears clean intent");
   Check(forcedWindow.GetLogicalDescendants().OfType<CheckBox>().Single(b=>b.Name=="ForcePreparation").IsChecked==false&&!FindButton(forcedWindow,"Выполнить предварительную подготовку модема").IsEnabled,language+" completed force clears deliberate mode and cannot silently repeat on existing SSH");
   forcedWindow.Close();Pump();
+  var cleanupOnly=new FakeModem{AllowPreparation=true,PrepareSuccess=true,Snapshot=new(true,"Synthetic SSH",ConnectionMode:"SSH",PreparationPending:true,ComponentCleanupPending:true)};
+  var cleanupWindow=new MainWindow(cleanupOnly,persistPreferences:false);cleanupWindow.Show();Pump();
+  var resumeCleanup=FindButton(cleanupWindow,"Продолжить очистку компонентов");
+  Check(resumeCleanup.IsEnabled&&cleanupOnly.Requests.Count==0,language+" saved cleanup is explicit and available without a password or navigation action");
+  resumeCleanup.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();
+  Check(cleanupOnly.Events.All(x=>x!="bootstrap-research")&&cleanupOnly.Requests.Count==1&&cleanupOnly.Requests[0].Operation==ModemOperation.PrepareSsh&&cleanupOnly.Requests[0].Parameters!["agent_password"]=="",language+" cleanup resume sends one explicit request without demanding or manufacturing credentials");
+  Check(FindButton(cleanupWindow,"Отменить очистку") is not null,language+" cleanup has a separate explicit cancellation control");
+  FindButton(cleanupWindow,"Отменить очистку").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();
+  Check(cleanupOnly.Requests.Last().Operation==ModemOperation.CancelComponentCleanup&&cleanupOnly.Requests.Count==2,language+" cancellation dispatches only its read-only proof operation");
+  cleanupWindow.Close();Pump();
  }
  Localization.SetLanguage("ru",persist:false);
  var discovery=new FakeModem {AllowPreparation=true};var first=new MainWindow(discovery,persistPreferences:false);first.Show();Pump();
@@ -376,7 +434,7 @@ internal sealed class FakeModem:IModemService {
  public ConnectionSettingsSnapshot? PreparedSettings;public Action? OnPrepare;public ConnectionSettingsSnapshot Settings=new(); public ConnectionSettingsSnapshot GetConnectionSettings()=>Settings;
  public int Operations{get;private set;} public bool AllowPreparation,AllowDiagnostics,AllowBackupCheck,BackupCheckSuccess=true,AllowRefresh,ConnectSuccess,ThrowPrepare,PrepareSuccess;public DeviceSnapshot Snapshot=new(false,"Нет подключения");public List<string> Events=[];public List<OperationRequest> Requests=[];public IReadOnlyDictionary<string,string>? ResearchParameters;
  public Task<DeviceSnapshot> GetDeviceSnapshotAsync(CancellationToken ct=default)=>Task.FromResult(Snapshot);
- public Task<OperationResult> RunAsync(OperationRequest request,CancellationToken ct=default){Operations++;Requests.Add(request);if(AllowRefresh&&request.Operation is ModemOperation.Connect or ModemOperation.RefreshDevice){if(request.Operation==ModemOperation.Connect&&ConnectSuccess){Snapshot=Snapshot with{IsConnected=true,ConnectionMode="SSH",Status="Synthetic SSH ready"};Settings=Settings with{Host=request.Parameters!["host"],KeyPath=request.Parameters["key_path"],KnownHostsPath=request.Parameters["known_hosts_path"]};}return Task.FromResult(new OperationResult(request.Operation==ModemOperation.RefreshDevice||ConnectSuccess,ConnectSuccess?"Synthetic SSH ready":"Закреплённый SSH host key не найден."));}if(AllowBackupCheck&&request.Operation==ModemOperation.VerifyBackupKey)return Task.FromResult(new OperationResult(BackupCheckSuccess,BackupCheckSuccess?"Ключ и формат бэкапа подтверждены. Это не разрешает восстановление или установку компонентов.":"Не удалось подтвердить ключ или формат архива бэкапа.",Values:BackupCheckSuccess?new Dictionary<string,string>{{"backup_firmware","FLY_CN_MU5250V1.0.0B13"},{"backup_inner","BD_FLYMODEMMU5250V1.0.0B28"},{"backup_entries","1"},{"backup_sha256",new string('a',64)}}:null));if(AllowDiagnostics&&request.Operation is ModemOperation.DiscoverConnections or ModemOperation.EnableDiagnosticAdb or ModemOperation.RefreshAccess or ModemOperation.ExportDiagnostics or ModemOperation.SetAdbEnabled or ModemOperation.RefreshAdbState or ModemOperation.Connect)return Task.FromResult(new OperationResult(false,"Synthetic diagnostic response; no device."));if(AllowPreparation&&request.Operation==ModemOperation.PrepareSsh){Events.Add("prepare");Snapshot=Snapshot with{PreparationPending=!PrepareSuccess};if(PreparedSettings is{} ready){Settings=ready;Snapshot=Snapshot with{IsConnected=true,ConnectionMode="SSH",IpAddress=ready.Host};}OnPrepare?.Invoke();if(ThrowPrepare)throw new IOException("Synthetic preparation interruption");return Task.FromResult(new OperationResult(PrepareSuccess,PrepareSuccess?"Synthetic preparation complete":"Synthetic preflight refused; no writes."));}throw new Exception("Unexpected modem operation");}
+ public Task<OperationResult> RunAsync(OperationRequest request,CancellationToken ct=default){Operations++;Requests.Add(request);if(AllowRefresh&&request.Operation is ModemOperation.Connect or ModemOperation.RefreshDevice){if(request.Operation==ModemOperation.Connect&&ConnectSuccess){Snapshot=Snapshot with{IsConnected=true,ConnectionMode="SSH",Status="Synthetic SSH ready"};Settings=Settings with{Host=request.Parameters!["host"],KeyPath=request.Parameters["key_path"],KnownHostsPath=request.Parameters["known_hosts_path"]};}return Task.FromResult(new OperationResult(request.Operation==ModemOperation.RefreshDevice||ConnectSuccess,ConnectSuccess?"Synthetic SSH ready":"Закреплённый SSH host key не найден."));}if(AllowBackupCheck&&request.Operation==ModemOperation.VerifyBackupKey)return Task.FromResult(new OperationResult(BackupCheckSuccess,BackupCheckSuccess?"Ключ и формат бэкапа подтверждены. Это не разрешает восстановление или установку компонентов.":"Не удалось подтвердить ключ или формат архива бэкапа.",Values:BackupCheckSuccess?new Dictionary<string,string>{{"backup_firmware","FLY_CN_MU5250V1.0.0B13"},{"backup_inner","BD_FLYMODEMMU5250V1.0.0B28"},{"backup_entries","1"},{"backup_sha256",new string('a',64)}}:null));if(AllowDiagnostics&&request.Operation is ModemOperation.DiscoverConnections or ModemOperation.EnableDiagnosticAdb or ModemOperation.RefreshAccess or ModemOperation.ExportDiagnostics or ModemOperation.SetAdbEnabled or ModemOperation.RefreshAdbState or ModemOperation.Connect)return Task.FromResult(new OperationResult(false,"Synthetic diagnostic response; no device."));if(AllowPreparation&&request.Operation==ModemOperation.CancelComponentCleanup){Snapshot=Snapshot with{PreparationPending=false,ComponentCleanupPending=false,IsConnected=false};if(PreparedSettings is{} cancelledReady)Settings=cancelledReady;OnPrepare?.Invoke();return Task.FromResult(new OperationResult(true,"Synthetic cancelled"));}if(AllowPreparation&&request.Operation==ModemOperation.PrepareSsh){Events.Add("prepare");Snapshot=Snapshot with{PreparationPending=!PrepareSuccess};if(PreparedSettings is{} ready){Settings=ready;Snapshot=Snapshot with{IsConnected=true,ConnectionMode="SSH",IpAddress=ready.Host};}OnPrepare?.Invoke();if(ThrowPrepare)throw new IOException("Synthetic preparation interruption");return Task.FromResult(new OperationResult(PrepareSuccess,PrepareSuccess?"Synthetic preparation complete":"Synthetic preflight refused; no writes."));}throw new Exception("Unexpected modem operation");}
  public Task<ResearchReport> CollectFirmwareResearchAsync(IReadOnlyDictionary<string,string> parameters,IProgress<ResearchProgress>? progress,CancellationToken ct=default){if(!AllowPreparation&&!AllowDiagnostics)throw new Exception("Unexpected research");ResearchParameters=parameters;Events.Add("research");return Task.FromResult(new ResearchReport(1,"fixture",DateTimeOffset.UtcNow,DateTimeOffset.UtcNow,"partial","ADB",null,"test",7,[],[],[],BindingStrength:"transport-only"));}
  public Task<ResearchReport> CollectPreparationResearchAsync(IReadOnlyDictionary<string,string> parameters,IProgress<ResearchProgress>? progress,CancellationToken ct=default){ResearchParameters=parameters;Events.Add("bootstrap-research");return Task.FromResult(new ResearchReport(1,"fixture",DateTimeOffset.UtcNow,DateTimeOffset.UtcNow,"partial","ADB",null,"test",7,[],[],[],BindingStrength:"transport-only"));}
  public Task<IReadOnlyList<BackupInfo>> ListBackupsAsync(CancellationToken ct=default)=>Task.FromResult<IReadOnlyList<BackupInfo>>([]);

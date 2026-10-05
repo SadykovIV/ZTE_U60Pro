@@ -415,6 +415,13 @@ struct ContentView: View {
                         .disabled(model.setupPending)
                     Text(L10n.text("Сначала сохраняется резервная копия. Агент получит введённый пароль; временные файлы удаляются после проверки. Незавершённая операция продолжается в сохранённом режиме."))
                         .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
+                    HStack {
+                        Toggle(L10n.text("Очистить данные агента, VPN и дополнительных страниц"), isOn: $model.cleanPreparationComponents)
+                            .disabled(model.setupPending)
+                        OperationInfoButton(topic: .componentCleanup)
+                    }
+                    Text(L10n.text("Включает принудительную подготовку. Перед удалением компоненты сохраняются в архив на Mac; агент и SSH остаются."))
+                        .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
                     connectionPasswordField("КЛЮЧ БЭКАПА (НЕОБЯЗАТЕЛЬНО)", placeholder: "Пусто — проверка известного ключа", text: $model.backupSuffix)
                     Text(L10n.text("Пустое поле использует известный ключ как кандидат. Ключ, архив и штатный USB-блок проверяются перед восстановлением; ручное значение не подменяется."))
                         .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)

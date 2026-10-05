@@ -4,6 +4,8 @@ private final class IntegrationRemote: RemoteTransport {
     var commands = [String](), uploaded = [String: Data]()
     var preflightFails = false, invalidReceipt = false, lostAt = "", failedAt = "", installed = BundledAgent.sha256, vpnPresent = true
     var backupHash: String?
+    var startupReady = true, recoveryPending = false
+    var unsafeAgent = false
     var badFinalAgentState = "", chainFinished = false
     let cid = String(repeating:"a",count:32), boot = "11111111-2222-3333-4444-555555555555"
     func output(_ text: String = "", _ code: Int32 = 0) -> CommandResult { .init(status:code,stdout:Data(text.utf8),stderr:Data()) }
@@ -12,6 +14,7 @@ private final class IntegrationRemote: RemoteTransport {
         if command.contains("mkdir /tmp/zte-imei-app.lock") || command.contains("&& rm /tmp/zte-imei-app.lock/owner") { return output() }
         if command.hasPrefix("if test -e /data/zte-vpn") { return output(vpnPresent ? "PRESENT" : "ABSENT") }
         if command.hasPrefix("test -d /data/zte-vpn") { return output() }
+        if command == "if test ! -e /data/zte-agent && test ! -L /data/zte-agent; then printf ABSENT; elif test -f /data/zte-agent && test ! -L /data/zte-agent; then printf PRESENT; else printf UNSAFE; fi" { return output(unsafeAgent ? "UNSAFE" : (installed == "absent" ? "ABSENT" : "PRESENT")) }
         if command.hasPrefix("for c in lua nft") { return output("AGENT:" + BundledAgent.sha256 + "\n") }
         if command.hasPrefix("test -d /data/zte-launcher") { return output() }
         if command == "sha256sum /data/zte-agent | awk '{print $1}'" { return output(installed) }
@@ -23,11 +26,11 @@ private final class IntegrationRemote: RemoteTransport {
         }
         if command.contains("/manager.sh' status") {
             let finalHash = chainFinished && badFinalAgentState == "hash" ? String(repeating:"0",count:64) : installed
-            let running = chainFinished && badFinalAgentState == "stopped" ? "no" : "yes"
-            let pending = chainFinished && badFinalAgentState == "pending" ? "AGENT_PENDING yes\n" : ""
-            return output("AGENT_SHA " + finalHash + "\nAGENT_RUNNING " + running + "\nAGENT_STARTUP yes\n" + pending + (backupHash.map { "AGENT_BACKUP " + $0 + "\n" } ?? ""))
+            let running = installed == "absent" || (chainFinished && badFinalAgentState == "stopped") ? "no" : "yes"
+            let pending = recoveryPending || (chainFinished && badFinalAgentState == "pending") ? "AGENT_PENDING yes\n" : ""
+            return output("AGENT_SHA " + finalHash + "\nAGENT_RUNNING " + running + "\nAGENT_STARTUP " + (startupReady ? "yes\n" : "no\n") + pending + (backupHash.map { "AGENT_BACKUP " + $0 + "\n" } ?? ""))
         }
-        if command.contains("/manager.sh' install ") { backupHash=installed; installed=BundledAgent.sha256; return output("AGENT_INSTALLED " + installed + "\n") }
+        if command.contains("/manager.sh' install ") { backupHash=installed == "absent" ? nil : installed; installed=BundledAgent.sha256; return output("AGENT_INSTALLED " + installed + "\n") }
         if command.hasPrefix("sh '/tmp/zte-dashboard-stage-") {
             let path = command.components(separatedBy:"'")[1]
             let id = URL(fileURLWithPath:path).deletingLastPathComponent().lastPathComponent.replacingOccurrences(of:"zte-dashboard-stage-",with:"")
@@ -83,6 +86,15 @@ private final class IntegrationRemote: RemoteTransport {
         let legacyPreflight=legacy.commands.firstIndex { $0.hasSuffix(" preflight") }!, legacyAgent=legacy.commands.firstIndex { $0.contains("/manager.sh' install ") }!
         try check(legacyPreflight < legacyAgent && legacyAgent < helper(legacy,"upgrade-controller.sh")! && legacy.backupHash == "e9f3e2170a7a2fa80a4836fd7d0db92c4aa119b4b8cceaa0907450123de29d19" && legacy.installed == BundledAgent.sha256,"Frozen .8 bypassed preflight, backup or ordered update")
         let custom=IntegrationRemote();custom.installed=String(repeating:"0",count:64);try reject(custom);try check(custom.uploaded.isEmpty,"Unknown agent reached upload")
+        let unsafe=IntegrationRemote();unsafe.unsafeAgent=true;try reject(unsafe)
+        try check(unsafe.uploaded.isEmpty && !unsafe.commands.contains { $0 == "sha256sum /data/zte-agent | awk '{print $1}'" }, "Unsafe present agent reached hash or write")
+        let absent=IntegrationRemote();absent.installed="absent";try run(absent)
+        try check(absent.installed == BundledAgent.sha256 && absent.backupHash == nil && absent.chainFinished, "Missing agent with verified startup did not complete coherent installation")
+        try check(absent.commands.firstIndex { $0.contains("/manager.sh' install ") }! < absent.commands.firstIndex { $0.hasSuffix(" preflight") }!, "Missing agent was not restored before dashboard preflight")
+        for pending in [false,true] {
+            let missing=IntegrationRemote();missing.installed="absent";missing.startupReady=pending;missing.recoveryPending=pending;try reject(missing)
+            try check(!missing.commands.contains { $0.contains("/manager.sh' install ") || $0.hasSuffix(" preflight") } && helper(missing,"upgrade-controller.sh") == nil, "Missing startup or pending recovery allowed component writes")
+        }
         for hash in ["413ba4b0a07540d6901e87e74c9730196eb3373cf35b8914e31a8194bfe5a839", "f85bd358b6d2b8d418375d45b52472f13e5a25942ed670d6671c275c33204d68"] {
             let previous=IntegrationRemote();previous.installed=hash;try run(previous,bundledAgent:true)
             try check(previous.installed==BundledAgent.sha256 && previous.backupHash==hash && previous.chainFinished,
@@ -103,6 +115,6 @@ private final class IntegrationRemote: RemoteTransport {
             let badFinal=IntegrationRemote();badFinal.badFinalAgentState=state;try reject(badFinal,bundledAgent:true)
             try check(badFinal.chainFinished,"Final agent verification fixture failed before chain completion")
         }
-        print("PASS 17 VPN integration scenarios: ordered updates, previous bundled builds, refusal/recovery, coherent bundled installation and final-state verification; fake SSH only")
+        print("PASS 21 VPN integration scenarios: ordered updates, missing agent with owned startup, unsafe paths, previous bundled builds, refusal/recovery, coherent bundled installation and final-state verification; fake SSH only")
     }
 }

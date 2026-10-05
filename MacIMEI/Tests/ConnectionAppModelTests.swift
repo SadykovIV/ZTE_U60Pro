@@ -204,6 +204,29 @@ private func snapshot() -> ConnectionOverviewSnapshot {
                 try check(m.canPrepareModem && m.preparationUnavailableReason == nil, "Known HTTP failure hides interrupted setup recovery")
             }
         }
+        try test("Clean components is explicit target-bound force intent with cleanup-only recovery") {
+            let m=try model();m.acceptChannelSelection(selection(.ssh))
+            try check(!m.cleanPreparationComponents && !m.forcePreparation, "Cleanup is enabled by default")
+            m.cleanPreparationComponents=true
+            try check(m.forcePreparation && m.canPrepareModem, "Cleanup did not require force preparation")
+            m.forcePreparation=false
+            try check(!m.cleanPreparationComponents, "Disabling force retained destructive cleanup intent")
+            m.cleanPreparationComponents=true;m.editConnectionHost("192.0.2.15")
+            try check(!m.cleanPreparationComponents && !m.forcePreparation, "Cleanup leaked to changed target")
+            m.acceptChannelSelection(selection(.ssh))
+            try savePrivate(Data("{}".utf8), ComponentCleanup.pendingURL(root:isolatedStorage))
+            m.refreshBackups()
+            try check(m.componentCleanupPending && m.setupPending && m.canPrepareModem && !m.canManage,
+                      "Cleanup recovery is hidden or permits unrelated management")
+        }
+        try test("Cleanup cancel is phase gated and observes busy terminal and operation guards") {
+            let m=try model();m.componentCleanupPending=true;m.componentCleanupCanCancel=true
+            try check(m.canCancelComponentCleanup,"Known undispatched cancellation requires credentials")
+            m.busy=true;try check(!m.canCancelComponentCleanup,"Busy cancel allowed");m.busy=false
+            m.terminalActive=true;try check(!m.canCancelComponentCleanup,"Terminal cancel allowed");m.terminalActive=false
+            m.pendingOperation=true;try check(!m.canCancelComponentCleanup,"Other operation cancel allowed");m.pendingOperation=false
+            m.componentCleanupCanCancel=false;try check(!m.canCancelComponentCleanup,"Unknown/dispatched cancel allowed")
+        }
         try test("Explicit force enables preparation on working SSH without bypassing operation guards") {
             let m=try model();m.acceptChannelSelection(selection(.ssh));m.forcePreparation=true
             try check(m.canPrepareModem && m.preparationUnavailableReason == nil,"Explicit force cannot prepare working SSH")

@@ -9,6 +9,7 @@ struct SetupJournal: Codable {
     var restoreRequested = false
     var installRequested = false
     var forceReinstall: Bool?
+    var cleanComponents: Bool?
     var adbSerial: String?
     var cid: String?
     var remoteJournal: String?
@@ -104,6 +105,7 @@ struct SetupResult: Sendable {
     var identity: Identity?
     var firmware: String
     var suffix: String
+    var componentsCleaned = false
 }
 protocol HostCommandRunner {
     func run(_ executable: URL, _ arguments: [String], timeout: TimeInterval) throws -> CommandResult
@@ -672,17 +674,20 @@ final class OnboardingEngine: @unchecked Sendable {
         try savePrivate(Data((output + "\n").utf8), directory.appendingPathComponent("rollback-verification.txt"))
         try fm.removeItem(at: pending)
     }
-    func run(webPassword: String, agentPassword: String, expectedIdentity: Identity? = nil, expectedIMEI: String? = nil, forceReinstall: Bool = false) throws -> SetupResult {
+    func run(webPassword: String, agentPassword: String, expectedIdentity: Identity? = nil, expectedIMEI: String? = nil, forceReinstall: Bool = false, cleanComponents: Bool = false) throws -> SetupResult {
         try locked {
+            if ComponentCleanup.hasPending(root: root) { return try resumeComponentCleanup() }
+            if let cleanup = try resumeCommittedCleanup() { return cleanup }
+            let requestedForce = forceReinstall || cleanComponents
             try require(!fm.fileExists(atPath: diagnosticPending.path), "Сначала завершите включение ADB для диагностики")
-            if !forceReinstall && !fm.fileExists(atPath: pending.path), let reused = try reuseSSH(expectedIdentity: expectedIdentity, expectedIMEI: expectedIMEI) { return reused }
+            if !requestedForce && !fm.fileExists(atPath: pending.path), let reused = try reuseSSH(expectedIdentity: expectedIdentity, expectedIMEI: expectedIMEI) { return reused }
             let expected = try DiagnosticDeviceExpectation.load(root: root, identity: expectedIdentity, web: nil, imei: expectedIMEI)
             func validateExpectedDevice(_ device: Identity) throws {
                 try require(expected.cids.isEmpty || expected.cids.contains(device.cid), "CID отличается от ожидаемого модема или незавершённой установки")
                 if let expectedIdentity { try require(device == expectedIdentity, "Прошивка ожидаемого модема изменилась; подготовка остановлена") }
             }
             let hashes = try verifyAssets()
-            if let access = try runExistingUSBAccess(hashes: hashes, webPassword: webPassword, agentPassword: agentPassword, expected: expected, expectedIdentity: expectedIdentity, forceReinstall: forceReinstall) { return access }
+            if let access = try runExistingUSBAccess(hashes: hashes, webPassword: webPassword, agentPassword: agentPassword, expected: expected, expectedIdentity: expectedIdentity, forceReinstall: requestedForce, cleanComponents: cleanComponents) { return access }
             // A previously dispatched restore needs no new Web authentication
             // once the same modem has returned as verified root USB ADB.
             if fm.fileExists(atPath: pending.path), var prior = try? readJSON(SetupJournal.self, pending),
@@ -706,7 +711,7 @@ final class OnboardingEngine: @unchecked Sendable {
                     try saveJSON(prior, pending)
                     let bound = try DiagnosticDeviceExpectation.load(root: root, identity: device, web: prior.identity)
                     guard let result = try runExistingUSBAccess(hashes: hashes, webPassword: "", agentPassword: agentPassword,
-                        expected: bound, expectedIdentity: device, completedBootstrapID: prior.id, forceReinstall: forceReinstall) else {
+                        expected: bound, expectedIdentity: device, completedBootstrapID: prior.id, forceReinstall: requestedForce, cleanComponents: cleanComponents) else {
                         throw IMEIError.message("Для продолжения установки нужен тот же USB ADB; новая установка не запускалась")
                     }
                     return result
@@ -719,6 +724,7 @@ final class OnboardingEngine: @unchecked Sendable {
             var journal: SetupJournal
             if fm.fileExists(atPath: pending.path) {
                 journal = try readJSON(SetupJournal.self, pending)
+                try require(journal.cleanComponents != true || journal.forceReinstall == true, "Некорректный режим незавершённой подготовки")
                 _ = try SetupRemotePaths(id: journal.id, installRequested: journal.installRequested, stage: journal.remoteStage, journal: journal.remoteJournal)
                 try require(journal.identity == identity && UUID(uuidString: journal.id) != nil, "Незавершённая настройка относится к другому устройству")
                 let savedDirectory = URL(fileURLWithPath: journal.directory).standardizedFileURL
@@ -726,7 +732,7 @@ final class OnboardingEngine: @unchecked Sendable {
                 if !journal.restoreRequested && !journal.installRequested { journal.directory = directory.path; try saveJSON(journal, pending) }
             } else {
                 journal = SetupJournal(id: UUID().uuidString.lowercased(), identity: identity, phase: "prepared", directory: directory.path)
-                journal.forceReinstall = forceReinstall
+                journal.forceReinstall = requestedForce; journal.cleanComponents = cleanComponents
                 try saveJSON(journal, pending)
             }
             // Existing verified SSH+agent is sufficient; do not restore a backup just to enable ADB again.
@@ -747,10 +753,10 @@ final class OnboardingEngine: @unchecked Sendable {
                     if journal.installRequested && journal.phase != "complete" {
                         try commitIfReady(journal: &journal, connection: candidate, password: agentPassword)
                     }
-                    journal.phase = "complete"; try saveJSON(journal, URL(fileURLWithPath: journal.directory).appendingPathComponent("setup-result.json"))
-                    try fm.removeItem(at: pending)
+                    journal.phase = "complete"
                     update("SSH и агент доступны. Совместимость операций с NV проверяется отдельно.", 1)
-                    return SetupResult(connection: candidate, state: state, identity: deviceID, firmware: identity.firmware, suffix: "")
+                    return try finishSetup(journal, id: journal.id, directory: URL(fileURLWithPath: journal.directory), cleanComponents: journal.cleanComponents == true,
+                        result: SetupResult(connection: candidate, state: state, identity: deviceID, firmware: identity.firmware, suffix: ""))
                 }
             }
             let adb = ADBClient(binary: assets.appendingPathComponent("adb"), runner: runner)
@@ -772,7 +778,7 @@ final class OnboardingEngine: @unchecked Sendable {
                 journal.firmwareHash = deviceID.firmwareHash; journal.routerHash = fresh.routerHash
                 try saveJSON(journal, pending)
                 let bound = try DiagnosticDeviceExpectation.load(root: root, identity: deviceID, web: identity)
-                guard let result = try runExistingUSBAccess(hashes: hashes, webPassword: webPassword, agentPassword: agentPassword, expected: bound, expectedIdentity: deviceID, completedBootstrapID: journal.id, forceReinstall: forceReinstall) else {
+                guard let result = try runExistingUSBAccess(hashes: hashes, webPassword: webPassword, agentPassword: agentPassword, expected: bound, expectedIdentity: deviceID, completedBootstrapID: journal.id, forceReinstall: requestedForce, cleanComponents: cleanComponents) else {
                     throw IMEIError.message("USB ADB был подтверждён, но сейчас недоступен. Восстановление автоматически не повторяется.")
                 }
                 return result
@@ -798,9 +804,9 @@ final class OnboardingEngine: @unchecked Sendable {
                 try require(sshIdentity == deviceID, "SSH CID отличается от проверенного USB-модема")
                 journal.remoteJournal = remoteJournal
                 try commitIfReady(journal: &journal, connection: connection, password: agentPassword)
-                try saveJSON(journal, URL(fileURLWithPath: journal.directory).appendingPathComponent("setup-result.json")); try fm.removeItem(at: pending)
                 update("Установка доступа завершена. Совместимость операций с NV проверяется отдельно.", 1)
-                return SetupResult(connection: connection, state: state, identity: deviceID, firmware: identity.firmware, suffix: "")
+                return try finishSetup(journal, id: journal.id, directory: URL(fileURLWithPath: journal.directory), cleanComponents: journal.cleanComponents == true,
+                    result: SetupResult(connection: connection, state: state, identity: deviceID, firmware: identity.firmware, suffix: ""))
             }
             let installer = try String(contentsOf: assets.appendingPathComponent("setup-agent.sh"), encoding: .utf8)
             let policyArguments = [deviceID.cid, profile, deviceID.firmwareHash, ModemEngine.routerHash]
@@ -846,11 +852,11 @@ final class OnboardingEngine: @unchecked Sendable {
             let (sshIdentity, state) = try inspectSetupSSH(connection, expected: identity, password: agentPassword)
             try require(sshIdentity == deviceID, "После установки подключён другой модем")
             try commitIfReady(journal: &journal, connection: connection, password: agentPassword)
-            try saveJSON(journal, URL(fileURLWithPath: journal.directory).appendingPathComponent("setup-result.json")); try fm.removeItem(at: pending)
             // Credentials in this owned staging directory are no longer needed. Device recovery snapshots remain private.
             _ = try? adb.shell(serial, "rm -f " + ["zte-agent","dropbear","setup-agent.sh","start_zte_imei_studio.sh","id_ed25519.pub","start-agent.sh","legacy-agent.private.sh",".owner",".install-requested"].map { shellQuote(stage + "/" + $0) }.joined(separator: " ") + "; rmdir " + shellQuote(stage))
             update("SSH и агент настроены. Совместимость операций с NV проверяется отдельно.", 1)
-            return SetupResult(connection: connection, state: state, identity: deviceID, firmware: identity.firmware, suffix: "")
+            return try finishSetup(journal, id: journal.id, directory: URL(fileURLWithPath: journal.directory), cleanComponents: journal.cleanComponents == true,
+                result: SetupResult(connection: connection, state: state, identity: deviceID, firmware: identity.firmware, suffix: ""))
         }
     }
     func pinSSH(adb: ADBClient, serial: String, expected: WebIdentity, deviceID: Identity, key: URL, dropbearKey: String) throws -> Connection {

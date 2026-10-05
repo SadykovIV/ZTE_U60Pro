@@ -57,28 +57,53 @@ struct DeviceBackupItem: Identifiable, Sendable {
 }
 struct BackupStreamResult: Sendable { var sha256: String; var bytes: Int64 }
 protocol BackupStreamTransport {
+    func stream(_ command: String, input: Data?, to destination: URL, maxBytes: Int64, timeout: TimeInterval, cancelled: @escaping @Sendable () -> Bool) throws -> BackupStreamResult
     func stream(_ command: String, to destination: URL, maxBytes: Int64, timeout: TimeInterval, cancelled: @escaping @Sendable () -> Bool) throws -> BackupStreamResult
+}
+
+extension BackupStreamTransport {
+    func stream(_ command: String, input: Data?, to destination: URL, maxBytes: Int64, timeout: TimeInterval, cancelled: @escaping @Sendable () -> Bool) throws -> BackupStreamResult {
+        try require(input == nil, "Этот транспорт не поддерживает передачу скрипта через стандартный ввод")
+        return try stream(command, to: destination, maxBytes: maxBytes, timeout: timeout, cancelled: cancelled)
+    }
 }
 
 /// The OS streams SSH stdout directly into a private file. No archive-sized Data
 /// or in-memory buffer exists; hashing is incremental in 1 MiB blocks.
 final class SSHBackupStreamTransport: BackupStreamTransport {
     let connection: Connection
-    init(_ connection: Connection) { self.connection = connection }
+    let sshExecutable: URL
+    init(_ connection: Connection, sshExecutable: URL = URL(fileURLWithPath: "/usr/bin/ssh")) { self.connection = connection; self.sshExecutable = sshExecutable }
     func stream(_ command: String, to destination: URL, maxBytes: Int64, timeout: TimeInterval, cancelled: @escaping @Sendable () -> Bool) throws -> BackupStreamResult {
+        try stream(command, input: nil, to: destination, maxBytes: maxBytes, timeout: timeout, cancelled: cancelled)
+    }
+    func stream(_ command: String, input: Data?, to destination: URL, maxBytes: Int64, timeout: TimeInterval, cancelled: @escaping @Sendable () -> Bool) throws -> BackupStreamResult {
         try connection.validate()
         try DeviceBackups.checkCancelled(cancelled)
         let output = try DeviceBackups.createFile(destination)
         let errorURL = destination.deletingLastPathComponent().appendingPathComponent(".stderr-" + UUID().uuidString.lowercased())
         let errors = try DeviceBackups.createFile(errorURL)
         defer { try? output.close(); try? errors.close(); try? FileManager.default.removeItem(at: errorURL) }
-        let process = Process(); process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+        // A private temporary input file lets the OS feed the script while stdout
+        // streams to disk. It cannot deadlock on a full stdin pipe and needs no
+        // unbounded writer thread. Existing callers still use /dev/null.
+        var inputURL: URL?, inputHandle: FileHandle?
+        defer { try? inputHandle?.close(); if let inputURL { try? FileManager.default.removeItem(at: inputURL) } }
+        if let input {
+            let url = destination.deletingLastPathComponent().appendingPathComponent(".stdin-" + UUID().uuidString.lowercased())
+            inputURL = url
+            let file = try DeviceBackups.createFile(url)
+            do { try file.write(contentsOf: input); try file.synchronize(); try file.close() }
+            catch { try? file.close(); throw error }
+            inputHandle = try DeviceBackups.openFile(url)
+        }
+        let process = Process(); process.executableURL = sshExecutable
         process.arguments = ["-F", "/dev/null", "-T", "-p", connection.port, "-i", connection.keyPath,
             "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes", "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=5", "-o", "ConnectionAttempts=1",
             "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3", "-o", "StrictHostKeyChecking=yes",
             "-o", "UserKnownHostsFile=\"" + connection.knownHostsPath.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\"",
             "-o", "GlobalKnownHostsFile=/dev/null", "root@" + connection.host, command]
-        process.standardInput = FileHandle.nullDevice; process.standardOutput = output; process.standardError = errors
+        process.standardInput = inputHandle ?? FileHandle.nullDevice; process.standardOutput = output; process.standardError = errors
         try process.run()
         let deadline = Date().addingTimeInterval(timeout)
         var stopped: String?

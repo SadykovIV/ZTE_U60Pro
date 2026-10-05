@@ -87,6 +87,7 @@ final class ModemEngine: @unchecked Sendable {
     func text(_ command: String) throws -> String { String(decoding: try remote(command), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) }
     var tokenURL: URL { root.appendingPathComponent("device-lock.json") }
     func acquireRemoteLock(allowSystemRestore: Bool = false) throws {
+        try require(!ComponentCleanup.hasPending(root: root), "Сначала завершите очистку компонентов программы в подготовке модема")
         try require(!fm.fileExists(atPath: root.appendingPathComponent("adb-access-pending.json").path), "Сначала завершите включение ADB для диагностики")
         try require(!fm.fileExists(atPath: root.appendingPathComponent("adb-toggle-pending.json").path), "Сначала проверьте незавершённое переключение ADB")
         try require(allowSystemRestore || !SystemBackups.hasPendingRestore(root: root), "Сначала завершите восстановление полного образа модема")

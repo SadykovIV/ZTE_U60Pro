@@ -237,6 +237,26 @@ private final class MockDisplay: RemoteTransport {
                 try check(state.state == .failed && !state.canInstall, "Untrusted state repair enabled")
             }
         }
+        test("owned intact launcher with absent service is reinstallable after reset") {
+            let mock = MockDisplay(hashes: hashes); mock.ready(running: false)
+            mock.service = "2"; mock.startup = "0"
+            mock.layoutBytes = try reorderedLayout().encoded()
+            let saved = mock.layoutBytes
+            let value = try make(mock)
+            let state = try value.inspect()
+            try check(state.state == .failed && state.canInstall && !state.running, "Missing service cannot be repaired")
+            let repaired = try install(value)
+            try check(repaired.state == .ready && mock.installerCalls == 1 && mock.layoutBytes == saved, "Reset repair changed layout or skipped installer")
+        }
+        test("absent service never authorizes corrupt or unsafe launcher data") {
+            for cause in ["integrity", "layout", "pages"] {
+                let mock = MockDisplay(hashes: hashes); mock.ready(); mock.service = "2"
+                if cause == "integrity" { mock.integrity = "0" }
+                if cause == "layout" { mock.unsafeLayout = true }
+                if cause == "pages" { mock.unsafePages = true }
+                try check(!make(mock).inspect().canInstall, "Missing service bypassed " + cause)
+            }
+        }
         test("owned interrupted transaction offers checked recovery") {
             let mock = MockDisplay(hashes: hashes); mock.transaction = "1"
             let value = try make(mock)

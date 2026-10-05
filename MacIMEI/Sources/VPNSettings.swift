@@ -174,15 +174,37 @@ final class VPNSettingsManager {
         ]
         return messages[code] ?? "Не удалось завершить настройку VPN. Обновите состояние (VPN_OPERATION_FAILED)."
     }
+    static let helperReadinessCommand = #"""
+    vpn_ready_file() {
+        test -f "$1" && test ! -L "$1" && test "$(stat -c %u:%h "$1")" = 0:1 || return 1
+        vpn_ready_perm=$(stat -c %a "$1") || return 1
+        test "$((0$vpn_ready_perm & 022))" = 0
+    }
+    if vpn_ready_file /etc/init.d/zte_vpn && vpn_ready_file /data/zte-vpn/service.sh &&
+       cmp -s /etc/init.d/zte_vpn /data/zte-vpn/service.sh &&
+       test -L /etc/rc.d/S99zte_vpn && test "$(stat -c %u /etc/rc.d/S99zte_vpn)" = 0 &&
+       test "$(readlink /etc/rc.d/S99zte_vpn)" = ../init.d/zte_vpn &&
+       test -L /etc/rc.d/K01zte_vpn && test "$(stat -c %u /etc/rc.d/K01zte_vpn)" = 0 &&
+       test "$(readlink /etc/rc.d/K01zte_vpn)" = ../init.d/zte_vpn; then
+        if test ! -e /data/zte-vpn/configured && test ! -L /data/zte-vpn/configured; then
+            echo HELPER_LAYOUT_READY
+        elif vpn_ready_file /data/zte-vpn/configured && vpn_ready_file /etc/init.d/network &&
+             vpn_ready_file /data/zte-vpn/network-init.sha256 &&
+             test "$(sha256sum /etc/init.d/network | cut -d ' ' -f1)" = "$(cat /data/zte-vpn/network-init.sha256)"; then
+            echo HELPER_LAYOUT_READY
+        fi
+    fi
+    true
+    """#
     func inspect() throws -> VPNInspection {
         _ = try engine.identity()
-        let probe = try engine.text("for c in lua nft iptables ip6tables ebtables dnsmasq ip ubus flock jsonfilter; do command -v \"$c\" >/dev/null 2>&1 || printf 'MISSING:%s\\n' \"$c\"; done; test -c /dev/net/tun || echo MISSING:TUN; test ! -e /data/zte-imei-apps/ssclash/bin/ssclash || echo SSCLASH; test ! -e /data/zte-vpn || echo VPN; test ! -e /data/zte-vpn/controller-upgrade || echo UPGRADE_PENDING; sha256sum /data/zte-vpn/vpnctl 2>/dev/null | awk '{print \"HELPER:\" $1}'; sha256sum /data/zte-agent 2>/dev/null | awk '{print \"AGENT:\" $1}'; sha256sum /data/zte-dashboard-runtime/current/index.html 2>/dev/null | awk '{print \"DASHBOARD:\" $1}'")
+        let probe = try engine.text("for c in lua nft iptables ip6tables ebtables dnsmasq ip ubus flock jsonfilter; do command -v \"$c\" >/dev/null 2>&1 || printf 'MISSING:%s\\n' \"$c\"; done; test -c /dev/net/tun || echo MISSING:TUN; test ! -e /data/zte-imei-apps/ssclash/bin/ssclash || echo SSCLASH; test ! -e /data/zte-vpn || echo VPN; test ! -e /data/zte-vpn/controller-upgrade || echo UPGRADE_PENDING; sha256sum /data/zte-vpn/vpnctl 2>/dev/null | awk '{print \"HELPER:\" $1}'; sha256sum /data/zte-agent 2>/dev/null | awk '{print \"AGENT:\" $1}'; sha256sum /data/zte-dashboard-runtime/current/index.html 2>/dev/null | awk '{print \"DASHBOARD:\" $1}'; " + Self.helperReadinessCommand)
         let launcherProbe = try engine.text("test -d /data/zte-launcher && test ! -L /data/zte-launcher && test \"$(stat -c %u:%a /data/zte-launcher)\" = 0:700 && test -f /data/zte-launcher/enabled && test ! -e /data/zte-launcher/failed && test ! -e /data/zte-launcher-update && (cd /data/zte-launcher && sha256sum -c launcher.sha256 >/dev/null 2>&1) && cmp -s /etc/init.d/zte_launcher /data/zte-launcher/launcher-service.sh && sha256sum /data/zte-launcher/launcher.so | awk '{print $1}'; true")
         let lines = probe.split(separator: "\n").map(String.init)
         var status = VPNStatus()
         if lines.contains("UPGRADE_PENDING") { status.installed = true }
         else if lines.contains("VPN") { status = try request(["action": "status"]) }
-        return VPNInspection(status: status, missingCapabilities: lines.filter { $0.hasPrefix("MISSING:") }.map { String($0.dropFirst(8)) }, ssclashInstalled: lines.contains("SSCLASH"), helperReady: lines.contains("HELPER:" + Self.helperHash) && !lines.contains("UPGRADE_PENDING"), agentReady: lines.contains("AGENT:" + Self.agentHash), dashboardReady: lines.contains("DASHBOARD:" + Self.dashboardIndexHash), launcherReady: launcherProbe.trimmingCharacters(in: .whitespacesAndNewlines) == Self.launcherHash)
+        return VPNInspection(status: status, missingCapabilities: lines.filter { $0.hasPrefix("MISSING:") }.map { String($0.dropFirst(8)) }, ssclashInstalled: lines.contains("SSCLASH"), helperReady: lines.contains("HELPER:" + Self.helperHash) && lines.contains("HELPER_LAYOUT_READY") && !lines.contains("UPGRADE_PENDING"), agentReady: lines.contains("AGENT:" + Self.agentHash), dashboardReady: lines.contains("DASHBOARD:" + Self.dashboardIndexHash), launcherReady: launcherProbe.trimmingCharacters(in: .whitespacesAndNewlines) == Self.launcherHash)
     }
     func request(_ value: [String: Any], expectedTarget: (Identity, String)? = nil) throws -> VPNStatus {
         let current = try engine.identity()
@@ -283,21 +305,21 @@ final class VPNSettingsManager {
         let presence = try engine.text("if test -e /data/zte-vpn || test -L /data/zte-vpn; then printf PRESENT; else printf ABSENT; fi")
         if presence == "ABSENT" { return false }
         try require(presence == "PRESENT", "Не удалось определить состояние компонентов VPN")
-        _ = try engine.remote("test -d /data/zte-vpn && test ! -L /data/zte-vpn && test -f /data/zte-vpn/vpnctl && test ! -L /data/zte-vpn/vpnctl && test -f /data/zte-agent && test ! -L /data/zte-agent && test ! -e /data/zte-vpn/transaction")
+        _ = try engine.remote("test -d /data/zte-vpn && test ! -L /data/zte-vpn && test -f /data/zte-vpn/vpnctl && test ! -L /data/zte-vpn/vpnctl && test ! -e /data/zte-vpn/transaction")
         // Reject a custom agent before replacing its controller: the existing
         // update script would reject it later, leaving mismatched components.
         let bundle = engine.resources.appendingPathComponent("VPN")
         let manifest = try readJSON([String: String].self, bundle.appendingPathComponent("SHA256.json"))
         let script = try Data(contentsOf: bundle.appendingPathComponent("update-agent.sh"))
         try require(digest(script) == manifest["update-agent.sh"], "Повреждён установщик компонентов дисплея")
-        let installed = try engine.text("sha256sum /data/zte-agent | awk '{print $1}'")
+        let installed = try installedAgentHash()
         try require(BundledAgent.supportedUpgradeHashes.contains(installed), "Установлен сторонний агент. Обновление дисплея остановлено до изменения компонентов VPN; требуется проверка совместимости этого агента.")
         engine.update("Обновляю связь дисплея с установленными компонентами VPN", 0.2)
         try updateAgent()
         return true
     }
     private func updateAgent(beforeUpdate: (() throws -> Void)? = nil) throws {
-        let installed = try engine.text("sha256sum /data/zte-agent | awk '{print $1}'")
+        let installed = try installedAgentHash()
         try require(BundledAgent.supportedUpgradeHashes.contains(installed), "Установлен сторонний агент. Обновление дисплея остановлено до изменения компонентов VPN; требуется проверка совместимости этого агента.")
         let root = engine.resources.appendingPathComponent("VPN")
         let manifest = try readJSON([String:String].self, root.appendingPathComponent("SHA256.json"))
@@ -323,6 +345,9 @@ final class VPNSettingsManager {
             cleanupSafe = false
             let result = try engine.transport.run("sh " + shellQuote(stage + "/" + name) + " " + shellQuote(stage), input: nil, timeout: timeout)
             cleanupSafe = result.status >= 0 && result.status < 255
+            if result.status != 0, let refusal = Self.upgradeFailure(result) {
+                throw IMEIError.message(refusal)
+            }
             try require(result.status == 0, "Обновление компонента " + name + " не подтверждено (exit " + String(result.status) + "). Подробности — в журнале. При потере связи временные средства восстановления сохранены.")
             if name == "update-agent.sh" {
                 try require(String(decoding: result.stdout, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) == "VPN_AGENT_UPDATED",
@@ -338,6 +363,55 @@ final class VPNSettingsManager {
         try executeUpdate("update-agent.sh", timeout: 180)
         engine.update("Добавляю страницы в штатный лаунчер модема", 0.97)
         try executeUpdate("install-launcher.sh", timeout: 120)
+    }
+
+    private func installedAgentHash() throws -> String {
+        let presence = try engine.text("if test ! -e /data/zte-agent && test ! -L /data/zte-agent; then printf ABSENT; elif test -f /data/zte-agent && test ! -L /data/zte-agent; then printf PRESENT; else printf UNSAFE; fi")
+        try require(presence == "ABSENT" || presence == "PRESENT", "Не удалось определить состояние агента")
+        if presence == "ABSENT" {
+            // Restore a missing binary only through the existing transaction,
+            // which verifies the saved startup and records the original absence.
+            let candidate = try AgentCandidate.inspect(engine.resources.appendingPathComponent("Onboarding/zte-agent"))
+            try require(candidate.sha256 == Self.agentHash, "Повреждён встроенный агент")
+            _ = try AgentInstallationManager(engine: engine).install(candidate)
+        }
+        return try engine.text("sha256sum /data/zte-agent | awk '{print $1}'")
+    }
+
+    /// A verified script emits a finite error catalog. Arbitrary stderr remains
+    /// out of UI text, and a lost SSH channel never becomes a confirmed refusal.
+    static func upgradeFailure(_ result: CommandResult) -> String? {
+        guard result.status > 0 && result.status < 255 else { return nil }
+        let messages = [
+            "INVALID_STAGE": "Не удалось проверить временные файлы обновления VPN.",
+            "UNSAFE_LAYOUT": "Каталоги компонентов VPN не прошли проверку владельца и прав.",
+            "PAYLOAD": "Компоненты обновления VPN не прошли проверку контрольных сумм.",
+            "VPN_PENDING": "Сначала завершите предыдущую настройку VPN.",
+            "SCREEN_BUSY": "Закройте временную страницу VPN на модеме и повторите обновление.",
+            "CONTROLLER_UNKNOWN": "Установлен неизвестный контроллер VPN. Автоматическая замена остановлена.",
+            "OLD_INTEGRITY": "Установленные компоненты VPN не прошли проверку целостности.",
+            "DEVICE_CHANGED": "Модем изменился во время обновления VPN. Проверьте подключение.",
+            "NETWORK_CHANGED": "Сценарий запуска сети изменён и не совпадает со штатным или сохранённым. Обновление VPN остановлено.",
+            "SERVICE_CHANGED": "Служба VPN изменена. Посторонний файл не заменён.",
+            "STARTUP_CHANGED": "Автозапуск VPN изменён. Посторонние ссылки не заменены.",
+            "STATE_UNSAFE": "Сохранённое состояние VPN не прошло проверку. Исходные данные сохранены.",
+            "SNAPSHOT": "Не удалось подтвердить резервную копию компонентов VPN.",
+            "WRITE": "Не удалось завершить замену компонентов VPN. Проверьте состояние перед повтором.",
+            "NEW_INTEGRITY": "Новые компоненты VPN не прошли проверку целостности.",
+            "VERIFY": "Результат обновления VPN не подтверждён. Проверьте состояние перед повтором.",
+            "RECOVERY_REQUIRED": "Предыдущее обновление VPN требует восстановления; его журнал сохранён.",
+            "ROLLBACK_UNKNOWN": "Откат компонентов VPN не подтверждён. Журнал и средства восстановления сохранены."
+        ]
+        let lines = CommandText.decode(result.stderr).split(separator: "\n").map(String.init)
+        let prefix = "VPN_UPGRADE_ERROR "
+        let codes = lines.compactMap { line -> String? in
+            guard line.hasPrefix(prefix) else { return nil }
+            let code = String(line.dropFirst(prefix.count))
+            return messages[code] == nil ? nil : code
+        }
+        guard let code = codes.contains("ROLLBACK_UNKNOWN") ? "ROLLBACK_UNKNOWN" : (Set(codes).count == 1 ? codes.first : nil),
+              let message = messages[code] else { return nil }
+        return message + " (VPN_UPGRADE_" + code + ")"
     }
 
 }

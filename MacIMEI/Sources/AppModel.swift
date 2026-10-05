@@ -26,8 +26,11 @@ import AppKit
     var channelSession: ReadOnlyChannelSession?
     @Published var skipFirmwareCheck = false
     @Published var backupSuffix = ""
-    @Published var forcePreparation = false
+    @Published var forcePreparation = false { didSet { if !forcePreparation { cleanPreparationComponents = false } } }
+    @Published var cleanPreparationComponents = false { didSet { if cleanPreparationComponents { forcePreparation = true } } }
     @Published var setupPending = false
+    @Published var componentCleanupPending = false
+    @Published var componentCleanupCanCancel = false
     @Published var keyPath = ""
     @Published var knownHostsPath = ""
     @Published var imei1 = ""
@@ -556,7 +559,9 @@ import AppKit
     func refreshBackups() {
         adbTogglePending = FileManager.default.fileExists(atPath: storage.appendingPathComponent("adb-toggle-pending.json").path)
         diagnosticADBPending = FileManager.default.fileExists(atPath: storage.appendingPathComponent("adb-access-pending.json").path)
-        setupPending = FileManager.default.fileExists(atPath: storage.appendingPathComponent("setup-pending.json").path)
+        componentCleanupPending = ComponentCleanup.hasPending(root: storage)
+        componentCleanupCanCancel = ComponentCleanup.canCancel(root: storage)
+        setupPending = FileManager.default.fileExists(atPath: storage.appendingPathComponent("setup-pending.json").path) || componentCleanupPending
         pendingOperation = FileManager.default.fileExists(atPath: storage.appendingPathComponent("pending.json").path)
         let dir = storage.appendingPathComponent("Backups")
         let urls = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []

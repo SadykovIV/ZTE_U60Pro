@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using ZteImeiStudio.Windows.Core;
 
+if (args.Contains("--component-cleanup-only")) { await ComponentCleanupTests.RunAsync(); return; }
 if (args.Contains("--force-preparation-only")) { await ForcePreparationTests.RunAsync(); return; }
 
 if (args.Contains("--installation-layout-only")) { await OnboardingLayoutTests.RunAsync(); return; }

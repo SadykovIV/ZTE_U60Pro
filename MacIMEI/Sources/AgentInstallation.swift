@@ -73,7 +73,7 @@ struct AgentInstallationStatus: Sendable {
 }
 final class AgentInstallationManager {
     let engine: ModemEngine
-    static let scriptHash = "b25db236bb426a4d3f36ca4672decec478a69843d6fe9fcf550a2e5a7fe336b9"
+    static let scriptHash = "fd76710b266669b34d251b7f06ac31ae1ee55a5d123f3dde8ca19f367cf3f289"
     init(engine: ModemEngine) { self.engine = engine }
     private func staged<T>(cleanupAllowed: () -> Bool = { true }, _ work: (String, Identity, String, String) throws -> T) throws -> T {
         try require(engine.lockFD >= 0, "Установка агента требует блокировки приложения")
@@ -113,10 +113,11 @@ final class AgentInstallationManager {
         return try staged(cleanupAllowed: { cleanupSafe }) { stage, identity, boot, router in
             let before = try status(stage)
             try require(!before.recoveryPending, "Сначала восстановите предыдущий агент")
-            try require(before.hash != "absent" && before.startupReady, "Сначала выполните автоматическую подготовку модема с паролем веб-интерфейса")
+            try require(before.startupReady, "Сначала выполните автоматическую подготовку модема с паролем веб-интерфейса")
+            try require(before.hash != "absent" || !before.running, "Агент работает из удалённого файла. Выполните подготовку модема для восстановления.")
             if let loader = candidate.interpreter { _ = try engine.remote("test -x " + shellQuote(loader)) }
             if before.hash == candidate.sha256 && before.running { return before }
-            engine.update("Передаю выбранный агент; затем будет создана резервная копия текущего…", 0.3)
+            engine.update(before.hash == "absent" ? "Передаю выбранный агент для установки…" : "Передаю выбранный агент; затем будет создана резервная копия текущего…", 0.3)
             try upload(data, to: stage + "/agent.bin")
             try sameDevice(identity, boot, router)
             cleanupSafe = false
@@ -124,8 +125,8 @@ final class AgentInstallationManager {
             cleanupSafe = result.status >= 0 && result.status < 255
             try require(result.status == 0, "Замена агента не подтверждена (exit " + String(result.status) + "). Обновите состояние. При потере связи средства восстановления сохранены.")
             let after = try status(stage)
-            try require(after.hash == candidate.sha256 && after.running && after.backupHash == before.hash && !after.recoveryPending, "Не удалось подтвердить замену агента; проверьте состояние и восстановление")
-            engine.update("Агент заменён и процесс запущен. Предыдущий файл сохранён на модеме.", 1)
+            try require(after.hash == candidate.sha256 && after.running && after.backupHash == (before.hash == "absent" ? nil : before.hash) && !after.recoveryPending, "Не удалось подтвердить замену агента; проверьте состояние и восстановление")
+            engine.update(before.hash == "absent" ? "Агент установлен и процесс запущен." : "Агент заменён и процесс запущен. Предыдущий файл сохранён на модеме.", 1)
             return after
         }
     }
@@ -138,6 +139,7 @@ final class AgentInstallationManager {
         // This path does not configure Wi-Fi or enable a VPN.
         try require(engine.lockFD >= 0, "Установка агента требует блокировки приложения")
         try engine.acquireRemoteLock()
+        if try inspect().hash == "absent" { _ = try install(candidate) }
         if try VPNSettingsManager(engine: engine).updateDisplayIntegrationIfNeeded() {
             let final = try inspect()
             try require(final.hash == candidate.sha256 && final.running && !final.recoveryPending,

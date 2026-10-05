@@ -14,7 +14,7 @@ public sealed record ScreenLocalizationStatus(string State, string Language, int
 
 public sealed partial class DeviceFeatureService
 {
-    private const string AgentManagerHash = "b25db236bb426a4d3f36ca4672decec478a69843d6fe9fcf550a2e5a7fe336b9";
+    private const string AgentManagerHash = "fd76710b266669b34d251b7f06ac31ae1ee55a5d123f3dde8ca19f367cf3f289";
     private const string ScreenRoot = "/data/zte-imei-screen-ru";
     private const string ScreenManagerHash = "810aae3c07c8019f2d0657f2bad6f1ee38f1dea5f1081210ab144478dd87c7b8";
     private static readonly HashSet<string> ScreenLegacyManagerHashes = ["6aed6654afb7a4fde7792a5f6034aa41e15b0fd77d794ed04d3a12c111c95fd2", "586a7727fb24a5701990c7cd82889887220c1c5566261c53ca21f3bb12549bfa"];
@@ -63,7 +63,12 @@ public sealed partial class DeviceFeatureService
                 if (token == null) throw new DeviceFeatureException("Потеряна блокировка установки агента.");
                 if (action == "install")
                 {
-                    Check(!before.RecoveryPending && before.Hash != "absent" && before.StartupReady, "Сначала выполните подготовку SSH/агента либо восстановите предыдущую версию.");
+                    Check(!before.RecoveryPending && before.StartupReady && (before.Hash != "absent" || !before.Running), "Сначала выполните подготовку SSH/агента либо восстановите предыдущую версию.");
+                    if (before.Hash == "absent")
+                    {
+                        await InstallAgentBinaryAtStageAsync(identity, token, stage, before, ct, finished => remoteFinished = finished);
+                        before = await AgentStatusAtStageAsync(stage, ct);
+                    }
                     var vpn = await RunTextAsync("if test -e /data/zte-vpn || test -L /data/zte-vpn; then echo present; else echo absent; fi", ct: ct);
                     Check(vpn is "present" or "absent", "Каталог VPN требует ручной проверки.");
                     if (vpn == "present")
@@ -111,7 +116,7 @@ public sealed partial class DeviceFeatureService
         try
         {
             var before = await AgentStatusAtStageAsync(stage, ct);
-            Check(!before.RecoveryPending && before.Hash != "absent" && before.StartupReady, "Сначала выполните подготовку SSH/агента либо восстановите предыдущую версию.");
+            Check(!before.RecoveryPending && before.StartupReady && (before.Hash != "absent" || !before.Running), "Сначала выполните подготовку SSH/агента либо восстановите предыдущую версию.");
             await InstallAgentBinaryAtStageAsync(identity, token, stage, before, ct, finished => cleanup = finished);
         }
         catch (Exception) when (!ct.IsCancellationRequested && !cleanup)
@@ -129,7 +134,7 @@ public sealed partial class DeviceFeatureService
         completion?.Invoke(KnownInstallerExit(result.ExitCode));
         Check(KnownInstallerExit(result.ExitCode) && result.Success, InstallerFailure("agent_install", result));
         var after = await AgentStatusAtStageAsync(stage, ct);
-        Check(after.IsCurrent && after.Running && after.BackupHash == before.Hash && !after.RecoveryPending,
+        Check(after.IsCurrent && after.Running && after.BackupHash == (before.Hash == "absent" ? null : before.Hash) && !after.RecoveryPending,
             "Установка агента не подтверждена; проверьте состояние восстановления.");
     }
 

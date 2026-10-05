@@ -75,7 +75,7 @@ public sealed partial class DeviceFeatureService
             "stat -c %u:%a /data/zte-launcher; cat /data/zte-launcher/owner 2>/dev/null || true; cat /data/zte-launcher/cid 2>/dev/null || true; " +
             "for f in launcher.so launcher.sha256; do if test -f /data/zte-launcher/$f && test ! -L /data/zte-launcher/$f; then sha256sum /data/zte-launcher/$f | cut -d ' ' -f1; else echo missing; fi; done; " +
             "if test -f /data/zte-launcher/enabled && test ! -e /data/zte-launcher/failed; then echo enabled; else echo disabled; fi; " +
-            "if test -f /etc/init.d/zte_launcher && cmp -s /etc/init.d/zte_launcher /data/zte-launcher/launcher-service.sh; then echo service-ok; else echo service-bad; fi; " +
+            "if test ! -e /etc/init.d/zte_launcher && test ! -L /etc/init.d/zte_launcher; then echo service-missing; elif test -f /etc/init.d/zte_launcher && test ! -L /etc/init.d/zte_launcher && cmp -s /etc/init.d/zte_launcher /data/zte-launcher/launcher-service.sh; then echo service-ok; else echo service-bad; fi; " +
             "if (cd /data/zte-launcher && sha256sum -c launcher.sha256 >/dev/null 2>&1); then echo integrity-ok; else echo integrity-bad; fi; fi; " +
             "if test -e /data/zte-launcher-update || test -L /data/zte-launcher-update; then echo pending; else echo clear; fi";
         var lines = (await RunTextAsync(probe, ct: ct)).Split('\n', StringSplitOptions.TrimEntries);
@@ -92,10 +92,15 @@ public sealed partial class DeviceFeatureService
             return new LauncherStatus("failed", false, false, false, null, null, "Владелец или привязка Launcher к модему не подтверждены.");
         var hash = lines[8];
         var manifest = lines[9];
-        var safe = lines[12] == "integrity-ok" && lines[11] == "service-ok" && lines[13] == "clear";
+        var serviceMissing = lines[11] == "service-missing";
+        var safe = lines[12] == "integrity-ok" && (serviceMissing || lines[11] == "service-ok") && lines[13] == "clear";
         if (!safe) return new LauncherStatus("failed", false, false, false, hash, null, "Файлы Launcher, служба или обновление требуют проверки.");
         var layout = await ReadLauncherLayoutAsync(ct);
         var pages = await ReadLauncherPagesAsync(ct);
+        if (serviceMissing)
+            return new LauncherStatus("failed", false, layout != null && pages != null, false, hash, layout,
+                layout == null || pages == null ? "Настройки Launcher изменены или повреждены." :
+                    "Служба запуска плиток отсутствует. Повторная установка восстановит её, сохранив раскладку.", pages);
         var current = hash == LauncherHash && manifest == LauncherManifestHash && lines[10] == "enabled";
         var running = await RunTextAsync("if test -f /tmp/zte-launcher/ready && test ! -L /tmp/zte-launcher/ready && pidof zte_topsw_devui >/dev/null 2>&1; then echo running; else echo stopped; fi", ct: ct) == "running";
         return new LauncherStatus(current ? "ready" : "outdated", running, layout != null && pages != null, current && layout != null && pages != null, hash, layout,

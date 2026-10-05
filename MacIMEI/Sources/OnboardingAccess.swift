@@ -15,6 +15,7 @@ struct AccessSetupJournal: Codable {
     var phase = "prepared"
     var installRequested = false
     var forceReinstall: Bool?
+    var cleanComponents: Bool?
     var remoteJournal: String?
     var remoteStage: String?
 
@@ -22,7 +23,7 @@ struct AccessSetupJournal: Codable {
         let validPhase = ["prepared", "install-requested", "ready", "complete"].contains(phase)
         let paths = try SetupRemotePaths(id: id, installRequested: installRequested, stage: remoteStage, journal: remoteJournal)
         let expectedRemote = paths.journal
-        try require(intent == "linux-arm64-access" && UUID(uuidString: id) != nil && validPhase &&
+        try require((cleanComponents != true || forceReinstall == true) && intent == "linux-arm64-access" && UUID(uuidString: id) != nil && validPhase &&
                     (installRequested == (phase != "prepared")) &&
                     (remoteJournal == nil || !installRequested || remoteJournal == expectedRemote) &&
                     (!["ready", "complete"].contains(phase) || remoteJournal == expectedRemote),
@@ -33,10 +34,93 @@ struct AccessSetupJournal: Codable {
 }
 
 extension OnboardingEngine {
+    /// Commit already succeeded, but saving the cleanup plan may have lost SSH.
+    /// Recheck the saved target through prepared SSH without replaying setup.
+    func resumeCommittedCleanup() throws -> SetupResult? {
+        guard fm.fileExists(atPath: pending.path) else { return nil }
+        let raw = try DeviceBackups.smallFile(pending, maximum: 65536)
+        guard let object = try JSONSerialization.jsonObject(with: raw) as? [String: Any],
+              object["phase"] as? String == "complete", object["cleanComponents"] as? Bool == true else { return nil }
+        try require(object["forceReinstall"] as? Bool == true, "Некорректный режим незавершённой подготовки")
+        func resume<J: Encodable>(_ journal: J, id: String, directory: URL, cid: String,
+                                  firmware: String, router: String, boot: String?) throws -> SetupResult {
+            try require(cid.range(of: #"^[0-9a-f]{32}$"#, options: .regularExpression) != nil &&
+                        DeviceBackups.validHash(firmware) && DeviceBackups.validHash(router), "Некорректный журнал завершённой подготовки")
+            let connection = Connection(host: host, port: "2222", keyPath: root.appendingPathComponent("SSH/id_ed25519").path,
+                knownHostsPath: root.appendingPathComponent("SSH/known_hosts").path, skipFirmwareCheck: currentConnection.skipFirmwareCheck)
+            try connection.validate()
+            let ssh = sshFactory?(connection) ?? SSHTransport(connection)
+            let answer = try ssh.run(AccessIdentity.command, input: nil, timeout: 20)
+            try require(answer.status == 0, "Не удалось подтвердить модем перед очисткой")
+            let proof = try AccessIdentity.parse(answer.stdout)
+            try require(proof.identity == Identity(cid: cid, firmwareHash: firmware) && proof.routerHash == router &&
+                        (boot == nil || proof.bootID == boot), "Модем или его загрузка изменились; журнал чистой установки сохранён")
+            return try finishSetup(journal, id: id, directory: directory, cleanComponents: true,
+                result: SetupResult(connection: connection, state: nil, identity: proof.identity, firmware: "unknown", suffix: ""))
+        }
+        if object["intent"] as? String == "linux-arm64-access" {
+            let journal = try JSONDecoder().decode(AccessSetupJournal.self, from: raw)
+            try journal.validate(root: root)
+            return try resume(journal, id: journal.id, directory: URL(fileURLWithPath: journal.directory), cid: journal.cid,
+                              firmware: journal.firmwareHash, router: journal.routerHash, boot: journal.bootID)
+        }
+        let journal = try JSONDecoder().decode(SetupJournal.self, from: raw)
+        let directory = URL(fileURLWithPath: journal.directory).standardizedFileURL
+        try require(object["bootID"] == nil && journal.intent == nil && journal.installRequested && UUID(uuidString: journal.id) != nil &&
+                    directory.deletingLastPathComponent().path == root.appendingPathComponent("SetupBackups").standardizedFileURL.path &&
+                    UUID(uuidString: directory.lastPathComponent) != nil, "Некорректный журнал завершённой подготовки")
+        _ = try SetupRemotePaths(id: journal.id, installRequested: true, stage: journal.remoteStage, journal: journal.remoteJournal)
+        return try resume(journal, id: journal.id, directory: directory, cid: journal.cid ?? "",
+                          firmware: journal.firmwareHash ?? "", router: journal.routerHash ?? "", boot: nil)
+    }
+    /// The SSH transaction is complete before cleanup can be scheduled. Save the
+    /// separate intent first so a crash never replays preparation to retry cleanup.
+    func finishSetup<J: Encodable>(_ journal: J, id: String, directory: URL,
+                                    cleanComponents: Bool, result: SetupResult) throws -> SetupResult {
+        try saveJSON(journal, directory.appendingPathComponent("setup-result.json"))
+        if cleanComponents {
+            guard let identity = result.identity else { throw IMEIError.message("Не подтверждено устройство для очистки компонентов") }
+            try saveJSON(journal, pending)
+            let ssh = sshFactory?(result.connection) ?? SSHTransport(result.connection)
+            try ComponentCleanup.schedule(root: root, connection: result.connection, setupID: id,
+                setupDirectory: directory, expectedIdentity: identity, transport: ssh)
+        }
+        try fm.removeItem(at: pending)
+        return cleanComponents ? try resumeComponentCleanup() : result
+    }
+
+    func resumeComponentCleanup() throws -> SetupResult {
+        let cleaner = ComponentCleanup(root: root, resources: resources, connection: currentConnection, sshFactory: sshFactory, update: update)
+        return try finishComponentCleanup(cleaner.run())
+    }
+
+    func cancelComponentCleanup() throws -> SetupResult {
+        try locked {
+            let cleaner = ComponentCleanup(root: root, resources: resources, connection: currentConnection, sshFactory: sshFactory, update: update)
+            return try finishComponentCleanup(cleaner.cancelBeforeDispatch())
+        }
+    }
+
+    private func finishComponentCleanup(_ result: ComponentCleanupResult) throws -> SetupResult {
+        // A crash may leave the already-complete preparation journal beside its
+        // cleanup intent. Never remove an unrelated or unfinished transaction.
+        if fm.fileExists(atPath: pending.path) {
+            let raw = try Data(contentsOf: pending)
+            let object = try JSONSerialization.jsonObject(with: raw) as? [String: Any]
+            try require(object?["id"] as? String == result.setupID && object?["phase"] as? String == "complete" &&
+                        object?["cleanComponents"] as? Bool == true && object?["forceReinstall"] as? Bool == true,
+                        "Журнал подготовки изменился; его данные сохранены")
+            try fm.removeItem(at: pending)
+        }
+        try ComponentCleanup.acknowledge(root: root, setupID: result.setupID)
+        update(result.cancelled ? "Очистка отменена до удаления компонентов. Агент и SSH сохранены." : "Подготовка и очистка компонентов завершены. Агент и SSH сохранены.", 1)
+        return SetupResult(connection: result.connection, state: nil, identity: result.identity,
+                           firmware: "unknown", suffix: "", componentsCleaned: !result.cancelled)
+    }
     /// Caller holds the host operation lock. A responding root USB device is
     /// evaluated before any web login, backup activation or installer mutation.
     func runExistingUSBAccess(hashes: [String: String], webPassword: String, agentPassword: String,
-                              expected: DiagnosticDeviceExpectation, expectedIdentity: Identity?, completedBootstrapID: String? = nil, forceReinstall: Bool = false) throws -> SetupResult? {
+                              expected: DiagnosticDeviceExpectation, expectedIdentity: Identity?, completedBootstrapID: String? = nil, forceReinstall: Bool = false, cleanComponents: Bool = false) throws -> SetupResult? {
         var bootstrap: SetupJournal?
         var saved: AccessSetupJournal?
         if fm.fileExists(atPath: pending.path) {
@@ -67,6 +151,8 @@ extension OnboardingEngine {
         try require(completedBootstrapID == nil || bootstrap != nil, "Журнал подтверждённого ADB отсутствует; установка не запускалась")
         // A checkbox never changes the mode of a saved operation.
         let reinstall = saved != nil ? saved!.forceReinstall == true : bootstrap != nil ? bootstrap!.forceReinstall == true : forceReinstall
+        let cleanup = saved != nil ? saved!.cleanComponents == true : bootstrap != nil ? bootstrap!.cleanComponents == true : cleanComponents
+        try require(!cleanup || reinstall, "Некорректный режим незавершённой подготовки")
         let installFlags = reinstall ? ["--reinstall"] : []
         let adb = ADBClient(binary: assets.appendingPathComponent("adb"), runner: runner)
         let serials: [String]
@@ -166,7 +252,7 @@ extension OnboardingEngine {
         let owner = ([id] + policy).joined(separator: " ")
         var journal = saved ?? AccessSetupJournal(id: id, cid: proof.identity.cid, bootID: proof.bootID, firmwareHash: proof.identity.firmwareHash,
             routerHash: proof.routerHash, installerProfile: profile, directory: directory.path, adbSerial: serial)
-        if saved == nil { journal.forceReinstall = reinstall }
+        if saved == nil { journal.forceReinstall = reinstall; journal.cleanComponents = cleanup }
         let key: URL
         if journal.installRequested {
             let phase = try adb.shell(serial, "cat " + shellQuote(remoteJournal + "/state"))
@@ -248,10 +334,10 @@ extension OnboardingEngine {
         try require(answer.status == 0 && CommandText.decode(answer.stdout).split(separator: "\n").contains(Substring("INSTALL_COMMITTED " + remoteJournal)), "Журнал установки не завершён; он сохранён для проверки")
         try sshVerify()
         journal.phase = "complete"; journal.remoteJournal = remoteJournal
-        try saveJSON(journal, directory.appendingPathComponent("setup-result.json")); try fm.removeItem(at: pending)
         _ = try? adb.shell(serial, "rm -f " + ["zte-agent", "dropbear", "setup-agent.sh", "start_zte_imei_studio.sh", "id_ed25519.pub", "start-agent.sh", "zte-timeout", "legacy-agent.private.sh", ".owner", ".install-requested"].map { shellQuote(stage + "/" + $0) }.joined(separator: " ") + "; rmdir " + shellQuote(stage))
         update("SSH и агент проверены. Операции с NV, картой и прошивкой проверяются отдельно.", 1)
-        return SetupResult(connection: connection, state: nil, identity: proof.identity, firmware: proof.webIdentity?.firmware ?? "unknown", suffix: "")
+        return try finishSetup(journal, id: journal.id, directory: directory, cleanComponents: journal.cleanComponents == true,
+            result: SetupResult(connection: connection, state: nil, identity: proof.identity, firmware: proof.webIdentity?.firmware ?? "unknown", suffix: ""))
     }
     @discardableResult
     func verifyAccessAgent(_ ssh: RemoteTransport, proof: DiagnosticDeviceProof, profile: String, expectedHash: String, password: String, reuseExisting: Bool = false) throws -> String {

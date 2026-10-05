@@ -16,7 +16,7 @@ public sealed record BackupKeyVerification(string Firmware, string InnerVersion,
 public sealed record AdbAccessResult(string Serial, DeviceIdentity Identity, WebIdentity WebIdentity, bool AlreadyAvailable);
 
 public sealed record OnboardingResult(string? Cid, string? FirmwareHash, string? Imei,
-    string KeyPath, string KnownHostsPath, bool AlreadyConfigured, string? Profile = null, bool AccessOnly = false, string? ReusedAgentVersion = null, int Port = 2222);
+    string KeyPath, string KnownHostsPath, bool AlreadyConfigured, string? Profile = null, bool AccessOnly = false, string? ReusedAgentVersion = null, int Port = 2222, bool ComponentsCleaned = false, string? CleanupId = null, bool CleanupCancelled = false);
 
 internal sealed class OnboardingPending
 {
@@ -32,6 +32,7 @@ internal sealed class OnboardingPending
     public string? DirectAdbOutcome { get; set; }
     public bool InstallRequested { get; set; }
     public bool ForceReinstall { get; set; }
+    public bool CleanComponents { get; set; }
     public string? AdbSerial { get; set; }
     public string? Cid { get; set; }
     public string? Profile { get; set; }
@@ -99,7 +100,7 @@ internal sealed class RestoreDeliveryUncertainException(Exception inner)
 /// and an installer request are never automatically repeated after uncertainty.
 /// Passwords and the agent token never enter the journal or ordinary logs.
 /// </summary>
-public sealed class OnboardingEngine
+public sealed partial class OnboardingEngine
 {
     private const string B02FirmwareHash = "7f1905a2844337640c08b66edffbde147adf20b3ab3e1e54fefe4939c40e633e";
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
@@ -182,7 +183,7 @@ public sealed class OnboardingEngine
     private static string ReportVersion(string value) => new(value.Select(c => char.IsControl(c) ? ' ' : c).ToArray());
 
     public async Task<OnboardingResult> PrepareAsync(string webPassword,
-        string agentPassword, string backupKeySuffix, CancellationToken ct = default, bool forceReinstall = false)
+        string agentPassword, string backupKeySuffix, CancellationToken ct = default, bool forceReinstall = false, bool cleanComponents = false)
     {
         if (webPassword.Contains('\0'))
             throw new ArgumentException("Недопустимый пароль Web.", nameof(webPassword));
@@ -195,8 +196,15 @@ public sealed class OnboardingEngine
             File.Exists(Path.Combine(_storage, "adb-access-pending.json")))
             throw new InvalidOperationException("Сначала завершите незавершённую операцию с модемом.");
 
+        RejectReparsePoint(CleanupPendingPath);
+        if (File.Exists(CleanupPendingPath) || Directory.Exists(CleanupPendingPath))
+            return await ResumeComponentCleanupAsync(ct).ConfigureAwait(false);
         var savedPending = await LoadPendingAsync(ct).ConfigureAwait(false);
-        forceReinstall = savedPending?.ForceReinstall ?? forceReinstall;
+        cleanComponents = savedPending?.CleanComponents ?? cleanComponents;
+        forceReinstall = savedPending?.ForceReinstall ?? (forceReinstall || cleanComponents);
+        if (cleanComponents) _ = await ReadCleanupHelperAsync(ct).ConfigureAwait(false);
+        if (savedPending is { Phase: "complete", InstallRequested: true, ForceReinstall: true, CleanComponents: true })
+            return await ResumeCommittedCleanupAsync(savedPending, ct).ConfigureAwait(false);
         if(savedPending is null && !forceReinstall && await ProbeReadOnlySshAsync(ct).ConfigureAwait(false) is SshReadProof existingSsh)
             return new OnboardingResult(existingSsh.Cid,existingSsh.FirmwareHash,null,ReuseKeyPath,ReuseKnownHostsPath,true,"read-only-ssh",AccessOnly:true,Port:ExistingPort);
         var hashes = await VerifyAssetsAsync(ct).ConfigureAwait(false);
@@ -269,7 +277,7 @@ public sealed class OnboardingEngine
                 Cid = match?.Identity.Cid, BootId = match?.Identity.BootId,
                 FirmwareHash = match?.Identity.FirmwareHash, RouterHash = match?.Identity.RouterHash,
                 Profile = genericAccess ? "linux-arm64-access" : null,
-                BackupDirectory = backupDirectory, ForceReinstall = forceReinstall,
+                BackupDirectory = backupDirectory, ForceReinstall = forceReinstall, CleanComponents = cleanComponents,
             };
             await SavePendingAsync(pending, ct).ConfigureAwait(false);
         }
@@ -384,8 +392,10 @@ public sealed class OnboardingEngine
         var verified = await PinAndVerifySshAsync(pending, serial, identity, webIdentity, agentPassword, ct)
             .ConfigureAwait(false);
         await CommitIfReadyAsync(pending, verified, agentPassword, ct).ConfigureAwait(false);
-        await FinishAsync(pending, ct).ConfigureAwait(false);
+        if (pending.CleanComponents) await SaveComponentCleanupIntentAsync(pending, verified, ct).ConfigureAwait(false);
+        else await FinishAsync(pending, ct).ConfigureAwait(false);
         await CleanupStageAsync(serial, stage, ct).ConfigureAwait(false);
+        if (pending.CleanComponents) return await ResumeComponentCleanupAsync(ct).ConfigureAwait(false);
         return new OnboardingResult(identity.Cid, identity.FirmwareHash, webIdentity?.Imei,
             KeyPath, KnownHostsPath, false, InstallerProfile(webIdentity, identity));
     }
@@ -1011,7 +1021,9 @@ public sealed class OnboardingEngine
         var verified = await PinAndVerifySshAsync(pending, serial, identity, web, agentPassword, ct).ConfigureAwait(false);
         pending.RemoteJournal = journal;
         await CommitIfReadyAsync(pending, verified, agentPassword, ct).ConfigureAwait(false);
-        await FinishAsync(pending, ct).ConfigureAwait(false);
+        if (pending.CleanComponents) await SaveComponentCleanupIntentAsync(pending, verified, ct).ConfigureAwait(false);
+        else await FinishAsync(pending, ct).ConfigureAwait(false);
+        if (pending.CleanComponents) return await ResumeComponentCleanupAsync(ct).ConfigureAwait(false);
         return new OnboardingResult(identity.Cid, identity.FirmwareHash, web?.Imei,
             KeyPath, KnownHostsPath, false, InstallerProfile(web, identity));
     }
@@ -1197,6 +1209,7 @@ public sealed class OnboardingEngine
         var pending = JsonSerializer.Deserialize<OnboardingPending>(
             await File.ReadAllBytesAsync(PendingPath, ct).ConfigureAwait(false));
         if (pending is null || !Guid.TryParse(pending.Id, out _) ||
+            (pending.CleanComponents && (!pending.ForceReinstall || _diagnosticAccess)) ||
             (pending.IdentitySource is not ("single-usb" or "web-matched")) ||
             (pending.IdentitySource == "web-matched" && pending.WebIdentity is null) ||
             (pending.IdentitySource == "single-usb" && (pending.WebIdentity is not null || _diagnosticAccess || pending.RestoreRequested || pending.DirectAdbRequested || pending.DiagnosticRebootRequested || pending.Profile != "linux-arm64-access" || pending.Cid is null || !Regex.IsMatch(pending.Cid,"^[0-9a-f]{32}$") || !Guid.TryParseExact(pending.BootId,"D",out _))) ||

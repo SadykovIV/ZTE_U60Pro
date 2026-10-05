@@ -248,6 +248,7 @@ private final class MockHost: HostCommandRunner {
 private final class UnavailableSSH: RemoteTransport {
     var calls = [String]()
     var ready=false, probesAvailable=true, authenticationAccepted=true, authenticationCalls=0, commitCalls=0
+    var cleanupComplete=false, cleanupActions=[String](), cleanupReply: String?
     var installedJournal="",uploads=[String:Data](),malformedSnapshot=false
     var firmware = ModemEngine.firmwareHash, info = deviceObject()
     var identityReads = 0, changeBootAfterAuthentication = false
@@ -261,6 +262,13 @@ private final class UnavailableSSH: RemoteTransport {
         calls.append(command)
         if let accessFailure, command.hasPrefix(AccessIdentity.command) || command == SSHReadProof.command { return accessFailure }
         if !ready {throw IMEIError.message("Synthetic SSH unavailable")}
+        if input == Data("SYNTHETIC-clean-components.sh".utf8) || command.contains("SYNTHETIC-clean-components.sh") {
+            let action = ["status", "prepare", "clean"].first { command.contains(" -- '" + $0 + "' ") } ?? "unexpected"
+            cleanupActions.append(action)
+            if let cleanupReply { return output(cleanupReply + "\n") }
+            if cleanupComplete { return output("CLEAN_COMPLETE\n") }
+            return CommandResult(status:1,stdout:Data(),stderr:Data("CLEAN_ERROR BUSY\n".utf8))
+        }
         if command == SSHReadProof.command {
             accessProofReads += 1
             let boot = changeAccessBoot && accessProofReads > 1 ? "11234567-89ab-4cde-8f01-23456789abcd" : "01234567-89ab-4cde-8f01-23456789abcd"
@@ -324,7 +332,7 @@ private struct Fixture {
         root = base.appendingPathComponent("state"); resources = base.appendingPathComponent("resources")
         let assets = resources.appendingPathComponent("Onboarding"); try secureDirectory(assets)
         var hashes = [String:String]()
-        for name in ["adb","zte-agent","dropbear","setup-agent.sh","start_zte_imei_studio.sh"] {
+        for name in ["adb","zte-agent","dropbear","setup-agent.sh","start_zte_imei_studio.sh","clean-components.sh"] {
             let content = Data(("SYNTHETIC-"+name).utf8); try savePrivate(content,assets.appendingPathComponent(name)); hashes[name]=digest(content)
         }
         let stream = try Data(contentsOf: URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("Resources/Onboarding/adb-stream.sh"))
@@ -996,6 +1004,141 @@ private struct Fixture {
                 _ = try f.engine.run(webPassword:"",agentPassword:testPassword,forceReinstall:!initial)
                 let apply=f.host.calls.map{$0.joined(separator:" ")}.first{$0.contains("(sh '") && $0.contains("/setup-agent.sh'")} ?? ""
                 try check(apply.contains("'--reinstall'")==initial && f.host.installerCalls==1,"Changed checkbox changed pending mode")
+            }
+        }
+        run("Clean intent implies force and the saved choice survives changed retry input") {
+            for initial in [false,true] {
+                let f=try Fixture();defer { f.remove() }
+                f.host.identityMode=true;f.host.fullInstaller=true;f.host.deviceList="List of devices attached\nABC device usb:1\n";f.host.failPushAt=2
+                try rejects("interrupted upload") { _ = try f.engine.run(webPassword:"",agentPassword:testPassword,cleanComponents:initial) }
+                let saved=try readJSON(AccessSetupJournal.self,f.engine.pending)
+                try check(saved.cleanComponents==initial && saved.forceReinstall==initial && !saved.installRequested,
+                          "Cleanup mode was not persisted before staging or failed to imply force")
+                f.host.pushCount=0;f.host.calls=[]
+                try rejects("interrupted upload") { _ = try f.engine.run(webPassword:"",agentPassword:testPassword,forceReinstall:!initial,cleanComponents:!initial) }
+                let retained=try readJSON(AccessSetupJournal.self,f.engine.pending)
+                try check(retained.cleanComponents==initial && retained.forceReinstall==initial && f.host.installerCalls==0,
+                          "Retry changed saved cleanup mode or dispatched installation")
+            }
+        }
+        run("Malformed cleanup journal blocks bootstrap before any Web or ADB request") {
+            let f=try Fixture();defer { f.remove() }
+            try savePrivate(Data("{}".utf8),ComponentCleanup.pendingURL(root:f.root))
+            try rejects { _ = try f.engine.run(webPassword:testPassword,agentPassword:testPassword,forceReinstall:true,cleanComponents:true) }
+            try check(f.web.requests.isEmpty && f.host.calls.isEmpty && f.ssh.calls.isEmpty && f.host.installerCalls==0,
+                      "Unknown cleanup state replayed preparation or accessed a device")
+        }
+        run("Dangling cleanup intent blocks bootstrap before any transport") {
+            let f=try Fixture();defer { f.remove() }
+            try FileManager.default.createSymbolicLink(at:ComponentCleanup.pendingURL(root:f.root),withDestinationURL:f.root.appendingPathComponent("absent-plan"))
+            try check(ComponentCleanup.hasPending(root:f.root), "Dangling intent was treated as absent")
+            try rejects { _ = try f.engine.run(webPassword:testPassword,agentPassword:testPassword) }
+            try check(f.web.requests.isEmpty && f.host.calls.isEmpty && f.ssh.calls.isEmpty, "Unsafe cleanup intent reached transport")
+        }
+        run("Committed cleanup resumes alone and acknowledges a completed crash without setup replay") {
+            let f=try Fixture();defer { f.remove() }
+            f.host.identityMode=true;f.host.fullInstaller=true;f.host.deviceList="List of devices attached\nABC device usb:1\n"
+            f.host.onInstall={ [weak host=f.host,weak ssh=f.ssh] in ssh?.ready=true;ssh?.installedJournal=host?.remoteJournal ?? "" }
+            try rejects("операция модема") { _ = try f.engine.run(webPassword:"",agentPassword:testPassword,cleanComponents:true) }
+            let url=ComponentCleanup.pendingURL(root:f.root)
+            var plan=try readJSON(ComponentCleanupPlan.self,url)
+            try check(plan.phase=="prepared" && f.host.installerCalls==1 && f.ssh.commitCalls==1 &&
+                      !FileManager.default.fileExists(atPath:f.engine.pending.path), "Cleanup was not durably separated after commit")
+            let backup=URL(fileURLWithPath:plan.setupReceipt)
+            let completeSetup=try Data(contentsOf:backup)
+            let saved=try JSONDecoder().decode(AccessSetupJournal.self,from:completeSetup)
+            try check(saved.phase=="complete" && saved.cleanComponents==true && saved.forceReinstall==true, "Missing completed setup receipt")
+            let webCount=f.web.requests.count, adbCount=f.host.calls.count, authCount=f.ssh.authenticationCalls
+            try rejects("операция модема") { _ = try f.engine.run(webPassword:"",agentPassword:"",forceReinstall:false,cleanComponents:false) }
+            try check(f.web.requests.count==webCount && f.host.calls.count==adbCount && f.ssh.authenticationCalls==authCount && f.host.installerCalls==1,
+                      "Cleanup retry requested credentials or replayed bootstrap/install")
+            let archive=Data("synthetic owned component backup".utf8)
+            try secureDirectory(URL(fileURLWithPath:plan.backupDirectory))
+            try savePrivate(archive,URL(fileURLWithPath:plan.backupDirectory).appendingPathComponent("components.tar"))
+            plan.phase="clean-requested";plan.archiveSha=digest(archive);plan.archiveBytes=Int64(archive.count)
+            try saveJSON(plan,url)
+            // Simulate a crash after scheduling while the already-complete setup journal remains.
+            try savePrivate(completeSetup,f.engine.pending)
+            f.ssh.cleanupComplete=true
+            let result=try f.engine.run(webPassword:"",agentPassword:"")
+            try check(result.componentsCleaned && result.identity==plan.identity &&
+                      !ComponentCleanup.hasPending(root:f.root) && !FileManager.default.fileExists(atPath:f.engine.pending.path),
+                      "Completed cleanup was not acknowledged")
+            try check(f.host.installerCalls==1 && f.ssh.commitCalls==1 && f.web.requests.count==webCount && f.host.calls.count==adbCount &&
+                      f.ssh.cleanupActions==["status","status","status"], "Completed cleanup replayed an action")
+            try check(try Data(contentsOf:backup)==completeSetup, "Setup receipt was lost or changed")
+            let receipt=try readJSON(ComponentCleanupPlan.self,URL(fileURLWithPath:plan.backupDirectory).appendingPathComponent("cleanup-result.json"))
+            try check(receipt.phase=="complete" && receipt.archiveSha==digest(archive), "Cleanup completion receipt missing")
+        }
+        run("Completed clean preparation retries scheduling over SSH without USB credentials or commit") {
+            let f=try Fixture();defer { f.remove() }
+            let id=UUID().uuidString.lowercased(), directory=f.root.appendingPathComponent("SetupBackups/"+UUID().uuidString.lowercased())
+            // Legacy backups may have a directory UUID different from the setup UUID.
+            try secureDirectory(directory)
+            var journal=SetupJournal(id:id,identity:try WebIdentity(deviceObject()),phase:"complete",directory:directory.path)
+            journal.installRequested=true;journal.forceReinstall=true;journal.cleanComponents=true
+            journal.cid=testCID;journal.firmwareHash=ModemEngine.firmwareHash;journal.routerHash=ModemEngine.routerHash
+            journal.installerProfile="b31";journal.remoteStage=SetupRemotePaths.anchor+"/stage-"+id
+            journal.remoteJournal=SetupRemotePaths.anchor+"/installations/"+id
+            try saveJSON(journal,f.engine.pending)
+            try secureDirectory(f.root.appendingPathComponent("SSH"))
+            try savePrivate(Data("synthetic key".utf8),f.root.appendingPathComponent("SSH/id_ed25519"))
+            try savePrivate(Data("synthetic known hosts".utf8),f.root.appendingPathComponent("SSH/known_hosts"))
+            f.ssh.ready=true
+            try rejects("операция модема") { _ = try f.engine.run(webPassword:"",agentPassword:"") }
+            try check(ComponentCleanup.hasPending(root:f.root) && f.ssh.cleanupActions==["status"] &&
+                      f.web.requests.isEmpty && f.host.calls.isEmpty && f.ssh.authenticationCalls==0 && f.ssh.commitCalls==0,
+                      "Completed preparation required USB, authentication or replayed commit")
+            try check(!FileManager.default.fileExists(atPath:f.engine.pending.path),"Complete setup journal was not handed off")
+        }
+        run("Cleanup cancellation preserves receipts and never dispatches setup or removal") {
+            let f=try Fixture();defer { f.remove() }
+            let id=UUID().uuidString.lowercased(), directory=f.root.appendingPathComponent("SetupBackups/"+UUID().uuidString.lowercased())
+            try secureDirectory(directory);f.ssh.ready=true
+                try savePrivate(Data("synthetic key".utf8),URL(fileURLWithPath:f.engine.currentConnection.keyPath))
+                try savePrivate(Data("synthetic known hosts".utf8),URL(fileURLWithPath:f.engine.currentConnection.knownHostsPath))
+            var journal=SetupJournal(id:id,identity:try WebIdentity(deviceObject()),phase:"complete",directory:directory.path)
+            journal.installRequested=true;journal.forceReinstall=true;journal.cleanComponents=true
+            journal.cid=testCID;journal.firmwareHash=ModemEngine.firmwareHash;journal.routerHash=ModemEngine.routerHash
+            try saveJSON(journal,f.engine.pending);try saveJSON(journal,directory.appendingPathComponent("setup-result.json"))
+            try ComponentCleanup.schedule(root:f.root,connection:f.engine.currentConnection,setupID:id,setupDirectory:directory,
+                expectedIdentity:Identity(cid:testCID,firmwareHash:ModemEngine.firmwareHash),transport:f.ssh)
+            let url=ComponentCleanup.pendingURL(root:f.root),original=try Data(contentsOf:ComponentCleanup.pendingURL(root:f.root))
+            try check(ComponentCleanup.canCancel(root:f.root), "Prepared cleanup cancellation is unavailable")
+            f.ssh.cleanupReply="CLEAN_ABSENT"
+            let result=try f.engine.cancelComponentCleanup()
+            try check(!result.componentsCleaned && !ComponentCleanup.hasPending(root:f.root) && !FileManager.default.fileExists(atPath:f.engine.pending.path),
+                      "Cancellation did not release only the completed matching intents")
+            let backup=f.root.appendingPathComponent("ComponentBackups/"+id)
+            try check(try Data(contentsOf:backup.appendingPathComponent("cleanup-before-cancel.json"))==original,"Original cancellation intent was lost")
+            let cancelled=try readJSON(ComponentCleanupPlan.self,backup.appendingPathComponent("cleanup-cancelled.json"))
+            try check(cancelled.phase=="cancelled" && f.ssh.cleanupActions==["status"] && f.host.calls.isEmpty && f.web.requests.isEmpty &&
+                      f.ssh.authenticationCalls==0 && f.ssh.commitCalls==0,"Cancel changed components or replayed preparation")
+            // Crash after terminal cancellation, before acknowledgment: run only finishes local handoff.
+            try saveJSON(cancelled,url);try saveJSON(journal,f.engine.pending)
+            let before=f.ssh.calls.count
+            _ = try f.engine.run(webPassword:"",agentPassword:"")
+            try check(f.ssh.calls.count==before && !ComponentCleanup.hasPending(root:f.root),"Terminal cancellation resumed remote work")
+        }
+        run("Cleanup cancellation refuses dispatched or unknown state and retains intent") {
+            for local in ["prepared", "clean-requested"] {
+                let f=try Fixture();defer { f.remove() }
+                let id=UUID().uuidString.lowercased(),directory=f.root.appendingPathComponent("SetupBackups/"+UUID().uuidString.lowercased())
+                try secureDirectory(directory);f.ssh.ready=true
+                try savePrivate(Data("synthetic key".utf8),URL(fileURLWithPath:f.engine.currentConnection.keyPath))
+                try savePrivate(Data("synthetic known hosts".utf8),URL(fileURLWithPath:f.engine.currentConnection.knownHostsPath))
+                try ComponentCleanup.schedule(root:f.root,connection:f.engine.currentConnection,setupID:id,setupDirectory:directory,
+                    expectedIdentity:Identity(cid:testCID,firmwareHash:ModemEngine.firmwareHash),transport:f.ssh)
+                let url=ComponentCleanup.pendingURL(root:f.root)
+                var plan=try readJSON(ComponentCleanupPlan.self,url)
+                if local=="clean-requested" {plan.phase=local;plan.archiveSha=String(repeating:"a",count:64);plan.archiveBytes=1;try saveJSON(plan,url)}
+                let original=try Data(contentsOf:url)
+                f.ssh.calls=[];f.ssh.cleanupReply="CLEAN_PENDING " + String(repeating:"a",count:64) + " 1"
+                try rejects { _ = try f.engine.cancelComponentCleanup() }
+                try check(try Data(contentsOf:url)==original,"Unknown/dispatched cancellation modified intent")
+                try check(!f.ssh.cleanupActions.contains("clean") && f.web.requests.isEmpty && f.host.calls.isEmpty,
+                          "Cancellation dispatched cleanup or bootstrap")
+                if local=="clean-requested" {try check(f.ssh.calls.isEmpty && !ComponentCleanup.canCancel(root:f.root),"Dispatched cleanup reached remote cancel")}
             }
         }
         run("Forced lost acknowledgement retains intent and resumes without replay") {

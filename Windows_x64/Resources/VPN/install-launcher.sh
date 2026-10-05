@@ -67,14 +67,14 @@ recover() {
  if [ ! -e "$transaction/started" ] && [ ! -d "$transaction/old" ]; then rm -rf "$transaction";return 0;fi
  (cd "$transaction" && sha256sum -c backup.sha256 >/dev/null) || return 1
  if [ -e "$transaction/started" ] || [ -d "$transaction/old" ]; then
-  /etc/init.d/zte_launcher stop >/dev/null 2>&1 || true
+  if [ -f /etc/init.d/zte_launcher ] && [ ! -L /etc/init.d/zte_launcher ]; then /etc/init.d/zte_launcher stop >/dev/null 2>&1 || true;fi
   if [ -e "$root" ]; then owned_root "$root" || return 1;rm -rf "$root";fi
   if [ -d "$transaction/old" ]; then mv "$transaction/old" "$root";fi
   cp -p "$transaction/rc.local" /etc/rc.local
   if [ -f "$transaction/service" ]; then cp -p "$transaction/service" /etc/init.d/zte_launcher
   else rm -f /etc/init.d/zte_launcher;fi
   /etc/init.d/zte_topsw_devui restart || true
-  if [ -d "$root" ]; then sh "$root/launcher-start.sh" || true;fi
+  if [ -d "$root" ] && [ -f "$transaction/service" ]; then sh "$root/launcher-start.sh" || true;fi
  fi
  rm -rf "$transaction"
 }
@@ -88,10 +88,19 @@ if [ "$mode" = preflight ]; then
 else
  recover || exit 74
 fi
+service_missing=0
 if [ -e "$root" ] || [ -L "$root" ]; then
  owned_root "$root" || exit 73
  (cd "$root" && sha256sum -c launcher.sha256 >/dev/null) || exit 73
- [ -f /etc/init.d/zte_launcher ] && [ ! -L /etc/init.d/zte_launcher ] && cmp -s /etc/init.d/zte_launcher "$root/launcher-service.sh" || exit 73
+ if [ ! -e /etc/init.d/zte_launcher ] && [ ! -L /etc/init.d/zte_launcher ]; then
+  # A reset may remove /etc while preserving this owned, intact /data bundle.
+  # Only the reviewed service from the pinned payload may repair that absence.
+  [ -f "$root/launcher-service.sh" ] && [ ! -L "$root/launcher-service.sh" ] &&
+   cmp -s "$root/launcher-service.sh" "$stage/launcher-service.sh" || exit 73
+  service_missing=1
+ else
+  [ -f /etc/init.d/zte_launcher ] && [ ! -L /etc/init.d/zte_launcher ] && cmp -s /etc/init.d/zte_launcher "$root/launcher-service.sh" || exit 73
+ fi
 else
  [ ! -e /etc/init.d/zte_launcher ] && [ ! -L /etc/init.d/zte_launcher ] || exit 73
 fi
@@ -143,7 +152,10 @@ sh -n "$transaction/rc.new"
 # A complete, verified replacement and backups exist before any running state changes.
 trap 'code=$?;trap - EXIT INT TERM;recover || true;exit "$code"' EXIT
 trap 'exit 75' INT TERM
-if [ -d "$root" ]; then /etc/init.d/zte_launcher stop;mv "$root" "$transaction/old";fi
+if [ -d "$root" ]; then
+ if [ "$service_missing" = 0 ]; then /etc/init.d/zte_launcher stop;fi
+ mv "$root" "$transaction/old"
+fi
 # Recovery also handles interruption immediately after the old-directory rename.
 touch "$transaction/started"
 sync

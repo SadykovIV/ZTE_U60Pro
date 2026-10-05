@@ -139,19 +139,22 @@ public sealed partial class SshTransport : IRemoteShell
 
     /// <summary>Stream a large, bounded remote stdout into a new local file.</summary>
     public async Task<RemoteFileResult> RunToFileAsync(string command, string destination,
-        long maximumBytes, TimeSpan timeout, CancellationToken ct = default)
+        long maximumBytes, TimeSpan timeout, CancellationToken ct = default, byte[]? stdin = null)
     {
         if (string.IsNullOrEmpty(command) || command.IndexOf('\0') >= 0 ||
             Encoding.UTF8.GetByteCount(command) > MaximumCommandBytes)
             throw new ArgumentException("Недопустимая SSH-команда.", nameof(command));
         if (!Path.IsPathFullyQualified(destination) || maximumBytes is < 1 or > 16L * 1024 * 1024 * 1024)
             throw new ArgumentException("Недопустимый путь или размер резервной копии.", nameof(destination));
+        if (stdin?.Length > MaximumTransferBytes)
+            throw new ArgumentException("Передаваемые данные превышают допустимый размер.", nameof(stdin));
         _ = EffectiveTimeout(timeout);
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(ct);
         lifetime.CancelAfter(timeout);
         var trustRejected = false;
         using var client = CreateClient(() => trustRejected = true);
         Task? execution = null;
+        Task? sending = null;
         try
         {
             await client.ConnectAsync(lifetime.Token).WaitAsync(lifetime.Token).ConfigureAwait(false);
@@ -159,6 +162,9 @@ public sealed partial class SshTransport : IRemoteShell
             remote.CommandTimeout = Timeout.InfiniteTimeSpan;
             execution = remote.ExecuteAsync(CancellationToken.None);
             var stderr = ReadBoundedAsync(remote.ExtendedOutputStream, 1024 * 1024, lifetime.Token);
+            // Drain both output streams while the helper body is sent. A helper
+            // may emit its archive before the final stdin write completes.
+            sending = WriteInputAsync(remote.CreateInputStream(), stdin, lifetime.Token);
             await using var output = new FileStream(destination, FileMode.CreateNew, FileAccess.Write,
                 FileShare.None, 1024 * 1024, FileOptions.Asynchronous | FileOptions.WriteThrough);
             using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
@@ -178,6 +184,7 @@ public sealed partial class SshTransport : IRemoteShell
                 }
             }
             finally { ArrayPool<byte>.Shared.Return(buffer); }
+            await sending.WaitAsync(lifetime.Token).ConfigureAwait(false);
             await execution.WaitAsync(lifetime.Token).ConfigureAwait(false);
             await output.FlushAsync(lifetime.Token).ConfigureAwait(false);
             return new RemoteFileResult(remote.ExitStatus ?? -1, total,
@@ -185,15 +192,21 @@ public sealed partial class SshTransport : IRemoteShell
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            Observe(execution); TryDisconnect(client);
+            Observe(execution); Observe(sending); TryDisconnect(client);
             throw new TimeoutException("Истекло время передачи резервной копии. Неполный файл будет удалён.");
         }
         catch (Exception error) when (trustRejected)
         {
-            Observe(execution); TryDisconnect(client);
+            Observe(execution); Observe(sending); TryDisconnect(client);
             throw new SshTrustException("Ключ сервера SSH не совпадает с закреплённым ключом.", error);
         }
-        catch { Observe(execution); TryDisconnect(client); throw; }
+        catch { Observe(execution); Observe(sending); TryDisconnect(client); throw; }
+    }
+
+    internal static async Task WriteInputAsync(Stream input, byte[]? data, CancellationToken ct)
+    {
+        using (input)
+            if (data is { Length: > 0 }) await input.WriteAsync(data, ct).ConfigureAwait(false);
     }
 
     public async Task<byte[]> DownloadAsync(string remotePath,

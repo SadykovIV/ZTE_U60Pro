@@ -20,6 +20,7 @@
     <Compile Include="../src/Core/ImeiEngine.cs" Link="Core/ImeiEngine.cs" />
     <Compile Include="../src/Core/AgentPackage.cs" Link="Core/AgentPackage.cs" />
     <Compile Include="../src/Core/OnboardingEngine.cs" Link="Core/OnboardingEngine.cs" />
+    <Compile Include="../src/Core/OnboardingCleanup.cs" Link="Core/OnboardingCleanup.cs" />
     <Compile Include="../src/Core/SystemBackupManager.cs" Link="Core/SystemBackupManager.cs" />
     <Compile Include="../src/Features/FeatureCore.cs" Link="Features/FeatureCore.cs" />
     <Compile Include="../src/Features/AdbControl.cs" Link="Features/AdbControl.cs" />

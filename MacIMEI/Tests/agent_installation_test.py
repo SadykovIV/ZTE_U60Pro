@@ -85,6 +85,34 @@ class Installation(unittest.TestCase):
         r=self.run_action('restore');self.assertEqual(r.returncode,0,r.stdout+r.stderr)
         self.assertEqual(startup.read_bytes(),original)
         self.assertEqual(self.agent.read_bytes(),b'previous-agent')
+    def absent(self):
+        self.agent.unlink(); (self.root/'running').unlink()
+    def test_first_install_with_prepared_startup(self):
+        self.absent()
+        r=self.install();self.assertEqual(r.returncode,0,r.stdout+r.stderr)
+        self.assertEqual(self.agent.read_bytes(),b'new-agent')
+        self.assertFalse((self.base/'previous.bin').exists())
+        self.assertEqual((self.base/'previous.sha256').read_text().strip(),'absent')
+        status=self.run_action('status');self.assertNotIn('AGENT_BACKUP',status.stdout)
+        self.assertFalse((self.base/'pending').exists())
+    def test_first_install_failed_start_restores_absence(self):
+        self.absent();(self.root/'fail-start').touch()
+        r=self.install();self.assertNotEqual(r.returncode,0)
+        self.assertFalse(self.agent.exists());self.assertFalse((self.root/'running').exists())
+        self.assertIn('AGENT_ROLLBACK restored',r.stderr)
+        self.assertFalse((self.base/'pending').exists())
+    def test_first_install_post_start_failure_restores_absence(self):
+        self.absent();(self.root/'fail-after-start').touch()
+        r=self.install();self.assertNotEqual(r.returncode,0)
+        self.assertFalse(self.agent.exists());self.assertIn('AGENT_ROLLBACK restored',r.stderr)
+    def test_missing_binary_with_deleted_running_process_is_refused(self):
+        self.agent.unlink()
+        r=self.install();self.assertNotEqual(r.returncode,0)
+        self.assertTrue((self.root/'running').exists());self.assertFalse(self.agent.exists())
+    def test_absent_binary_symlink_is_not_first_install(self):
+        self.absent();self.agent.symlink_to(self.root/'missing')
+        r=self.install();self.assertNotEqual(r.returncode,0)
+        self.assertTrue(self.agent.is_symlink())
     def test_invalid_private_startup_does_not_fall_back_to_legacy(self):
         startup=self.root/'data/zte-imei-studio/start_zte_agent.sh'
         startup.parent.mkdir(mode=0o700)

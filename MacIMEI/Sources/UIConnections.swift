@@ -6,11 +6,15 @@ extension ContentView {
             Text(L10n.text("Web → ADB → агент и SSH → подключение по SSH"))
                 .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary)
             HStack(spacing: 10) {
-                Button(L10n.text("Выполнить предварительную подготовку модема"), action: model.preparePreferredSSH)
+                Button(L10n.text(model.componentCleanupPending ? "Продолжить очистку компонентов" : "Выполнить предварительную подготовку модема"), action: model.preparePreferredSSH)
                     .buttonStyle(StudioButtonStyle(prominent: true)).disabled(!model.canPrepareModem)
                     .fixedSize(horizontal: false, vertical: true)
                 OperationInfoButton(topic: .preparation)
                 Spacer(minLength: 0)
+            }
+            if model.componentCleanupPending && model.componentCleanupCanCancel {
+                Button(L10n.text("Отменить очистку"), action: model.cancelComponentCleanup)
+                    .buttonStyle(StudioButtonStyle()).disabled(!model.canCancelComponentCleanup)
             }
             if let reason = model.preparationUnavailableReason {
                 Text(L10n.text(reason))

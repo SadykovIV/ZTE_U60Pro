@@ -124,7 +124,8 @@ final class ModemDisplayManager {
             installed=$(hash_file "$root/launcher.so"); manifest=$(hash_file "$root/launcher.sha256")
             test ! -f "$root/enabled" || test -L "$root/enabled" || enabled=1
             if test -e "$root/failed" || test -L "$root/failed"; then failure=1; fi
-            if test -f /etc/init.d/zte_launcher && test ! -L /etc/init.d/zte_launcher && cmp -s /etc/init.d/zte_launcher "$root/launcher-service.sh"; then service=1; fi
+            if test ! -e /etc/init.d/zte_launcher && test ! -L /etc/init.d/zte_launcher; then service=2
+            elif test -f /etc/init.d/zte_launcher && test ! -L /etc/init.d/zte_launcher && cmp -s /etc/init.d/zte_launcher "$root/launcher-service.sh"; then service=1; fi
             if test -f /etc/rc.local && test ! -L /etc/rc.local && grep -qFx 'sh /data/zte-launcher/launcher-start.sh' /etc/rc.local; then startup=1; fi
             pid=$(pidof zte_topsw_devui 2>/dev/null || true)
             case "$pid" in ''|*[!0-9]*) ;; *)
@@ -224,8 +225,8 @@ final class ModemDisplayManager {
             values[pair[0]] = pair[1]
         }
         try require(Set(values.keys) == Set(["uid", "arch", "ui", "init", "root", "integrity", "enabled", "failure", "service", "startup", "running", "transaction", "installed", "manifest"]), "Неполный статус дисплея")
-        for key in ["root", "transaction"] { try require(["0", "1", "2"].contains(values[key]!), "Некорректное состояние дисплея") }
-        for key in ["integrity", "enabled", "failure", "service", "startup", "running"] { try require(["0", "1"].contains(values[key]!), "Некорректное состояние дисплея") }
+        for key in ["root", "transaction", "service"] { try require(["0", "1", "2"].contains(values[key]!), "Некорректное состояние дисплея") }
+        for key in ["integrity", "enabled", "failure", "startup", "running"] { try require(["0", "1"].contains(values[key]!), "Некорректное состояние дисплея") }
         for key in ["ui", "init", "installed", "manifest"] { try require(values[key] == "missing" || isHash(values[key]!), "Некорректная контрольная сумма дисплея") }
         return values
     }
@@ -251,9 +252,9 @@ final class ModemDisplayManager {
             result.detail = "Обнаружена незавершённая установка этого модема. Повторная установка сначала проверит журнал и восстановит прежнее состояние."
         } else if fields["root"] == "0" {
             result.canInstall = true
-        } else if fields["integrity"] != "1" || fields["service"] != "1" {
+        } else if fields["integrity"] != "1" || fields["service"] == "0" {
             result.state = .failed; result.detail = "Файлы дисплея или служба запуска изменены. Целостность установки не подтверждена."
-        } else if fields["failure"] == "1" || fields["enabled"] != "1" || fields["startup"] != "1" {
+        } else if fields["service"] == "2" || fields["failure"] == "1" || fields["enabled"] != "1" || fields["startup"] != "1" {
             result.state = .failed; result.canInstall = true
             result.detail = "Дополнительные плитки отключены или не подтвердили запуск. Проверенная повторная установка восстановит их файлы и службу запуска."
         } else if fields["installed"] != assets.hashes["launcher.so"] || fields["manifest"] != assets.hashes["launcher.sha256"] {

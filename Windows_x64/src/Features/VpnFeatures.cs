@@ -240,14 +240,16 @@ public sealed partial class DeviceFeatureService
 
     private async Task UpdateVpnIntegrationAsync(DeviceIdentity identity, string token, CancellationToken ct, Func<Task>? prepareVpn = null, LauncherPages? pages = null)
     {
-        var installedAgent = await RunTextAsync("set -eu; test -f /data/zte-agent && test ! -L /data/zte-agent; sha256sum /data/zte-agent | cut -d ' ' -f1", ct: ct);
-        Check(AgentPackage.SupportedUpgradeHashes.Contains(installedAgent), "Установлен сторонний агент. Обновление дисплея остановлено до изменения компонентов VPN; требуется проверка совместимости этого агента.");
+        var installedAgent = await RunTextAsync("set -eu; if test ! -e /data/zte-agent && test ! -L /data/zte-agent; then echo absent; else test -f /data/zte-agent && test ! -L /data/zte-agent || exit 73; sha256sum /data/zte-agent | cut -d ' ' -f1; fi", ct: ct);
+        Check(installedAgent == "absent" || AgentPackage.SupportedUpgradeHashes.Contains(installedAgent), "Установлен сторонний агент. Обновление дисплея остановлено до изменения компонентов VPN; требуется проверка совместимости этого агента.");
         var files = await LoadResourcesAsync("VPN", VpnIntegrationNames, ct);
         if (pages is not null) files.Add("page-layout.conf", pages.Encode());
         var agent = await File.ReadAllBytesAsync(Path.Combine(_resourcesRoot, "Onboarding", "zte-agent"), ct);
         AgentPackage.VerifyPayload(agent);
         var manager = await ResourceAsync("AgentInstallation", "manager.sh", ct);
         Check(Sha(manager) == AgentManagerHash, "Несовместимый установщик агента.");
+        if (installedAgent == "absent")
+            await InstallBundledAgentBinaryAsync(identity, token, agent, manager, ct);
         files.Add("zte-agent", agent);
         var stage = await StageAsync("zte-vpn-agent", files, ct);
         var remoteFinished = true;

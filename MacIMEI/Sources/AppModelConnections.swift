@@ -31,6 +31,9 @@ import AppKit
         !busy && !terminalActive && !pendingOperation && !systemRestorePending && !diagnosticADBPending && !adbTogglePending && (webBootstrapRequested || isStockWebAvailable || setupPending || (forcePreparation && hasSSHForPreparation) || channelStatuses.contains { $0.mode == .adb && $0.state == .available } || firmwareResearchReport?.transport == "adb")
             && (setupPending || forcePreparation || !hasSSHForPreparation)
     }
+    var canCancelComponentCleanup: Bool {
+        componentCleanupPending && componentCleanupCanCancel && !busy && !terminalActive && !pendingOperation && !systemRestorePending && !diagnosticADBPending && !adbTogglePending
+    }
     var canEnableDiagnosticADB: Bool {
         !busy && !terminalActive && !pendingOperation && !systemRestorePending && !setupPending && !adbTogglePending && !hasSSHForPreparation && (isStockWebAvailable || diagnosticADBPending || (!host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !webPassword.isEmpty))
     }
@@ -545,12 +548,38 @@ import AppKit
             busy = false; operationTask = nil; refreshActivity()
         }
     }
+    func cancelComponentCleanup() {
+        guard canCancelComponentCleanup else { return }
+        let config = connection, root = storage, assets = resources
+        preparationError = ""; busy = true; progress = 0
+        operationTask = Task { [weak self] in
+            guard let self else { return }
+            var completed = false
+            do {
+                let result = try await Task.detached(priority: .userInitiated) { [weak self] in
+                    let installer = try OnboardingEngine(root: root, resources: assets, connection: config, update: { [weak self] message, value in
+                        Task { @MainActor [weak self] in self?.append(message, progress: value) }
+                    })
+                    return try installer.cancelComponentCleanup()
+                }.value
+                keyPath = result.connection.keyPath; knownHostsPath = result.connection.knownHostsPath; port = result.connection.port
+                try saveJSON(result.connection, storage.appendingPathComponent("connection.json"))
+                connectionMode = .ssh; try saveJSON(connectionMode, storage.appendingPathComponent("connection-mode.json"))
+                connectedIdentity = result.identity; connectedWebIdentity = nil
+                forcePreparation = false; completed = true
+                append("Очистка отменена до удаления компонентов. Агент и SSH сохранены.", progress: 1)
+            } catch { preparationError = error.localizedDescription; append("Подготовка: " + error.localizedDescription) }
+            busy = false; refreshBackups(); refreshActivity(); operationTask = nil
+            if completed { connectPreferredChannel() }
+        }
+    }
+
     func preparePreferredSSH() {
         guard canPrepareModem else { return }
         preparationError = ""
         let config = connection, root = storage, assets = resources
         let webSecret = webPassword, agentSecret = agentPassword, suffix = backupSuffix, expected = connectedIdentity
-        let reinstall = forcePreparation
+        let reinstall = forcePreparation, cleanComponents = cleanPreparationComponents
         let expectedIMEI = connectedIMEI ?? channelSummary?.primaryIMEI
         markConnectionUnavailable("")
         busy = true; progress = 0
@@ -563,7 +592,7 @@ import AppKit
                     let installer = try OnboardingEngine(root: root, resources: assets, connection: config, backupSuffix: suffix, update: { [weak self] message, value in
                         Task { @MainActor [weak self] in self?.append(message, progress: value) }
                     })
-                    return try installer.run(webPassword: webSecret, agentPassword: agentSecret, expectedIdentity: expected, expectedIMEI: expectedIMEI, forceReinstall: reinstall)
+                    return try installer.run(webPassword: webSecret, agentPassword: agentSecret, expectedIdentity: expected, expectedIMEI: expectedIMEI, forceReinstall: reinstall, cleanComponents: cleanComponents)
                 }.value
                 keyPath = result.connection.keyPath; knownHostsPath = result.connection.knownHostsPath; port = result.connection.port
                 try saveJSON(result.connection, storage.appendingPathComponent("connection.json"))

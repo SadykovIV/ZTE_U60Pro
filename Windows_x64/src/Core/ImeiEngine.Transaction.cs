@@ -28,6 +28,8 @@ public sealed partial class ImeiEngine
     /// <summary>Explicitly reconcile an interrupted transaction; never starts a fresh write.</summary>
     public async Task<ImeiState> ResumeAsync(CancellationToken ct = default)
     {
+        if (File.Exists(Path.Combine(storageRoot, "component-cleanup-pending.json")))
+            throw new InvalidOperationException("Сначала завершите очистку компонентов программы в подготовке модема.");
         if (!File.Exists(Pending)) throw new InvalidOperationException("Незавершённая операция IMEI не найдена.");
         if (File.Exists(Path.Combine(storageRoot, "adb-access-pending.json")))
             throw new InvalidOperationException("Сначала завершите включение диагностического ADB.");
@@ -39,6 +41,8 @@ public sealed partial class ImeiEngine
 
     private async Task<ImeiState> BeginAsync(string[]? targets, string? restoreId, CancellationToken ct)
     {
+        if (File.Exists(Path.Combine(storageRoot, "component-cleanup-pending.json")))
+            throw new InvalidOperationException("Сначала завершите очистку компонентов программы в подготовке модема.");
         if (File.Exists(Path.Combine(storageRoot, "setup-pending.json")) || File.Exists(Path.Combine(storageRoot, "adb-access-pending.json")))
             throw new InvalidOperationException("Сначала завершите первоначальную настройку модема.");
         if (File.Exists(Pending))

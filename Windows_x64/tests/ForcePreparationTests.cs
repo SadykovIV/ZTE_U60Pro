@@ -13,14 +13,15 @@ internal static class ForcePreparationTests
         void Check(bool ok,string label){if(!ok)throw new Exception("FAIL "+label);passed++;Console.WriteLine("PASS "+label);}
         try
         {
-            foreach(var saved in new bool?[]{null,false,true})
+            foreach(var mode in new (bool? SavedForce,bool SavedClean,bool RequestedForce,bool RequestedClean)[]{(null,false,true,false),(null,false,false,true),(false,false,true,true),(true,false,false,true),(true,true,false,false)})
             {
+                var saved=mode.SavedForce;
                 var folder=Path.Combine(root,Guid.NewGuid().ToString());Directory.CreateDirectory(Path.Combine(folder,"SSH"));
                 File.WriteAllText(Path.Combine(folder,"SSH/id_ed25519"),"synthetic");File.WriteAllText(Path.Combine(folder,"SSH/known_hosts"),"synthetic");
                 var backup=Path.Combine(folder,"SetupBackups",Guid.NewGuid().ToString());Directory.CreateDirectory(backup);
                 if(saved is not null)await File.WriteAllTextAsync(Path.Combine(folder,"setup-pending.json"),JsonSerializer.Serialize(new OnboardingPending
-                {Id=Guid.NewGuid().ToString(),BackupDirectory=backup,IdentitySource="single-usb",Intent="linux-arm64-access",Cid=Cid,BootId=Boot,FirmwareHash=ImeiEngine.FirmwareHash,RouterHash=ImeiEngine.RouterHash,Profile="linux-arm64-access",ForceReinstall=saved.Value}));
-                var ssh=new ReadySsh();var preflight=0;var uploads=0;var requested=saved!=true;var expected=saved??requested;
+                {Id=Guid.NewGuid().ToString(),BackupDirectory=backup,IdentitySource="single-usb",Intent="linux-arm64-access",Cid=Cid,BootId=Boot,FirmwareHash=ImeiEngine.FirmwareHash,RouterHash=ImeiEngine.RouterHash,Profile="linux-arm64-access",ForceReinstall=saved.Value,CleanComponents=mode.SavedClean}));
+                var ssh=new ReadySsh();var preflight=0;var uploads=0;var requested=mode.RequestedForce;var expected=saved??(requested||mode.RequestedClean);var expectedClean=saved is null?mode.RequestedClean:mode.SavedClean;
                 var adb=new AdbTransport((args,stream,_,_)=>
                 {
                     if(args[0]=="devices")return Task.FromResult(Reply("fixture device usb:1\n"));
@@ -38,10 +39,11 @@ internal static class ForcePreparationTests
                     return Task.FromResult(Reply(prefix+ImeiEngine.FirmwareHash+"  /firmware/image/modem.b16\n"+ImeiEngine.RouterHash+"  /usr/bin/diag-router\n"+Cid+"\n"+Boot+"\n"+marker+"0\n"));
                 },Path.GetFullPath("Windows_x64/Resources/Onboarding/adb-stream.sh"));
                 var engine=new OnboardingEngine("192.0.2.1",folder,Path.GetFullPath("Windows_x64/Resources"),adb){ExistingSshFactory=()=>ssh,WebFactory=()=>new ModemWebClient("192.0.2.1",new NoWeb())};
-                try{await engine.PrepareAsync("","synthetic-new-password","",forceReinstall:requested);}catch(IOException){}
+                try{await engine.PrepareAsync("","synthetic-new-password","",forceReinstall:requested,cleanComponents:mode.RequestedClean);}catch(IOException){}
                 Check(preflight==1&&ssh.Calls==0&&uploads==0,"explicit force/new or saved intent reaches measured preflight without SSH reuse, Web or uploads");
                 var pending=JsonSerializer.Deserialize<OnboardingPending>(File.ReadAllBytes(Path.Combine(folder,"setup-pending.json")))!;
-                Check(pending.ForceReinstall==expected&&!pending.InstallRequested,"force intent is durable before dispatch and cannot override an existing journal");
+                Check(pending.ForceReinstall==expected&&pending.CleanComponents==expectedClean&&!pending.InstallRequested,"force intent is durable before dispatch and cannot override an existing journal");
+                Check(!OnboardingEngine.InstallerArguments(pending,new[]{"--preflight"}).Any(arg=>arg.Contains("clean",StringComparison.Ordinal)),"clean components never adds an unsupported installer flag");
                 Check(OnboardingEngine.InstallerArguments(pending,new[]{"stage","cid","agent-sha","dropbear-sha","key-sha","profile"}).SequenceEqual((expected?new[]{"--reinstall"}:Array.Empty<string>()).Concat(new[]{"stage","cid","agent-sha","dropbear-sha","key-sha","profile"})),"normal apply keeps its original CLI arguments behind the optional leading flag");
             }
             foreach(var scenario in new[]{"pending","rollback-unknown","rollback-confirmed","ordinary-rollback"})

@@ -73,7 +73,9 @@ public sealed partial class MainWindow : Window
     private readonly List<Button> _actionButtons = [];
     private Button? _refreshButton;
     private Button? _preparationButton;
+    private Button? _cancelCleanupButton;
     private CheckBox? _forcePreparationCheckBox;
+    private CheckBox? _cleanPreparationCheckBox;
     private readonly Dictionary<string, string> _form = new(StringComparer.Ordinal);
     private readonly Dictionary<string, TextBox> _secretFields = new(StringComparer.Ordinal);
     // Preparation credentials belong to this window and selected target only. Never persist them.
@@ -294,7 +296,9 @@ public sealed partial class MainWindow : Window
         ClearSecrets(discardFields: true, preservePreparation: true);
         _actionButtons.Clear();
         _preparationButton = null;
+        _cancelCleanupButton = null;
         _forcePreparationCheckBox = null;
+        _cleanPreparationCheckBox = null;
         _researchCollectButton = null;
         _diagnosticAccessButton = null;
         _refreshAdbButton = null;
@@ -373,15 +377,51 @@ public sealed partial class MainWindow : Window
                     {
                         if (!ReferenceEquals(_forcePreparationCheckBox, force)) return;
                         _form["force_reinstall"] = force.IsChecked == true ? "true" : "false";
+                        if (force.IsChecked != true)
+                        {
+                            _form["clean_components"] = "false";
+                            if (_cleanPreparationCheckBox is not null) _cleanPreparationCheckBox.IsChecked = false;
+                        }
                         if (_preparationButton is not null) _preparationButton.IsEnabled = CanPrepare();
                     };
                     panel.Children.Add(force);
                     panel.Children.Add(Muted("Сначала сохраняется резервная копия. Агент получит введённый пароль; временные файлы удаляются после проверки. Незавершённая операция продолжается в сохранённом режиме."));
+                    var clean = new CheckBox
+                    {
+                        Name = "CleanPreparation", IsChecked = Get("clean_components") == "true",
+                        Content = Localization.Translate("Очистить данные агента, VPN и дополнительных страниц"),
+                        Foreground = Foreground, IsEnabled = CanChangePreparationMode(),
+                    };
+                    _cleanPreparationCheckBox = clean;
+                    clean.IsCheckedChanged += (_, _) =>
+                    {
+                        if (!ReferenceEquals(_cleanPreparationCheckBox, clean)) return;
+                        _form["clean_components"] = clean.IsChecked == true ? "true" : "false";
+                        if (clean.IsChecked == true)
+                        {
+                            _form["force_reinstall"] = "true";
+                            force.IsChecked = true;
+                        }
+                        if (_preparationButton is not null) _preparationButton.IsEnabled = CanPrepare();
+                    };
+                    var cleanRow = new WrapPanel { Orientation = Orientation.Horizontal };
+                    cleanRow.Children.Add(clean);
+                    var cleanInfo = OperationInfoButton(OperationHelpContent.CleanPreparation);
+                    cleanInfo.Name = "CleanPreparationInfo";
+                    cleanRow.Children.Add(cleanInfo);
+                    panel.Children.Add(cleanRow);
                     var preparation = new WrapPanel { Orientation = Orientation.Horizontal };
-                    _preparationButton = ActionButton("Выполнить предварительную подготовку модема", async () =>
-                        await ExecuteAsync(ModemOperation.PrepareSsh, ["host", "username", "web_password", "agent_password", "backup_key_suffix", "skip_firmware_check", "key_path", "known_hosts_path", "force_reinstall"]), true);
+                    _preparationButton = ActionButton(_snapshot?.ComponentCleanupPending == true ? "Продолжить очистку компонентов" : "Выполнить предварительную подготовку модема", async () =>
+                        await ExecuteAsync(ModemOperation.PrepareSsh, ["host", "username", "web_password", "agent_password", "backup_key_suffix", "skip_firmware_check", "key_path", "known_hosts_path", "force_reinstall", "clean_components"]), true);
                     _preparationButton.IsEnabled = CanPrepare();
                     preparation.Children.Add(_preparationButton);
+                    if (_snapshot?.ComponentCleanupPending == true)
+                    {
+                        _cancelCleanupButton = ActionButton("Отменить очистку", async () => await ExecuteAsync(ModemOperation.CancelComponentCleanup, ["host", "username", "key_path", "known_hosts_path"]), false);
+                        _cancelCleanupButton.IsEnabled = CanPrepare();
+                        preparation.Children.Add(_cancelCleanupButton);
+                    }
+
                     preparation.Children.Add(OperationInfoButton(OperationHelpContent.Preparation));
                     panel.Children.Add(preparation);
                 });
@@ -1667,7 +1707,7 @@ public sealed partial class MainWindow : Window
     private async Task ExecuteAsync(ModemOperation operation, IReadOnlyDictionary<string, string>? parameters)
     {
         if (_busy) return;
-        if (operation == ModemOperation.PrepareSsh && _lastResearchInput != ResearchInputKey())
+        if (operation == ModemOperation.PrepareSsh && _snapshot?.ComponentCleanupPending != true && _lastResearchInput != ResearchInputKey())
         {
             await CollectFirmwareResearchAsync(forPreparation: true);
             if (_lastResearchInput != ResearchInputKey()) return;
@@ -1708,8 +1748,10 @@ public sealed partial class MainWindow : Window
         {
             var result = await _service.RunAsync(new OperationRequest(operation, parameters), _lifetime.Token);
             AdoptPreparedConnection(operation, parameters);
-            if (operation == ModemOperation.PrepareSsh && result.Success)
+            if (operation is (ModemOperation.PrepareSsh or ModemOperation.CancelComponentCleanup) && result.Success)
             {
+                _form["clean_components"] = "false";
+                if (_cleanPreparationCheckBox is not null) _cleanPreparationCheckBox.IsChecked = false;
                 _form["force_reinstall"] = "false";
                 if (_forcePreparationCheckBox is not null) _forcePreparationCheckBox.IsChecked = false;
             }
@@ -1740,7 +1782,7 @@ public sealed partial class MainWindow : Window
 
     private void AdoptPreparedConnection(ModemOperation operation, IReadOnlyDictionary<string, string>? requested)
     {
-        if (operation != ModemOperation.PrepareSsh || requested is null) return;
+        if (operation is not (ModemOperation.PrepareSsh or ModemOperation.CancelComponentCleanup) || requested is null) return;
         // Preparation may establish SSH before a later step fails. Use its saved
         // connection metadata only while the user's original selection is unchanged.
         if (new[] { "host", "username", "key_path", "known_hosts_path" }.Any(key =>
@@ -1880,7 +1922,9 @@ public sealed partial class MainWindow : Window
         foreach (var button in _actionButtons) button.IsEnabled = !busy;
         if (_preparationButton is not null)
             _preparationButton.IsEnabled = CanPrepare();
+        if (_cancelCleanupButton is not null) _cancelCleanupButton.IsEnabled = CanPrepare();
         if (_forcePreparationCheckBox is not null) _forcePreparationCheckBox.IsEnabled = CanChangePreparationMode();
+        if (_cleanPreparationCheckBox is not null) _cleanPreparationCheckBox.IsEnabled = CanChangePreparationMode();
         if (!busy && _page == 5 && _sections[5] == 2 && !_terminalAutoAttempted)
             _ = LoadPageDataAsync();
         UpdateDiagnosticAvailability();
@@ -1893,6 +1937,8 @@ public sealed partial class MainWindow : Window
         if (!preservePreparation)
         {
             _preparationSecrets.Clear(); InvalidateBackupKeyCheck();
+            _form["clean_components"] = "false";
+            if (_cleanPreparationCheckBox is not null) _cleanPreparationCheckBox.IsChecked = false;
             _form["force_reinstall"] = "false";
             if (_forcePreparationCheckBox is not null) _forcePreparationCheckBox.IsChecked = false;
         }

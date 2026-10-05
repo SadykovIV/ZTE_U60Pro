@@ -14,6 +14,75 @@ static class PageInstallerTests
   async Task Reject(Func<Task> action,string label){try{await action();}catch(Exception e){check(!e.Message.Contains("PRIVATE"),"installer errors remain fixed: "+label);check(true,label);return;}throw new Exception("accepted "+label);}
   try
   {
+   foreach(var noVpn in new[]{true,false})
+   {
+    var missing=new FakeShell{Hash="absent",AgentRunning=false,FreshVpn=noVpn};
+    var installed=await Service(missing).InstallAgentAsync();
+    check(installed.IsCurrent&&installed.Running&&installed.BackupHash is null,"missing binary with valid startup installs without inventing a prior backup, VPN absent="+noVpn);
+    check(missing.Events.SequenceEqual(noVpn?new[]{"agent_install","dashboard_preflight","dashboard_install"}:new[]{"agent_install","vpn_preflight","vpn_controller","vpn_dashboard","vpn_launcher"}),"missing agent is installed once before dependent preflight");
+    check(!missing.Requests.Any()&&!missing.Events.Contains("vpn_components"),"missing agent repair does not configure or enable VPN");
+   }
+   foreach(var invalid in new[]{"running","startup","pending"})
+   {
+    var missing=new FakeShell{Hash="absent",AgentRunning=invalid=="running",AgentStartup=invalid!="startup",AgentPending=invalid=="pending"};
+    await Reject(()=>Service(missing).InstallAgentAsync(),"absent agent refuses "+invalid);
+    check(missing.Events.Count==0,"absent agent guard prevents component writes: "+invalid);
+   }
+   var missingForPage=new FakeShell{Hash="absent",AgentRunning=false};
+   check((await Service(missingForPage).InstallLauncherAsync()).State=="ready","launcher integration repairs absent agent before VPN preflight");
+   check(missingForPage.Events.SequenceEqual(new[]{"launcher_preflight","agent_install","vpn_preflight","vpn_controller","vpn_dashboard","vpn_launcher"}),"direct component integration installs absent agent once without recursive dashboard installation");
+   var failureMethod=typeof(DeviceFeatureService).GetMethod("InstallerFailure",System.Reflection.BindingFlags.Static|System.Reflection.BindingFlags.NonPublic)!;
+   string FailureText(string stderr,int exit=73)=> (string)failureMethod.Invoke(null,new object[]{"vpn_controller",new RemoteResult(exit,Encoding.UTF8.GetBytes("PRIVATE output"),Encoding.UTF8.GetBytes(stderr))})!;
+   foreach(var code in new[]{"INVALID_STAGE","UNSAFE_LAYOUT","PAYLOAD","VPN_PENDING","SCREEN_BUSY","CONTROLLER_UNKNOWN","OLD_INTEGRITY","DEVICE_CHANGED","NETWORK_CHANGED","SERVICE_CHANGED","STARTUP_CHANGED","STATE_UNSAFE","SNAPSHOT","WRITE","NEW_INTEGRITY","VERIFY","RECOVERY_REQUIRED","ROLLBACK_UNKNOWN"})
+   {
+    var message=FailureText("PRIVATE credential\nVPN_UPGRADE_ERROR "+code+"\nVPN_UPGRADE_CAUSE VPN_PRIVATE_CAUSE\n");
+    check(message.Contains("VPN_UPGRADE_"+code,StringComparison.Ordinal)&&!message.Contains("PRIVATE"),"fixed controller-upgrade error survives without raw data: "+code);
+    ZteImeiStudio.Windows.Localization.SetLanguage("en",persist:false);
+    check(!ZteImeiStudio.Windows.Localization.Translate(message).Any(c=>c>='\u0400'&&c<='\u04ff'),"fixed controller-upgrade reason has English text: "+code);
+    ZteImeiStudio.Windows.Localization.SetLanguage("ru",persist:false);
+   }
+   foreach(var bad in new[]{"VPN_UPGRADE_ERROR PRIVATE","prefix VPN_UPGRADE_ERROR NETWORK_CHANGED","VPN_UPGRADE_ERROR NETWORK_CHANGED suffix"," VPN_UPGRADE_ERROR NETWORK_CHANGED","VPN_UPGRADE_ERROR NETWORK_CHANGED ","VPN_UPGRADE_ERROR NETWORK_CHANGED\rPRIVATE","VPN_UPGRADE_ERROR NETWORK_CHANGED\nVPN_UPGRADE_ERROR SERVICE_CHANGED"})
+    check(FailureText(bad).Contains("installer_failed")&&!FailureText(bad).Contains("PRIVATE"),"unknown, malformed or contradictory controller error is generic #"+Array.IndexOf(new[]{"VPN_UPGRADE_ERROR PRIVATE","prefix VPN_UPGRADE_ERROR NETWORK_CHANGED","VPN_UPGRADE_ERROR NETWORK_CHANGED suffix"," VPN_UPGRADE_ERROR NETWORK_CHANGED","VPN_UPGRADE_ERROR NETWORK_CHANGED ","VPN_UPGRADE_ERROR NETWORK_CHANGED\rPRIVATE","VPN_UPGRADE_ERROR NETWORK_CHANGED\nVPN_UPGRADE_ERROR SERVICE_CHANGED"},bad));
+   check(FailureText("VPN_UPGRADE_ERROR NETWORK_CHANGED\r\n").Contains("VPN_UPGRADE_NETWORK_CHANGED"),"CRLF fixed controller error accepted");
+   check(FailureText("VPN_UPGRADE_ERROR WRITE\nVPN_UPGRADE_ERROR ROLLBACK_UNKNOWN\n").Contains("VPN_UPGRADE_ROLLBACK_UNKNOWN"),"unknown rollback takes priority over initial write failure");
+   foreach(var exit in new[]{-1,255})check(FailureText("VPN_UPGRADE_ERROR NETWORK_CHANGED\n",exit).Contains("transport_unknown"),"unknown remote completion remains transport unknown: "+exit);
+   var rejectedUpgrade=new FakeShell{FailPhase="vpn_controller",FailureStderr="PRIVATE detail\nVPN_UPGRADE_ERROR NETWORK_CHANGED\n"};
+   try{await Service(rejectedUpgrade).InstallAgentAsync();throw new Exception("controller rejection accepted");}catch(DeviceFeatureException e){check(e.Message.Contains("VPN_UPGRADE_NETWORK_CHANGED")&&!e.Message.Contains("PRIVATE"),"actual bundled upgrade propagates the fixed controller refusal");}
+   check(rejectedUpgrade.Events.SequenceEqual(new[]{"vpn_preflight","agent_install","vpn_controller"}),"controller refusal stops dashboard and launcher steps without replay");
+   foreach(var noVpn in new[]{true,false})
+   {
+    var shell=new FakeShell{FreshVpn=noVpn,LauncherService="service-missing",Pages=new LauncherPages(new[]{"esim","info"}).Encode()};
+    var oldLayout=shell.Layout.ToArray();var oldPages=shell.Pages.ToArray();
+    var status=await Service(shell).GetLauncherStatusAsync();
+    check(status.State=="failed"&&status.CanInstall&&!status.CanApplyLayout&&!status.Running,"owned intact launcher with missing service is repairable, VPN absent="+noVpn);
+    ZteImeiStudio.Windows.Localization.SetLanguage("en",persist:false);
+    check(ZteImeiStudio.Windows.Localization.Translate(status.Detail)=="The tile startup service is missing. Reinstalling will restore it and preserve the layout.","missing-service English reason is present in the production catalog");
+    ZteImeiStudio.Windows.Localization.SetLanguage("ru",persist:false);
+    check(status.Detail=="Служба запуска плиток отсутствует. Повторная установка восстановит её, сохранив раскладку.","missing-service status gives a fixed repair reason");
+    if(noVpn)await CheckActualServiceProbe(shell.Commands.Single(c=>c.StartsWith("set -eu; uname -m; id -u; sha256sum /usr/bin/zte_topsw_devui")),check);
+    var repaired=await Service(shell).InstallLauncherAsync();
+    check(repaired.State=="ready"&&repaired.Running&&repaired.CanApplyLayout,"explicit install repairs missing startup service, VPN absent="+noVpn);
+    check(shell.Layout.SequenceEqual(oldLayout)&&shell.Pages!.SequenceEqual(oldPages)&&shell.StagedPages==0,"service repair preserves exact page order and information layout");
+    check(shell.Events.SequenceEqual(noVpn?new[]{"launcher_preflight","dashboard_preflight","agent_install","dashboard_install","launcher_install"}:new[]{"launcher_preflight","vpn_preflight","agent_install","vpn_controller","vpn_dashboard","vpn_launcher"}),"service repair uses the existing dependency chain once");
+    check(!shell.Events.Contains("vpn_components")&&!shell.Requests.Any(),"service repair does not install absent VPN or change VPN state");
+    shell.Events.Clear();var repeated=await Service(shell).InstallLauncherAsync();
+    check(repeated.State=="ready"&&shell.Events.Count(e=>e==(noVpn?"launcher_install":"vpn_launcher"))==1&&shell.Layout.SequenceEqual(oldLayout)&&shell.Pages!.SequenceEqual(oldPages),"subsequent explicit install preserves state without automatic replay");
+   }
+   foreach(var service in new[]{"service-bad","service-unknown"})
+   {
+    var foreign=new FakeShell{LauncherService=service};var state=await Service(foreign).GetLauncherStatusAsync();
+    check(!state.CanInstall&&!state.CanApplyLayout,"foreign or unrecognized startup service stays blocked: "+service);
+    await Reject(()=>Service(foreign).InstallLauncherAsync(),"foreign service refuses repair "+service);
+    check(foreign.Events.Count==0,"foreign service refusal occurs before installer dispatch");
+   }
+   foreach(var fault in new[]{"integrity","cid","pages","pending"})
+   {
+    var brokenService=new FakeShell{LauncherService="service-missing",BadLauncherIntegrity=fault=="integrity",WrongLauncherCid=fault=="cid",UnsafePages=fault=="pages",LauncherPending=fault=="pending"};
+    check(!(await Service(brokenService).GetLauncherStatusAsync()).CanInstall,"missing service does not bypass "+fault+" guard");
+   }
+   var freshLauncher=new FakeShell{FreshVpn=true,LauncherAbsent=true,Layout=LauncherLayout.Default.Encode()};
+   check((await Service(freshLauncher).GetLauncherStatusAsync()).State=="absent","fresh installation remains distinct from service repair");
+   check((await Service(freshLauncher).InstallLauncherAsync()).State=="ready","fresh absent launcher uses existing installation path");
    foreach(var absent in new[]{false,true})
    {
     var shell=new FakeShell{FreshVpn=absent,Pages=new LauncherPages(new[]{"vpn","info"}).Encode()};
@@ -114,6 +183,26 @@ static class PageInstallerTests
   }
   finally{Directory.Delete(storage,true);}
  }
+ static async Task CheckActualServiceProbe(string command,Action<bool,string> check)
+ {
+  var folder=Path.Combine(Path.GetTempPath(),"zte-launcher-service-probe-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(folder);
+  try
+  {
+   var service=Path.Combine(folder,"service");var payload=Path.Combine(folder,"payload");await File.WriteAllTextAsync(payload,"owned service\n");
+   var start=command.IndexOf("if test",command.IndexOf("then echo enabled",StringComparison.Ordinal),StringComparison.Ordinal);
+   var end=command.IndexOf("; if (cd /data/zte-launcher",start,StringComparison.Ordinal);
+   var probe=command[start..end].Replace("/etc/init.d/zte_launcher",service).Replace("/data/zte-launcher/launcher-service.sh",payload);
+   foreach(var kind in new[]{"absent","matching","foreign","symlink","dangling","directory"})
+   {
+    if(kind=="matching")File.Copy(payload,service);if(kind=="foreign")await File.WriteAllTextAsync(service,"foreign service\n");
+    if(kind=="symlink")File.CreateSymbolicLink(service,payload);if(kind=="dangling")File.CreateSymbolicLink(service,payload+".absent");if(kind=="directory")Directory.CreateDirectory(service);
+    using var process=new System.Diagnostics.Process{StartInfo=new("/bin/sh"){RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true}};process.Start();await process.StandardInput.WriteAsync(probe);process.StandardInput.Close();var output=await process.StandardOutput.ReadToEndAsync();await process.WaitForExitAsync();
+    check(process.ExitCode==0&&output.TrimEnd('\n')==(kind=="absent"?"service-missing":kind=="matching"?"service-ok":"service-bad"),"actual production service probe: "+kind);
+    if(kind=="directory")Directory.Delete(service);else if(kind!="absent")File.Delete(service);
+   }
+  }
+  finally{Directory.Delete(folder,true);}
+ }
  static async Task CheckActualMetadataGuard(string command,Action<bool,string> check)
  {
   var path=Path.Combine(Path.GetTempPath(),"zte-page-guard-"+Guid.NewGuid().ToString("N"));await File.WriteAllTextAsync(path,"fixture");
@@ -151,8 +240,8 @@ static class PageInstallerTests
     {
         const string Cid="0123456789abcdef0123456789abcdef"; string Boot="01234567-89ab-cdef-0123-456789abcdef";
         public byte[]? Pages; public bool UnsafePages,CorruptPageReadback,ChangeBootOnUpload,UnknownPageWrite,ChangePagesOnUpload;public int PageWrites,StagedPages;readonly Dictionary<string,byte[]> Uploads=[];
-        public string Hash=AgentPackage.LegacyVpnSha256;public string? BackupHash;
-        public string FailPhase="",Failure="";public bool FreshVpn;public bool LauncherApplied,ChangeLayout,Stopped;public byte[] Layout=new LauncherLayout("tiles",LauncherLayout.MetricIds.Reverse().Select((id,i)=>new LauncherMetric(id,i<4)).ToArray()).Encode();
+        public string Hash=AgentPackage.LegacyVpnSha256;public string? BackupHash;public bool AgentRunning=true,AgentStartup=true,AgentPending;
+        public string FailPhase="",Failure="";public string? FailureStderr;public bool FreshVpn;public bool LauncherApplied,ChangeLayout,Stopped;public string LauncherService="service-ok";public bool LauncherAbsent,BadLauncherIntegrity,WrongLauncherCid,LauncherPending;public byte[] Layout=new LauncherLayout("tiles",LauncherLayout.MetricIds.Reverse().Select((id,i)=>new LauncherMetric(id,i<4)).ToArray()).Encode();
         public int StartAfterProbes, RunningProbes; public List<string> Events=[],Commands=[],Cleanup=[],Requests=[]; public string VpnStatusHash="missing";
         static RemoteResult Reply(string s="")=>new(0,Encoding.UTF8.GetBytes(s),[]);
         RemoteResult Step(string phase,string output="")
@@ -162,18 +251,19 @@ static class PageInstallerTests
             {
                 if(Failure=="timeout")throw new TimeoutException("PRIVATE device transport text");
                 if(Failure=="wrong-marker")return Reply("WRONG_MARKER");
-                return new(Failure=="exit255"?255:Failure=="missing-exit"?-1:1,[],Encoding.UTF8.GetBytes("PRIVATE LPA:1$operator$matching\nVPN_AGENT_UNSAFE_PARENT"));
+                return new(Failure=="exit255"?255:Failure=="missing-exit"?-1:1,[],Encoding.UTF8.GetBytes(FailureStderr??"PRIVATE LPA:1$operator$matching\nVPN_AGENT_UNSAFE_PARENT"));
             }
             return Reply(output);
         }
         public Task<RemoteResult> RunAsync(string command,byte[]? stdin=null,TimeSpan? timeout=null,CancellationToken ct=default)
         {
             Commands.Add(command);
-            if(command == "set -eu; test -f /data/zte-agent && test ! -L /data/zte-agent; sha256sum /data/zte-agent | cut -d ' ' -f1") return Task.FromResult(Reply(Hash));
+            if(command == "set -eu; if test ! -e /data/zte-agent && test ! -L /data/zte-agent; then echo absent; else test -f /data/zte-agent && test ! -L /data/zte-agent || exit 73; sha256sum /data/zte-agent | cut -d ' ' -f1; fi") return Task.FromResult(Reply(Hash));
             if(command.StartsWith("set -eu; uname -m; id -u; sha256sum /usr/bin/zte_topsw_devui"))
             {
                 string Pin(string name)=>(string)typeof(DeviceFeatureService).GetField(name,System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Static)!.GetRawConstantValue()!;
-                return Task.FromResult(Reply("aarch64\n0\ne3914e78a8488cb736770f0ac9fb8ce10e0e5222fa50285f08e9e8be90d7f1e9\na30da6481637f1fd94e037373d406e574be7e722937a4965325086740be67e35\npresent\n0:700\nzte-native-launcher-v1\n"+Cid+"\n"+(LauncherApplied?Pin("LauncherHash"):new string('a',64))+"\n"+(LauncherApplied?Pin("LauncherManifestHash"):new string('b',64))+"\nenabled\nservice-ok\nintegrity-ok\nclear"));
+                if(LauncherAbsent)return Task.FromResult(Reply("aarch64\n0\ne3914e78a8488cb736770f0ac9fb8ce10e0e5222fa50285f08e9e8be90d7f1e9\na30da6481637f1fd94e037373d406e574be7e722937a4965325086740be67e35\nabsent\nclear"));
+                return Task.FromResult(Reply("aarch64\n0\ne3914e78a8488cb736770f0ac9fb8ce10e0e5222fa50285f08e9e8be90d7f1e9\na30da6481637f1fd94e037373d406e574be7e722937a4965325086740be67e35\npresent\n0:700\nzte-native-launcher-v1\n"+(WrongLauncherCid?new string('f',32):Cid)+"\n"+(LauncherApplied?Pin("LauncherHash"):new string('a',64))+"\n"+(LauncherApplied?Pin("LauncherManifestHash"):new string('b',64))+"\nenabled\n"+LauncherService+"\n"+(BadLauncherIntegrity?"integrity-bad":"integrity-ok")+"\n"+(LauncherPending?"pending":"clear")));
             }
             if(command.StartsWith("set -eu; f=/data/zte-launcher/page-layout.conf"))return Task.FromResult(Reply(UnsafePages?"unsafe":Pages is null?"missing":"data\n"+Convert.ToBase64String(Pages)));
             if(command.StartsWith("set -eu; f=/data/zte-launcher/info-layout.conf"))return Task.FromResult(Reply("data\n"+Convert.ToBase64String(Layout)));
@@ -181,8 +271,8 @@ static class PageInstallerTests
             if(command=="if test -e /data/zte-vpn || test -L /data/zte-vpn; then echo present; else echo absent; fi")return Task.FromResult(Reply(FreshVpn?"absent":"present"));
             if(command.Contains("sha256sum /firmware/image/modem.b16 /usr/bin/diag-router"))return Task.FromResult(Reply("604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263  /firmware/image/modem.b16\n55c54f74aaa427940254a2f16c36771e675a80a002363e4f10b0dfcb604d9c6f  /usr/bin/diag-router\n"+Cid+"\n"+Boot));
             if(stdin is not null&&command.Contains("cat > ")){var path=Regex.Match(command,"cat > '([^']+)'").Groups[1].Value;Uploads[path]=stdin.ToArray();if(path.EndsWith("page-layout.conf"))StagedPages++;if(path.Contains("/.page-layout-")&&ChangePagesOnUpload)Pages=new LauncherPages(new[]{"esim"}).Encode();if(path.Contains("/.page-layout-")&&ChangeBootOnUpload)Boot="11234567-89ab-cdef-0123-456789abcdef";return Task.FromResult(Reply(Convert.ToHexStringLower(SHA256.HashData(stdin))+"  "+path));}
-            if(command.Contains("/manager.sh' status"))return Task.FromResult(Reply("AGENT_SHA "+Hash+"\nAGENT_RUNNING yes\nAGENT_STARTUP yes\n"+(BackupHash is null?"":"AGENT_BACKUP "+BackupHash+"\n")));
-            if(command.Contains("/manager.sh' install ")){var r=Step("agent_install");if(r.Success){BackupHash=Hash;Hash=AgentPackage.Sha256;}return Task.FromResult(r);}
+            if(command.Contains("/manager.sh' status"))return Task.FromResult(Reply("AGENT_SHA "+Hash+"\nAGENT_RUNNING "+(AgentRunning?"yes":"no")+"\nAGENT_STARTUP "+(AgentStartup?"yes":"no")+"\n"+(AgentPending?"AGENT_PENDING yes\n":"")+(BackupHash is null?"":"AGENT_BACKUP "+BackupHash+"\n")));
+            if(command.Contains("/manager.sh' install ")){var r=Step("agent_install");if(r.Success){BackupHash=Hash=="absent"?null:Hash;Hash=AgentPackage.Sha256;AgentRunning=true;}return Task.FromResult(r);}
             if(command.Contains("; sh '/tmp/zte-dashboard-stage-")){var id=Regex.Match(command,@"/tmp/zte-dashboard-stage-([0-9a-f-]{36})/").Groups[1].Value;return Task.FromResult(command.EndsWith(" preflight")?Step("dashboard_preflight","DASHBOARD_PREFLIGHT "+id):Step("dashboard_install","DASHBOARD_INSTALLED "+id));}
             if(command.Contains("; sh '/tmp/zte-vpn-agent-"))
             {
@@ -192,7 +282,7 @@ static class PageInstallerTests
                 {
                     if(command.EndsWith(" preflight"))return Task.FromResult(Step("launcher_preflight","LAUNCHER_PREFLIGHT_OK"));
                     var r=Step(FreshVpn?"launcher_install":"vpn_launcher","LAUNCHER_INSTALLED");
-                    if(r.Success){LauncherApplied=true;if(ChangeLayout)Layout=LauncherLayout.Default.Encode();var stage=Regex.Match(command,@"/tmp/zte-vpn-agent-[0-9a-f-]{36}").Value;if(Uploads.TryGetValue(stage+"/page-layout.conf",out var pages))Pages=pages;}return Task.FromResult(r);
+                    if(r.Success){LauncherApplied=true;LauncherAbsent=false;LauncherService="service-ok";if(ChangeLayout)Layout=LauncherLayout.Default.Encode();var stage=Regex.Match(command,@"/tmp/zte-vpn-agent-[0-9a-f-]{36}").Value;if(Uploads.TryGetValue(stage+"/page-layout.conf",out var pages))Pages=pages;}return Task.FromResult(r);
                 }
             }
             if(command.Contains("; sh '/tmp/zte-vpn-install-"))return Task.FromResult(Step("vpn_components","VPN_COMPONENTS_INSTALLED"));

@@ -23,7 +23,12 @@ public sealed partial class WindowsModemService
                 ExistingSshFactory = _ssh is not null && host == _host && key == KeyPath && knownHosts == KnownHostsPath
                     ? () => _sshRead ?? _ssh : null,
             };
-        var setup = await onboarding.PrepareAsync(webPassword,agentPassword,backupKeySuffix,ct,forceReinstall: Param(parameters,"force_reinstall") == "true");
+        var setup = await onboarding.PrepareAsync(webPassword,agentPassword,backupKeySuffix,ct,forceReinstall: Param(parameters,"force_reinstall") == "true", cleanComponents: Param(parameters,"clean_components") == "true");
+        if (setup.CleanupCancelled)
+        {
+            AdoptCancelledCleanupConnection(host, setup);
+            return "Очистка отменена до удаления. Агент, SSH и резервные копии сохранены.";
+        }
         _host = host;
         _port = setup.Port;
         _keyPath = setup.KeyPath;
@@ -35,6 +40,11 @@ public sealed partial class WindowsModemService
             ["access_only"] = setup.AccessOnly || setup.Profile == "linux-arm64-access" ? "true" : "false",
         };
         var message = await ConnectAsync(connection,ct);
+        if (setup.ComponentsCleaned)
+        {
+            await onboarding.AcknowledgeComponentCleanupAsync(setup.CleanupId ?? "", ct);
+            return "Чистая установка завершена. Агент и SSH готовы; резервная копия компонентов сохранена на компьютере. VPN и страницы устанавливаются отдельно. " + message;
+        }
         if (setup.AlreadyConfigured)
             return "Доступ SSH подтверждён; установка не выполнялась. Агент устанавливается отдельно. " + message;
         if (setup.Profile != "linux-arm64-access" && setup.FirmwareHash == DeviceFeatureService.FirmwareHash)
@@ -51,6 +61,15 @@ public sealed partial class WindowsModemService
             }
         }
         return "Предварительная подготовка завершена. " + message;
+    }
+
+    private void AdoptCancelledCleanupConnection(string host, OnboardingResult setup)
+    {
+        // Onboarding saved these metadata atomically before clearing its journals.
+        // The next connection remains an explicit action through fresh SSH proofs.
+        _host = host; _port = setup.Port; _keyPath = setup.KeyPath; _knownHostsPath = setup.KnownHostsPath;
+        _ssh = null; _sshRead = null; _features = null; _imei = null;
+        _snapshot = new DeviceSnapshot(false, "SSH не подключён; проверьте доступ или выполните предварительную подготовку.", IpAddress: host);
     }
 
     private async Task<string> VerifyBackupKeyAsync(IReadOnlyDictionary<string,string>? parameters,CancellationToken ct)
@@ -192,12 +211,12 @@ public sealed partial class WindowsModemService
                 return await ExportLocalDiagnosticsAsync(ct);
             case ModemOperation.RebootDevice:
             {
-                foreach (var name in new[] { "imei-pending.json", "pending.json", "setup-pending.json", "adb-access-pending.json", "system-restore-pending.json" })
+                foreach (var name in new[] { "imei-pending.json", "pending.json", "setup-pending.json", OnboardingEngine.CleanupPendingName, "adb-access-pending.json", "system-restore-pending.json" })
                     if (File.Exists(Path.Combine(_storage,name)))
                         throw new InvalidOperationException("Сначала завершите незавершённую операцию; перезагрузка сейчас запрещена.");
                 using var local = new FileStream(Path.Combine(_storage,"operation.lock"),FileMode.OpenOrCreate,
                     FileAccess.ReadWrite,FileShare.None);
-                foreach (var name in new[] { "imei-pending.json", "pending.json", "setup-pending.json", "adb-access-pending.json", "system-restore-pending.json" })
+                foreach (var name in new[] { "imei-pending.json", "pending.json", "setup-pending.json", OnboardingEngine.CleanupPendingName, "adb-access-pending.json", "system-restore-pending.json" })
                     if (File.Exists(Path.Combine(_storage,name)))
                         throw new InvalidOperationException("Сначала завершите незавершённую операцию; перезагрузка сейчас запрещена.");
                 var token = Guid.NewGuid().ToString("D");

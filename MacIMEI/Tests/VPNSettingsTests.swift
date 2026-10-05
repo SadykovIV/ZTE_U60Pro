@@ -15,6 +15,7 @@ private final class Remote: RemoteTransport {
     let cid = String(repeating: "a", count: 32), boot = "11111111-2222-3333-4444-555555555555"
     var commands: [String] = [], requests: [[String: Any]] = []
     var locked = false, installed = true, helperReady = true
+    var helperLayoutReady = true
     var installedHelperHash: String?
     var installedAgentHash = VPNSettingsManager.agentHash
     var requestOverride: CommandResult?
@@ -38,7 +39,7 @@ private final class Remote: RemoteTransport {
         if command.contains("if mkdir /tmp/zte-imei-app.lock") { locked = true; return result() }
         if command.contains("&& rm /tmp/zte-imei-app.lock/owner") { locked = false; return result() }
         if command.hasPrefix("for c in lua nft") {
-            return result((installed ? "VPN\nHELPER:" + (installedHelperHash ?? (helperReady ? VPNSettingsManager.helperHash : String(repeating: "0", count: 64))) + "\n" : "") + "AGENT:" + installedAgentHash + "\nDASHBOARD:" + VPNSettingsManager.dashboardIndexHash + "\n")
+            return result((installed ? "VPN\nHELPER:" + (installedHelperHash ?? (helperReady ? VPNSettingsManager.helperHash : String(repeating: "0", count: 64))) + "\n" : "") + (helperLayoutReady ? "HELPER_LAYOUT_READY\n" : "") + "AGENT:" + installedAgentHash + "\nDASHBOARD:" + VPNSettingsManager.dashboardIndexHash + "\n")
         }
         if command.hasPrefix("test -d /data/zte-launcher") { return result(VPNSettingsManager.launcherHash) }
         if command.contains("exec /data/zte-vpn/vpnctl request") {
@@ -94,6 +95,69 @@ private final class Fixture {
     static func main() throws {
         var count = 0
         func test(_ name: String, _ body: () throws -> Void) throws { try body(); count += 1; print("PASS " + name) }
+        try test("Upgrade errors expose only fixed causes and keep uncertain transport distinct") {
+            func result(_ stderr: String, _ exit: Int32 = 1) -> CommandResult { .init(status: exit, stdout: Data(), stderr: Data(stderr.utf8)) }
+            let codes = ["INVALID_STAGE", "UNSAFE_LAYOUT", "PAYLOAD", "VPN_PENDING", "SCREEN_BUSY", "CONTROLLER_UNKNOWN", "OLD_INTEGRITY", "DEVICE_CHANGED", "NETWORK_CHANGED", "SERVICE_CHANGED", "STARTUP_CHANGED", "STATE_UNSAFE", "SNAPSHOT", "WRITE", "NEW_INTEGRITY", "VERIFY", "RECOVERY_REQUIRED", "ROLLBACK_UNKNOWN"]
+            for code in codes {
+                let message = VPNSettingsManager.upgradeFailure(result("private-canary\nVPN_UPGRADE_ERROR " + code + "\n"))
+                try check(message?.contains("VPN_UPGRADE_" + code) == true && message?.contains("private-canary") == false, "Known upgrade error or privacy lost")
+            }
+            for text in ["VPN_UPGRADE_ERROR PRIVATE_CANARY", "prefix VPN_UPGRADE_ERROR NETWORK_CHANGED", "VPN_UPGRADE_ERROR NETWORK_CHANGED private-canary"] {
+                try check(VPNSettingsManager.upgradeFailure(result(text)) == nil, "Untrusted error text accepted")
+            }
+            for exit: Int32 in [-1, 0, 255] { try check(VPNSettingsManager.upgradeFailure(result("VPN_UPGRADE_ERROR NETWORK_CHANGED", exit)) == nil, "Unknown transport converted to helper refusal") }
+            try check(VPNSettingsManager.upgradeFailure(result("VPN_UPGRADE_ERROR WRITE\nVPN_UPGRADE_ERROR ROLLBACK_UNKNOWN"))?.contains("VPN_UPGRADE_ROLLBACK_UNKNOWN") == true, "Unknown rollback was masked")
+            try check(VPNSettingsManager.upgradeFailure(result("VPN_UPGRADE_ERROR WRITE\nVPN_UPGRADE_ERROR VERIFY")) == nil, "Conflicting helper causes presented as certain")
+        }
+        try test("Current helper readiness checks actual service startup links and network snapshot") {
+            let fm = FileManager.default
+            func ready(_ change: (URL) throws -> Void) throws -> Bool {
+                let base = fm.temporaryDirectory.appendingPathComponent("vpn-ready-" + UUID().uuidString)
+                defer { try? fm.removeItem(at: base) }
+                for path in ["data/zte-vpn", "etc/init.d", "etc/rc.d", "bin"] {
+                    try fm.createDirectory(at: base.appendingPathComponent(path), withIntermediateDirectories: true)
+                }
+                let network = Data("#!/bin/sh\n# fixture network hook\n".utf8)
+                for (name, bytes) in ["etc/init.d/zte_vpn":Data("fixture service\n".utf8), "data/zte-vpn/service.sh":Data("fixture service\n".utf8), "etc/init.d/network":network, "data/zte-vpn/configured":Data(), "data/zte-vpn/network-init.sha256":Data(digest(network).utf8)] {
+                    let file = base.appendingPathComponent(name)
+                    try bytes.write(to: file); try fm.setAttributes([.posixPermissions:0o600], ofItemAtPath:file.path)
+                }
+                for link in ["S99zte_vpn", "K01zte_vpn"] {
+                    try fm.createSymbolicLink(atPath:base.appendingPathComponent("etc/rc.d/" + link).path, withDestinationPath:"../init.d/zte_vpn")
+                }
+                let stat = "#!/bin/sh\ncase \"$2\" in %u:%h) printf '0:1\\n';; %u) printf '0\\n';; %a) exec /usr/bin/stat -f '%Lp' \"$3\";; *) exit 1;; esac\n"
+                for (name, contents) in ["stat":stat, "sha256sum":"#!/bin/sh\nexec /usr/bin/shasum -a 256 \"$@\"\n"] {
+                    let file=base.appendingPathComponent("bin/" + name)
+                    try Data(contents.utf8).write(to:file);try fm.setAttributes([.posixPermissions:0o700],ofItemAtPath:file.path)
+                }
+                try change(base)
+                let process=Process(), stdout=Pipe(), stderr=Pipe()
+                process.executableURL=URL(fileURLWithPath:"/bin/sh")
+                var command=VPNSettingsManager.helperReadinessCommand
+                for path in ["/data/zte-vpn", "/etc/init.d", "/etc/rc.d"] { command=command.replacingOccurrences(of:path,with:base.path + path) }
+                process.arguments=["-c", command]
+                process.environment=["PATH":base.appendingPathComponent("bin").path + ":/usr/bin:/bin"]
+                process.standardOutput=stdout;process.standardError=stderr
+                try process.run();try stdout.fileHandleForWriting.close();try stderr.fileHandleForWriting.close();process.waitUntilExit()
+                let result=stdout.fileHandleForReading.readDataToEndOfFile()
+                try check(process.terminationStatus==0, "Readiness inspection failed instead of returning not ready")
+                try check(stderr.fileHandleForReading.readDataToEndOfFile().isEmpty,"Readiness fixture had shell errors")
+                return String(decoding:result,as:UTF8.self).trimmingCharacters(in:.whitespacesAndNewlines)=="HELPER_LAYOUT_READY"
+            }
+            try check(try ready { _ in }, "Intact integration is not ready")
+            try check(!(try ready { try fm.removeItem(at:$0.appendingPathComponent("etc/init.d/zte_vpn")) }), "Missing service accepted")
+            try check(!(try ready { try Data("foreign".utf8).write(to:$0.appendingPathComponent("etc/init.d/zte_vpn")) }), "Foreign service accepted")
+            try check(!(try ready { try fm.removeItem(at:$0.appendingPathComponent("etc/rc.d/K01zte_vpn")) }), "Missing stop link accepted")
+            try check(!(try ready { base in
+                let link=base.appendingPathComponent("etc/rc.d/S99zte_vpn")
+                try fm.removeItem(at:link);try fm.createSymbolicLink(atPath:link.path,withDestinationPath:"../init.d/foreign")
+            }), "Foreign startup link accepted")
+            try check(!(try ready { try Data("#!/bin/sh\n# stock reset\n".utf8).write(to:$0.appendingPathComponent("etc/init.d/network")) }), "Reset network accepted as configured")
+            try check(!(try ready { try fm.removeItem(at:$0.appendingPathComponent("data/zte-vpn/network-init.sha256")) }), "Missing configured network proof accepted")
+            try check(try ready { try fm.removeItem(at:$0.appendingPathComponent("data/zte-vpn/configured")) }, "Unconfigured repaired integration requires old network state")
+            let f=try Fixture();f.remote.helperLayoutReady=false
+            try check(!(try f.manager.inspect()).helperReady,"Current binary hash hid missing integration")
+        }
         try test("New status decodes both actual band SSIDs and desired settings") {
             let f = try Fixture(), status = try f.manager.request(["action": "status"])
             try check(status.ssid2G == "Guest 2G" && status.ssid5G == "Guest 5G" && status.actualSSID == "Guest 5G", "Snake-case radio keys were lost")
