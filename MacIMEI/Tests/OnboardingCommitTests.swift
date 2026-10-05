@@ -53,7 +53,7 @@ import Darwin
                 *) exit 88;;
               esac
             }
-            
+
             """
             let command = legacy.commitCommand(id: id, policy: policy).replacingOccurrences(of: "/data", with: data.path).replacingOccurrences(of: "/proc/self/fd/9", with: "/dev/fd/9")
             let result = try HostProcessRunner().run(URL(fileURLWithPath: "/bin/sh"), ["-c", shim + command], timeout: 5)
