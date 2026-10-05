@@ -73,7 +73,6 @@ public sealed partial class MainWindow : Window
     private readonly List<Button> _actionButtons = [];
     private Button? _refreshButton;
     private Button? _preparationButton;
-    private Button? _diagnosticAdbButton;
     private readonly Dictionary<string, string> _form = new(StringComparer.Ordinal);
     private readonly Dictionary<string, TextBox> _secretFields = new(StringComparer.Ordinal);
     private StackPanel? _metricRows;
@@ -195,9 +194,13 @@ public sealed partial class MainWindow : Window
         layout.Children.Add(right);
         Content = layout;
 
-        _form["host"] = "192.168.0.1";
-        _form["username"] = "root";
-        _form["mode"] = "Автоматически";
+        var connection = _service.GetConnectionSettings();
+        _form["host"] = connection.Host;
+        _form["port"] = connection.Port.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        _form["username"] = connection.Username;
+        _form["key_path"] = connection.KeyPath;
+        _form["known_hosts_path"] = connection.KnownHostsPath;
+        _form["mode"] = "SSH";
         _form["outbound_ttl"] = "64";
         _form["incoming_delta"] = "1";
         _form["style"] = "list";
@@ -287,9 +290,10 @@ public sealed partial class MainWindow : Window
         ClearSecrets();
         _actionButtons.Clear();
         _preparationButton = null;
-        _diagnosticAdbButton = null;
         _researchCollectButton = null;
         _diagnosticAccessButton = null;
+        _refreshAdbButton = null;
+        _adbEnabledCheckbox = null;
         _diagnosticConnectionStatus = null;
         _diagnosticAccessStatus = null;
         _researchProgress = null;
@@ -344,25 +348,13 @@ public sealed partial class MainWindow : Window
         switch (_sections[0])
         {
             case 0:
-                AddCard("Подключение к модему", "Обычная работа — по SSH. Для нового модема: Web → USB ADB → агент и SSH. ADB используется для подготовки и диагностики.", panel =>
+                AddCard("Подключение к модему", Localization.IsEnglish ? "Manage the modem over SSH. USB ADB is used only to prepare SSH access." : "Управление модемом выполняется по SSH. USB ADB используется только для подготовки доступа SSH.", panel =>
                 {
                     panel.Children.Add(FieldPair(Field("Адрес модема", "host", "192.168.0.1"), Field("Пользователь SSH", "username", "root")));
-                    panel.Children.Add(FieldPair(Field("Пароль веб-интерфейса", "web_password", "Введите пароль", secret: true), Field("Пароль агента / SSH", "agent_password", "Введите пароль", secret: true)));
-                    panel.Children.Add(Muted(Localization.IsEnglish ? "With working root USB ADB, leave the Web password empty for access-only installation. Generic mode starts a passive agent; device functions require separate checks." : "При работающем root USB ADB оставьте пароль Web пустым для установки доступа. Универсальный режим запускает пассивный агент; функции модема проверяются отдельно."));
-                    panel.Children.Add(Field("Backup-key suffix вашей прошивки", "backup_key_suffix", "Только для проверки бэкапа B31", secret: true));
                     panel.Children.Add(FileField("Приватный ключ SSH", "key_path", "Использовать локальный ключ"));
                     panel.Children.Add(FileField("Файл known_hosts", "known_hosts_path", "Использовать локальный known_hosts"));
-                    panel.Children.Add(ConnectionModePicker());
-                    var skipCheck = new CheckBox
-                    {
-                        Content = Localization.Translate("Пропустить проверку прошивки"),
-                        IsChecked = Get("skip_firmware_check") == "true",
-                        Foreground = Warn,
-                    };
-                    skipCheck.IsCheckedChanged += (_, _) => _form["skip_firmware_check"] = skipCheck.IsChecked == true ? "true" : "false";
-                    panel.Children.Add(skipCheck);
-                    panel.Children.Add(Actions(
-                        ("Подключиться", ModemOperation.Connect, ["host", "username", "web_password", "agent_password", "mode", "skip_firmware_check", "key_path", "known_hosts_path"])));
+                    panel.Children.Add(Actions(("Подключиться", ModemOperation.Connect, ["host", "username", "key_path", "known_hosts_path"])));
+                    BuildConnectionMethods(panel);
                     var preparation = new WrapPanel { Orientation = Orientation.Horizontal };
                     _preparationButton = ActionButton("Выполнить предварительную подготовку модема", async () =>
                         await ExecuteAsync(ModemOperation.PrepareSsh, ["host", "username", "web_password", "agent_password", "backup_key_suffix", "skip_firmware_check", "key_path", "known_hosts_path"]), true);
@@ -1104,6 +1096,11 @@ public sealed partial class MainWindow : Window
                     panel.Children.Add(Field("Служба", "service", "dashboard / agent / userSSH"));
                     panel.Children.Add(Field("Действие", "service_action", "start / stop / restart"));
                     panel.Children.Add(Actions(("Изменить службу", ModemOperation.ChangeAccessService, ["service", "service_action"])));
+                    panel.Children.Add(ActionButton("Перезагрузить модем", async () =>
+                    {
+                        if (await ConfirmAsync("Перезагрузить модем?", "Соединение будет временно потеряно."))
+                            await ExecuteAsync(ModemOperation.RebootDevice, (string[]?)null);
+                    }, false));
                 });
                 break;
             case 1:
@@ -1392,11 +1389,16 @@ public sealed partial class MainWindow : Window
             input.MinHeight = 140;
             input.MaxWidth = 700;
         }
-        if (secret) _secretFields[key] = input;
+        if (secret)
+        {
+            _secretFields[key] = input;
+            if (key == "web_password") input.TextChanged += (_, _) => UpdateDiagnosticAvailability();
+        }
         else input.TextChanged += (_, _) =>
         {
             _form[key] = input.Text ?? "";
             if (key is "host" or "key_path" or "known_hosts_path") UpdateDiagnosticConnectionStatus();
+            if (key == "host") UpdateDiagnosticAvailability();
         };
         stack.Children.Add(input);
         return stack;
@@ -1625,8 +1627,13 @@ public sealed partial class MainWindow : Window
         if (_busy) return;
         if (operation == ModemOperation.PrepareSsh && _lastResearchInput != ResearchInputKey())
         {
-            await CollectFirmwareResearchAsync();
+            await CollectFirmwareResearchAsync(forPreparation: true);
             if (_lastResearchInput != ResearchInputKey()) return;
+        }
+        if (operation == ModemOperation.EnableDiagnosticAdb && (_snapshot?.IsConnected == true && _snapshot.ConnectionMode == "SSH"))
+        {
+            SetStatus(Localization.IsEnglish ? "Use the verified SSH ADB control." : "Используйте проверенное управление ADB по SSH.", true);
+            return;
         }
         if (operation == ModemOperation.EnableDiagnosticAdb && (_terminal?.IsConnected == true || _terminalOpening))
         {
@@ -1670,7 +1677,7 @@ public sealed partial class MainWindow : Window
             }
             if (!string.IsNullOrWhiteSpace(result.Details))
                 await ShowMessageAsync(result.Success ? "Результат" : "Ошибка", result.Details);
-            if ((result.Success && !preserveSecrets) || operation is ModemOperation.EnableDiagnosticAdb or ModemOperation.Connect)
+            if ((result.Success && !preserveSecrets) || operation is ModemOperation.EnableDiagnosticAdb or ModemOperation.RefreshAdbState or ModemOperation.SetAdbEnabled or ModemOperation.Connect)
             {
                 await ReloadSnapshotAsync();
                 if (_page == 2 || (_page == 6 && _sections[6] == 1)) await RefreshBackupsAsync();
@@ -1782,8 +1789,6 @@ public sealed partial class MainWindow : Window
         foreach (var button in _actionButtons) button.IsEnabled = !busy;
         if (_preparationButton is not null)
             _preparationButton.IsEnabled = !busy && _terminal?.IsConnected != true && !_terminalOpening && _snapshot?.AdbActivationPending != true && (_snapshot?.PreparationPending == true || !(_snapshot?.IsConnected == true && _snapshot.ConnectionMode == "SSH"));
-        if (_diagnosticAdbButton is not null)
-            _diagnosticAdbButton.IsEnabled = !busy && _terminal?.IsConnected != true && !_terminalOpening && _snapshot?.PreparationPending != true;
         if (!busy && _page == 5 && _sections[5] == 2 && !_terminalAutoAttempted)
             _ = LoadPageDataAsync();
         UpdateDiagnosticAvailability();

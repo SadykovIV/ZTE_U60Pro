@@ -2,7 +2,7 @@ import AppKit
 import UniformTypeIdentifiers
 
 @MainActor extension AppModel {
-    var canResearchFirmware: Bool { !busy && !terminalActive }
+    var canResearchFirmware: Bool { canReadModem }
     func loadFirmwareResearch() {
         guard !firmwareResearchLoaded else { return }; firmwareResearchLoaded = true
         firmwareResearchReport = try? FirmwareResearchArchive.latest(root: storage)
@@ -13,17 +13,17 @@ import UniformTypeIdentifiers
     }
     func startFirmwareResearch() {
         guard canResearchFirmware else { return }
-        let root = storage, assets = resources, config = connection, mode = ConnectionMode.automatic
+        let root = storage, assets = resources, config = connection, mode = ConnectionMode.ssh
         let expectedCID = modemInformation?.identity.cid ?? connectedIdentity?.cid
         let secrets = [webPassword, agentPassword, backupSuffix, sshPassword, currentIMEI1, currentIMEI2, imei1, imei2, connectedIMEI ?? ""]
-        let context = ["appVersion": appVersion, "platform": "macos", "hostOS": ProcessInfo.processInfo.operatingSystemVersionString,
+        let context = ["appVersion": appVersion, "appBuild": DiagnosticsContext.build, "platform": "macos", "hostOS": ProcessInfo.processInfo.operatingSystemVersionString,
                        "requestedConnectionMode": mode.rawValue, "previouslyConnected": String(connected),
                        "SSHKeyConfigured": String(FileManager.default.isReadableFile(atPath: keyPath)),
                        "knownHostsConfigured": String(FileManager.default.isReadableFile(atPath: knownHostsPath)),
                        "writePermissionGrantedByResearch": "false", "firmwareCheckSkipped": String(skipFirmwareCheck), "probeSpecificationSHA256": ResearchSpecification.expectedSHA256]
         let token = ResearchCancellation(); firmwareResearchCancellation = token
         firmwareResearchRunning = true; firmwareResearchProgress = 0; firmwareResearchExportURL = nil; busy = true
-        firmwareResearchMessage = L10n.text("Проверяю доступные каналы для чтения…", "Checking available read-only channels…")
+        firmwareResearchMessage = L10n.text("Проверяю подключение SSH для чтения…", "Checking the SSH connection for read-only collection…")
         operationTask = Task { [weak self] in
             guard let self else { return }
             do {

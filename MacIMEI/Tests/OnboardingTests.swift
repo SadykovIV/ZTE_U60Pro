@@ -321,6 +321,7 @@ private struct Fixture {
         try savePrivate(stream, assets.appendingPathComponent("adb-stream.sh")); hashes["adb-stream.sh"] = digest(stream)
         try saveJSON(hashes,assets.appendingPathComponent("SHA256.json"))
         try FileManager.default.copyItem(at: URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("Resources/FirmwareResearch"), to: resources.appendingPathComponent("FirmwareResearch"))
+        try FileManager.default.copyItem(at: URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("Resources/HostTools"), to: resources.appendingPathComponent("HostTools"))
         let helper=Data("SYNTHETIC-zte_nv".utf8);try savePrivate(helper,resources.appendingPathComponent("zte_nv"));try saveJSON(["zte_nv":digest(helper)],resources.appendingPathComponent("helpers.json"))
         web = MockWeb(try data ?? backup()); host = MockHost(); ssh = UnavailableSSH()
         let connection = Connection(host:"192.0.2.1",port:"2222",keyPath:root.appendingPathComponent("absent-key").path,knownHostsPath:root.appendingPathComponent("absent-hosts").path)
@@ -1181,7 +1182,17 @@ private struct Fixture {
                 try check(f.web.requests.isEmpty && f.web.backupCount == 0 && f.web.restoreCount == 0 && !f.ssh.calls.contains { $0.contains("zte_nv") || $0.contains("--snapshot") || $0.contains("get_imei") }, "Unknown access called Web activation or NV")
                 let deploy = f.host.calls.map { $0.joined(separator: " ") }.first { $0.contains("(sh '") && $0.contains("/setup-agent.sh'") }!
                 try check(deploy.contains("'linux-arm64-access'") && deploy.contains("'01234567-89ab-4cde-8f01-23456789abcd'"), "Generic installer lost boot binding")
+                try check(f.host.uploads[f.host.stage + "/zte-timeout"].map(digest) == ModemHostTools.timeoutHash, "Generic installer did not receive verified timeout helper")
             }
+        }
+        run("Generic timeout resource corruption refuses before preflight or staging") {
+            let f = try Fixture(); defer { f.remove() }
+            f.host.identityMode = true; f.host.fullInstaller = true; f.host.deviceList = "List of devices attached\nABC device usb:1\n"
+            f.host.identityFirmware = String(repeating: "a", count: 64); f.host.identityRouter = String(repeating: "b", count: 64)
+            try savePrivate(Data("UNTRUSTED-TIMEOUT".utf8), f.resources.appendingPathComponent("HostTools/zte-timeout"))
+            try rejects { _ = try f.engine.run(webPassword: "", agentPassword: testPassword) }
+            try check(f.host.pushCount == 0 && f.host.installerCalls == 0 && !f.host.calls.contains { $0.joined().contains("--preflight") }, "Corrupt timeout reached installation preflight")
+            try check(f.web.requests.isEmpty && !FileManager.default.fileExists(atPath: f.engine.pending.path), "Corrupt resource activated Web or saved install intent")
         }
         run("Non-root USB and ambiguous USB never fall through to activation") {
             for ambiguous in [false, true] {

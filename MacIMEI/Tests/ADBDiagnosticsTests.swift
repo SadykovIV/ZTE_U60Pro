@@ -16,12 +16,20 @@ private func proof(_ identity: String = cid, web: Bool = false, changedBoot: Boo
 }
 private final class SSH: RemoteTransport {
     var status: Int32 = 255, message = "ssh: connect: Connection refused", calls: [String] = []
-    var thrown = false
+    var thrown = false, changeAfterQuery = false, failQueries = false, producerStatus = 0, queryCount = 0
+    var observedCID = cid
     func run(_ command: String, input: Data?, timeout: TimeInterval) throws -> CommandResult {
         calls.append(command)
         if thrown { throw IMEIError.message("Файл SSH не найден") }
         if status != 0 { return CommandResult(status: status, stdout: Data(), stderr: Data(message.utf8)) }
-        let out = command.contains(DiagnosticTransportSelector.identityCommand) ? proof(web: command.contains("device_info")) : "ssh result\n__DIAGNOSTIC_RESULT__0\n"
+        let out: String
+        if command.contains(DiagnosticTransportSelector.identityCommand) {
+            out = proof(observedCID, web: command.contains("device_info"), changedBoot: changeAfterQuery && queryCount > 0)
+        } else {
+            queryCount += 1
+            if failQueries { throw IMEIError.message("SSH disconnected") }
+            out = "ssh result\npassword=TOP-SECRET\n__DIAGNOSTIC_RESULT__\(producerStatus)\n"
+        }
         return CommandResult(status: 0, stdout: Data(out.utf8), stderr: Data())
     }
 }
@@ -76,23 +84,22 @@ private final class Fixture {
             try check(report.transport == "ssh" && report.identityVerified == true && f.adb.calls.isEmpty, "Wrong transport")
             try check(report.files.allSatisfy { $0.effectiveOutcome == .succeeded }, "Missing SSH data")
         }
-        try test("SSH refusal falls back to unique existing USB ADB on B02 without write policy change") {
+        try test("SSH refusal never contacts existing ready USB") {
             let f = try Fixture(), report = try f.collect()
-            try check(report.transport == "adb" && report.identity?.firmwareHash == b02 && report.identityVerified == true, "B02 fallback failed")
-            try check(report.selectionReason?.contains("Совпадение с настроенным IP-адресом не установлено") == true, "Implicit IP identity claim")
-            try check(f.ssh.calls.count == 1 && !f.engine.connection.skipFirmwareCheck, "Repeated SSH or changed write policy")
-            try check(report.files.count == ModemInformationManager.diagnosticCommands.count && report.files.allSatisfy { $0.effectiveOutcome == .succeeded }, "Incomplete USB report")
-            let body = try String(contentsOf: report.url.appendingPathComponent("firmware.txt"))
-            try check(!body.contains("TOP-SECRET"), "Secret leaked")
+            try check(report.transport == "none" && report.identityVerified == false && f.adb.calls.isEmpty, "Ordinary collection fell back to USB")
+            try check(f.ssh.calls.count == 1 && report.files.allSatisfy { $0.effectiveOutcome == .skipped }, "Repeated SSH or fake success")
         }
-        try test("missing SSH files permits read-only USB fallback") {
+        try test("missing SSH configuration never starts USB discovery") {
             let f = try Fixture(); f.ssh.thrown = true
-            try check(try f.collect().transport == "adb", "Missing SSH files blocked ADB")
+            try check(try f.collect().transport == "none" && f.adb.calls.isEmpty, "Missing SSH fell back")
         }
-        try test("ADB USB selector resolves a real USB backend without a usb descriptor") {
+        try test("low-level bootstrap selector retains explicit independent USB support") {
             let f = try Fixture(); f.adb.usb = false; f.adb.physicalSerial = "USB-A"
-            let report = try f.collect()
-            try check(report.transport == "adb" && report.identityVerified == true && f.adb.calls.contains(["-d", "get-serialno"]), "Confirmed physical USB was ignored")
+            let selected = try DiagnosticTransportSelector.select(engine: f.engine, expected: DiagnosticDeviceExpectation(), adb: f.client)
+            try check(selected.transport == "adb" && f.adb.calls.contains(["-d", "get-serialno"]), "Bootstrap USB selection changed")
+            try selected.verify()
+            try f.engine.locked { try rejects("SSH") { _ = try ModemInformationManager(engine: f.engine).collectDiagnostics(preferredSession: selected) } }
+            try check(f.adb.queryCount == 0, "Ordinary collector accepted bootstrap ADB")
         }
         try test("host key mismatch never silently changes target or transport") {
             let f = try Fixture(); f.ssh.message = "WARNING REMOTE HOST IDENTIFICATION HAS CHANGED! Host key verification failed."
@@ -100,54 +107,48 @@ private final class Fixture {
             try check(report.transport == "none" && f.adb.calls.isEmpty && report.files.allSatisfy { $0.effectiveOutcome == .skipped }, "Trust failure bypassed")
             try check(report.connectionError != nil && report.outcomeSummary.contains("ошибки подключения: 1"), "Error classification missing")
         }
-        try test("multiple unknown USB devices refuse before any shell and TCP ADB excluded") {
-            let f = try Fixture(); f.adb.devices.append("USB-B")
+        try test("ordinary SSH rejects wrong CID without contacting USB") {
+            let f = try Fixture(); f.ssh.status = 0; f.ssh.observedCID = String(repeating: "f", count: 32)
+            let report = try f.collect(expected: Identity(cid: cid, firmwareHash: b02))
+            try check(report.transport == "none" && f.ssh.queryCount == 0 && f.adb.calls.isEmpty, "Wrong SSH target read or fallback")
+        }
+        try test("damaged pending identity prevents all transports") {
+            let f = try Fixture(); f.ssh.status = 0
+            try savePrivate(Data("{}".utf8), f.root.appendingPathComponent("setup-pending.json"))
             let report = try f.collect()
-            try check(report.transport == "none" && f.adb.calls.count == 1, "Selected first ambiguous device")
-            let g = try Fixture(); g.adb.usb = false
-            try check(try g.collect().transport == "none" && g.adb.queryCount == 0, "Network ADB accepted as USB")
+            try check(report.transport == "none" && f.ssh.calls.isEmpty && f.adb.calls.isEmpty, "Malformed pending identity ignored")
         }
-        try test("known CID selects exactly one matching USB and rejects mismatches") {
-            let f = try Fixture(); f.adb.devices.append("USB-B"); f.adb.cids["USB-B"] = String(repeating: "f", count: 32)
-            let expected = Identity(cid: cid, firmwareHash: b02)
-            try check(try f.collect(expected: expected).transport == "adb", "Known CID not selected")
-            let g = try Fixture(); g.adb.cids["USB-A"] = String(repeating: "f", count: 32)
-            try check(try g.collect(expected: expected).transport == "none" && g.adb.queryCount == 0, "Wrong CID queried")
-        }
-        try test("two USB matches or a damaged pending identity refuse without collecting") {
-            let f = try Fixture(); f.adb.devices.append("USB-B"); f.adb.cids["USB-B"] = cid
-            try check(try f.collect(expected: Identity(cid: cid, firmwareHash: b02)).transport == "none" && f.adb.queryCount == 0, "Duplicate CID matches accepted")
-            let g = try Fixture(); try savePrivate(Data("{}".utf8), g.root.appendingPathComponent("setup-pending.json"))
-            try check(try g.collect().transport == "none" && g.adb.calls.isEmpty, "Malformed pending identity ignored")
-        }
-        try test("saved setup identity binds USB without firmware allowlist") {
-            let f = try Fixture()
+        try test("saved setup identity remains binding without firmware allowlist") {
+            let f = try Fixture(); f.ssh.status = 0
             let saved: [String: Any] = ["cid": cid, "identity": try JSONSerialization.jsonObject(with: Data(webInfo.utf8))]
             try savePrivate(JSONSerialization.data(withJSONObject: saved), f.root.appendingPathComponent("setup-pending.json"))
             let report = try f.collect()
-            try check(report.transport == "adb" && report.selectionReason?.contains("сохранённой идентификации") == true, "Pending identity ignored")
+            try check(report.transport == "ssh" && report.identity?.firmwareHash == b02 && report.identityVerified == true && f.adb.calls.isEmpty, "Pending binding/unknown-firmware diagnostics changed")
+            try check(!f.engine.connection.skipFirmwareCheck, "Read-only path changed write policy")
+            let body = try String(contentsOf: report.url.appendingPathComponent("firmware.txt"))
+            try check(!body.contains("TOP-SECRET"), "Secret leaked")
         }
-        try test("saved diagnostic activation binds USB identity across restart") {
-            let f = try Fixture()
+        try test("saved diagnostic activation still binds SSH identity across restart") {
+            let f = try Fixture(); f.ssh.status = 0
             let saved: [String: Any] = ["cid": cid, "identity": try JSONSerialization.jsonObject(with: Data(webInfo.utf8))]
             try savePrivate(JSONSerialization.data(withJSONObject: saved), f.root.appendingPathComponent("adb-access-pending.json"))
             let report = try f.collect()
-            try check(report.transport == "adb" && report.selectionReason?.contains("сохранённой идентификации") == true, "Pending identity ignored")
+            try check(report.transport == "ssh" && report.identityVerified == true && f.adb.calls.isEmpty, "Pending identity ignored")
         }
         try test("device reboot during a section discards output and skips later sections") {
-            let f = try Fixture(); f.adb.changeAfterQuery = true
+            let f = try Fixture(); f.ssh.status = 0; f.ssh.changeAfterQuery = true
             let report = try f.collect()
-            try check(report.identityVerified == false && f.adb.queryCount == 1, "Reboot accepted or more diagnostics queried")
+            try check(report.identityVerified == false && f.ssh.queryCount == 1, "Reboot accepted or more diagnostics queried")
             try check(report.files.filter { $0.effectiveOutcome == .connectionError }.count == 3 && report.files.filter { $0.effectiveOutcome == .skipped }.count == report.files.count - 3, "Connection vs skipped conflated")
             try check(report.files.allSatisfy { $0.effectiveOutcome != .succeeded }, "Mixed-device data accepted")
         }
         try test("remote command failure remains distinct from local transport and skipped") {
-            let f = try Fixture(); f.adb.producerStatus = 7
+            let f = try Fixture(); f.ssh.status = 0; f.ssh.producerStatus = 7
             let report = try f.collect()
             try check(report.files.allSatisfy { $0.effectiveOutcome == .commandFailed && $0.status == 7 }, "Remote failures misclassified")
-            let g = try Fixture(); g.adb.failQueries = true
+            let g = try Fixture(); g.ssh.status = 0; g.ssh.failQueries = true
             let offline = try g.collect()
-            try check(g.adb.queryCount == 3 && offline.files.dropFirst(3).allSatisfy { $0.effectiveOutcome == .skipped }, "Unbounded retries")
+            try check(g.ssh.queryCount == 3 && offline.files.dropFirst(3).allSatisfy { $0.effectiveOutcome == .skipped }, "Unbounded retries")
         }
         try test("diagnostics are serialized and metadata commands never touch EFS or protection") {
             let f = try Fixture()

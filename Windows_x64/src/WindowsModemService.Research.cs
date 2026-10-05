@@ -13,7 +13,11 @@ public sealed partial class WindowsModemService
         try { return Task.FromResult(ResearchReportFiles.Load(ResearchPath)); }
         catch { return Task.FromResult<ResearchReport?>(null); }
     }
-    public async Task<ResearchReport> CollectFirmwareResearchAsync(IReadOnlyDictionary<string,string> parameters,IProgress<ResearchProgress>? progress,CancellationToken ct=default)
+    public Task<ResearchReport> CollectFirmwareResearchAsync(IReadOnlyDictionary<string,string> parameters,IProgress<ResearchProgress>? progress,CancellationToken ct=default)
+        => CollectResearchCoreAsync(parameters,progress,forPreparation:false,ct);
+    public Task<ResearchReport> CollectPreparationResearchAsync(IReadOnlyDictionary<string,string> parameters,IProgress<ResearchProgress>? progress,CancellationToken ct=default)
+        => CollectResearchCoreAsync(parameters,progress,forPreparation:true,ct);
+    private async Task<ResearchReport> CollectResearchCoreAsync(IReadOnlyDictionary<string,string> parameters,IProgress<ResearchProgress>? progress,bool forPreparation,CancellationToken ct)
     {
         if(!await _operation.WaitAsync(0,ct))throw new InvalidOperationException("Другая операция уже выполняется.");
         try
@@ -23,9 +27,11 @@ public sealed partial class WindowsModemService
             var host=Param(parameters,"host",_host);if(string.IsNullOrWhiteSpace(host))host=_host;
             var key=Param(parameters,"key_path",KeyPath);if(string.IsNullOrWhiteSpace(key))key=KeyPath;
             var known=Param(parameters,"known_hosts_path",KnownHostsPath);if(string.IsNullOrWhiteSpace(known))known=KnownHostsPath;
-            var mode=Param(parameters,"mode","Автоматически");
+            // Only the explicit preparation flow may survey the single USB device.
+            // Public diagnostics never fall back from SSH to ADB.
+            var mode = forPreparation ? "Автоматически" : "SSH";
             var spec=ResearchSpec.Load(Path.Combine(_resources,"FirmwareResearch","probes.json"));
-            var factory=new ResearchTransportFactory(host,_port,key,known,_adb.ExecutablePath);
+            var factory = _researchFactory?.Invoke() ?? new ResearchTransportFactory(host,_port,key,known,_adb.ExecutablePath);
             var secrets=parameters.Where(p=>p.Key.Contains("password",StringComparison.Ordinal)||p.Key=="backup_key_suffix").Select(p=>p.Value);
             var engine=new FirmwareResearchEngine(spec,factory,new ResearchRedactor(secrets));
             using var deadline=CancellationTokenSource.CreateLinkedTokenSource(ct);deadline.CancelAfter(TimeSpan.FromMinutes(8));

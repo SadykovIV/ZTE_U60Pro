@@ -112,6 +112,18 @@ struct DiagnosticArchive {
                 try write(clean, relative)
             } catch { issue(relative + ": " + error.localizedDescription) }
         }
+        // Only the validated latest pointer and its report are read. Historical reports,
+        // neighbouring cache files and linked paths are never recursively collected.
+        do {
+            let report = try FirmwareResearchArchive.latest(root: root)
+            let payloads = try FirmwareResearchArchive.textPayloads(report)
+            let bytes = payloads.reduce(0) { $0 + $1.data.count }
+            try require(total + bytes <= Self.totalLimit && entries.count + payloads.count <= 10000, "Research exceeds archive budget")
+            for payload in payloads { try write(payload.data, "FirmwareResearch/" + report.id + "/" + payload.path) }
+        } catch {
+            // Cache errors may contain untrusted saved strings: emit only a fixed omission.
+            issue("FirmwareResearch: сохранённое исследование отсутствует, недоступно, повреждено или превышает предел архива; пропущено")
+        }
         let readme = """
         Диагностика ZTE IMEI Studio \(DiagnosticsContext.version)
 
@@ -121,6 +133,11 @@ struct DiagnosticArchive {
         длительность, exitCode, размеры и SHA256. Ввод команд и тела HTTP-запросов не сохраняются.
         Diagnostics: ранее собранные отчёты модема, включая версии прошивки и компонентов,
         память, маршруты, firewall, журналы, USB, службы и доступные методы ubus.
+        FirmwareResearch/<id>: последнее сохранённое исследование, его проверки и исходные
+        startedAt/finishedAt; частичные результаты сохраняют свой outcome. Новый сбор не запускается.
+        Это сохранённые сведения: они могут относиться к другому устройству или сеансу.
+        При отсутствии, повреждении, небезопасном пути или превышении лимита набор пропускается
+        с причиной в manifest.json. Остальные сохранённые исследования не обходятся.
         Logs и installation.log: очищенные текстовые журналы прежних операций.
 
         Это диагностический архив, а не резервная копия для восстановления модема.
@@ -129,7 +146,8 @@ struct DiagnosticArchive {
         имена устройств и пути могут оставаться в диагностике. Просмотрите файлы перед передачей.
         Произвольные секреты без узнаваемого формата автоматически распознать невозможно.
 
-        Пределы: 2 МиБ на файл, 64 МиБ и 10000 файлов на набор; сначала новые файлы.
+        Пределы: 2 МиБ на обычный файл, 32 МиБ на сохранённый отчёт исследования;
+        64 МиБ и 10000 файлов на набор. Сначала новые обычные файлы, затем исследование целиком.
         Журнал при сокращении сохраняет последние записи, прочие файлы — начало.
         Отсутствующие службы и несовместимые методы отмечены кодами ошибок в отчётах.
         Незавершённый запрос может иметь только событие started. Старые сеансы до 1.9.0

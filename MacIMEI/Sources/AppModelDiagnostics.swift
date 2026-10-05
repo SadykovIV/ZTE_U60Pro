@@ -3,14 +3,14 @@ import UniformTypeIdentifiers
 
 @MainActor extension AppModel {
     var canReadModem: Bool { !busy && !terminalActive && connected && activeChannel == .ssh && permitsSSHOperations && !host.isEmpty && !keyPath.isEmpty && !knownHostsPath.isEmpty }
-    var diagnosticConnectionMode: ConnectionMode { connected && activeChannel == .ssh ? .ssh : .automatic }
-    var canCollectDiagnostics: Bool { !busy && !host.isEmpty && ((connected && activeChannel == .ssh) || channelStatuses.contains { $0.mode == .adb && $0.state == .available }) }
+    var diagnosticConnectionMode: ConnectionMode { .ssh }
+    var canCollectDiagnostics: Bool { canReadModem }
     func recordNavigation(_ title: String) {
         do { try ActivityJournal(root: storage).record(operationID: sessionID, category: "navigation", title: title, result: "message") }
         catch { journalWarning = "Не удалось сохранить переход в журнал: " + error.localizedDescription }
     }
     func exportDiagnostics(collectFresh: Bool) {
-        guard !busy else { return }
+        guard !busy, !collectFresh || canCollectDiagnostics else { return }
         let panel = NSSavePanel()
         panel.title = "Сохранить диагностический ZIP"
         panel.allowedContentTypes = [.zip]
@@ -21,8 +21,7 @@ import UniformTypeIdentifiers
         let expectedIdentity = modemInformation?.identity ?? connectedIdentity
         let mode = diagnosticConnectionMode, session = channelSession, expectedWeb = connectedWebIdentity ?? channelSummary?.webIdentity
         let expectedIMEI = connectedIMEI ?? channelSummary?.primaryIMEI
-        let webSecret = webPassword, agentSecret = agentPassword
-        let context = ["appVersion": appVersion, "macOS": ProcessInfo.processInfo.operatingSystemVersionString,
+        let context = ["appVersion": appVersion, "appBuild": DiagnosticsContext.build, "macOS": ProcessInfo.processInfo.operatingSystemVersionString,
                        "architecture": "arm64", "endpoint": config.host + ":" + config.port,
                        "connected": String(connected), "firmwareCheckSkipped": String(skipFirmwareCheck),
                        "pendingIMEIOperation": String(pendingOperation), "pendingSetup": String(setupPending),
@@ -43,7 +42,7 @@ import UniformTypeIdentifiers
                                 Task { @MainActor [weak self] in self?.append(message, progress: value * 0.85) }
                             }
                             report = try engine.locked { try ConnectionDiagnostics.collect(engine: engine, mode: mode, session: session,
-                                expectedIdentity: expectedIdentity, expectedWebIdentity: expectedWeb, expectedIMEI: expectedIMEI, webPassword: webSecret, agentPassword: agentSecret) }
+                                expectedIdentity: expectedIdentity, expectedWebIdentity: expectedWeb, expectedIMEI: expectedIMEI) }
                             context["freshReportID"] = report?.id
                             context["freshReportSummary"] = report?.outcomeSummary
                             context["freshReportTransport"] = report?.transport

@@ -252,6 +252,8 @@ public sealed class OnboardingEngine
         if (!pending.CanStartInstallation)
             return await ResumeInstallationAsync(pending, serial, identity, webIdentity, agentPassword, ct)
                 .ConfigureAwait(false);
+        if (_genericAccess)
+            await VerifyGenericTimeoutAsync(ct).ConfigureAwait(false);
         var installer = StrictUtf8.GetString(await File.ReadAllBytesAsync(
             Path.Combine(_resources, "Onboarding", "setup-agent.sh"), ct).ConfigureAwait(false));
         var policy = InstallerPolicy(identity, profile);
@@ -277,6 +279,8 @@ public sealed class OnboardingEngine
             foreach (var name in new[] { "zte-agent", "dropbear", "setup-agent.sh", "start_zte_imei_studio.sh" })
                 await PushStagedAsync(serial, Path.Combine(_resources, "Onboarding", name), stage,
                     name, owner, hashes[name], ct).ConfigureAwait(false);
+            if (_genericAccess)
+                await StageGenericTimeoutAsync(serial, stage, owner, ct).ConfigureAwait(false);
             await PushStagedAsync(serial, KeyPath + ".pub", stage, "id_ed25519.pub", owner,
                 Sha(publicKey), ct).ConfigureAwait(false);
             await PushStagedAsync(serial, credentialFile, stage, "start-agent.sh", owner,
@@ -553,6 +557,25 @@ public sealed class OnboardingEngine
             web.Inner == "BD_STDPLMU5250V1.0.0B02" && device.FirmwareHash == B02FirmwareHash && device.RouterHash == ImeiEngine.RouterHash)
             return "b02-experimental";
         return "linux-arm64-access";
+    }
+
+    internal const string GenericTimeoutSha256 = "6e81024c273080294a251ae38572f1ef0cb496fbd16c7009c6a4ae1c07fb55ff";
+    internal async Task VerifyGenericTimeoutAsync(CancellationToken ct)
+    {
+        var path = Path.Combine(_resources, "HostTools", "zte-timeout");
+        RejectReparsePoint(path);
+        var bytes = await File.ReadAllBytesAsync(path, ct).ConfigureAwait(false);
+        if (Sha(bytes) != GenericTimeoutSha256)
+            throw new InvalidDataException("Повреждён компонент ограниченного ожидания установщика.");
+    }
+
+    internal async Task StageGenericTimeoutAsync(string serial, string stage, string owner, CancellationToken ct)
+    {
+        // Verify again immediately before transfer; remote staging verifies the
+        // same digest before installer dispatch, even if the local file changes.
+        await VerifyGenericTimeoutAsync(ct).ConfigureAwait(false);
+        await PushStagedAsync(serial, Path.Combine(_resources, "HostTools", "zte-timeout"), stage,
+            "zte-timeout", owner, GenericTimeoutSha256, ct).ConfigureAwait(false);
     }
 
     private async Task<Dictionary<string, string>> VerifyAssetsAsync(CancellationToken ct)
@@ -1007,7 +1030,7 @@ public sealed class OnboardingEngine
         try
         {
             var names = new[] { "zte-agent", "dropbear", "setup-agent.sh", "start_zte_imei_studio.sh",
-                "id_ed25519.pub", "start-agent.sh", ".owner", ".install-requested" };
+                "id_ed25519.pub", "start-agent.sh", "zte-timeout", ".owner", ".install-requested" };
             await AdbTextAsync(serial, "rm -f " + string.Join(' ', names.Select(n => Quote(stage + "/" + n))) +
                 "; rmdir " + Quote(stage), TimeSpan.FromSeconds(20), ct).ConfigureAwait(false);
         }

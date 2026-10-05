@@ -19,6 +19,7 @@ CID = '0123456789abcdef0123456789abcdef'
 TOKEN = '11111111-2222-3333-4444-555555555555'
 FIRMWARE = '604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263'
 B02_FIRMWARE = '7f1905a2844337640c08b66edffbde147adf20b3ab3e1e54fefe4939c40e633e'
+TIMEOUT_SHA = '6e81024c273080294a251ae38572f1ef0cb496fbd16c7009c6a4ae1c07fb55ff'
 ROUTER = '55c54f74aaa427940254a2f16c36771e675a80a002363e4f10b0dfcb604d9c6f'
 
 
@@ -60,6 +61,7 @@ field=sys.argv[2]
 if field=='%u': print(0)
 elif field=='%a': print(mode)
 elif field=='%u:%a': print('0:'+mode)
+elif field=='%u:%h': print('0:'+str(value.st_nlink))
 else: sys.exit(1)
 ''')
         self.command('sha256sum', f'''#!{shutil.which('python3')}
@@ -74,6 +76,7 @@ def h(p):
    if reads>int(os.environ['MOCK_FIRMWARE_CHANGE_AFTER']):return 'e'*64
   return os.environ.get('MOCK_FIRMWARE','{FIRMWARE}')
  if p.endswith('/usr/bin/diag-router'): return os.environ.get('MOCK_ROUTER','{ROUTER}')
+ if p.endswith('/zte-timeout'): return os.environ.get('MOCK_TIMEOUT_SHA','{TIMEOUT_SHA}')
  return hashlib.sha256(Path(p).read_bytes()).hexdigest()
 if sys.argv[1]=='-c':
  for line in Path(sys.argv[2]).read_text().splitlines():
@@ -148,7 +151,8 @@ esac
         self.write('/etc/init.d/done',f'#!/bin/sh\nsh {self.root}/etc/rc.local\n',0o700)
         # Mock only the ELF header inspection and pinned Dropbear's -V entry.
         self.command('od','#!/bin/sh\necho 7f454c460201010000000000000000000200b700\n')
-        self.command('timeout','#!/bin/sh\nshift; exec "$@"\n')
+        (self.stage/'zte-timeout').write_text('#!/bin/sh\nshift; exec "$@"\n')
+        (self.stage/'zte-timeout').chmod(0o600)
         (self.stage/'dropbear').chmod(0o700)
         (self.stage/'zte-agent').chmod(0o700)
         (self.stage/'start-agent.sh').write_text("#!/bin/sh\nexport ZTE_AGENT_MODE='discovery'\ntouch \"$MOCK_ROOT/running\"\n")
@@ -157,6 +161,44 @@ esac
         router='absent' if absent else 'b'*64
         self.owner('linux-arm64-access','a'*64,router,BOOT)
         return dict(profile='linux-arm64-access',firmware='a'*64,router=router,boot=BOOT)
+
+    def test_generic_fresh_layout_without_local_dirs_and_sticky_tmp_preflights(self):
+        args=self.generic()
+        self.write('/etc/rc.local','#!/bin/sh\nexit 0\n',0o775)
+        (self.root/'tmp').mkdir(exist_ok=True);(self.root/'tmp').chmod(0o1777)
+        # Observed shape only: all identities and file contents are synthetic.
+        shutil.rmtree(self.root/'data/local')
+        for name in ('bin','dropbear'):
+            self.assertFalse((self.root/'data'/name).exists())
+        result=self.preflight(**args)
+        self.assert_success(result)
+        self.assertEqual(result.stdout.strip(),'INSTALL_PREFLIGHT linux-arm64-access imei_config=unknown')
+        self.assertFalse((self.root/'data/local').exists(),'Read-only preflight created directories')
+
+    def test_generic_missing_native_timeout_uses_pinned_stage_supervisor(self):
+        args=self.generic()
+        # /bin/sh is a real native shell; no command named timeout is installed.
+        self.assertNotIn('timeout', [p.name for p in self.bin.iterdir()])
+        self.assert_success(self.preflight(**args))
+        self.assert_success(self.run_setup(**args))
+        self.assertEqual((self.stage/'zte-timeout').stat().st_mode & 0o777,0o700)
+
+    def test_generic_unverified_timeout_refused_before_journal_or_install(self):
+        for kind in ('missing','hash','symlink','hardlink'):
+            with self.subTest(kind=kind):
+                args=self.generic(); helper=self.stage/'zte-timeout'
+                self.env.pop('MOCK_TIMEOUT_SHA',None)
+                if kind=='missing': helper.unlink()
+                elif kind=='hash':self.env['MOCK_TIMEOUT_SHA']='f'*64
+                elif kind=='symlink':helper.unlink();helper.symlink_to(self.stage/'dropbear')
+                elif kind=='hardlink':os.link(helper,self.stage/'linked-timeout')
+                result=self.run_setup(**args)
+                self.assertNotEqual(result.returncode,0)
+                self.assertIn('TIMEOUT_',result.stderr)
+                self.assertFalse(self.journal.parent.exists())
+                self.assertFalse((self.root/'data/zte-agent').exists())
+                if helper.exists() or helper.is_symlink():helper.unlink()
+                (self.stage/'linked-timeout').unlink(missing_ok=True)
 
     def test_generic_unknown_firmware_installs_discovery_transaction(self):
         args=self.generic()

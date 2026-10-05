@@ -232,8 +232,25 @@ final class ModemInformationManager {
         if truncated { bytes.append(Data("\n[Вывод ограничен 512 КиБ]\n".utf8)) }
         return (bytes, status, truncated)
     }
+    /// Reuse the existing identity protocol, but never its automatic ADB selector.
+    private func sshDiagnosticSession(expected: DiagnosticDeviceExpectation) throws -> DiagnosticSession {
+        let command = DiagnosticTransportSelector.identityCommand(requireWeb: expected.requiresWeb)
+        let read: () throws -> DiagnosticDeviceProof = {
+            let result = try self.engine.transport.run(command, input: nil, timeout: 15)
+            try require(result.status == 0, "Не удалось подтвердить идентификацию через SSH; другой канал не запрашивался")
+            return try DiagnosticTransportSelector.parseIdentity(result.stdout, requireWeb: expected.requiresWeb)
+        }
+        let proof = try read()
+        try require(expected.matches(proof), "SSH подключён к другому модему; сбор остановлен")
+        return DiagnosticSession(transport: "ssh", reason: "Диагностика использует только SSH с проверенной идентификацией модема.", proof: proof, readIdentity: read) { command, timeout in
+            let result = try self.engine.transport.run(command, input: nil, timeout: timeout)
+            try require(result.status != 255, "Соединение SSH потеряно; другой канал не запрашивался")
+            return result
+        }
+    }
     func collectDiagnostics(expectedIdentity: Identity? = nil, expectedWebIdentity: WebIdentity? = nil, expectedIMEI: String? = nil, adb: ADBClient? = nil, preferredSession: DiagnosticSession? = nil) throws -> DiagnosticReport {
         try require(engine.lockFD >= 0, "Диагностика требует блокировки операции")
+        try require(preferredSession == nil || preferredSession?.transport == "ssh", "Диагностика модема доступна только через SSH")
         var warnings = [String](), selectionError: String?
         let session: DiagnosticSession?
         do {
@@ -243,7 +260,7 @@ final class ModemInformationManager {
                 try preferredSession.verify()
                 session = preferredSession
             } else {
-                session = try DiagnosticTransportSelector.select(engine: engine, expected: expected, adb: adb)
+                session = try sshDiagnosticSession(expected: expected)
             }
         } catch {
             session = nil

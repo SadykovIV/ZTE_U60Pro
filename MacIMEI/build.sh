@@ -61,7 +61,7 @@ python3 - "$APP" <<'PY'
 import hashlib,json,pathlib,plistlib,sys
 app=pathlib.Path(sys.argv[1]); res=app/'Contents/Resources'
 (res/'helpers.json').write_text(json.dumps({n:hashlib.sha256((res/n).read_bytes()).hexdigest() for n in ['zte_nv','zte_config','zte_config_read']},indent=2)+'\n')
-info={'CFBundleName':'ZTE U60Pro Manager','CFBundleDisplayName':'ZTE U60Pro Manager','CFBundleIdentifier':'local.zte.imei-studio','CFBundleVersion':'41','CFBundleShortVersionString':'1.24.4','CFBundleExecutable':'ZTEU60ProManager','CFBundlePackageType':'APPL','LSMinimumSystemVersion':'13.0','LSArchitecturePriority':['arm64'],'NSHighResolutionCapable':True,'NSAppTransportSecurity':{'NSAllowsArbitraryLoads':True},'NSPrincipalClass':'NSApplication','NSLocalNetworkUsageDescription':'Подключение к вашему модему для чтения, резервного копирования и настройки устройства.','CFBundleIconFile':'AppIcon'}
+info={'CFBundleName':'ZTE U60Pro Manager','CFBundleDisplayName':'ZTE U60Pro Manager','CFBundleIdentifier':'local.zte.imei-studio','CFBundleVersion':'42','CFBundleShortVersionString':'1.24.4','CFBundleExecutable':'ZTEU60ProManager','CFBundlePackageType':'APPL','LSMinimumSystemVersion':'13.0','LSArchitecturePriority':['arm64'],'NSHighResolutionCapable':True,'NSAppTransportSecurity':{'NSAllowsArbitraryLoads':True},'NSPrincipalClass':'NSApplication','NSLocalNetworkUsageDescription':'Подключение к вашему модему для чтения, резервного копирования и настройки устройства.','CFBundleIconFile':'AppIcon'}
 (app/'Contents/Info.plist').write_bytes(plistlib.dumps(info))
 setup=res/'Onboarding'
 setup_manifest = json.loads((setup/'SHA256.json').read_text())

@@ -35,7 +35,7 @@ public sealed partial class DeviceFeatureService
 
     private void CheckLocalPending()
     {
-        foreach (var name in new[] { "imei-pending.json", "pending.json", "setup-pending.json", "adb-access-pending.json", "system-restore-pending.json" })
+        foreach (var name in new[] { "imei-pending.json", "pending.json", "setup-pending.json", "adb-access-pending.json", AdbToggleTransaction.PendingName, "system-restore-pending.json" })
         {
             var path = Path.Combine(_storageRoot, name);
             Check(!File.Exists(path) && !Directory.Exists(path),

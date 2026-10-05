@@ -62,6 +62,7 @@ final class ActivityJournal: @unchecked Sendable {
         var details = details
         details["sessionID"] = DiagnosticsContext.sessionID
         details["appVersion"] = DiagnosticsContext.version
+        details["appBuild"] = DiagnosticsContext.build
         let now = Date(), formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let event = ActivityEvent(id: UUID().uuidString.lowercased(), timestamp: formatter.string(from: now),

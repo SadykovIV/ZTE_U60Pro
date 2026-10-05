@@ -50,13 +50,13 @@ struct ConnectionOverviewReaders {
 
 enum ConnectionOverview {
     /// Caller holds the application's local operation lock. No installation or
-    /// NV/EFS helpers are invoked. ADB supplies information only, by design.
+    /// NV/EFS helpers are invoked. Ordinary application reads require SSH.
     static func collect(engine: ModemEngine, session: ReadOnlyChannelSession,
                         sections: Set<ConnectionOverviewSection> = Set(ConnectionOverviewSection.allCases),
                         update: @escaping (ConnectionOverviewSection) -> Void = { _ in }) throws -> ConnectionOverviewSnapshot {
         try require(engine.lockFD >= 0, "Обновление разделов требует блокировки приложения")
-        guard let shell = session.diagnosticSession, [.ssh, .adb].contains(session.mode) else {
-            throw IMEIError.message("Для подключения к модему требуется SSH или ADB")
+        guard session.mode == .ssh, let shell = session.diagnosticSession, shell.transport == "ssh" else {
+            throw IMEIError.message("Для подключения к модему требуется SSH")
         }
         let sections = session.summary.fields["accessProfile"] == "linux-arm64-access" ? sections.intersection([.information]) : sections
         let readers = ConnectionOverviewReaders(
@@ -88,13 +88,13 @@ enum ConnectionOverview {
                         sections: Set<ConnectionOverviewSection> = Set(ConnectionOverviewSection.allCases),
                         update: @escaping (ConnectionOverviewSection) -> Void = { _ in },
                         verifyEngine: () throws -> Void = {}) throws -> ConnectionOverviewSnapshot {
-        guard let shell = session.diagnosticSession, [.ssh, .adb].contains(session.mode) else {
-            throw IMEIError.message("Для подключения к модему требуется SSH или ADB")
+        guard session.mode == .ssh, let shell = session.diagnosticSession, shell.transport == "ssh" else {
+            throw IMEIError.message("Для подключения к модему требуется SSH")
         }
         let summary = try session.readSummary()
         try require(summary.identity == shell.proof.identity && summary.bootID == shell.proof.bootID,
                     "Сведения подключения не совпадают с проверенным сеансом модема")
-        var snapshot = ConnectionOverviewSnapshot(summary: summary, limitedToADB: session.mode == .adb, sections: sections)
+        var snapshot = ConnectionOverviewSnapshot(summary: summary, limitedToADB: false, sections: sections)
         func verify() throws { try shell.verify(); try verifyEngine() }
         func read<T>(_ section: ConnectionOverviewSection, _ reader: (() throws -> T)?) throws -> T? {
             guard sections.contains(section) else { return nil }

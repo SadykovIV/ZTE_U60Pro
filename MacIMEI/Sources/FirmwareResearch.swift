@@ -10,7 +10,7 @@ struct ResearchObservation: Codable, Sendable { let id: String; let title: Resea
 struct ResearchObservationResult: Codable, Sendable, Identifiable { let id: String; let title: ResearchText; let probe: String; let fact: String; let state: String; let value: String?; var sourceStatus: String? = nil; var sourceExitCode: Int32? = nil; var reason: String? = nil }
 struct ResearchSpecification: Codable, Sendable {
     // Updated only when the reviewed, bundled command allowlist changes.
-    static let expectedSHA256 = "86b3e60ef1ac531ee68c6394e23c06fe96f31756162b99a41be704b042e73223"
+    static let expectedSHA256 = "1b37362f46c4f8940a19d37b65312156eb8b6b370c556493340233252519e406"
     let schemaVersion: Int; let revision: Int; let profiles: [ResearchProfile]; let probes: [ResearchProbe]; let features: [ResearchFeature]
     var observations: [ResearchObservation]? = nil
     static func load(_ resources: URL) throws -> Self {
@@ -376,28 +376,60 @@ enum FirmwareResearchArchive {
         try saveJSON(["id": report.id], root.appendingPathComponent("FirmwareResearch/latest.json")); return directory
     }
     static func latest(root: URL) throws -> FirmwareResearchReport {
-        let base = root.appendingPathComponent("FirmwareResearch")
-        let (pointer, clipped) = try DiagnosticArchive.readRegular(root: base, relative: "latest.json", limit: 4096)
+        let (pointer, clipped) = try DiagnosticArchive.readRegular(root: root, relative: "FirmwareResearch/latest.json", limit: 4097)
         let id = try JSONDecoder().decode([String: String].self, from: pointer)["id"] ?? ""
-        try require(!clipped && UUID(uuidString: id) != nil, "Invalid saved research report")
-        let (data, truncated) = try DiagnosticArchive.readRegular(root: base, relative: id + "/report.json", limit: 32 * 1024 * 1024)
-        try require(!truncated, "Saved research report is too large")
+        try require(!clipped && pointer.count <= 4096 && UUID(uuidString: id) != nil, "Invalid saved research report")
+        let (data, truncated) = try DiagnosticArchive.readRegular(root: root, relative: "FirmwareResearch/" + id + "/report.json", limit: 32 * 1024 * 1024 + 1)
+        try require(!truncated && data.count <= 32 * 1024 * 1024, "Saved research report is too large")
         let report = try JSONDecoder().decode(FirmwareResearchReport.self, from: data)
         try require(report.id == id, "Saved research report identity mismatch")
         return report
     }
-    static func export(_ report: FirmwareResearchReport, to destination: URL) throws -> String {
-        try require(UUID(uuidString: report.id) != nil && report.probes.count <= 64 && report.features.count <= 100, "Invalid research export dataset")
-        try require(report.probes.allSatisfy { $0.id.range(of: #"^[a-z0-9][a-z0-9-]{0,63}$"#, options: .regularExpression) != nil }, "Unsafe research probe filename")
-        try require(Set(report.probes.map(\.id)).count == report.probes.count, "Duplicate research export probe")
-        let work = FileManager.default.temporaryDirectory.appendingPathComponent("zte-research-" + UUID().uuidString)
-        try secureDirectory(work); defer { try? FileManager.default.removeItem(at: work) }
-        let snapshot = work.appendingPathComponent("ZTE-Firmware-Research"); try secureDirectory(snapshot)
+    /// Shared offline payloads for both the standalone report and the common support ZIP.
+    /// Never enumerates the cache or copies arbitrary saved files.
+    static func textPayloads(_ original: FirmwareResearchReport) throws -> [(path: String, data: Data)] {
+        try require(original.schemaVersion == 1 && UUID(uuidString: original.id) != nil && original.probes.count <= 64 && original.features.count <= 100 && (original.observations?.count ?? 0) <= 4096, "Invalid research export dataset")
+        try require(original.probes.allSatisfy { $0.id.range(of: #"^[a-z0-9][a-z0-9-]{0,63}$"#, options: .regularExpression) != nil }, "Unsafe research probe filename")
+        try require(Set(original.probes.map(\.id)).count == original.probes.count, "Duplicate research export probe")
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        let originalData = try encoder.encode(original)
+        try require(originalData.count <= 32 * 1024 * 1024, "Research export dataset exceeds the size limit")
+        let redactor = ResearchRedactor(secrets: [])
+        // Export-only policy: activation and SM-DP data can be short or look like
+        // an ordinary SHA256. Redact by field name before considering its value.
+        let credentialName = #"(?i)(activation|confirmation|matching[_ -]?id|sm[-_ ]?dp)"#
+        func credential(_ key: String) -> Bool {
+            ActivityJournal.isSecretField(key) || key.range(of: credentialName, options: .regularExpression) != nil
+        }
+        func cleanText(_ text: String) -> String {
+            guard !text.contains("\0") else { return "[binary output omitted]" }
+            let clean = redactor.clean(text).replacingOccurrences(of: #"(?im)^.*(?:\bLPA[ \t]*:|(?:activation[_ -]?code|confirmation[_ -]?code|matching[_ -]?id|sm[-_ ]?dp\+?(?:[_ -]*(?:address|server|host))?)[A-Za-z0-9_-]*["']?[ \t]*(?:[:=]|[ \t]+\S)).*$"#, with: "[activation data redacted]", options: .regularExpression)
+            return clean.replacingOccurrences(of: #"(?i)\b(?:https?|ftp|ssh|socks[45]?)://[^\s\"<>]+"#, with: "[url-redacted]", options: .regularExpression)
+        }
+        func clean(_ value: Any) -> Any {
+            if let object = value as? [String: Any] {
+                return object.reduce(into: [String: Any]()) { result, pair in
+                    let privateObservation = pair.key == "value" && (object["fact"] as? String).map(credential) == true
+                    result[cleanText(pair.key)] = credential(pair.key) || privateObservation ? "[redacted]" : clean(pair.value)
+                }
+            }
+            if let array = value as? [Any] { return array.map(clean) }
+            if let text = value as? String { return cleanText(text) }
+            return value
+        }
+        var object = clean(try JSONSerialization.jsonObject(with: originalData)) as! [String: Any]
+        // The random local report ID names the archive namespace; it is not a device ID.
+        object["id"] = original.id
+        object["profile"] = original.profile.map { clean($0) }
+        object["authorization"] = "none"
+        let report = try JSONDecoder().decode(FirmwareResearchReport.self, from: JSONSerialization.data(withJSONObject: object))
         let encodedReport = try encoder.encode(report)
-        try require(encodedReport.count <= 32 * 1024 * 1024, "Research export dataset exceeds the size limit")
-        var manifest = [[String: String]]()
-        func write(_ data: Data, _ path: String) throws { let target = snapshot.appendingPathComponent(path); try secureDirectory(target.deletingLastPathComponent()); try savePrivate(data, target); manifest.append(["path": path, "sha256": digest(data), "bytes": String(data.count)]) }
+        var payloads = [(path: String, data: Data)](), manifest = [[String: String]](), total = 0
+        func write(_ data: Data, _ path: String) throws {
+            try require(data.count <= 32 * 1024 * 1024 && total + data.count <= DiagnosticArchive.totalLimit, "Research export payload exceeds the size limit")
+            payloads.append((path, data)); total += data.count
+            manifest.append(["path": path, "sha256": digest(data), "bytes": String(data.count)])
+        }
         try write(encodedReport, "report.json"); try write(encoder.encode(report.application), "application.json")
         var markdown = "# Исследование прошивки / Firmware research\n\nCreated: \(report.startedAt)\nFinished: \(report.finishedAt)\nTransport: \(report.transport)\nOutcome: \(report.outcome)\nProfile: \(report.profile ?? "unknown")\n\nRead-only evidence, not write compatibility certification. / Сведения только для чтения; успешная проверка предпосылок не гарантирует безопасность операций записи.\n\n"
         markdown += "Binding: \(report.bindingStrength ?? "not-assessed")\nWrite authorization: none\n\n"
@@ -411,6 +443,17 @@ enum FirmwareResearchArchive {
         markdown += "## Probes / Проверки\n\n| Probe | Outcome | Local exit | Remote exit | Seconds |\n|---|---|---|---|---|\n"
         for probe in report.probes { markdown += "| \(probe.id) | \(probe.outcome) | \(probe.localExitCode.map(String.init) ?? "—") | \(probe.remoteExitCode.map(String.init) ?? "—") | \(String(format: "%.2f", probe.durationSeconds)) |\n"; try write(encoder.encode(probe), "probes/" + probe.id + ".json") }
         try write(Data(markdown.utf8), "REPORT.md"); try write(encoder.encode(manifest), "manifest-sha256.json")
+        return payloads
+    }
+    static func export(_ report: FirmwareResearchReport, to destination: URL) throws -> String {
+        let payloads = try textPayloads(report)
+        let work = FileManager.default.temporaryDirectory.appendingPathComponent("zte-research-" + UUID().uuidString)
+        try secureDirectory(work); defer { try? FileManager.default.removeItem(at: work) }
+        let snapshot = work.appendingPathComponent("ZTE-Firmware-Research"); try secureDirectory(snapshot)
+        for payload in payloads {
+            let target = snapshot.appendingPathComponent(payload.path)
+            try secureDirectory(target.deletingLastPathComponent()); try savePrivate(payload.data, target)
+        }
         let zip = work.appendingPathComponent("report.zip"), runner = ResearchBoundedRunner(), token = ResearchCancellation()
         let packed = try runner.run(URL(fileURLWithPath: "/usr/bin/ditto"), arguments: ["-c", "-k", "--keepParent", "--norsrc", "--noextattr", snapshot.path, zip.path], timeout: 60, maxBytes: 65536, cancellation: token)
         try require(packed.outcome == "success", "Could not create firmware research ZIP")

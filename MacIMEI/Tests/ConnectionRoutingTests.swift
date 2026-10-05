@@ -321,14 +321,13 @@ private final class Fixture {
             try check(result.actualMode == .ssh && result.session?.diagnosticSession?.transport == "ssh", "Connect did not select SSH")
             try check(f.agent.calls.isEmpty && f.web.calls.isEmpty && state(result, .agent) == .notChecked && state(result, .web) == .notChecked, "Connect sent HTTP credentials")
         }
-        try test("Connect automatic falls back to physical ADB even when Agent would be available") {
+        try test("Connect automatic never falls back from SSH to ADB or HTTP") {
             let f = try Fixture()
             let result = try f.router().connect(mode: .automatic)
-            try check(result.actualMode == .adb && result.session?.diagnosticSession?.transport == "adb" && result.reason.contains("чтение"), "ADB was not selected with limited capability")
-            try check(f.agent.calls.isEmpty && f.web.calls.isEmpty, "Agent or Web was used as connection")
-            try rejects("SSH") { _ = try result.session!.requireSSH() }
+            try check(result.session == nil && result.actualMode == nil, "Fallback became a working connection")
+            try check(f.adb.calls.isEmpty && f.agent.calls.isEmpty && f.web.calls.isEmpty, "Connect bypassed SSH")
         }
-        try test("Connect manual SSH or ADB is strict on success and failure") {
+        try test("Connect manual SSH is strict on success and failure") {
             for mode in ConnectionMode.connectionPriority {
                 for missing in [false, true] {
                     var calls = [ConnectionMode]()
@@ -343,7 +342,7 @@ private final class Fixture {
             }
         }
         try test("Connect never labels Agent or Web as a connected modem") {
-            for mode in [ConnectionMode.agent, .web] {
+            for mode in [ConnectionMode.agent, .web, .adb] {
                 let f = try Fixture(), result = try f.router().connect(mode: mode)
                 try check(result.session == nil && result.actualMode == nil && state(result, mode) == .unsupported && result.reason.contains("подготовку"), "API was labelled a connection")
                 try check(f.ssh.calls.isEmpty && f.adb.calls.isEmpty && f.agent.calls.isEmpty && f.web.calls.isEmpty, "Unsupported connection mode performed IO")
@@ -366,7 +365,7 @@ private final class Fixture {
         }
         try test("Discovery verifies every channel without logging in or installing") {
             let f = try Fixture(); f.ssh.status = 0
-            let statuses = try f.router(webPassword: "DO-NOT-SEND-WEB", agentPassword: "DO-NOT-SEND-AGENT").discover()
+            let statuses = try f.router(webPassword: "DO-NOT-SEND-WEB", agentPassword: "DO-NOT-SEND-AGENT").discover(modes: ConnectionMode.discoveryOrder)
             func status(_ mode: ConnectionMode) -> ConnectionChannelStatus { statuses.first { $0.mode == mode }! }
             try check(status(.ssh).state == .available && status(.adb).state == .available, "Shell discovery failed")
             try check(status(.web).state == .authenticationRequired && status(.agent).state == .authenticationRequired, "Known unauthenticated services not discovered")
@@ -376,7 +375,7 @@ private final class Fixture {
         }
         try test("Explicit discovery verifies the supplied independent HTTP passwords once") {
             let f = try Fixture()
-            let statuses = try f.router().discover(authenticate: true)
+            let statuses = try f.router().discover(authenticate: true, modes: ConnectionMode.discoveryOrder)
             for mode in [ConnectionMode.web, .agent] {
                 try check(statuses.first { $0.mode == mode }?.state == .available, "Correct password did not authorize " + mode.rawValue)
             }
@@ -387,7 +386,7 @@ private final class Fixture {
         }
         try test("Explicit discovery with blank passwords asks for authentication without a login") {
             let f = try Fixture()
-            let statuses = try f.router(webPassword: "", agentPassword: "").discover(authenticate: true)
+            let statuses = try f.router(webPassword: "", agentPassword: "").discover(authenticate: true, modes: ConnectionMode.discoveryOrder)
             for mode in [ConnectionMode.web, .agent] {
                 try check(statuses.first { $0.mode == mode }?.state == .authenticationRequired, "Blank password shown as rejection")
             }
@@ -395,7 +394,7 @@ private final class Fixture {
         }
         try test("Rejected passwords are distinct from unreachable services and are not retried") {
             let f = try Fixture(); f.web.loginResult = 1; f.agent.loginStatus = 401
-            let statuses = try f.router().discover(authenticate: true)
+            let statuses = try f.router().discover(authenticate: true, modes: ConnectionMode.discoveryOrder)
             for mode in [ConnectionMode.web, .agent] {
                 let status = statuses.first { $0.mode == mode }!
                 try check(status.state == .invalidPassword && status.state.title == "Неверный пароль", "Wrong-password status missing")
@@ -405,9 +404,9 @@ private final class Fixture {
         }
         try test("A new explicit check accepts corrected passwords and replaces prior failures") {
             let f = try Fixture(); f.web.loginResult = 1; f.agent.loginStatus = 401
-            _ = try f.router().discover(authenticate: true)
+            _ = try f.router().discover(authenticate: true, modes: ConnectionMode.discoveryOrder)
             f.web.loginResult = 0; f.agent.loginStatus = 200
-            let statuses = try f.router(webPassword: "CORRECTED-WEB", agentPassword: "CORRECTED-AGENT").discover(authenticate: true)
+            let statuses = try f.router(webPassword: "CORRECTED-WEB", agentPassword: "CORRECTED-AGENT").discover(authenticate: true, modes: ConnectionMode.discoveryOrder)
             for mode in [ConnectionMode.web, .agent] {
                 try check(statuses.first { $0.mode == mode }?.state == .available, "Corrected password retained old rejection")
             }
@@ -417,14 +416,14 @@ private final class Fixture {
         try test("Password rejection on one HTTP channel does not mask success on the other") {
             for wrongWeb in [false, true] {
                 let f = try Fixture(); f.web.loginResult = wrongWeb ? 1 : 0; f.agent.loginStatus = wrongWeb ? 200 : 401
-                let statuses = try f.router().discover(authenticate: true)
+                let statuses = try f.router().discover(authenticate: true, modes: ConnectionMode.discoveryOrder)
                 try check(statuses.first { $0.mode == .web }?.state == (wrongWeb ? .invalidPassword : .available), "Web status contaminated by Agent")
                 try check(statuses.first { $0.mode == .agent }?.state == (wrongWeb ? .available : .invalidPassword), "Agent status contaminated by Web")
             }
         }
         try test("Connection refusal and timeout remain unavailable even with supplied passwords") {
             let f = try Fixture(); f.web.transportFailure = true; f.agent.transportFailure = true
-            let statuses = try f.router().discover(authenticate: true)
+            let statuses = try f.router().discover(authenticate: true, modes: ConnectionMode.discoveryOrder)
             for mode in [ConnectionMode.web, .agent] {
                 try check(statuses.first { $0.mode == mode }?.state == .unavailable, "Transport failure blamed on password")
             }
@@ -432,34 +431,34 @@ private final class Fixture {
         }
         try test("Rate limit and malformed successful login are not labelled wrong password") {
             let f = try Fixture(); f.agent.loginStatus = 429; f.web.missingCookie = true
-            let statuses = try f.router().discover(authenticate: true)
+            let statuses = try f.router().discover(authenticate: true, modes: ConnectionMode.discoveryOrder)
             try check(statuses.first { $0.mode == .agent }?.state == .rateLimited, "Rate limit blamed on password")
             try check(statuses.first { $0.mode == .web }?.state == .unsupported, "Missing successful-session cookie blamed on password")
             try check(f.agent.passwords.count == 1 && f.web.passwords.count == 1, "Malformed/restricted login retried")
         }
         try test("Explicit discovery refuses to send passwords after SSH trust rejection") {
             let f = try Fixture(); f.ssh.message = "Host key verification failed."
-            let statuses = try f.router().discover(authenticate: true)
+            let statuses = try f.router().discover(authenticate: true, modes: ConnectionMode.discoveryOrder)
             try check(statuses.first { $0.mode == .ssh }?.state == .trustRejected, "SSH rejection hidden")
             try check(f.web.calls.isEmpty && f.agent.calls.isEmpty && f.adb.calls.isEmpty, "Explicit check sent secrets after trust rejection")
         }
         try test("Discovery finds stock Web without shell or any password so preparation can be offered") {
             let f = try Fixture(); f.adb.serials = []
-            let statuses = try f.router(webPassword: "", agentPassword: "").discover()
+            let statuses = try f.router(webPassword: "", agentPassword: "").discover(modes: ConnectionMode.discoveryOrder)
             try check(statuses.first { $0.mode == .web }?.state == .authenticationRequired && f.web.calls == ["web_login_info"], "Stock Web was hidden without credentials")
             try check(statuses.first { $0.mode == .ssh }?.state == .unavailable && statuses.first { $0.mode == .adb }?.state == .unavailable, "Missing shell was labelled connected")
         }
         try test("Discovery never accepts an arbitrary HTTP page as stock Web") {
             for response in [Data("<html>Router login</html>".utf8), Data("[{\"result\":[0,{}]}]".utf8), Data("[{\"result\":[0,{\"zte_web_sault\":\"\"}]}]".utf8), Data("[{\"result\":[0,{\"zte_web_sault\":23}]}]".utf8)] {
                 let f = try Fixture(); f.web.challengeReply = response
-                let statuses = try f.router().discover()
+                let statuses = try f.router().discover(modes: ConnectionMode.discoveryOrder)
                 let web = statuses.first { $0.mode == .web }!
                 try check(web.state != .authenticationRequired && web.state != .available && f.web.passwords.isEmpty, "Unrelated HTTP service accepted as stock Web")
             }
         }
         try test("Discovery preserves SSH trust rejection instead of probing lower services") {
             let f = try Fixture(); f.ssh.message = "Host key verification failed."
-            let statuses = try f.router().discover()
+            let statuses = try f.router().discover(modes: ConnectionMode.discoveryOrder)
             try check(statuses.first { $0.mode == .ssh }?.state == .trustRejected && statuses.filter { $0.mode != .ssh }.allSatisfy { $0.state == .notChecked }, "Trust failure obscured")
             try check(f.adb.calls.isEmpty && f.agent.calls.isEmpty && f.web.calls.isEmpty, "Discovery bypassed trust rejection")
         }
@@ -467,22 +466,27 @@ private final class Fixture {
             for discovery in [false, true] {
                 var calls = 0
                 let router = ConnectionRouter(expected: DiagnosticDeviceExpectation(cids: ["invalid"], imeis: []), probes: [.ssh: { _ in calls += 1; return session(.ssh) }])
-                try rejects { if discovery { _ = try router.discover() } else { _ = try router.connect(mode: .automatic) } }
+                try rejects { if discovery { _ = try router.discover(modes: ConnectionMode.discoveryOrder) } else { _ = try router.connect(mode: .automatic) } }
                 try check(calls == 0, "Invalid expected modem contacted a device")
             }
         }
         try test("Connect accepts a verified USB selector when devices output omits usb") {
             let f = try Fixture(); f.adb.usb = false; f.adb.physicalSerial = "USB-A"
-            let result = try f.router().connect(mode: .adb)
+            let result = try f.router().select(mode: .adb)
             try check(result.actualMode == .adb && result.session?.summary.identity?.cid == cid && f.adb.calls.contains(["-d", "get-serialno"]), "Physical USB missing descriptor was hidden")
         }
         try test("Connect reports unauthorized and offline rather than missing ADB") {
             for deviceState in ["unauthorized", "offline"] {
                 let f = try Fixture(); f.adb.deviceState = deviceState
-                let result = try f.router().connect(mode: .adb)
+                let result = try f.router().select(mode: .adb)
                 try check(result.session == nil && result.statuses.first { $0.mode == .adb }?.message.contains(deviceState) == true, "ADB transport state was hidden")
                 try check(f.adb.calls == [["devices", "-l"]] && f.web.calls.isEmpty && f.agent.calls.isEmpty, "Unavailable manual ADB fell back or ran shell")
             }
+        }
+        try test("Default discovery is SSH and USB availability without Web or agent login") {
+            let f = try Fixture(); f.ssh.status = 0
+            _ = try f.router(webPassword: "DO-NOT-SEND-WEB", agentPassword: "DO-NOT-SEND-AGENT").discover(authenticate: true)
+            try check(f.web.calls.isEmpty && f.agent.calls.isEmpty && !f.ssh.calls.isEmpty && !f.adb.calls.isEmpty, "Ordinary discovery used HTTP authentication")
         }
         print("Connection routing: \(passed) passed; 0 failed")
     }

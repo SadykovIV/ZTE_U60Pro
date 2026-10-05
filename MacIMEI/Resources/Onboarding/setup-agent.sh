@@ -6,6 +6,7 @@ set -eu
 umask 077
 base=/data/local/tmp/zte-imei-installations
 firmware_sha=604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263
+timeout_sha=6e81024c273080294a251ae38572f1ef0cb496fbd16c7009c6a4ae1c07fb55ff
 router_sha=55c54f74aaa427940254a2f16c36771e675a80a002363e4f10b0dfcb604d9c6f
 profile=b31
 boot_id=
@@ -94,7 +95,7 @@ structural_preflight() {
         command -v "$command" >/dev/null 2>&1 || fail MISSING_TOOL
     done
     if test "$profile" = linux-arm64-access; then
-        for command in od timeout; do command -v "$command" >/dev/null 2>&1 || fail MISSING_TOOL; done
+        for command in od; do command -v "$command" >/dev/null 2>&1 || fail MISSING_TOOL; done
         test "$(cat /proc/1/comm)" = procd || fail STARTUP_NOT_ASSESSED
         plain_file /etc/init.d/done && test -r /etc/init.d/done || fail STARTUP_NOT_ASSESSED
         grep -qE '^[[:space:]]*sh[[:space:]]+/etc/rc\.local([[:space:]]|$)' /etc/init.d/done || fail STARTUP_NOT_ASSESSED
@@ -221,14 +222,19 @@ sh -n "$stage/start-agent.sh" || fail AGENT_SCRIPT_SYNTAX
 sh -n "$stage/start_zte_imei_studio.sh" || fail STARTUP_SYNTAX
 if test "$profile" = linux-arm64-access; then
     discovery_startup "$stage/start-agent.sh"
-    for executable in zte-agent dropbear; do
+    # The host verifies and stages this pinned static ARM64 supervisor. Reduced
+    # firmware does not need a native timeout applet; the deadline remains 5s.
+    plain_file "$stage/zte-timeout" && test "$(stat -c %u:%h "$stage/zte-timeout")" = 0:1 || fail TIMEOUT_TYPE
+    test "$(hash "$stage/zte-timeout")" = "$timeout_sha" || fail TIMEOUT_HASH
+    chmod 700 "$stage/zte-timeout" || fail TIMEOUT_MODE
+    for executable in zte-timeout zte-agent dropbear; do
         header=$(od -An -tx1 -N20 "$stage/$executable" | tr -d ' \n')
         case "$header" in 7f454c46020101??????????????????0200b700|7f454c46020101??????????????????0300b700) ;; *) fail PAYLOAD_ABI;; esac
     done
-    timeout 5 "$stage/dropbear" -V >/dev/null 2>&1 || fail DROPBEAR_ABI
+    "$stage/zte-timeout" 5 "$stage/dropbear" -V >/dev/null 2>&1 || fail DROPBEAR_ABI
     # The pinned self-check verifies embedded resources and exits before any
     # server construction, configuration migration or device operation.
-    ZTE_AGENT_MODE=normal timeout 5 "$stage/zte-agent" --esim-check >/dev/null 2>&1 || fail AGENT_ABI
+    ZTE_AGENT_MODE=normal "$stage/zte-timeout" 5 "$stage/zte-agent" --esim-check >/dev/null 2>&1 || fail AGENT_ABI
 fi
 plain_file /etc/rc.local || fail RC_LOCAL_TYPE
 sh -n /etc/rc.local || fail RC_LOCAL_SYNTAX

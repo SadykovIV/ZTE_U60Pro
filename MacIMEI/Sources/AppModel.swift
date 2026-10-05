@@ -19,6 +19,8 @@ import AppKit
     @Published var preparationError = ""
     @Published var diagnosticADBMessage = ""
     @Published var diagnosticADBPending = false
+    @Published var adbControlStatus: ADBControlStatus?
+    @Published var adbTogglePending = false
     @Published var sectionRefreshErrors: [ConnectionOverviewSection: String] = [:]
     @Published var sectionsUpdatedAt: Date?
     var channelSession: ReadOnlyChannelSession?
@@ -148,8 +150,8 @@ import AppKit
         if imei1 == currentIMEI1 && imei2 == currentIMEI2 { return "Эта пара уже записана на модеме" }
         return "Оба IMEI корректны по формату и контрольной сумме"
     }
-    var canApply: Bool { permitsSSHOperations && (connected || (!webPassword.isEmpty && !agentPassword.isEmpty)) && !busy && !terminalActive && !pendingOperation && !setupPending && !diagnosticADBPending && !systemRestorePending && IMEI.valid(imei1) && IMEI.valid(imei2) && imei1 != imei2 && (imei1 != currentIMEI1 || imei2 != currentIMEI2) }
-    var canManage: Bool { connected && activeChannel == .ssh && accessReady && permitsSSHOperations && !busy && !terminalActive && !pendingOperation && !setupPending && !systemRestorePending }
+    var canApply: Bool { permitsSSHOperations && (connected || (!webPassword.isEmpty && !agentPassword.isEmpty)) && !busy && !terminalActive && !pendingOperation && !setupPending && !diagnosticADBPending && !adbTogglePending && !systemRestorePending && IMEI.valid(imei1) && IMEI.valid(imei2) && imei1 != imei2 && (imei1 != currentIMEI1 || imei2 != currentIMEI2) }
+    var canManage: Bool { connected && activeChannel == .ssh && accessReady && permitsSSHOperations && !busy && !terminalActive && !pendingOperation && !setupPending && !adbTogglePending && !systemRestorePending }
     var ttlValidationMessage: String {
         do {
             _ = try TTLConfiguration(outboundEnabled: ttlOutboundEnabled, outboundText: ttlOutboundValue,
@@ -192,7 +194,7 @@ import AppKit
         keyPath = storage.appendingPathComponent("SSH/id_ed25519").path
         knownHostsPath = storage.appendingPathComponent("SSH/known_hosts").path
         if let c = try? readJSON(Connection.self, storage.appendingPathComponent("connection.json")) { host = c.host; port = c.port; keyPath = c.keyPath; knownHostsPath = Connection.restoredKnownHostsPath(c.knownHostsPath, fallback: storage.appendingPathComponent("SSH/known_hosts").path) }
-        if let saved = try? readJSON(ConnectionMode.self, storage.appendingPathComponent("connection-mode.json")) { connectionMode = saved == .web || saved == .agent ? .automatic : saved }
+        if let saved = try? readJSON(ConnectionMode.self, storage.appendingPathComponent("connection-mode.json")) { connectionMode = saved == .ssh ? .ssh : .automatic }
         refreshBackups()
         refreshSystemBackups()
         do {
@@ -552,6 +554,7 @@ import AppKit
         imeiCheckResult = lines.joined(separator: "\n")
     }
     func refreshBackups() {
+        adbTogglePending = FileManager.default.fileExists(atPath: storage.appendingPathComponent("adb-toggle-pending.json").path)
         diagnosticADBPending = FileManager.default.fileExists(atPath: storage.appendingPathComponent("adb-access-pending.json").path)
         setupPending = FileManager.default.fileExists(atPath: storage.appendingPathComponent("setup-pending.json").path)
         pendingOperation = FileManager.default.fileExists(atPath: storage.appendingPathComponent("pending.json").path)

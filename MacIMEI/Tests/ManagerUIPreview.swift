@@ -40,9 +40,9 @@ import SwiftUI
         let catalog = VerifiedCatalogStore(cacheURL: model.storage.appendingPathComponent("catalog-preview.json"))
         precondition(catalog.entries.map(\.id) == ["htop", "opkg"])
         var paths: [String] = []
-        var syntheticResearch = FirmwareResearchReport(startedAt: "2026-09-27T12:00:00Z", finishedAt: "2026-09-27T12:02:08Z", specificationRevision: 7, transport: "adb", outcome: "partial", profile: nil,
-            attempts: [.init(transport: "ssh", outcome: "unconfigured", detail: "SSH key or known_hosts file is unavailable."), .init(transport: "adb", outcome: "available", detail: "USB ADB root shell is available.")],
-            warnings: ["The sole USB ADB device was selected. Its relationship to the configured WEB IP address is not established."],
+        var syntheticResearch = FirmwareResearchReport(startedAt: "2026-09-27T12:00:00Z", finishedAt: "2026-09-27T12:02:08Z", specificationRevision: 7, transport: "ssh", outcome: "partial", profile: nil,
+            attempts: [.init(transport: "ssh", outcome: "available", detail: "Synthetic SSH fixture; no modem access")],
+            warnings: ["Synthetic report; no modem access"],
             features: [
                 .init(id: "agent", title: .init(ru: "Установка агента и SSH", en: "Agent and SSH installation"), state: "prerequisites_met", evidence: [.init(ru: "Права root: выполнено", en: "Root privilege: met")], limitations: .init(ru: "Установка не выполнялась. Результат не даёт разрешения на запись.", en: "No installation was performed. This finding grants no write permission.")),
                 .init(id: "imei", title: .init(ru: "Изменение IMEI", en: "IMEI changes"), state: "unknown", evidence: [.init(ru: "Нет совпадения с проверенным профилем прошивки", en: "No matching verified firmware profile")], limitations: .init(ru: "NV/EFS не читаются и не меняются исследованием.", en: "Research does not read or change NV/EFS contents.")),
@@ -60,9 +60,9 @@ import SwiftUI
             precondition(L10n.language == language)
             let screens: [(String, AnyView)] = [
                 ("preparation", AnyView(ContentView(model: model, verifiedCatalog: catalog))),
-                ("diagnostics-connection", AnyView(ContentView(model: model, verifiedCatalog: catalog, preparationSection: .diagnostics))),
-                ("diagnostics-firmware", AnyView(ContentView(model: model, verifiedCatalog: catalog, preparationSection: .diagnostics, diagnosticsSection: .firmware))),
-                ("diagnostics-export", AnyView(ContentView(model: model, verifiedCatalog: catalog, preparationSection: .diagnostics, diagnosticsSection: .reports))),
+                ("connection-methods", AnyView(ContentView(model: model, verifiedCatalog: catalog, connectionMethodsExpanded: true))),
+                ("diagnostics", AnyView(ContentView(model: model, verifiedCatalog: catalog, preparationSection: .diagnostics))),
+                ("preparation-credentials", AnyView(ContentView(model: model, verifiedCatalog: catalog, preparationCredentialsExpanded: true))),
                 ("journal", AnyView(ContentView(model: model, verifiedCatalog: catalog, page: .administration, administrationSection: .activity))),
                 ("administration", AnyView(ContentView(model: model, verifiedCatalog: catalog, page: .administration))),
                 ("modem", AnyView(ContentView(model: model, verifiedCatalog: catalog, page: .modem))),

@@ -15,7 +15,7 @@ final class SystemBackupCancellation: @unchecked Sendable {
     var canUseSystemBackupConnection: Bool {
         // RAM recovery cannot pass the normal running-firmware connection probe.
         // The restore service verifies recovery environment and CID itself.
-        !busy && !terminalActive && permitsSSHOperations && !host.isEmpty && !keyPath.isEmpty && !knownHostsPath.isEmpty && !pendingOperation && !setupPending
+        !busy && !terminalActive && permitsSSHOperations && !host.isEmpty && !keyPath.isEmpty && !knownHostsPath.isEmpty && !pendingOperation && !setupPending && !adbTogglePending
     }
     var canExecuteSystemRestore: Bool {
         guard !busy, !terminalActive, permitsSSHOperations, let plan = systemRestorePlan, plan.canRestore,

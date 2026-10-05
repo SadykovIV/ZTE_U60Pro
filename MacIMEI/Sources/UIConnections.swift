@@ -32,56 +32,45 @@ extension ContentView {
         }
     }
 
-    var connectionDiagnosticsCard: some View {
-        StudioCard {
-            HStack(alignment: .center) {
-                Text(L10n.text("Доступ к модему")).font(.system(size: 18, weight: .semibold))
-                Spacer(minLength: 12)
-                Button(L10n.text("Проверить подключения"), action: model.discoverConnections)
-                    .buttonStyle(StudioButtonStyle()).disabled(model.busy || model.host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-            Text(L10n.text("Кнопка проверяет доступность SSH и USB ADB, а также вход в агент и штатный Web с введёнными паролями. Автоматическая проверка при открытии страницы выполняется без входа."))
-                .font(.system(size: 12)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
-            VStack(spacing: 12) {
-                ForEach([ConnectionMode.ssh, .adb, .agent, .web]) { mode in connectionAvailabilityRow(mode) }
-            }.padding(.vertical, 4)
-
-        }
-    }
-
-    var diagnosticADBCard: some View {
-        StudioCard {
-            Text(L10n.text("Для диагностики")).font(.system(size: 12, weight: .semibold))
-            HStack(spacing: 10) {
-                Button(L10n.text(model.diagnosticADBPending ? "Продолжить включение ADB" : "Принудительно включить ADB"), action: model.enableDiagnosticADB)
-                    .buttonStyle(StudioButtonStyle()).disabled(!model.canEnableDiagnosticADB)
-                OperationInfoButton(topic: .diagnosticADB)
-                Spacer(minLength: 0)
-            }
-            Text(L10n.text("Доступно и при работающем SSH. Возможна перезагрузка модема; агент и настройки SSH не меняются."))
-                .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
-            if !model.diagnosticADBMessage.isEmpty {
-                Text(L10n.text(model.diagnosticADBMessage)).font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
-                    .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-
-    var accessDiagnosticsCard: some View {
-        StudioCard {
+    var connectionMethodsContents: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(L10n.text("Все операции с модемом выполняются через SSH. USB ADB нужен для подготовки SSH; веб-панели открываются в браузере."))
+                .font(.system(size: 11)).fixedSize(horizontal: false, vertical: true)
             HStack {
-                Text(L10n.text("Службы и способы входа")).font(.system(size: 18, weight: .semibold))
+                connectionAvailabilityRow(.ssh)
+                Button(L10n.text("Проверить подключения"), action: model.discoverConnections)
+                    .buttonStyle(StudioButtonStyle()).disabled(model.busy || model.terminalActive || model.host.isEmpty)
+            }
+            HStack {
+                Toggle(L10n.text("Включить ADB"), isOn: Binding(get: { model.adbControlStatus?.enabled == true }, set: { model.setADBEnabled($0) }))
+                    .toggleStyle(.checkbox).disabled(!model.canChangeADB)
+                if model.adbControlStatus?.enabled == nil { Text(L10n.text("Состояние не определено")).font(.system(size: 10)) }
                 Spacer()
-                Button(action: model.refreshAccess) { Label(L10n.text("Проверить доступы"), systemImage: "arrow.clockwise") }
+                Button(L10n.text("Обновить состояние ADB"), action: model.refreshADBState)
+                    .buttonStyle(StudioButtonStyle()).disabled(!model.canReadModem)
+                OperationInfoButton(topic: .diagnosticADB)
+            }
+            Text(L10n.text(model.diagnosticADBMessage.isEmpty ? model.adbControlStatus?.detail ?? "Для чтения состояния ADB подключитесь по SSH." : model.diagnosticADBMessage))
+                .font(.system(size: 11)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            if !model.connected {
+                Text(L10n.text("Если SSH ещё не настроен, включение ADB использует поддерживаемый способ первоначальной подготовки. Заполните параметры подготовки SSH."))
+                    .font(.system(size: 11)).fixedSize(horizontal: false, vertical: true)
+            }
+            HStack {
+                Button(L10n.text("Штатный Web")) { model.openModemBrowser(port: nil) }.buttonStyle(StudioButtonStyle())
+                Button(L10n.text("Веб-панель агента")) { model.openModemBrowser(port: 8080) }.buttonStyle(StudioButtonStyle())
+                Spacer()
+                Button(L10n.text("Проверить доступы"), action: model.refreshAccess)
                     .buttonStyle(StudioButtonStyle()).disabled(!model.canManage)
             }
             if let state = model.accessState {
-                ForEach(state.services) { service in
-                    VStack(alignment: .leading, spacing: 6) {
-                        informationRow(service.title, serviceStateLabel(service.state))
-                        Text(service.endpoint).font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
-                        Text(L10n.text(service.detail)).font(.system(size: 11)).foregroundStyle(StudioStyle.secondary)
-                    }.padding(.vertical, 5)
+                ForEach(state.services.filter { $0.id != .stockWeb && $0.id != .dashboard && $0.id != .agent && $0.id != .adb }) { service in
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(L10n.text(service.title)).frame(width: 140, alignment: .leading)
+                        Text(L10n.text(serviceStateLabel(service.state)))
+                        Spacer()
+                        Text(service.endpoint).font(.system(size: 10, design: .monospaced)).textSelection(.enabled)
+                    }.font(.system(size: 11))
                 }
             }
         }
@@ -89,26 +78,12 @@ extension ContentView {
 
     private func connectionAvailabilityRow(_ mode: ConnectionMode) -> some View {
         let status = model.channelStatuses.first { $0.mode == mode }
-        let state = status?.state ?? .notChecked
-        let color: Color
-        let symbol: String
-        switch state {
-        case .available: color = StudioStyle.accent; symbol = "checkmark.circle.fill"
-        case .invalidPassword: color = .red; symbol = "xmark.circle.fill"
-        case .authenticationRequired: color = StudioStyle.warning; symbol = "key.fill"
-        case .rateLimited: color = StudioStyle.warning; symbol = "clock.badge.exclamationmark"
-        default: color = StudioStyle.secondary; symbol = "circle"
-        }
-        return HStack(alignment: .top, spacing: 12) {
-            Image(systemName: symbol)
-                .foregroundStyle(color).frame(width: 16)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(L10n.text(mode == .web ? "Штатный Web" : mode == .adb ? "ADB · диагностика" : mode.title)).font(.system(size: 12, weight: .medium))
-                Text(L10n.text(state.title)).font(.system(size: 10)).foregroundStyle(color)
-            }.frame(width: 110, alignment: .leading)
-            Text(L10n.text(status?.message ?? "Нажмите «Проверить подключения»."))
-                .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
+        return HStack(alignment: .top, spacing: 8) {
+            Image(systemName: status?.state == .available ? "checkmark.circle.fill" : "circle")
+                .foregroundStyle(status?.state == .available ? StudioStyle.accent : StudioStyle.secondary)
+            Text(mode.title).font(.system(size: 12, weight: .medium))
+            Text(L10n.text(status?.state.title ?? "Не проверен")).font(.system(size: 11))
+            Spacer()
         }
     }
 }

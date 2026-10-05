@@ -103,9 +103,9 @@ extension ContentView {
                 StudioCard {
                     informationRow("RAM всего, КиБ", total)
                     informationRow("RAM доступно, КиБ", summary.fields["memoryAvailableKiB"] ?? "Нет данных")
-                    Text(L10n.text("Сведения API агента. Для списка разделов и файловых систем выберите SSH или ADB.")).font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
+                    Text(L10n.text("Для списка разделов и файловых систем обновите сведения через SSH.")).font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
                 }
-            } else { StudioNote(symbol: "memorychip", text: "Выберите SSH, ADB или агент и обновите сведения. Web не предоставляет данные о памяти.") }
+            } else { StudioNote(symbol: "memorychip", text: "Подключитесь по SSH и обновите сведения.") }
         }
     }
     var diagnosticsPage: some View {
@@ -118,7 +118,7 @@ extension ContentView {
                     Button(action: model.collectDiagnostics) { Label(L10n.text("Собрать диагностику"), systemImage: "doc.text.magnifyingglass") }
                         .buttonStyle(StudioButtonStyle(prominent: true)).disabled(!model.canCollectDiagnostics)
                 }
-                Text(L10n.text("Системный журнал, ядро, сеть, маршруты, firewall, процессы, USB, питание, температуры и структура каталогов. Системные разделы читаются через SSH или работающий ADB по USB. Через агент и Web сохраняются доступные сведения API; остальные разделы отмечаются как пропущенные. Сбор соблюдает выбранный способ подключения и не требует соответствия B31. Для каждого раздела сохраняются результат чтения и контрольная сумма; известные поля с паролями и токенами скрываются."))
+                Text(L10n.text("Системный журнал, ядро, сеть, маршруты, firewall, процессы, USB, питание, температуры и структура каталогов. Системные разделы читаются через SSH. Сбор не требует соответствия B31. Для каждого раздела сохраняются результат чтения и контрольная сумма; известные поля с паролями и токенами скрываются."))
                     .font(.system(size: 12)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
                 if let report = model.diagnosticReport {
                     ForEach(report.warnings ?? [], id: \.self) { Text(L10n.text($0)).font(.system(size: 11)).foregroundStyle(StudioStyle.warning) }
@@ -172,7 +172,7 @@ extension ContentView {
             }
             if let state = model.accessState {
                 ForEach(state.services) { service in accessCard(service) }
-            } else { StudioNote(symbol: "network", text: "Проверка доступов находится в «Подготовка модема» → «Диагностика» → «Подключение и ADB».") }
+            } else { StudioNote(symbol: "network", text: "Проверка доступов находится в «Подготовка модема» → «Подключение» → «Доступные способы подключения».") }
             sshPage
         }
     }

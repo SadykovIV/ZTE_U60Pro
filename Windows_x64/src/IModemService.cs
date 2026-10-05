@@ -7,6 +7,8 @@ public enum ModemOperation
     DiscoverConnections,
     PrepareSsh,
     EnableDiagnosticAdb,
+    RefreshAdbState,
+    SetAdbEnabled,
     Connect,
     RefreshDevice,
     RefreshAgent,
@@ -88,7 +90,10 @@ public sealed record DeviceSnapshot(
     VpnPageSnapshot? VpnPage = null,
     string? LauncherPages = null,
     bool AdbActivationPending = false,
-    bool PreparationPending = false);
+    bool PreparationPending = false,
+    bool? AdbEnabled = null,
+    bool AdbControlSupported = false,
+    string? AdbStatus = null);
 
 public sealed record VpnPageSnapshot(
     bool Installed,
@@ -133,11 +138,18 @@ public interface ITerminalSession : IAsyncDisposable
     Task SendAsync(string text, CancellationToken cancellationToken = default);
 }
 
+public sealed record ConnectionSettingsSnapshot(
+    string Host = "192.168.0.1", int Port = 2222, string Username = "root",
+    string KeyPath = "", string KnownHostsPath = "");
+
 public interface IModemService
 {
+    ConnectionSettingsSnapshot GetConnectionSettings() => new();
     Task<Esim.EsimResult> RunEsimAsync(Esim.EsimRequest request, IProgress<string>? progress, CancellationToken ct = default) => throw new Esim.EsimException();
     Task<ResearchReport?> GetFirmwareResearchAsync(CancellationToken ct = default) => Task.FromResult<ResearchReport?>(null);
     Task<ResearchReport> CollectFirmwareResearchAsync(IReadOnlyDictionary<string,string> parameters, IProgress<ResearchProgress>? progress, CancellationToken ct = default) => throw new NotSupportedException();
+    Task<ResearchReport> CollectPreparationResearchAsync(IReadOnlyDictionary<string,string> parameters, IProgress<ResearchProgress>? progress, CancellationToken ct = default)
+        => CollectFirmwareResearchAsync(parameters, progress, ct);
     Task ExportFirmwareResearchAsync(ResearchReport report, string destination, CancellationToken ct = default) => throw new NotSupportedException();
     Task<DeviceSnapshot> GetDeviceSnapshotAsync(CancellationToken cancellationToken = default);
     Task<OperationResult> RunAsync(OperationRequest request, CancellationToken cancellationToken = default);

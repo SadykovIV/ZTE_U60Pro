@@ -147,6 +147,13 @@ extension OnboardingEngine {
             key = root.appendingPathComponent("SSH/id_ed25519")
             try require(fm.fileExists(atPath: key.path), "Ключ незавершённой установки недоступен")
         } else {
+            let timeoutResource: URL?
+            if profile == "linux-arm64-access" {
+                let source = resources.appendingPathComponent("HostTools/zte-timeout")
+                let bytes = try DeviceBackups.smallFile(source, maximum: 256 * 1024, publicResource: true)
+                try require(digest(bytes) == ModemHostTools.timeoutHash, "Повреждён встроенный инструмент ограничения времени")
+                timeoutResource = source
+            } else { timeoutResource = nil }
             let installer = try String(contentsOf: assets.appendingPathComponent("setup-agent.sh"), encoding: .utf8)
             update("Проверяю условия установки доступа…", 0.5)
             try verify()
@@ -161,6 +168,7 @@ extension OnboardingEngine {
             let startup = temporary.appendingPathComponent("start-agent.sh")
             try savePrivate(startupData, startup)
             for name in ["zte-agent", "dropbear", "setup-agent.sh", "start_zte_imei_studio.sh"] { try pushStaged(adb, serial: serial, source: assets.appendingPathComponent(name), stage: stage, name: name, owner: owner) }
+            if let timeoutResource { try pushStaged(adb, serial: serial, source: timeoutResource, stage: stage, name: "zte-timeout", owner: owner) }
             try pushStaged(adb, serial: serial, source: key.appendingPathExtension("pub"), stage: stage, name: "id_ed25519.pub", owner: owner)
             try pushStaged(adb, serial: serial, source: startup, stage: stage, name: "start-agent.sh", owner: owner)
             try verify()
@@ -199,7 +207,7 @@ extension OnboardingEngine {
         try sshVerify()
         journal.phase = "complete"; journal.remoteJournal = remoteJournal
         try saveJSON(journal, directory.appendingPathComponent("setup-result.json")); try fm.removeItem(at: pending)
-        _ = try? adb.shell(serial, "rm -f " + ["zte-agent", "dropbear", "setup-agent.sh", "start_zte_imei_studio.sh", "id_ed25519.pub", "start-agent.sh", ".owner", ".install-requested"].map { shellQuote(stage + "/" + $0) }.joined(separator: " ") + "; rmdir " + shellQuote(stage))
+        _ = try? adb.shell(serial, "rm -f " + ["zte-agent", "dropbear", "setup-agent.sh", "start_zte_imei_studio.sh", "id_ed25519.pub", "start-agent.sh", "zte-timeout", ".owner", ".install-requested"].map { shellQuote(stage + "/" + $0) }.joined(separator: " ") + "; rmdir " + shellQuote(stage))
         update("SSH и агент проверены. Операции с NV, картой и прошивкой проверяются отдельно.", 1)
         return SetupResult(connection: connection, state: nil, identity: proof.identity, firmware: proof.webIdentity?.firmware ?? "unknown", suffix: "")
     }

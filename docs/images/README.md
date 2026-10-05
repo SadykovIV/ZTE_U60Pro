@@ -2,6 +2,11 @@
 
 ## Диагностика 1.24.4
 
+Исторические снимки **macOS build 41 / Windows 1.24.4.0**. В следующем
+кандидате build 42 / 1.24.4.1 диагностика объединена на одной странице,
+а способы подключения перенесены в компактный блок вкладки «Подключение».
+Эти PNG не показывают новый интерфейс и сохранены как история.
+
 Новые снимки показывают «Подготовка модема → Диагностика» на синтетических
 данных. macOS использует нативный SwiftUI, Windows UI — Avalonia на macOS.
 Модем не подключался; эти снимки не подтверждают запуск в Windows.
@@ -32,3 +37,14 @@
 ## English
 
 These are fresh captures of the actual 1.23.2 UI using synthetic fixtures. No modem was contacted. macOS images use native SwiftUI; Windows UI images use the production Avalonia assembly in a macOS headless host, **not a verified Windows OS session**. The simulated connection indicator does not represent a live connection. Profiles and identifiers are synthetic; activation and confirmation fields are empty.
+
+## Подключение и единая диагностика 1.24.4 build 42
+
+Снимки созданы настоящими SwiftUI/Avalonia-компонентами с отдельными тестовыми данными. Они не содержат сведений реального модема. RU/EN проверены визуально; версии кандидата — macOS 1.24.4 build 42 и Windows 1.24.4.1. Windows UI отрисован на macOS; запуск на Windows этим не подтверждён.
+
+| Экран | macOS RU | macOS EN | Windows UI RU | Windows UI EN |
+| --- | --- | --- | --- | --- |
+| Способы подключения | [PNG](1.24.4-build42/macos-connection-methods-ru.png) | [PNG](1.24.4-build42/macos-connection-methods-en.png) | [PNG](1.24.4-build42/windows-connection-methods-ru.png) | [PNG](1.24.4-build42/windows-connection-methods-en.png) |
+| Единая диагностика | [PNG](1.24.4-build42/macos-diagnostics-ru.png) | [PNG](1.24.4-build42/macos-diagnostics-en.png) | [PNG](1.24.4-build42/windows-diagnostics-ru.png) | [PNG](1.24.4-build42/windows-diagnostics-en.png) |
+
+[SHA-256 и источники снимков](1.24.4-build42/manifest.json).

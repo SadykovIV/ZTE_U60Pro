@@ -126,13 +126,12 @@ await session.Dispatch(() =>
     var researchWindow = new MainWindow(researchModem, persistPreferences: false);
     researchWindow.Show(); Pump();
     Click(researchWindow, b => b.Name == "Section0-1");
-    Click(researchWindow, b => b.Name == "DiagnosticsGroup1");
     var collect = researchWindow.GetLogicalDescendants().OfType<Button>().Single(b => b.Name == "CollectFirmwareResearch");
     Assert(collect.IsEnabled, "research is enabled on an unprepared/disconnected modem");
     var labels = researchWindow.GetLogicalDescendants().OfType<TextBlock>().Select(t => t.Text).ToArray();
     Assert(labels.Contains("1. Проверить устройство") && !labels.Contains("Подключение к модему"), "research is isolated in preparation diagnostics");
     collect.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); Pump();
-    Assert(researchModem.ResearchCollections == 1 && researchWindow.GetLogicalDescendants().OfType<Button>().Any(b => b.Content?.ToString() == "Экспортировать ZIP"), "research returns exportable result without a connection");
+    Assert(researchModem.ResearchCollections == 1 && researchWindow.GetLogicalDescendants().OfType<Button>().Count(b => b.Content?.ToString() == "Сохранить диагностический ZIP") == 1 && !researchWindow.GetLogicalDescendants().OfType<Button>().Any(b => b.Content?.ToString() == "Экспортировать ZIP"), "research returns exportable result without a connection");
     researchWindow.GetLogicalDescendants().OfType<Expander>().Single(e => e.Header?.ToString() == "Результаты исследования").IsExpanded = true;
     var researchScroll = researchWindow.GetLogicalDescendants().OfType<ScrollViewer>().First(sv => sv.Content is StackPanel panel && panel.Children.OfType<Border>().Any());
     researchScroll.Offset = new Vector(0, 735); Pump(); Capture(researchWindow, "ru-firmware-research.png");

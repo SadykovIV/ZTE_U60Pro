@@ -31,122 +31,100 @@ private final class Fixture {
     }
     deinit { try? FileManager.default.removeItem(at: root) }
 }
+private final class SessionFixture {
+    var proof: DiagnosticDeviceProof
+    var reads = 0, commands = 0, failed = false
+    init() throws {
+        proof = DiagnosticDeviceProof(identity: Identity(cid: cid, firmwareHash: String(repeating: "b", count: 64)), routerHash: ModemEngine.routerHash, bootID: boot, webIdentity: try webIdentity())
+    }
+    func channel(_ mode: ConnectionMode = .ssh, transport: String? = nil) -> ReadOnlyChannelSession {
+        let shell = DiagnosticSession(transport: transport ?? mode.rawValue, reason: "fixture", proof: proof, readIdentity: {
+            self.reads += 1
+            if self.failed { throw IMEIError.message("SSH disconnected") }
+            return self.proof
+        }) { _, _ in
+            self.commands += 1
+            return CommandResult(status: 0, stdout: Data("password=PRIVATE-CANARY\n__DIAGNOSTIC_RESULT__0\n".utf8), stderr: Data())
+        }
+        let summary = ConnectionDeviceSummary(identity: proof.identity, webIdentity: proof.webIdentity, bootID: boot)
+        return ReadOnlyChannelSession(mode: mode, summary: summary, diagnosticSession: shell) { self.reads += 1; return summary }
+    }
+}
 @main enum ConnectionDiagnosticsTests {
     static func main() throws {
         var passed = 0
         func test(_ name: String, _ body: () throws -> Void) throws { try body(); passed += 1; print("PASS " + name) }
-        try test("manual ADB uses only its selected session and preserves full diagnostics") {
-            let f = try Fixture(), web = try webIdentity()
-            let proof = DiagnosticDeviceProof(identity: Identity(cid: cid, firmwareHash: ModemEngine.firmwareHash), routerHash: ModemEngine.routerHash, bootID: boot, webIdentity: web)
-            var queries = 0, probes = [ConnectionMode]()
-            let shell = DiagnosticSession(transport: "adb", reason: "strict selected ADB", proof: proof, readIdentity: { proof }) { _, _ in
-                queries += 1
-                return CommandResult(status: 0, stdout: Data("USB-only section\n__DIAGNOSTIC_RESULT__0\n".utf8), stderr: Data())
+        try test("automatic ordinary collection selects SSH only and accepts unknown firmware read-only") {
+            let f = try Fixture(), s = try SessionFixture(); var probes = [ConnectionMode]()
+            var probeMap = [ConnectionMode: ConnectionRouter.Probe]()
+            for mode in [ConnectionMode.ssh, .adb, .agent, .web] { probeMap[mode] = { _ in probes.append(mode); return s.channel(mode) } }
+            let router = ConnectionRouter(probes: probeMap)
+            let report = try f.engine.locked { try ConnectionDiagnostics.collect(engine: f.engine, mode: .automatic, expectedIdentity: s.proof.identity, router: router) }
+            try check(probes == [.ssh] && f.ssh.calls == 0 && s.commands == ModemInformationManager.diagnosticCommands.count, "Wrong transport or incomplete report")
+            try check(report.transport == "ssh" && report.identityVerified == true && report.files.allSatisfy { $0.effectiveOutcome == .succeeded }, "Invalid provenance")
+            try check(!f.engine.connection.skipFirmwareCheck && report.warnings?.isEmpty == false, "Read-only unknown firmware widened write permission")
+            for file in report.files {
+                let data = try Data(contentsOf: report.url.appendingPathComponent(file.name))
+                try check(digest(data) == file.sha256 && !String(decoding: data, as: UTF8.self).contains("PRIVATE-CANARY"), "Checksum or redaction regression")
             }
-            let summary = ConnectionDeviceSummary(identity: proof.identity, webIdentity: web, bootID: boot)
-            let channel = ReadOnlyChannelSession(mode: .adb, summary: summary, diagnosticSession: shell) { summary }
-            let router = ConnectionRouter(probes: [.ssh: { _ in probes.append(.ssh); throw Failure.assertion("SSH probe in manual ADB") }, .adb: { _ in probes.append(.adb); return channel }])
-            let report = try f.engine.locked { try ConnectionDiagnostics.collect(engine: f.engine, mode: .adb, expectedIdentity: proof.identity, router: router) }
-            try check(probes == [.adb] && f.ssh.calls == 0 && queries == ModemInformationManager.diagnosticCommands.count, "Manual ADB reached another channel or lost sections")
-            try check(report.transport == "adb" && report.identityVerified == true && report.files.allSatisfy { $0.effectiveOutcome == .succeeded }, "ADB report lost verified provenance")
         }
-        try test("manual unavailable channel never tries the available alternative") {
-            let f = try Fixture(); var probes = [ConnectionMode]()
-            let router = ConnectionRouter(probes: [.adb: { _ in probes.append(.adb); throw IMEIError.message("USB unavailable") }, .ssh: { _ in probes.append(.ssh); throw Failure.assertion("Unexpected fallback") }])
-            try rejects { _ = try f.engine.locked { try ConnectionDiagnostics.collect(engine: f.engine, mode: .adb, router: router) } }
-            try check(probes == [.adb] && f.ssh.calls == 0, "Manual failure fell back")
+        try test("explicit non-SSH modes refuse before all probes") {
+            for mode in [ConnectionMode.adb, .agent, .web] {
+                let f = try Fixture(); var probes = 0
+                let router = ConnectionRouter(probes: [mode: { _ in probes += 1; throw Failure.assertion("Disallowed probe") }])
+                try rejects { _ = try f.engine.locked { try ConnectionDiagnostics.collect(engine: f.engine, mode: mode, router: router) } }
+                try check(probes == 0 && f.ssh.calls == 0, "Non-SSH mode probed")
+            }
         }
-        try test("API report redacts credentials and labels shell sections unsupported") {
-            for mode in [ConnectionMode.agent, .web] {
-                let f = try Fixture(), web = try webIdentity()
-                let summary = ConnectionDeviceSummary(webIdentity: web, agentVersion: mode == .agent ? "fixture" : nil, fields: ["model": "MU5250", "password": "secret-api-password", "token": "secret-api-token"])
-                var reads = 0
-                let session = ReadOnlyChannelSession(mode: mode, summary: summary) { reads += 1; return summary }
-                let report = try f.engine.locked { try ConnectionDiagnostics.collect(engine: f.engine, mode: mode, session: session, expectedWebIdentity: web) }
-                try check(report.transport == mode.rawValue && report.identity == nil && report.identityVerified == false && report.bootID == "не сообщается API", "API fabricated strong identity")
-                try check(report.files.filter { $0.effectiveOutcome == .succeeded }.count == 1 && report.files.filter { $0.effectiveOutcome == .skipped }.count == ModemInformationManager.diagnosticCommands.count, "API implied shell capabilities")
-                try check(reads == 3 && f.ssh.calls == 0, "API report changed channels or missed identity checks")
-                for item in report.files {
-                    let url = report.url.appendingPathComponent(item.name), data = try Data(contentsOf: url), text = String(decoding: data, as: UTF8.self)
-                    try check(digest(data) == item.sha256 && data.count == item.bytes && data.count <= ConnectionDiagnostics.apiByteLimit, "Report checksum/size mismatch")
-                    try check(!text.contains("secret-api-password") && !text.contains("secret-api-token") && !text.contains(imei), "API response disclosed sensitive data")
-                    let permissions = try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber
-                    try check(permissions?.intValue == 0o600, "Report file not private")
+        try test("supplied non-SSH sessions refuse before identity or data reads") {
+            for mode in [ConnectionMode.adb, .agent, .web] {
+                for requested in [ConnectionMode.automatic, .ssh] {
+                    let f = try Fixture(), s = try SessionFixture()
+                    try rejects { _ = try f.engine.locked { try ConnectionDiagnostics.collect(engine: f.engine, mode: requested, session: s.channel(mode)) } }
+                    try check(s.reads == 0 && s.commands == 0 && f.ssh.calls == 0, "Disallowed supplied session consumed")
                 }
             }
         }
-        try test("large JSON is redacted before a UTF8 safe strict byte limit") {
-            let data = try JSONSerialization.data(withJSONObject: ["body": String(repeating: "Ж", count: 60000), "password": "SECRET-AT-END", "token": "TOKEN-AT-END"])
-            let (body, truncated) = ConnectionDiagnostics.sanitizedSection(data, source: "agent")
-            try check(truncated && body.count <= ConnectionDiagnostics.apiByteLimit && String(data: body, encoding: .utf8) != nil, "Output not strictly bounded UTF8")
-            let text = String(decoding: body, as: UTF8.self)
-            try check(!text.contains("SECRET-AT-END") && !text.contains("TOKEN-AT-END"), "Truncation bypassed JSON redaction")
+        try test("SSH wrapper cannot smuggle an ADB shell") {
+            let f = try Fixture(), s = try SessionFixture()
+            try rejects { _ = try f.engine.locked { try ConnectionDiagnostics.collect(engine: f.engine, mode: .automatic, session: s.channel(.ssh, transport: "adb")) } }
+            try check(s.reads == 0 && s.commands == 0 && f.ssh.calls == 0, "Mismatched shell consumed")
         }
-        try test("API identity change discards collected sections without fallback") {
-            let f = try Fixture(), web = try webIdentity(), changed = try webIdentity("353490068701230")
-            let summary = ConnectionDeviceSummary(webIdentity: web)
-            var reads = 0, probes = 0
-            let session = ReadOnlyChannelSession(mode: .agent, summary: summary) {
-                reads += 1; return ConnectionDeviceSummary(webIdentity: reads == 3 ? changed : web)
-            }
-            let router = ConnectionRouter(probes: [.ssh: { _ in probes += 1; throw Failure.assertion("Mid-operation fallback") }])
-            let report = try f.engine.locked { try ConnectionDiagnostics.collect(engine: f.engine, mode: .automatic, session: session, router: router) }
-            try check(probes == 0 && f.ssh.calls == 0 && report.transport == "agent", "API failure switched transport")
-            try check(report.files.filter { $0.effectiveOutcome == .connectionError }.count == 1 && !report.files.contains { $0.effectiveOutcome == .succeeded }, "Mixed-device API output accepted")
+        try test("SSH refusal does not probe available alternatives") {
+            let f = try Fixture(), s = try SessionFixture(); var probes = [ConnectionMode]()
+            let router = ConnectionRouter(probes: [.ssh: { _ in probes.append(.ssh); throw IMEIError.message("SSH refused") }, .adb: { _ in probes.append(.adb); return s.channel(.adb) }, .web: { _ in probes.append(.web); return s.channel(.web) }])
+            try rejects { _ = try f.engine.locked { try ConnectionDiagnostics.collect(engine: f.engine, mode: .automatic, router: router) } }
+            try check(probes == [.ssh] && s.reads == 0 && f.ssh.calls == 0, "Fallback after refusal")
         }
-        try test("a new pending CID guard cannot be bypassed by an already selected API") {
-            let f = try Fixture(), summary = ConnectionDeviceSummary(imei: imei)
-            var reads = 0
-            let session = ReadOnlyChannelSession(mode: .agent, summary: summary) { reads += 1; return summary }
-            // The transaction appeared after the API session was selected.
-            try saveJSON(["cid": cid], f.root.appendingPathComponent("setup-pending.json"))
-            let report = try f.engine.locked { try ConnectionDiagnostics.collect(engine: f.engine, mode: .agent, session: session) }
-            try check(reads == 1 && f.ssh.calls == 0 && report.identityVerified == false, "Cached API bypassed pending-device binding")
-            try check(!report.files.contains { $0.effectiveOutcome == .succeeded } && report.files.contains { $0.name == "api-error.txt" }, "CID-unverified API data published")
-            try check(FileManager.default.fileExists(atPath: f.root.appendingPathComponent("setup-pending.json").path), "Read-only report changed pending transaction")
+        try test("cached SSH disconnect produces local partial report without selecting another session") {
+            let f = try Fixture(), s = try SessionFixture(); s.failed = true; var probes = 0
+            let router = ConnectionRouter(probes: [.ssh: { _ in probes += 1; throw Failure.assertion("Retry") }])
+            let report = try f.engine.locked { try ConnectionDiagnostics.collect(engine: f.engine, mode: .automatic, session: s.channel(), router: router) }
+            try check(probes == 0 && s.commands == 0 && f.ssh.calls == 0 && report.identityVerified == false, "Disconnected session retried")
+            try check(report.files.allSatisfy { $0.effectiveOutcome == .skipped } && report.connectionError != nil, "Disconnect reported success")
         }
-        try test("selected shell failure cannot trigger the legacy automatic selector") {
-            let f = try Fixture(), web = try webIdentity()
-            let proof = DiagnosticDeviceProof(identity: Identity(cid: cid, firmwareHash: ModemEngine.firmwareHash), routerHash: ModemEngine.routerHash, bootID: boot, webIdentity: web)
-            var commands = 0, probes = 0
-            let shell = DiagnosticSession(transport: "adb", reason: "selected before disconnect", proof: proof, readIdentity: { throw IMEIError.message("Selected USB disconnected") }) { _, _ in
-                commands += 1; throw Failure.assertion("Read on disconnected session")
-            }
-            let summary = ConnectionDeviceSummary(identity: proof.identity, webIdentity: web, bootID: boot)
-            let session = ReadOnlyChannelSession(mode: .adb, summary: summary, diagnosticSession: shell) { summary }
-            let router = ConnectionRouter(probes: [.ssh: { _ in probes += 1; throw Failure.assertion("Fallback") }])
-            let report = try f.engine.locked { try ConnectionDiagnostics.collect(engine: f.engine, mode: .automatic, session: session, router: router) }
-            try check(probes == 0 && commands == 0 && f.ssh.calls == 0 && report.transport == "adb", "Disconnected session switched transport")
-            try check(report.connectionError != nil && report.identityVerified == false && report.files.allSatisfy { $0.effectiveOutcome == .skipped }, "Disconnect reported successful data")
+        try test("new pending CID still binds cached SSH before queries") {
+            let f = try Fixture(), s = try SessionFixture()
+            try saveJSON(["cid": String(repeating: "f", count: 32)], f.root.appendingPathComponent("setup-pending.json"))
+            let report = try f.engine.locked { try ConnectionDiagnostics.collect(engine: f.engine, mode: .ssh, session: s.channel()) }
+            try check(s.commands == 0 && s.reads == 0 && report.identityVerified == false, "Cached session bypassed pending identity")
+            try check(FileManager.default.fileExists(atPath: f.root.appendingPathComponent("setup-pending.json").path), "Pending state changed")
         }
-        try test("manual mode rejects a cached session from another channel before reading") {
-            let f = try Fixture(), summary = ConnectionDeviceSummary(imei: imei); var reads = 0
-            let session = ReadOnlyChannelSession(mode: .agent, summary: summary) { reads += 1; return summary }
-            try rejects { _ = try f.engine.locked { try ConnectionDiagnostics.collect(engine: f.engine, mode: .adb, session: session) } }
-            try check(reads == 0 && f.ssh.calls == 0, "Manual mode consumed foreign cached session")
+        try test("expected IMEI still binds SSH before queries") {
+            let f = try Fixture(), s = try SessionFixture()
+            let report = try f.engine.locked { try ConnectionDiagnostics.collect(engine: f.engine, mode: .ssh, session: s.channel(), expectedIMEI: "353490068701230") }
+            try check(s.reads == 0 && s.commands == 0 && report.identityVerified == false, "Expected IMEI bypassed")
         }
-        try test("standalone expected IMEI remains binding for cached API and shell sessions") {
-            for mode in [ConnectionMode.agent, .adb] {
-                let f = try Fixture(), web = try webIdentity()
-                let proof = DiagnosticDeviceProof(identity: Identity(cid: cid, firmwareHash: ModemEngine.firmwareHash), routerHash: ModemEngine.routerHash, bootID: boot, webIdentity: web)
-                var commands = 0
-                let shell = DiagnosticSession(transport: "adb", reason: "selected USB", proof: proof, readIdentity: { proof }) { _, _ in commands += 1; throw Failure.assertion("Wrong IMEI reached shell") }
-                let summary = ConnectionDeviceSummary(webIdentity: web)
-                let session = ReadOnlyChannelSession(mode: mode, summary: summary, diagnosticSession: mode == .adb ? shell : nil) { summary }
-                let report = try f.engine.locked { try ConnectionDiagnostics.collect(engine: f.engine, mode: mode, session: session, expectedIMEI: "353490068701230") }
-                try check(commands == 0 && f.ssh.calls == 0 && !report.files.contains { $0.effectiveOutcome == .succeeded }, "Changing mode discarded known IMEI")
-            }
-        }
-        try test("standalone IMEI conflicts with saved or web identity fail before collection") {
+        try test("conflicting saved IMEI refuses before collection") {
             let f = try Fixture(), web = try webIdentity()
             try rejects { _ = try DiagnosticDeviceExpectation.load(root: f.root, identity: nil, web: web, imei: "353490068701230") }
             try saveJSON(["identity": ["imei": imei]], f.root.appendingPathComponent("setup-pending.json"))
             try rejects { _ = try DiagnosticDeviceExpectation.load(root: f.root, identity: nil, web: nil, imei: "353490068701230") }
         }
-        try test("collection requires the shared operation lock") {
-            let f = try Fixture()
-            try rejects { _ = try ConnectionDiagnostics.collect(engine: f.engine, mode: .adb) }
-            try check(f.ssh.calls == 0, "Unlocked collection contacted modem")
+        try test("collection requires shared lock before probing") {
+            let f = try Fixture(), s = try SessionFixture()
+            try rejects { _ = try ConnectionDiagnostics.collect(engine: f.engine, mode: .ssh, session: s.channel()) }
+            try check(s.reads == 0 && f.ssh.calls == 0, "Unlocked collection contacted modem")
         }
         print("Connection diagnostics: \(passed) passed; 0 failed")
     }

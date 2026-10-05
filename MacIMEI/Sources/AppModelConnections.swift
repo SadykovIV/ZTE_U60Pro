@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 
 @MainActor extension AppModel {
     var sshSelectionContext: SSHSelectionContext {
@@ -11,14 +12,11 @@ import Foundation
     var connectionLabel: String {
         guard connected else { return "Нет подключения" }
         if activeChannel == .ssh { return "Подключено · SSH" }
-        if activeChannel == .adb { return "Подключено · ADB" }
         return "Нет подключения"
     }
     var connectionCapabilityText: String {
-        guard connected else { return "Сначала нажмите «Проверить устройство». Рабочий root USB ADB позволяет подготовить SSH; неизвестная прошивка требует проверки конкретных условий установки." }
-        return activeChannel == .ssh
-            ? "SSH: сведения, диагностика и управление. Совместимость каждой операции проверяется отдельно."
-            : "ADB по USB: ограниченный доступ — сведения и диагностика. Для установки плиток и управления выполните подготовку SSH."
+        connected ? "SSH: сведения, диагностика и управление. Совместимость каждой операции проверяется отдельно."
+            : "Все операции с модемом выполняются через SSH. ADB используется для первоначальной подготовки SSH."
     }
     var isStockWebAvailable: Bool {
         channelStatuses.contains { $0.mode == .web && ($0.state == .available || $0.state == .authenticationRequired) }
@@ -26,27 +24,72 @@ import Foundation
     var hasSSHForPreparation: Bool {
         (connected && activeChannel == .ssh && accessReady) || channelStatuses.contains { $0.mode == .ssh && $0.state == .available }
     }
+    var webBootstrapRequested: Bool {
+        !host.isEmpty && !webPassword.isEmpty && !channelStatuses.contains { $0.mode == .web && [.invalidPassword, .rateLimited, .identityMismatch, .trustRejected].contains($0.state) }
+    }
     var canPrepareModem: Bool {
-        !busy && !terminalActive && !pendingOperation && !systemRestorePending && !diagnosticADBPending && (isStockWebAvailable || setupPending || channelStatuses.contains { $0.mode == .adb && $0.state == .available } || firmwareResearchReport?.transport == "adb")
+        !busy && !terminalActive && !pendingOperation && !systemRestorePending && !diagnosticADBPending && !adbTogglePending && (webBootstrapRequested || isStockWebAvailable || setupPending || channelStatuses.contains { $0.mode == .adb && $0.state == .available } || firmwareResearchReport?.transport == "adb")
             && (setupPending || !hasSSHForPreparation)
     }
     var canEnableDiagnosticADB: Bool {
-        !busy && !terminalActive && !pendingOperation && !systemRestorePending && !setupPending && (isStockWebAvailable || diagnosticADBPending || (!host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !webPassword.isEmpty))
+        !busy && !terminalActive && !pendingOperation && !systemRestorePending && !setupPending && !adbTogglePending && !hasSSHForPreparation && (isStockWebAvailable || diagnosticADBPending || (!host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !webPassword.isEmpty))
     }
     var preparationUnavailableReason: String? {
-        if hasSSHForPreparation && !setupPending {
-            return "SSH уже доступен: предварительная подготовка не требуется. ADB можно включить отдельно для диагностики."
+        if hasSSHForPreparation && !setupPending { return "SSH уже доступен: предварительная подготовка не требуется." }
+        if canPrepareModem { return nil }
+        if channelStatuses.first(where: { $0.mode == .web })?.state == .invalidPassword { return "Неверный пароль штатного Web. Исправьте параметры первоначальной подготовки." }
+        if channelStatuses.first(where: { $0.mode == .web })?.state == .rateLimited { return "Штатный Web временно заблокировал вход. Дождитесь окончания блокировки." }
+        return "Для подготовки SSH нужен работающий root USB ADB или параметры поддерживаемого включения ADB через штатный Web."
+    }
+    var canChangeADB: Bool {
+        guard !busy, !terminalActive, !pendingOperation, !systemRestorePending, !setupPending else { return false }
+        if connected && activeChannel == .ssh { return adbControlStatus?.enabled != nil && adbControlStatus?.supportsChange == true && !diagnosticADBPending && !adbTogglePending }
+        return canEnableDiagnosticADB
+    }
+    func openModemBrowser(port: Int?) {
+        do {
+            let partsHost = host.split(separator: ".", omittingEmptySubsequences: false)
+            try require(partsHost.count == 4 && partsHost.allSatisfy { !$0.isEmpty && $0.utf8.allSatisfy { (48...57).contains($0) } && (Int($0) ?? 256) <= 255 }, "Введите IPv4-адрес модема")
+            var parts = URLComponents(); parts.scheme = "http"; parts.host = host; parts.port = port; parts.path = "/"
+            guard let url = parts.url else { throw IMEIError.message("Некорректный адрес модема") }
+            NSWorkspace.shared.open(url)
+        } catch { append(error.localizedDescription) }
+    }
+    func refreshADBState() {
+        guard canReadModem else { return }
+        let config = connection, root = storage, assets = resources, target = sshSelectionContext
+        busy = true; diagnosticADBMessage = ""; adbControlStatus = nil
+        operationTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                adbControlStatus = try await Task.detached(priority: .userInitiated) {
+                    let engine = try ModemEngine(root: root, resources: assets, connection: config)
+                    return try engine.locked { try target.verify(engine); return try ADBControlManager(engine: engine).status() }
+                }.value
+            } catch { adbControlStatus = nil; diagnosticADBMessage = ActivityJournal.redact(error.localizedDescription); append("Состояние ADB: " + diagnosticADBMessage) }
+            busy = false; operationTask = nil; refreshBackups(); refreshActivity()
         }
-        guard connectionsChecked, !isStockWebAvailable, !setupPending, firmwareResearchReport?.transport != "adb", !channelStatuses.contains(where: { $0.mode == .adb && $0.state == .available }) else { return nil }
-        switch channelStatuses.first(where: { $0.mode == .web })?.state {
-        case .invalidPassword:
-            return "Неверный пароль штатного Web. Исправьте пароль и нажмите «Проверить подключения»."
-        case .rateLimited:
-            return "Штатный Web временно заблокировал вход. Дождитесь окончания блокировки и повторите проверку подключений."
-        case .notChecked:
-            return "Пароль штатного Web ещё не проверен. Нажмите «Проверить подключения»."
-        default:
-            return "Сначала нажмите «Проверить устройство». Для подготовки нужен работающий root USB ADB или поддерживаемый способ его включения через штатный Web."
+    }
+    func setADBEnabled(_ enabled: Bool) {
+        guard canChangeADB else { return }
+        guard connected && activeChannel == .ssh else { if enabled { enableDiagnosticADB() }; return }
+        let config = connection, root = storage, assets = resources, target = sshSelectionContext
+        busy = true; diagnosticADBMessage = ""
+        operationTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                adbControlStatus = try await Task.detached(priority: .userInitiated) { [weak self] in
+                    let engine = try ModemEngine(root: root, resources: assets, connection: config) { [weak self] text, progress in
+                        Task { @MainActor [weak self] in self?.append(text, progress: progress) }
+                    }
+                    return try engine.locked { try target.verify(engine); return try ADBControlManager(engine: engine).setEnabled(enabled) }
+                }.value
+                append(enabled ? "USB ADB включён и проверен через SSH." : "USB ADB выключен и проверен через SSH.", progress: 1)
+            } catch {
+                adbControlStatus = nil; diagnosticADBMessage = ActivityJournal.redact(error.localizedDescription)
+                append("Переключение ADB: " + diagnosticADBMessage)
+            }
+            busy = false; operationTask = nil; refreshBackups(); refreshActivity()
         }
     }
 
@@ -72,7 +115,7 @@ import Foundation
     func clearConnectedData(preserveDisplayDraft: Bool = false) {
         closeTerminal(); terminalSession.clear(); terminalError = ""
         opkgFeeds = nil; opkgFeedsDraft = ""; opkgFeedsMessage = ""
-        modemInformation = nil; applicationInventory = nil; accessState = nil
+        modemInformation = nil; applicationInventory = nil; accessState = nil; adbControlStatus = nil
         applicationsError = ""; experimentalOpkgStatus = nil; experimentalOpkgError = ""
         opkgTranscript = ""; opkgHistory = []; opkgCommand = ""
         diagnosticToolsStatus = nil; diagnosticToolsPlan = nil; diagnosticToolsError = ""
@@ -216,10 +259,10 @@ import Foundation
         guard !busy, !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         let config = connection, root = storage, assets = resources
         let expected = connectedIdentity, expectedWeb = connectedWebIdentity, expectedIMEI = connectedIMEI
-        let webSecret = authenticate ? webPassword : "", agentSecret = authenticate ? agentPassword : ""
+
         let selected = channelSession
         busy = true; progress = 0; preparationError = ""
-        append(authenticate ? "Проверяю SSH, USB ADB, агент и штатный Web с введёнными паролями…" : "Проверяю доступность SSH, USB ADB, агента и штатного Web без входа…")
+        append("Проверяю доступность SSH и USB ADB…")
         operationTask = Task { [weak self] in
             guard let self else { return }
             do {
@@ -227,7 +270,7 @@ import Foundation
                     let engine = try ModemEngine(root: root, resources: assets, connection: config) { _, _ in }
                     return try engine.locked {
                         let statuses = try ConnectionRouter(engine: engine, expectedIdentity: expected, expectedWebIdentity: expectedWeb,
-                            expectedIMEI: expectedIMEI, webPassword: webSecret, agentPassword: agentSecret).discover(authenticate: authenticate)
+                            expectedIMEI: expectedIMEI).discover(modes: [.ssh, .adb])
                         return statuses
                     }
                 }.value
@@ -274,7 +317,7 @@ import Foundation
                         let engine = try ModemEngine(root: root, resources: assets, connection: config) { _, _ in }
                         return try engine.locked {
                             try ConnectionRouter(engine: engine, expectedIdentity: result.session?.summary.identity ?? expected,
-                                                 expectedWebIdentity: expectedWeb, expectedIMEI: result.session?.summary.primaryIMEI ?? expectedIMEI).discover()
+                                                 expectedWebIdentity: expectedWeb, expectedIMEI: result.session?.summary.primaryIMEI ?? expectedIMEI).discover(modes: [.ssh, .adb])
                         }
                     }.value
                     acceptDiscoveredStatuses(statuses, authenticate: false)
@@ -283,6 +326,15 @@ import Foundation
                     append(preparationError)
                 }
                 if let session = channelSession { acceptChannelSummary(try await Task.detached { try session.readSummary() }.value) }
+                if connected {
+                    do {
+                        adbControlStatus = try await Task.detached {
+                            let engine = try ModemEngine(root: root, resources: assets, connection: config)
+                            return try engine.locked { try ADBControlManager(engine: engine).status() }
+                        }.value
+                    } catch { diagnosticADBMessage = "Состояние ADB: " + ActivityJournal.redact(error.localizedDescription) }
+                }
+
                 if connected { append(connectionLabel + (sectionRefreshErrors.isEmpty ? ". Разделы обновлены." : ". Часть разделов требует внимания; причины показаны в них."), progress: 1) }
                 else { append(result.reason) }
             } catch {
@@ -313,7 +365,7 @@ import Foundation
         refreshConnectedSections(Set(ConnectionOverviewSection.allCases))
     }
     private func refreshConnectedSections(_ sections: Set<ConnectionOverviewSection>) {
-        guard !busy, connected else { return }
+        guard canReadModem else { return }
         let selected = channelSession, mode = activeChannel ?? .ssh
         let config = connection, root = storage, assets = resources
         let expected = connectedIdentity, expectedIMEI = connectedIMEI

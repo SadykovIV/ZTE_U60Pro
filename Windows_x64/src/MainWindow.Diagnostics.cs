@@ -6,11 +6,11 @@ namespace ZteImeiStudio.Windows;
 
 public sealed partial class MainWindow
 {
-    private static readonly string[] DiagnosticGroups =
-        ["Подключение и ADB", "Устройство и прошивка", "Сбор и экспорт"];
-    private int _diagnosticGroup;
     private Button? _researchCollectButton;
     private Button? _diagnosticAccessButton;
+    private Button? _refreshAdbButton;
+    private CheckBox? _adbEnabledCheckbox;
+    private bool _updatingAdbCheckbox;
     private TextBlock? _diagnosticConnectionStatus;
     private TextBlock? _diagnosticAccessStatus;
     private string _diagnosticConnectionResult = "";
@@ -20,111 +20,134 @@ public sealed partial class MainWindow
     private string DiagnosticInputKey() => string.Join('\n', new[] { "host", "key_path", "known_hosts_path" }.Select(Get));
     private string ConnectedDiagnosticKey() => string.Join('\n', _snapshot?.Serial, _snapshot?.IpAddress, _snapshot?.ConnectionMode);
 
-    private ComboBox ConnectionModePicker()
+    private void BuildConnectionMethods(StackPanel panel)
     {
-        var mode = new ComboBox
+        var methods = new StackPanel { Spacing = 10 };
+        methods.Children.Add(Muted(Localization.IsEnglish
+            ? "Application operations use SSH. Web pages open in your browser; USB ADB is only for preparing SSH."
+            : "Операции программы выполняются по SSH. Веб-страницы открываются в браузере; USB ADB нужен только для подготовки SSH."));
+        var links = new WrapPanel();
+        var web = ActionButton(Localization.IsEnglish ? "Open modem web page" : "Открыть веб-интерфейс модема", () => OpenConnectionBrowserAsync(false), false);
+        web.Name = "OpenModemWeb"; links.Children.Add(web);
+        var agent = ActionButton(Localization.IsEnglish ? "Open agent web page" : "Открыть веб-панель агента", () => OpenConnectionBrowserAsync(true), false);
+        agent.Name = "OpenAgentWeb"; links.Children.Add(agent); methods.Children.Add(links);
+        var discover = ActionButton("Проверить подключения", () => ExecuteAsync(ModemOperation.DiscoverConnections,
+            ["host", "key_path", "known_hosts_path"]), false);
+        discover.Name = "DiscoverConnections"; methods.Children.Add(discover);
+        _diagnosticConnectionStatus = Muted(_diagnosticConnectionInput == DiagnosticInputKey() ? _diagnosticConnectionResult : "Состояние не проверено");
+        methods.Children.Add(_diagnosticConnectionStatus);
+        _diagnosticAccessButton = ActionButton("Проверить доступы", () => ExecuteAsync(ModemOperation.RefreshAccess, (string[]?)null), false);
+        _diagnosticAccessButton.Name = "DiagnosticAccess"; methods.Children.Add(_diagnosticAccessButton);
+        _diagnosticAccessStatus = Muted(_diagnosticAccessIdentity == ConnectedDiagnosticKey() ? _diagnosticAccessResult : "Состояние не проверено");
+        methods.Children.Add(_diagnosticAccessStatus);
+        _refreshAdbButton = ActionButton(Localization.IsEnglish ? "Check ADB state" : "Проверить состояние ADB",
+            () => ExecuteAsync(ModemOperation.RefreshAdbState, (string[]?)null), false);
+        _refreshAdbButton.Name = "RefreshAdbState"; methods.Children.Add(_refreshAdbButton);
+        _adbEnabledCheckbox = new AdbIntentCheckBox { Name = "AdbEnabled", IsThreeState = true,
+            Content = Localization.IsEnglish ? "Enable ADB" : "Включить ADB", IsChecked = _snapshot?.AdbEnabled };
+        _adbEnabledCheckbox.IsCheckedChanged += async (_, _) =>
         {
-            Name = "ConnectionMode", ItemsSource = new[] { "Автоматически", "SSH", "ADB" }.Select(Localization.Translate).ToArray(),
-            SelectedIndex = Get("mode") switch { "SSH" => 1, "ADB" => 2, _ => 0 }, MinWidth = 220,
-            HorizontalAlignment = HorizontalAlignment.Left,
+            if (_updatingAdbCheckbox) return;
+            var requested = _adbEnabledCheckbox.IsChecked;
+            var ssh = _snapshot?.IsConnected == true && _snapshot.ConnectionMode == "SSH";
+            if (_busy || _terminal?.IsConnected == true || _terminalOpening || _snapshot?.PreparationPending == true)
+            { UpdateDiagnosticAvailability(); return; }
+            if (!ssh)
+            {
+                // An unknown state is an ON request only, never authority to send OFF.
+                if (requested != true || !CanBootstrapAdb()) { UpdateDiagnosticAvailability(); return; }
+                await ExecuteAsync(ModemOperation.EnableDiagnosticAdb, ["host", "web_password", "backup_key_suffix", "skip_firmware_check"]);
+                return;
+            }
+            if (_snapshot?.AdbControlSupported != true || _snapshot.AdbEnabled is null || _snapshot.AdbActivationPending || requested is null || requested == _snapshot.AdbEnabled)
+            { UpdateDiagnosticAvailability(); return; }
+            await ExecuteAsync(ModemOperation.SetAdbEnabled, new Dictionary<string,string> { ["enabled"] = requested.Value ? "true" : "false" });
         };
-        mode.SelectionChanged += (_, _) => _form["mode"] = mode.SelectedIndex switch { 1 => "SSH", 2 => "ADB", _ => "Автоматически" };
-        return mode;
+        var adbControls = new WrapPanel();
+        adbControls.Children.Add(_adbEnabledCheckbox); adbControls.Children.Add(OperationInfoButton(OperationHelpContent.DiagnosticAdb));
+        methods.Children.Add(adbControls);
+        methods.Children.Add(Muted(_snapshot?.AdbActivationPending == true
+            ? (Localization.IsEnglish ? "The ADB operation is unfinished. Connect over SSH and check its state, or select the checkbox to resume preparation." : "Операция ADB не завершена. Подключитесь по SSH и проверьте состояние либо подтвердите продолжение подготовки флажком.")
+            : _snapshot?.AdbStatus ?? (Localization.IsEnglish ? "ADB state is unknown. To enable it initially, complete the SSH preparation settings and select the checkbox." : "Состояние ADB неизвестно. Для первоначального включения заполните настройки подготовки SSH и установите флажок.")));
+        var setup = new StackPanel { Spacing = 8 };
+        setup.Children.Add(Muted(Localization.IsEnglish
+            ? "These credentials are only for preparing SSH. With working root USB ADB, the Web password can be left empty."
+            : "Эти пароли используются только для подготовки SSH. При работающем root USB ADB пароль Web можно оставить пустым."));
+        setup.Children.Add(FieldPair(Field("Пароль веб-интерфейса", "web_password", "Введите пароль", secret: true), Field("Пароль агента / SSH", "agent_password", "Введите пароль", secret: true)));
+        setup.Children.Add(Field("Backup-key suffix вашей прошивки", "backup_key_suffix", "Только для проверки бэкапа B31", secret: true));
+        var skip = new CheckBox { Content = Localization.Translate("Пропустить проверку прошивки"), IsChecked = Get("skip_firmware_check") == "true", Foreground = Warn };
+        skip.IsCheckedChanged += (_, _) => _form["skip_firmware_check"] = skip.IsChecked == true ? "true" : "false";
+        setup.Children.Add(skip);
+        methods.Children.Add(new Expander { Header = Localization.IsEnglish ? "Prepare SSH access" : "Подготовка доступа SSH", Content = setup, HorizontalAlignment = HorizontalAlignment.Stretch });
+        panel.Children.Add(new Expander { Name = "ConnectionMethods", Header = Localization.IsEnglish ? "Available connection methods" : "Доступные способы подключения", Content = methods, HorizontalAlignment = HorizontalAlignment.Stretch });
+        UpdateDiagnosticAvailability();
+    }
+
+    internal static Uri ConnectionBrowserUri(string host, bool agent)
+    {
+        if (!System.Net.IPAddress.TryParse(host, out var address) || address.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork)
+            throw new ArgumentException("Введите IPv4-адрес модема.");
+        return new Uri("http://" + address + (agent ? ":8080" : "") + "/");
+    }
+
+    private Task OpenConnectionBrowserAsync(bool agent)
+    {
+        Uri url;
+        try { url = ConnectionBrowserUri(Get("host"), agent); }
+        catch (ArgumentException) { SetStatus("Введите IPv4-адрес модема.", true); return Task.CompletedTask; }
+        try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(url.AbsoluteUri) { UseShellExecute = true }); }
+        catch { SetStatus(Localization.IsEnglish ? "Could not open the web browser." : "Не удалось открыть браузер.", true); }
+        return Task.CompletedTask;
     }
 
     private void BuildDiagnostics()
     {
-        var groups = new WrapPanel { Orientation = Orientation.Horizontal };
-        for (var index = 0; index < DiagnosticGroups.Length; index++)
+        BuildFirmwareResearch();
+        AddCard("Сбор и экспорт", "Сохранённое исследование и действия программы в одном архиве.", panel =>
         {
-            var group = index;
-            var button = ActionButton(DiagnosticGroups[index], async () =>
-            {
-                _diagnosticGroup = group;
-                RenderPage();
-                await LoadPageDataAsync();
-            }, index == _diagnosticGroup);
-            button.Name = "DiagnosticsGroup" + index;
-            groups.Children.Add(button);
-        }
-        _body.Children.Add(groups);
-        switch (_diagnosticGroup)
-        {
-            case 0:
-                BuildDiagnosticContext(includePasswords: true);
-                AddCard("Подключение и ADB", "Проверка доступных каналов и отдельное включение диагностического ADB.", panel =>
-                {
-                    var discover = ActionButton("Проверить подключения", () => ExecuteAsync(ModemOperation.DiscoverConnections,
-                        ["host", "web_password", "agent_password", "key_path", "known_hosts_path"]), false);
-                    discover.Name = "DiscoverConnections";
-                    panel.Children.Add(discover);
-                    _diagnosticConnectionStatus = Muted(_diagnosticConnectionInput == DiagnosticInputKey() ? _diagnosticConnectionResult : "Состояние не проверено");
-                    panel.Children.Add(_diagnosticConnectionStatus);
-                    var adb = new WrapPanel();
-                    _diagnosticAdbButton = ActionButton(_snapshot?.AdbActivationPending == true ? "Продолжить включение ADB" : "Принудительно включить ADB", () =>
-                        ExecuteAsync(ModemOperation.EnableDiagnosticAdb, ["host", "web_password", "backup_key_suffix", "skip_firmware_check"]), false);
-                    _diagnosticAdbButton.Name = "EnableDiagnosticAdb";
-                    _diagnosticAdbButton.IsEnabled = !_busy && _terminal?.IsConnected != true && !_terminalOpening && _snapshot?.PreparationPending != true;
-                    adb.Children.Add(_diagnosticAdbButton);
-                    adb.Children.Add(OperationInfoButton(OperationHelpContent.DiagnosticAdb));
-                    panel.Children.Add(adb);
-                    panel.Children.Add(Muted("Для диагностического ADB нужны USB-кабель и пароль Web выше. Пароль агента не нужен. Доступ можно включить при работающем SSH; возможна перезагрузка модема."));
-                    if (_terminal?.IsConnected == true || _terminalOpening) panel.Children.Add(Muted("Перед включением ADB отключите интерактивный терминал."));
-                    _diagnosticAccessButton = ActionButton("Проверить доступы", () => ExecuteAsync(ModemOperation.RefreshAccess, (string[]?)null), false);
-                    _diagnosticAccessButton.Name = "DiagnosticAccess";
-                    panel.Children.Add(_diagnosticAccessButton);
-                    panel.Children.Add(Muted("Проверка служб и утилит использует уже подключённый SSH-модем."));
-                    panel.Children.Add(ValueLine("Подключение", _snapshot?.IpAddress ?? _snapshot?.Status));
-                    _diagnosticAccessStatus = Muted(_diagnosticAccessIdentity == ConnectedDiagnosticKey() ? _diagnosticAccessResult : "Состояние не проверено");
-                    panel.Children.Add(_diagnosticAccessStatus);
-                    UpdateDiagnosticAvailability();
-                });
-                break;
-            case 1:
-                BuildDiagnosticContext(includePasswords: false);
-                BuildFirmwareResearch();
-                break;
-            case 2:
-                AddCard("Сбор и экспорт", "Экспорт сохранённых сведений об устройстве и действий программы. Новое исследование запускается отдельно.", panel =>
-                {
-                    panel.Children.Add(Actions(("Сохранить диагностический ZIP", ModemOperation.ExportDiagnostics, null)));
-                    panel.Children.Add(Muted("Диагностический отчёт включает действия программы; исследование устройства экспортируется отдельно."));
-                    if (_researchReport is not null) panel.Children.Add(ActionButton("Экспортировать ZIP", ExportFirmwareResearchAsync, false));
-                    panel.Children.Add(ActionButton("Перезагрузить модем", async () =>
-                    {
-                        if (await ConfirmAsync("Перезагрузить модем?", "Соединение будет временно потеряно."))
-                            await ExecuteAsync(ModemOperation.RebootDevice, (string[]?)null);
-                    }, false));
-                });
-                break;
+            panel.Children.Add(Actions(("Сохранить диагностический ZIP", ModemOperation.ExportDiagnostics, null)));
+            panel.Children.Add(Muted("Диагностический ZIP включает сохранённое исследование устройства и действия программы. Новое исследование запускается отдельно."));
 
-        }
-    }
-
-    private void BuildDiagnosticContext(bool includePasswords)
-    {
-        AddCard("Контекст диагностики", "Параметры выбранного устройства для диагностических действий.", panel =>
-        {
-            panel.Children.Add(Field("Адрес модема", "host", "192.168.0.1"));
-            panel.Children.Add(ConnectionModePicker());
-            panel.Children.Add(FileField("Приватный ключ SSH", "key_path", "Использовать локальный ключ"));
-            panel.Children.Add(FileField("Файл known_hosts", "known_hosts_path", "Использовать локальный known_hosts"));
-            if (includePasswords)
-            {
-                panel.Children.Add(FieldPair(Field("Пароль веб-интерфейса", "web_password", "Введите пароль", secret: true),
-                    Field("Пароль агента / SSH", "agent_password", "Введите пароль", secret: true)));
-                panel.Children.Add(Field("Backup-key suffix вашей прошивки", "backup_key_suffix", "Только для проверки бэкапа B31", secret: true));
-                var skip = new CheckBox { Content = Localization.Translate("Пропустить проверку прошивки"), IsChecked = Get("skip_firmware_check") == "true", Foreground = Warn };
-                skip.IsCheckedChanged += (_, _) => _form["skip_firmware_check"] = skip.IsChecked == true ? "true" : "false";
-                panel.Children.Add(skip);
-            }
         });
     }
 
     private void UpdateDiagnosticAvailability()
     {
-        if (_researchCollectButton is not null) _researchCollectButton.IsEnabled = !_busy && _terminal?.IsConnected != true && !_terminalOpening;
-        if (_diagnosticAccessButton is not null) _diagnosticAccessButton.IsEnabled = !_busy && _snapshot?.IsConnected == true && _snapshot.ConnectionMode == "SSH" && _terminal?.IsConnected != true && !_terminalOpening;
+        var idle = !_busy && _terminal?.IsConnected != true && !_terminalOpening;
+        var ssh = _snapshot?.IsConnected == true && _snapshot.ConnectionMode == "SSH";
+        var noPending = _snapshot?.PreparationPending != true && _snapshot?.AdbActivationPending != true;
+        if (_researchCollectButton is not null) _researchCollectButton.IsEnabled = idle;
+        if (_diagnosticAccessButton is not null) _diagnosticAccessButton.IsEnabled = idle && ssh;
+        if (_refreshAdbButton is not null) _refreshAdbButton.IsEnabled = idle && ssh;
+        if (_adbEnabledCheckbox is not null)
+        {
+            _updatingAdbCheckbox = true;
+            _adbEnabledCheckbox.IsThreeState = !ssh || _snapshot?.AdbEnabled is null;
+            _adbEnabledCheckbox.IsChecked = ssh ? _snapshot?.AdbEnabled : null;
+            _adbEnabledCheckbox.IsEnabled = idle && (ssh
+                ? noPending && _snapshot?.AdbControlSupported == true && _snapshot.AdbEnabled is not null
+                : CanBootstrapAdb());
+            _updatingAdbCheckbox = false;
+        }
+    }
+
+    private bool CanBootstrapAdb()
+    {
+        if (_snapshot?.IsConnected == true && _snapshot.ConnectionMode == "SSH" || _snapshot?.PreparationPending == true) return false;
+        if (!System.Net.IPAddress.TryParse(Get("host"), out var host) || host.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork) return false;
+        var password = Get("web_password");
+        return !password.Contains('\0') && (_snapshot?.AdbActivationPending == true || password.Length > 0);
+    }
+
+    private sealed class AdbIntentCheckBox : CheckBox
+    {
+        protected override Type StyleKeyOverride => typeof(CheckBox);
+        protected override void Toggle()
+        {
+            // The first explicit click on unknown requests ON, rather than cycling to OFF.
+            if (IsChecked is null) IsChecked = true;
+            else base.Toggle();
+        }
     }
 
     private void UpdateDiagnosticConnectionStatus()

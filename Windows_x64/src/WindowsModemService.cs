@@ -19,14 +19,13 @@ public sealed partial class WindowsModemService : IModemService
     private bool _diagnosticJournalWriteFailed;
     private IReadOnlyDictionary<string,string>? _operationValues;
     private readonly AdbTransport _adb = new();
+    private readonly Func<Research.IResearchTransportFactory>? _researchFactory;
     private SshTransport? _ssh;
     private DeviceFeatureService? _features;
     private ImeiEngine? _imei;
     private DeviceSnapshot _snapshot = new(false,"Нет подключения");
     private string _host = "192.168.0.1";
     private int _port = 2222;
-    private string? _serial;
-    private string? _adbCid;
     private bool _skipFirmwareCheck;
     private string _keyPath;
     private string _knownHostsPath;
@@ -37,10 +36,11 @@ public sealed partial class WindowsModemService : IModemService
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ZTE IMEI Studio"),
         Path.Combine(AppContext.BaseDirectory, "Resources")) { }
 
-    internal WindowsModemService(string storage, string resources)
+    internal WindowsModemService(string storage, string resources, Func<Research.IResearchTransportFactory>? researchFactory = null)
     {
         _storage = Path.GetFullPath(storage);
         _resources = Path.GetFullPath(resources);
+        _researchFactory = researchFactory;
         _keyPath = Path.Combine(_storage,"SSH","id_ed25519");
         _knownHostsPath = Path.Combine(_storage,"SSH","known_hosts");
         Directory.CreateDirectory(_storage);
@@ -82,7 +82,8 @@ public sealed partial class WindowsModemService : IModemService
             outcome == "failed" ? "error" : "info", operation + ": " + outcome,
             "operation", operation.ToString(), outcome, duration));
     }
-    public Task<DeviceSnapshot> GetDeviceSnapshotAsync(CancellationToken cancellationToken = default) => Task.FromResult(_snapshot with { AdbActivationPending = File.Exists(Path.Combine(_storage, "adb-access-pending.json")), PreparationPending = File.Exists(Path.Combine(_storage, "setup-pending.json")) });
+    public ConnectionSettingsSnapshot GetConnectionSettings() => new(_host, _port, "root", _keyPath, _knownHostsPath);
+    public Task<DeviceSnapshot> GetDeviceSnapshotAsync(CancellationToken cancellationToken = default) => Task.FromResult(_snapshot with { AdbActivationPending = File.Exists(Path.Combine(_storage, "adb-access-pending.json")) || File.Exists(Path.Combine(_storage, AdbToggleTransaction.PendingName)), PreparationPending = File.Exists(Path.Combine(_storage, "setup-pending.json")) });
     public Task<IReadOnlyList<LogEntry>> GetLogsAsync(CancellationToken cancellationToken = default)
     {
         lock (_logs) return Task.FromResult<IReadOnlyList<LogEntry>>(_logs.ToArray());
@@ -122,8 +123,10 @@ public sealed partial class WindowsModemService : IModemService
 
     private static string Param(IReadOnlyDictionary<string,string>? values,string name,string fallback="")
         => values?.TryGetValue(name,out var value) == true ? value.Trim() : fallback;
-    private void RequireSsh()
+    private void RequireSsh(bool allowAdbPending = false)
     {
+        if (!allowAdbPending && (File.Exists(Path.Combine(_storage, AdbToggleTransaction.PendingName)) || Directory.Exists(Path.Combine(_storage, AdbToggleTransaction.PendingName))))
+            throw new InvalidOperationException(AdbToggleTransaction.Unknown);
         if (_ssh is null || _features is null || _imei is null) throw new InvalidOperationException("Для этого действия сначала подключитесь к модему по SSH.");
     }
     public async Task<OperationResult> RunAsync(OperationRequest request,CancellationToken cancellationToken = default)
@@ -137,6 +140,9 @@ public sealed partial class WindowsModemService : IModemService
             TraceDiagnosticOperation(request.Operation, "started");
             _operationValues = null;
             var p = request.Parameters;
+            if (File.Exists(Path.Combine(_storage, AdbToggleTransaction.PendingName)) && request.Operation is not
+                (ModemOperation.RefreshAdbState or ModemOperation.Connect or ModemOperation.DiscoverConnections or ModemOperation.ExportDiagnostics))
+                throw new InvalidOperationException(AdbToggleTransaction.Unknown);
             string result;
             switch (request.Operation)
             {
@@ -144,30 +150,14 @@ public sealed partial class WindowsModemService : IModemService
                 case ModemOperation.Connect: result = await ConnectAsync(p,cancellationToken); break;
                 case ModemOperation.PrepareSsh: result = await PrepareSshAsync(p,cancellationToken); break;
                 case ModemOperation.EnableDiagnosticAdb: result = await EnableDiagnosticAdbAsync(p,cancellationToken); break;
+                case ModemOperation.RefreshAdbState: result = await RefreshAdbStateAsync(cancellationToken); break;
+                case ModemOperation.SetAdbEnabled: result = await SetAdbEnabledAsync(p,cancellationToken); break;
                 case ModemOperation.RefreshDevice: result = await RefreshDeviceAsync(cancellationToken); break;
                 case ModemOperation.ReadImei:
-                    if (_imei is not null)
-                    {
-                        var state = await _imei.InspectAsync(cancellationToken);
-                        _snapshot = _snapshot with { Imei = string.Join(" / ",state.Imeis), Serial = state.Identity.Cid };
-                        result = "Оба IMEI подтверждены по NV и API.";
-                    }
-                    else if (_serial is not null)
-                    {
-                        var imeis = new List<string>();
-                        foreach (var method in new[] { "get_imei", "get_imei2" })
-                        {
-                            var reply = await AdbReadAsync("ubus call zwrt_zte_mdm.api " + method,cancellationToken);
-                            using var doc = JsonDocument.Parse(reply.Stdout);
-                            var values = doc.RootElement.EnumerateObject().Where(x => x.Value.ValueKind == JsonValueKind.String)
-                                .Select(x => x.Value.GetString()).Where(ImeiCodec.IsValid).ToArray();
-                            if (values.Length != 1) throw new InvalidDataException("ADB API не вернул однозначный IMEI.");
-                            imeis.Add(values[0]!);
-                        }
-                        _snapshot = _snapshot with { Imei = string.Join(" / ",imeis) };
-                        result = "IMEI прочитаны по ADB API; NV в ограниченном режиме не проверены.";
-                    }
-                    else throw new InvalidOperationException("Сначала подключитесь по SSH или ADB.");
+                    RequireSsh();
+                    var state = await _imei!.InspectAsync(cancellationToken);
+                    _snapshot = _snapshot with { Imei = string.Join(" / ",state.Imeis), Serial = state.Identity.Cid };
+                    result = "Оба IMEI подтверждены по NV и API.";
                     break;
                 case ModemOperation.CreateImeiBackup:
                     RequireSsh(); result = "Проверенный бэкап IMEI: " + await _imei!.CreateBackupAsync(cancellationToken); break;
@@ -324,67 +314,9 @@ public sealed partial class WindowsModemService : IModemService
             else status.Add(devices.Count == 0 ? "ADB: " + inventory.UnavailableReason : "ADB: несколько USB-устройств");
         }
         catch (Exception e) { status.Add("ADB: " + e.Message); }
-        try
-        {
-            using var web = new ModemWebClient(host);
-            _ = await web.ProbeAsync(ct);
-            var password = parameters?.GetValueOrDefault("web_password");
-            if (string.IsNullOrEmpty(password)) status.Add("Web: доступен, нужен пароль");
-            else
-            {
-                try { await web.LoginAsync(password,ct); _ = await web.GetIdentityAsync(skipFirmwareCheck:true,ct:ct); status.Add("Web: доступен, пароль верен"); }
-                catch (ModemWebException error) when (error.Kind == WebFailureKind.InvalidPassword)
-                { status.Add("Web: неверный пароль"); }
-            }
-        }
-        catch { status.Add("Web: недоступен"); }
-        status.Add(await ProbeAgentAsync(host,parameters?.GetValueOrDefault("agent_password"),ct));
         return string.Join(" · ",status);
     }
 
-    private static async Task<string> ProbeAgentAsync(string host,string? password,CancellationToken ct)
-    {
-        using var handler = new HttpClientHandler { UseProxy = false, UseCookies = false, AllowAutoRedirect = false };
-        using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(7) };
-        var origin = "http://" + host + ":9090";
-        try
-        {
-            using var health = await client.GetAsync(origin + "/api/health",ct);
-            if (health.StatusCode == System.Net.HttpStatusCode.Forbidden) return "Агент: пароль не настроен";
-            if (health.StatusCode != System.Net.HttpStatusCode.Unauthorized) return "Агент: сервис не распознан";
-            if (health.Content.Headers.ContentLength > 64*1024) return "Агент: сервис не распознан";
-            var healthBody = await health.Content.ReadAsByteArrayAsync(ct);
-            if (healthBody.Length > 64*1024) return "Агент: сервис не распознан";
-            using (var healthDoc = JsonDocument.Parse(healthBody))
-            {
-                var healthRoot = healthDoc.RootElement;
-                if (healthRoot.ValueKind != JsonValueKind.Object ||
-                    !healthRoot.TryGetProperty("ok",out var healthOk) || healthOk.ValueKind != JsonValueKind.False ||
-                    !healthRoot.TryGetProperty("error",out var healthError) || healthError.GetString() != "unauthorized")
-                    return "Агент: сервис не распознан";
-            }
-            if (string.IsNullOrEmpty(password)) return "Агент: доступен, нужен пароль";
-            var content = JsonSerializer.SerializeToUtf8Bytes(new { password });
-            using var request = new HttpRequestMessage(HttpMethod.Post,origin + "/api/auth/login") {
-                Content = new ByteArrayContent(content),
-            };
-            request.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
-            using var reply = await client.SendAsync(request,HttpCompletionOption.ResponseHeadersRead,ct);
-            if (reply.StatusCode == System.Net.HttpStatusCode.Unauthorized) return "Агент: неверный пароль";
-            if (reply.StatusCode == System.Net.HttpStatusCode.TooManyRequests) return "Агент: вход временно ограничен";
-            if (reply.StatusCode != System.Net.HttpStatusCode.OK || reply.Content.Headers.ContentLength > 64*1024)
-                return "Агент: вход не подтверждён";
-            var body = await reply.Content.ReadAsByteArrayAsync(ct);
-            if (body.Length > 64*1024) return "Агент: некорректный ответ";
-            using var doc = JsonDocument.Parse(body);
-            var root = doc.RootElement;
-            return root.TryGetProperty("ok",out var ok) && ok.ValueKind == JsonValueKind.True &&
-                root.TryGetProperty("data",out var data) && data.ValueKind == JsonValueKind.Object &&
-                data.TryGetProperty("token",out var token) && token.ValueKind == JsonValueKind.String &&
-                !string.IsNullOrEmpty(token.GetString()) ? "Агент: доступен, пароль верен" : "Агент: вход не подтверждён";
-        }
-        catch (Exception) when (!ct.IsCancellationRequested) { return "Агент: недоступен"; }
-    }
     private async Task<string> ConnectAsync(IReadOnlyDictionary<string,string>? values,CancellationToken ct)
     {
         var host = Param(values,"host",_host);
@@ -394,13 +326,13 @@ public sealed partial class WindowsModemService : IModemService
         if (!string.IsNullOrWhiteSpace(Param(values,"known_hosts_path"))) _knownHostsPath = Param(values,"known_hosts_path");
         _skipFirmwareCheck = Param(values,"skip_firmware_check").Equals("true",StringComparison.OrdinalIgnoreCase);
         // The application's working channel is SSH. USB ADB remains available
-        // independently for preparation and read-only firmware research.
-        _ssh = null; _imei = null; _features = null; _serial = null; _adbCid = null;
+        // independently for preparing SSH access.
+        _ssh = null; _imei = null; _features = null;
         _snapshot = new DeviceSnapshot(false, "SSH не подключён; проверьте доступ или выполните предварительную подготовку.", IpAddress: host);
         var ssh = new SshTransport(host,_port,KeyPath,KnownHostsPath);
         var imei = new ImeiEngine(ssh,_storage,_resources);
         var identity = await imei.MeasuredIdentityAsync(ct);
-        _ssh = ssh; _imei = imei; _features = new DeviceFeatureService(ssh,_resources,_storage); _serial = null; _adbCid = null;
+        _ssh = ssh; _imei = imei; _features = new DeviceFeatureService(ssh,_resources,_storage);
         var supported = identity.FirmwareHash == ImeiEngine.FirmwareHash && identity.RouterHash == ImeiEngine.RouterHash;
         _snapshot = new DeviceSnapshot(true,supported ? "Подключено по SSH" : "Подключено по SSH · доступ подтверждён; функции проверяются отдельно",
             IpAddress:host,ConnectionMode:"SSH",Serial:identity.Cid);
@@ -411,10 +343,8 @@ public sealed partial class WindowsModemService : IModemService
     }
     private async Task<string> RefreshDeviceAsync(CancellationToken ct)
     {
-        RemoteResult info;
-        if (_ssh is not null) info = await _ssh.RunAsync("ubus call system board",timeout:TimeSpan.FromSeconds(20),ct:ct);
-        else if (_serial is not null) info = await AdbReadAsync("ubus call system board",ct);
-        else throw new InvalidOperationException("Сначала подключитесь к модему.");
+        RequireSsh();
+        var info = await _ssh!.RunAsync("ubus call system board",timeout:TimeSpan.FromSeconds(20),ct:ct);
         if (!info.Success) throw new IOException("Не удалось прочитать сведения о модеме.");
         using var doc = JsonDocument.Parse(info.Stdout);
         var root = doc.RootElement;
@@ -424,18 +354,6 @@ public sealed partial class WindowsModemService : IModemService
         _snapshot = _snapshot with { Model = property("model"), Firmware = release,
             Details = new Dictionary<string,string> { ["Система"] = property("system") ?? "", ["Ядро"] = property("kernel") ?? "", ["Версия"] = property("version") ?? "" } };
         return "Сведения о модеме обновлены.";
-    }
-
-    private async Task<RemoteResult> AdbReadAsync(string command,CancellationToken ct)
-    {
-        if (_serial is null || _adbCid is null) throw new InvalidOperationException("ADB не подключён.");
-        var proof = await _adb.ShellAsync(_serial,"set -eu; test \"$(id -u)\" = 0; cat /sys/block/mmcblk0/device/cid",
-            TimeSpan.FromSeconds(15),ct);
-        if (!proof.Success || Encoding.UTF8.GetString(proof.Stdout).Trim().ToLowerInvariant() != _adbCid)
-            throw new InvalidDataException("Устройство ADB изменилось или root утрачен.");
-        var reply = await _adb.ShellAsync(_serial,command,TimeSpan.FromSeconds(20),ct);
-        if (!reply.Success) throw new IOException("ADB-команда чтения завершилась с кодом " + reply.ExitCode + ".");
-        return reply;
     }
 
     private async Task HydrateConnectedAsync(bool supported,CancellationToken ct)

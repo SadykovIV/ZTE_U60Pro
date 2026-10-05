@@ -175,12 +175,11 @@ private final class StatusTransport: RemoteTransport {
             let value = try ConnectionOverview.collect(session: f.session(), readers: readers)
             try check(value.information == nil && value.errors[.information] != nil && value.display?.canInstall == true, "Basic section error disconnected device")
         }
-        try test("ADB never invokes SSH readers or reports their absence as failures") {
-            let f = Fixture(); var progress = [ConnectionOverviewSection]()
-            let value = try ConnectionOverview.collect(session: f.session(.adb), readers: f.readers(), update: { progress.append($0) })
-            try check(value.limitedToADB && value.information != nil && f.readNames == ["information"] && value.errors.isEmpty, "ADB silently tried SSH")
-            try check(value.display == nil && value.access == nil && value.applications == nil, "ADB fabricated management status")
-            try check(progress == [.information], "ADB progress advertised SSH section reads")
+        try test("ADB rejected by both overview overloads before any reader") {
+            let f = Fixture(), stub = StatusTransport(), e = try engine(stub)
+            try rejects("SSH") { _ = try ConnectionOverview.collect(session: f.session(.adb), readers: f.readers()) }
+            try e.locked { try rejects("SSH") { _ = try ConnectionOverview.collect(engine: e, session: f.session(.adb)) } }
+            try check(f.readNames.isEmpty && f.summaryCalls == 0 && stub.commands.isEmpty, "ADB caused collection before refusal")
         }
         try test("Device replacement during a successful reader aborts all later readers") {
             let f = Fixture(); let session = f.session(); var readers = f.readers()
@@ -220,7 +219,7 @@ private final class StatusTransport: RemoteTransport {
         try test("Web and agent cannot masquerade as full application connections") {
             for mode in [ConnectionMode.web, .agent] {
                 let f = Fixture()
-                try rejects("SSH или ADB") { _ = try ConnectionOverview.collect(session: f.session(mode), readers: f.readers()) }
+                try rejects("SSH") { _ = try ConnectionOverview.collect(session: f.session(mode), readers: f.readers()) }
                 try check(f.readNames.isEmpty, "Weak channel reached readers")
             }
         }
@@ -260,11 +259,15 @@ private final class StatusTransport: RemoteTransport {
             try rejects("кодом 1") { _ = try ConnectionOverview.readAgent(engine: e) }
             try rejects("кодом 1") { _ = try ConnectionOverview.readTTL(engine: e, cid: identity.cid) }
         }
-        try test("Production ADB overview only executes the pinned diagnostic session") {
+        try test("Mislabeled SSH overview refuses an ADB shell before identity or probes") {
             let f = Fixture(), stub = StatusTransport(), e = try engine(stub)
-            let value = try e.locked { try ConnectionOverview.collect(engine: e, session: f.session(.adb)) }
-            try check(value.information?.identity == identity && value.errors.isEmpty && value.limitedToADB, "ADB collection failed")
-            try check(stub.commands.isEmpty, "ADB unexpectedly used manager SSH transport")
+            let adb = f.session(.adb)
+            let session = ReadOnlyChannelSession(mode: .ssh, summary: f.summary, diagnosticSession: adb.diagnosticSession) {
+                throw Failure.check("Foreign session summary queried")
+            }
+            try rejects("SSH") { _ = try ConnectionOverview.collect(session: session, readers: f.readers()) }
+            try e.locked { try rejects("SSH") { _ = try ConnectionOverview.collect(engine: e, session: session) } }
+            try check(stub.commands.isEmpty && f.readNames.isEmpty, "Foreign shell reached readers")
         }
         try test("Production collector refuses execution without the caller operation lock") {
             let f = Fixture(), stub = StatusTransport(), e = try engine(stub)

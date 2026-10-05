@@ -77,7 +77,7 @@ class ZteVersionProbeTests(unittest.TestCase):
     def test_mirrors_revision_and_count(self):
         self.assertEqual(SPEC.read_bytes(), (MAC.parent / "Windows_x64/Resources/FirmwareResearch/probes.json").read_bytes())
         spec = json.loads(SPEC.read_text())
-        self.assertEqual(spec["revision"], 7)
+        self.assertEqual(spec["revision"], 8)
         self.assertEqual(len(spec["probes"]), 46)
 
     def test_versions_only_secrets_and_stderr_never_exported(self):

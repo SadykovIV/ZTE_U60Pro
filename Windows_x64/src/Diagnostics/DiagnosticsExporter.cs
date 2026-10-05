@@ -2,6 +2,8 @@ using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
+using ZteImeiStudio.Windows.Research;
 
 namespace ZteImeiStudio.Windows.Diagnostics;
 
@@ -10,7 +12,7 @@ public sealed record DiagnosticActivity(DateTimeOffset Timestamp, string Level, 
 public sealed record DiagnosticSystemSnapshot(string? ConnectionMode, string? Model, string? Firmware, string ApplicationVersion);
 public sealed record DiagnosticExportResult(string Path, int Files, int Events, int Omissions);
 
-/// Fixed local inputs only: never walks app storage or collects modem/command output.
+/// Fixed local inputs only: saved application activity and the last saved research report.
 public static class DiagnosticsExporter
 {
     public const int SegmentLimit = 2 * 1024 * 1024;
@@ -77,6 +79,7 @@ public static class DiagnosticsExporter
         CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested(); SafePath(destination);
+        var exportedAt = DateTimeOffset.UtcNow;
         var omissions = new HashSet<string>(StringComparer.Ordinal);
         var saved = new List<DiagnosticActivity>();
         foreach (var name in JournalFiles)
@@ -110,7 +113,7 @@ public static class DiagnosticsExporter
         byte[] Lines(IEnumerable<DiagnosticActivity> entries) => Encoding.UTF8.GetBytes(string.Concat(entries.Select(x => JsonSerializer.Serialize(x, Json) + "\n")));
         var report = new
         {
-            schema = 1, createdAt = DateTimeOffset.UtcNow, application = "ZTE IMEI Studio Windows x64",
+            schema = 1, createdAt = exportedAt, application = "ZTE IMEI Studio Windows x64",
             applicationVersion = privacy.Clean(system.ApplicationVersion),
             connectionMode = privacy.Clean(system.ConnectionMode ?? ""), model = privacy.Clean(system.Model ?? ""), firmware = privacy.Clean(system.Firmware ?? ""),
             operations = current.Select(x => new { x.Timestamp, x.Level, operation = x.Message.StartsWith("eSIM[", StringComparison.Ordinal) ? x.Message : x.Message.Split(':', 2)[0] }).ToArray(),
@@ -122,14 +125,57 @@ public static class DiagnosticsExporter
             ["application-journal.jsonl"] = Lines(saved),
             ["current-session.jsonl"] = Lines(current),
             ["operation-traces.jsonl"] = Lines(saved.Where(x => x.Kind == "operation" || x.Message.StartsWith("eSIM[", StringComparison.Ordinal))),
-            ["README.txt"] = Encoding.UTF8.GetBytes("Local application diagnostics only; no modem collection or network access.\nreport.json preserves the previous cached system-summary format.\napplication-journal.jsonl: sanitized saved activity (two bounded 2 MiB segments). Earlier sessions from versions without this journal cannot be recovered.\ncurrent-session.jsonl: latest 2000 in-memory events, may overlap the saved journal.\noperation-traces.jsonl: structured action timing/results and safe eSIM progress; no raw SSH/ADB commands, stdin or responses.\nExisting private keys, trust files, connection settings, backups, VPN profiles and activation codes are never copied. Firmware research is exported separately.\n")
+            ["README.txt"] = Encoding.UTF8.GetBytes("Offline diagnostic bundle; no new modem collection or network access.\nreport.json preserves the cached application system-summary format; it is not a fresh modem snapshot.\napplication-journal.jsonl: sanitized saved activity (two bounded 2 MiB segments). Earlier sessions from versions without this journal cannot be recovered.\ncurrent-session.jsonl: latest 2000 in-memory events, may overlap the saved journal.\noperation-traces.jsonl: structured action timing/results and safe eSIM progress; no raw action commands, stdin or responses.\nfirmware-research/: last saved read-only survey, when available, with its own collection times, application/specification versions and sanitized probe transcripts. It may describe a different device/session than the current application summary; no identity match is inferred. Redaction is reapplied during export.\nExisting private keys, trust files, connection settings, backups, VPN profiles and activation codes are never copied. Missing or unsafe inputs are listed in manifest.json.\n")
         };
+        object cachedResearchSource = new { status = "missing", path = "FirmwareResearch/latest.json" };
+        try
+        {
+            ct.ThrowIfCancellationRequested();
+            var cachedPath = System.IO.Path.Combine(root, "FirmwareResearch", "latest.json");
+            SafePath(cachedPath);
+            if (!File.Exists(cachedPath)) omissions.Add("Cached firmware research is missing; no new collection was performed.");
+            else
+            {
+                var before = new FileInfo(cachedPath); var modified = before.LastWriteTimeUtc; var length = before.Length;
+                var bytes = ResearchReportFiles.ReadBoundedFile(cachedPath, FirmwareResearchEngine.TotalLimit, ct);
+                var after = new FileInfo(cachedPath);
+                if (after.LastWriteTimeUtc != modified || after.Length != length || bytes.LongLength != length)
+                    throw new InvalidDataException("Cached research changed while being read.");
+                var cached = JsonSerializer.Deserialize<ResearchReport>(bytes, ResearchSpec.Json)
+                    ?? throw new InvalidDataException("Invalid cached research.");
+                // Per-line cleaning preserves bounded multi-line probe output while
+                // applying the same secret policy as the application journal.
+                string CleanResearch(string value)
+                {
+                    // PEM bodies must be removed before splitting into lines,
+                    // including a block truncated before its closing delimiter.
+                    try { value = Regex.Replace(value, @"-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?(?:-----END [^-]*PRIVATE KEY-----|$)", "[PRIVATE KEY REDACTED]", RegexOptions.None, TimeSpan.FromSeconds(1)); }
+                    catch (RegexMatchTimeoutException) { throw new InvalidDataException("Cached research redaction exceeded its limit."); }
+                    return string.Join('\n', value.Split('\n').Select(line => { ct.ThrowIfCancellationRequested(); return privacy.Clean(line); }));
+                }
+                var payload = ResearchReportFiles.BuildExportFiles(cached, CleanResearch, ct);
+                foreach (var item in payload) files.Add("firmware-research/" + item.Key, item.Value);
+                cachedResearchSource = new { status = "included", path = "FirmwareResearch/latest.json",
+                    sourceLastWriteAt = new DateTimeOffset(modified, TimeSpan.Zero), sourceBytes = bytes.Length,
+                    sourceSha256 = Convert.ToHexStringLower(SHA256.HashData(bytes)),
+                    collectionStartedAt = cached.StartedAt, collectionCompletedAt = cached.CompletedAt,
+                    applicationVersion = privacy.Clean(cached.ApplicationVersion), specificationRevision = cached.SpecificationRevision,
+                    specificationSha256 = cached.SpecificationSHA256, relationToCurrentConnection = "not-assessed" };
+            }
+        }
+        catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or JsonException or ArgumentException or System.Security.SecurityException)
+        {
+            omissions.Add("Cached firmware research unavailable, malformed, oversized or unsafe; application activity is still included.");
+            cachedResearchSource = new { status = "omitted", path = "FirmwareResearch/latest.json" };
+        }
         if (files.Values.Sum(x => (long)x.Length) > 32 * 1024 * 1024) throw new InvalidDataException("Diagnostic export exceeds its size limit.");
         files["manifest.json"] = JsonSerializer.SerializeToUtf8Bytes(new
         {
-            schemaVersion = 1, collectedFromModem = false, omissions = omissions.Distinct().ToArray(),
-            files = files.Select(x => new { path = x.Key, bytes = x.Value.Length, sha256 = Convert.ToHexStringLower(SHA256.HashData(x.Value)) }).ToArray()
+            schemaVersion = 1, collectedFromModem = false, exportedAt, omissions = omissions.Distinct().ToArray(),
+            sources = new { applicationSummary = new { kind = "cached-application-state", capturedAt = (DateTimeOffset?)null }, firmwareResearch = cachedResearchSource },
+            files = files.Select(x => new { path = x.Key, bytes = x.Value.Length, sha256 = Convert.ToHexStringLower(SHA256.HashData(x.Value)), source = x.Key.StartsWith("firmware-research/", StringComparison.Ordinal) ? "cached-firmware-research" : x.Key == "report.json" ? "cached-application-state" : "local-application-diagnostics" }).ToArray()
         }, Json);
+        if (files.Values.Sum(x => (long)x.Length) > 32 * 1024 * 1024) throw new InvalidDataException("Diagnostic export exceeds its size limit.");
         var directory = System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(destination))!;
         Directory.CreateDirectory(directory); SafePath(directory);
         var temporary = destination + "." + Guid.NewGuid().ToString("N") + ".tmp";

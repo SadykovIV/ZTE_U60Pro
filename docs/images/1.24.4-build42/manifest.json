@@ -1,0 +1,30 @@
+{
+  "version": "1.24.4",
+  "macBuild": "42",
+  "windowsFileVersion": "1.24.4.1",
+  "source": {
+    "macOS": "Production SwiftUI rendered with isolated synthetic data",
+    "WindowsUI": "Production Avalonia rendered on macOS with isolated synthetic data"
+  },
+  "realModemData": false,
+  "nativeWindowsRuntimeVerified": false,
+  "screenshots": {
+    "macos-connection-methods-en.png": "f81b84ec68dfd63177771969d5c077c8c4fcb8700cd88caced7ee982799c8669",
+    "macos-connection-methods-ru.png": "f18bae922e891d3e8a1500dcc84eada83e2befc2f1f9e4de99b5237fc2360b02",
+    "macos-diagnostics-en.png": "844c4dead304dce607d8ebf529be169388720cb6ec1a2c196672899b9cf48682",
+    "macos-diagnostics-ru.png": "878a9d6cc89303c480f47d3f4a870469363d6ae540a59fdcee20aa2cf092cb8f",
+    "windows-connection-methods-en.png": "8723bea9be6822278438572fc2642ecee7fc0a11d64e12eaf5b598799b025ce8",
+    "windows-connection-methods-ru.png": "f7eb443c445bada1eb212b1094a8caeda0f87de6877b1735d98fefb447bde8e6",
+    "windows-diagnostics-en.png": "3c25899899a4e81021210a5eea10e8afcbb8653daa96a05d4422c42d8c39c64b",
+    "windows-diagnostics-ru.png": "ca983fd9a9533455effb569113729e65878a89c06f72e6aa655e028017115df6"
+  },
+  "sourceHashes": {
+    "MacIMEI/Sources/UI.swift": "5219133c4c924602f9e4e03f0f6c645ba638d17652effc4238a9f141a069c8b7",
+    "MacIMEI/Sources/UIConnections.swift": "a0d9151750bacda2080f2f5a9c3ce54e7a6f124404d7986897b63c95c671ecc2",
+    "MacIMEI/Sources/UIDiagnostics.swift": "f39fce9a36e507a9b959193f62f7f549c3ac24aeb414e2f5065db70849e96919",
+    "MacIMEI/Sources/UIFirmwareResearch.swift": "abbea481eff72fa516169b0e16cd8c3d19f17ed3621dde2539aa26379eaba5e9",
+    "Windows_x64/src/MainWindow.cs": "0e29ecaf17788e60b8449fca449bf8ebc26603b7f962dc3da373e45c8c5a2da0",
+    "Windows_x64/src/MainWindow.Diagnostics.cs": "f2a3f7315b8352167e9c5697f13cae5830227813884ed1f4925b2f5ebb71317b",
+    "Windows_x64/src/MainWindow.Research.cs": "92343dd8496b76afa314c876898576e8575f47197735304c6352a6d2dcf38238"
+  }
+}

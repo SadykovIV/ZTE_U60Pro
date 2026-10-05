@@ -18,7 +18,7 @@ public sealed record ResearchObservation(string Id,ResearchText Title,string Pro
 public sealed record ResearchObservationResult(string Id,ResearchText Title,string Probe,string Fact,string Status,string? Value,string SourceStatus,int? ExitCode);
 public sealed record ResearchSpec(int SchemaVersion,int Revision,ResearchProfile[] Profiles,ResearchProbe[] Probes,ResearchFeature[] Features,ResearchObservation[]? Observations=null)
 {
-    public const string ExpectedSpecificationSha256="86b3e60ef1ac531ee68c6394e23c06fe96f31756162b99a41be704b042e73223";
+    public const string ExpectedSpecificationSha256="1b37362f46c4f8940a19d37b65312156eb8b6b370c556493340233252519e406";
     public string? Sha256 { get; private set; }
     public static readonly JsonSerializerOptions Json=new() { PropertyNameCaseInsensitive=true,PropertyNamingPolicy=JsonNamingPolicy.CamelCase,WriteIndented=true };
     public static ResearchSpec Load(string path)
@@ -278,17 +278,26 @@ public static class ResearchReportFiles
 {
     private static void EnsureSafePath(string path)
     {
-        foreach(var candidate in new[]{path,Path.GetDirectoryName(path)!})
-            if((File.Exists(candidate)||Directory.Exists(candidate)) && (File.GetAttributes(candidate)&FileAttributes.ReparsePoint)!=0)
-                throw new InvalidDataException("Research files cannot use links or reparse points.");
+        for(string? candidate=Path.GetFullPath(path);candidate is not null;candidate=Path.GetDirectoryName(candidate))
+            try
+            {
+                if((File.GetAttributes(candidate)&FileAttributes.ReparsePoint)!=0)
+                    throw new InvalidDataException("Research files cannot use links or reparse points.");
+            }
+            catch(FileNotFoundException) { }
+            catch(DirectoryNotFoundException) { }
     }
-    public static byte[] ReadBoundedFile(string path,int maximum)
+    public static byte[] ReadBoundedFile(string path,int maximum,CancellationToken ct=default)
     {
-        EnsureSafePath(path);
+        ct.ThrowIfCancellationRequested();EnsureSafePath(path);
+        var info=new FileInfo(path);
+        if(info.Length<=0 || info.Length>maximum || (info.Attributes&FileAttributes.Directory)!=0)
+            throw new InvalidDataException("Research file exceeds size or type limits.");
         using var input=new FileStream(path,FileMode.Open,FileAccess.Read,FileShare.Read);
-        if(input.Length>maximum)throw new InvalidDataException("Research file exceeds size limit.");
+        if(!input.CanSeek || input.Length>maximum)throw new InvalidDataException("Research file exceeds size limit.");
         using var output=new MemoryStream();var buffer=new byte[8192];int count;
-        while((count=input.Read(buffer))>0) { if(output.Length+count>maximum)throw new InvalidDataException("Research file exceeds size limit.");output.Write(buffer,0,count); }
+        while((count=input.Read(buffer))>0) { ct.ThrowIfCancellationRequested();if(output.Length+count>maximum)throw new InvalidDataException("Research file exceeds size limit.");output.Write(buffer,0,count); }
+        EnsureSafePath(path);
         return output.ToArray();
     }
     public static void Save(ResearchReport report,string path)
@@ -299,29 +308,70 @@ public static class ResearchReportFiles
         try { using(var stream=new FileStream(temporary,FileMode.CreateNew,FileAccess.Write,FileShare.None))stream.Write(data);File.Move(temporary,path,true); }
         finally { if(File.Exists(temporary))File.Delete(temporary); }
     }
-    public static ResearchReport? Load(string path)
+    public static ResearchReport? Load(string path,CancellationToken ct=default)
     {
+        ct.ThrowIfCancellationRequested();EnsureSafePath(path);
         if(!File.Exists(path))return null;
         if(new FileInfo(path).Length>FirmwareResearchEngine.TotalLimit)throw new InvalidDataException("Saved report exceeds the size limit.");
-        var report=JsonSerializer.Deserialize<ResearchReport>(ReadBoundedFile(path,FirmwareResearchEngine.TotalLimit),ResearchSpec.Json);
+        var report=JsonSerializer.Deserialize<ResearchReport>(ReadBoundedFile(path,FirmwareResearchEngine.TotalLimit,ct),ResearchSpec.Json);
         if(report?.SchemaVersion!=1)throw new InvalidDataException("Unsupported saved research report.");return report;
     }
     public static void Export(ResearchReport report,string destination)
     {
+        var files=BuildExportFiles(report);
+        EnsureSafePath(destination);
+        var temp=destination+"."+Guid.NewGuid().ToString("N")+".tmp";
+        try { using(var zip=ZipFile.Open(temp,ZipArchiveMode.Create))foreach(var file in files) { using var stream=zip.CreateEntry(file.Key,CompressionLevel.Optimal).Open();stream.Write(file.Value); }File.Move(temp,destination,true); }
+        finally { if(File.Exists(temp))File.Delete(temp); }
+    }
+    // Common and standalone exports share one bounded payload and path policy.
+    // The optional cleaner operates on text fields, never serialized JSON or SHA256 facts.
+    public static IReadOnlyDictionary<string,byte[]> BuildExportFiles(ResearchReport report,Func<string,string>? clean=null,CancellationToken ct=default)
+    {
+        ct.ThrowIfCancellationRequested();
+        if(report.SchemaVersion!=1 || report.StartedAt==default || report.CompletedAt<report.StartedAt || report.SpecificationRevision<1 ||
+           report.Probes is null || report.Probes.Length>256 || report.Features is null || report.Features.Length>64 || report.Omissions is null || report.Omissions.Length>512 || report.Observations?.Length>8192)
+            throw new InvalidDataException("Invalid saved research report.");
+        string C(string value) { ct.ThrowIfCancellationRequested();if(value is null)throw new InvalidDataException("Missing research text.");return clean?.Invoke(value)??value; }
+        string Id(string value)
+        {
+            if(value is null || !Regex.IsMatch(value,@"^[a-z][a-z0-9-]{0,127}$") || C(value)!=value)throw new InvalidDataException("Unsafe probe report path.");
+            return value;
+        }
+        ResearchText T(ResearchText value)=>value is null?throw new InvalidDataException("Missing research title."):new(C(value.Ru),C(value.En));
+        string Fact(string key,string value)
+        {
+            if(key is null || !Regex.IsMatch(key,@"^[a-z0-9_]{1,64}$") || value is null)throw new InvalidDataException("Invalid research fact.");
+            if(clean is not null && Regex.IsMatch(key,@"password|passwd|passphrase|secret|token|activation|matching|confirmation|cookie|authorization|credential|private|api_key|access_key|psk|(^|_)pin($|_)|(^|_)puk($|_)"))return "[REDACTED]";
+            if((key.Contains("sha256",StringComparison.Ordinal)||key.EndsWith("_hash",StringComparison.Ordinal)) && Regex.IsMatch(value,@"^[a-f0-9]{64}$"))return value;
+            if(clean is null)return value;
+            var prefix=key+"=";var cleaned=C(prefix+value);
+            return cleaned.StartsWith(prefix,StringComparison.Ordinal)?cleaned[prefix.Length..]:"[REDACTED]";
+        }
+        if(report.SpecificationSHA256 is not null && !Regex.IsMatch(report.SpecificationSHA256,@"^[a-f0-9]{64}$"))throw new InvalidDataException("Invalid research specification hash.");
+        var probes=report.Probes.Select(p=>
+        {
+            if(p is null || p.Facts is null || p.Facts.Count>512)throw new InvalidDataException("Invalid research probe.");
+            return p with {Id=Id(p.Id),Title=T(p.Title),Category=C(p.Category),Command=C(p.Command),Status=C(p.Status),Stdout=C(p.Stdout),Stderr=C(p.Stderr),Facts=p.Facts.ToDictionary(x=>x.Key,x=>Fact(x.Key,x.Value))};
+        }).ToArray();
+        if(probes.Select(p=>p.Id).Distinct().Count()!=probes.Length)throw new InvalidDataException("Duplicate research probe path.");
+        report=report with {Id=C(report.Id),Outcome=C(report.Outcome),Channel=C(report.Channel),Profile=report.Profile is null?null:C(report.Profile),ApplicationVersion=C(report.ApplicationVersion),RequestedMode=C(report.RequestedMode),BindingStrength=C(report.BindingStrength),Probes=probes,
+            Features=report.Features.Select(f=>f is null || f.Reasons is null?throw new InvalidDataException("Invalid research feature."):f with {Id=C(f.Id),Title=T(f.Title),State=C(f.State),Reasons=f.Reasons.Select(T).ToArray(),Limitations=T(f.Limitations)}).ToArray(),
+            Omissions=report.Omissions.Select(C).ToArray(),Observations=report.Observations?.Select(o=>o is null?throw new InvalidDataException("Invalid research observation."):o with {Id=C(o.Id),Title=T(o.Title),Probe=C(o.Probe),Fact=C(o.Fact),Status=C(o.Status),Value=o.Value is null?null:Fact(o.Fact,o.Value),SourceStatus=C(o.SourceStatus)}).ToArray()};
         var files=new SortedDictionary<string,byte[]> { ["report.json"]=JsonSerializer.SerializeToUtf8Bytes(report,ResearchSpec.Json),
             ["REPORT_RU.md"]=Encoding.UTF8.GetBytes(Markdown(report,false)),["REPORT_EN.md"]=Encoding.UTF8.GetBytes(Markdown(report,true)),
             ["app-context.json"]=JsonSerializer.SerializeToUtf8Bytes(new {platform="windows",report.ApplicationVersion,report.SpecificationRevision,report.SpecificationSHA256,report.RequestedMode,runtime=System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,architecture=System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString(),report.StartedAt,report.CompletedAt,report.Channel,report.Outcome,report.BindingStrength},ResearchSpec.Json) };
         foreach(var probe in report.Probes)
         {
+            ct.ThrowIfCancellationRequested();
             if(!Regex.IsMatch(probe.Id,@"^[a-z][a-z0-9-]{0,127}$"))throw new InvalidDataException("Unsafe probe report path.");
             files["probes/"+probe.Id+".txt"]=Encoding.UTF8.GetBytes($"Status: {probe.Status}\nRemote exit: {probe.ExitCode}\nLocal exit: {probe.LocalExitCode}\nDuration ms: {probe.DurationMs}\nTruncated: {probe.Truncated}\nCommand:\n{probe.Command}\n\nSTDOUT:\n{probe.Stdout}\n\nSTDERR:\n{probe.Stderr}\n");
         }
         if(files.Values.Sum(x=>(long)x.Length)>FirmwareResearchEngine.TotalLimit)throw new InvalidDataException("Export exceeds its size limit.");
         var manifest=files.Select(x=>new {path=x.Key,bytes=x.Value.Length,sha256=Convert.ToHexStringLower(SHA256.HashData(x.Value))}).ToArray();
         files["manifest.json"]=JsonSerializer.SerializeToUtf8Bytes(new {schemaVersion=1,files=manifest,omissions=report.Omissions},ResearchSpec.Json);
-        var temp=destination+"."+Guid.NewGuid().ToString("N")+".tmp";
-        try { using(var zip=ZipFile.Open(temp,ZipArchiveMode.Create))foreach(var file in files) { using var stream=zip.CreateEntry(file.Key,CompressionLevel.Optimal).Open();stream.Write(file.Value); }File.Move(temp,destination,true); }
-        finally { if(File.Exists(temp))File.Delete(temp); }
+        if(files.Values.Sum(x=>(long)x.Length)>FirmwareResearchEngine.TotalLimit)throw new InvalidDataException("Export exceeds its size limit.");
+        return files;
     }
     public static string Markdown(ResearchReport report,bool en)
     {

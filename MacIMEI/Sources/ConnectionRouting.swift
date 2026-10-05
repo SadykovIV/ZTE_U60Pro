@@ -9,7 +9,7 @@ enum ConnectionMode: String, Codable, CaseIterable, Identifiable, Sendable {
     // Legacy read-only API routing remains available to diagnostics. A user
     // connection grants management capabilities only over SSH or physical USB.
     static let priority: [ConnectionMode] = [.ssh, .agent, .adb, .web]
-    static let connectionPriority: [ConnectionMode] = [.ssh, .adb]
+    static let connectionPriority: [ConnectionMode] = [.ssh]
     static let discoveryOrder: [ConnectionMode] = [.ssh, .adb, .agent, .web]
 }
 enum ConnectionChannelState: String, Codable, Sendable {
@@ -205,8 +205,8 @@ final class ConnectionRouter {
     /// Passive discovery sends no credentials. An explicit check can authenticate
     /// with the supplied passwords, once per service, and read device identity.
     /// Neither path enables ADB, installs files, or changes the active connection.
-    func discover(authenticate: Bool = false) throws -> [ConnectionChannelStatus] {
-        try select(mode: .automatic, priority: ConnectionMode.discoveryOrder,
+    func discover(authenticate: Bool = false, modes: [ConnectionMode] = [.ssh, .adb]) throws -> [ConnectionChannelStatus] {
+        try select(mode: .automatic, priority: modes,
                    probes: authenticate ? probes : discoveryProbes).statuses
     }
 
@@ -216,12 +216,12 @@ final class ConnectionRouter {
         guard mode == .automatic || ConnectionMode.connectionPriority.contains(mode) else {
             return ChannelSelection(requestedMode: mode, actualMode: nil, statuses: ConnectionMode.priority.map { channel in
                 ConnectionChannelStatus(mode: channel, state: channel == mode ? .unsupported : .notChecked,
-                                        message: channel == mode ? "Для подключения выберите SSH, ADB по USB или автоматический режим." : "Не проверен в выбранном режиме")
-            }, session: nil, reason: "Агент и веб-интерфейс используются для проверки доступности и подготовки. Подключитесь по SSH или ADB по USB; при их отсутствии сначала выполните подготовку модема.")
+                                        message: channel == mode ? "Для подключения используется SSH." : "Не проверен в выбранном режиме")
+            }, session: nil, reason: "Веб-панели открываются в браузере. Подключитесь по SSH; при его отсутствии сначала выполните подготовку модема.")
         }
         var selection = try select(mode: mode, priority: ConnectionMode.connectionPriority, probes: probes)
         if selection.session == nil && !selection.statuses.contains(where: { $0.state.preventsDowngrade }) {
-            selection.reason += " Если SSH или ADB ещё не настроены, сначала выполните подготовку модема."
+            selection.reason += " Если SSH ещё не настроен, сначала выполните подготовку модема."
         } else if selection.actualMode == .adb {
             selection.reason += " Доступны чтение сведений и диагностика. Для управления выполните подготовку SSH."
         }

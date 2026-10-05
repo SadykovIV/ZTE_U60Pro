@@ -2,6 +2,7 @@ import Foundation
 
 /// One ID for all engine, onboarding and UI events in this application process.
 enum DiagnosticsContext {
+    static let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
     static let sessionID = UUID().uuidString.lowercased()
     static let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.23.3"
 }

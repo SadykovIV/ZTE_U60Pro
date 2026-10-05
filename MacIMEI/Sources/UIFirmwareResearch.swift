@@ -65,7 +65,7 @@ extension ContentView {
         StudioCard {
             Label(L10n.text("Проверить устройство", "Check device"), systemImage: "doc.text.magnifyingglass")
                 .font(.system(size: 16, weight: .semibold))
-            Text(L10n.text("Проверка условий для функций программы, включая eSIM. Это не общий вердикт совместимости прошивки: отсутствие данных отличается от конкретного препятствия, например прав каталога. Доступна через работающий USB ADB или SSH без ключа бэкапа и отключения проверки прошивки.", "Checks prerequisites for application features, including eSIM. This is not an overall firmware compatibility verdict: missing evidence differs from a specific blocker such as directory permissions. Available through working USB ADB or SSH without a backup key or firmware-check override."))
+            Text(L10n.text("Проверка условий для функций программы, включая eSIM. Это не общий вердикт совместимости прошивки: отсутствие данных отличается от конкретного препятствия, например прав каталога. Выполняется через SSH без ключа бэкапа и отключения проверки прошивки.", "Checks prerequisites for application features, including eSIM. This is not an overall firmware compatibility verdict: missing evidence differs from a specific blocker such as directory permissions. Uses SSH without a backup key or firmware-check override."))
                 .font(.system(size: 12)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
             Text(L10n.text("Только чтение: без включения ADB, установки, перезагрузки и записи в модем. Результат не разрешает операции записи и не гарантирует их совместимость.", "Read-only: no ADB activation, installation, reboot or modem writes. Findings do not authorize writes or certify their compatibility."))
                 .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
@@ -75,10 +75,10 @@ extension ContentView {
                 if model.firmwareResearchRunning {
                     Button(L10n.text("Остановить", "Stop"), action: model.cancelFirmwareResearch).buttonStyle(StudioButtonStyle())
                 }
-                Button(L10n.text("Экспорт ZIP", "Export ZIP"), action: model.exportFirmwareResearch)
-                    .buttonStyle(StudioButtonStyle()).disabled(model.busy || model.firmwareResearchReport == nil)
                 Spacer()
             }
+            Text(L10n.text("Исследование и журнал действий войдут в общий диагностический ZIP.", "The research report and activity log are included in the diagnostic ZIP."))
+                .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
             if model.firmwareResearchRunning { ProgressView(value: model.firmwareResearchProgress).tint(StudioStyle.accent) }
             if !model.firmwareResearchMessage.isEmpty { Text(model.firmwareResearchMessage).font(.system(size: 11)).foregroundStyle(StudioStyle.secondary).textSelection(.enabled) }
             if let report = model.firmwareResearchReport {

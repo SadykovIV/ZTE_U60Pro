@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "revision": 7,
+  "revision": 8,
   "profiles": [
     {
       "id": "b31",
@@ -122,7 +122,7 @@
         "en": "Preparation directories: permissions and parents"
       },
       "category": "filesystem",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nneed stat\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  if metadata=$(stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\" 2>/dev/null); then printf 'PATH %s %s\\n' \"$1\" \"$metadata\"\n  else printf 'PATH %s not-assessed\\n' \"$1\"; fi\n else printf 'PATH %s %s\\n' \"$1\" \"$(path_state \"$1\")\"; fi\n}\npresent() { case \"$(path_state \"$2\")\" in present) fact \"$1\" 1;; missing) fact \"$1\" 0;; *) fact \"$1\" not-assessed;; esac; }\n\nsafe_dir() {\n test -d \"$1\" && test ! -L \"$1\" || return 1\n owner=$(stat -c %u \"$1\") || return 1; mode=$(stat -c %a \"$1\") || return 1\n test \"$owner\" = 0 || return 1\n case \"$mode\" in ''|*[!0-7]*) return 1;; esac\n test \"$((0$mode & 022))\" = 0\n}\ntmp_stage_parent_safe() {\n test -d \"$1\" && test ! -L \"$1\" || return 1\n owner=$(stat -c %u \"$1\") || return 1; mode=$(stat -c %a \"$1\") || return 1\n test \"$owner\" = 0 || return 1\n case \"$mode\" in ''|*[!0-7]*) return 1;; esac\n test -w \"$1\" || return 1\n # A root-owned sticky shared /tmp supports a fresh private 0700 stage.\n test \"$((0$mode & 022))\" = 0 || test \"$((0$mode & 01000))\" != 0\n}\nfor path in / /data /data/local /data/local/tmp /data/bin /data/dropbear /etc /etc/dropbear /tmp /var/run /etc/config /etc/init.d /etc/rc.d /etc/hotplug.d /etc/hotplug.d/iface; do meta \"$path\"; done\nfor name in data etc tmp; do if safe_dir \"/$name\"; then fact \"${name}_safe\" 1; else fact \"${name}_safe\" 0; fi; done\nparents_safe=1\nfor path in /data/local /data/local/tmp /data/bin /data/dropbear /etc/dropbear /data/local/tmp/zte-imei-installations; do\n case \"$(path_state \"$path\")\" in present) if ! safe_dir \"$path\"; then parents_safe=0; fi;; missing) :;; *) test \"$parents_safe\" = 0 || parents_safe=not-assessed;; esac\ndone\nfact setup_parents_safe \"$parents_safe\"\nfor name in data etc; do if test -d \"/$name\" && test -w \"/$name\"; then fact \"${name}_writable\" 1; else fact \"${name}_writable\" 0; fi; done\nif test -d /var/run && test -w /var/run; then fact runtime_writable 1; else fact runtime_writable 0; fi\nif test -d /etc/config && test -r /etc/config; then fact config_readable 1; else fact config_readable 0; fi\npresent local_tmp_exists /data/local/tmp\nif tmp_stage_parent_safe /tmp; then fact tmp_private_stage_parent 1; else fact tmp_private_stage_parent 0; fi\ndashboard_safe=1\nfor path in /data/zte-dashboard-runtime /data/zte-dashboard-runtime/dashboards /data/zte-dashboard-runtime/installer; do\n meta \"$path\"\n if test -e \"$path\" || test -L \"$path\"; then\n  if test -d \"$path\" && test ! -L \"$path\" && test \"$(stat -c '%u:%a' \"$path\")\" = 0:700; then :; else dashboard_safe=0; fi\n elif test \"$(path_state \"$path\")\" != missing; then test \"$dashboard_safe\" = 0 || dashboard_safe=not-assessed\n fi\ndone\nfact dashboard_runtime_safe \"$dashboard_safe\"\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n # Fixed absolute probe paths only. Verify every existing ancestor before\n # treating a missing intermediate directory as proof of absence below it.\n case \"$1\" in /*) ;; *) printf not-assessed; return;; esac\n test -d / && test -r / && test -x / || { printf not-assessed; return; }\n rest=${1#/}; checked=; depth=0\n while test -n \"$rest\"; do\n  part=${rest%%/*}; case \"$rest\" in */*) rest=${rest#*/};; *) rest=;; esac\n  case \"$part\" in ''|.|..) printf not-assessed; return;; esac\n  depth=$((depth+1)); test \"$depth\" -le 32 || { printf not-assessed; return; }\n  checked=\"$checked/$part\"\n  test ! -L \"$checked\" || { printf not-assessed; return; }\n  if test ! -e \"$checked\"; then printf missing; return; fi\n  if test -n \"$rest\"; then\n   test -d \"$checked\" && test -r \"$checked\" && test -x \"$checked\" || { printf not-assessed; return; }\n  else printf present; return; fi\n done\n printf present\n}\nneed stat\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  if metadata=$(stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\" 2>/dev/null); then printf 'PATH %s %s\\n' \"$1\" \"$metadata\"\n  else printf 'PATH %s not-assessed\\n' \"$1\"; fi\n else printf 'PATH %s %s\\n' \"$1\" \"$(path_state \"$1\")\"; fi\n}\npresent() { case \"$(path_state \"$2\")\" in present) fact \"$1\" 1;; missing) fact \"$1\" 0;; *) fact \"$1\" not-assessed;; esac; }\n\nsafe_dir() {\n test -d \"$1\" && test ! -L \"$1\" || return 1\n owner=$(stat -c %u \"$1\") || return 1; mode=$(stat -c %a \"$1\") || return 1\n test \"$owner\" = 0 || return 1\n case \"$mode\" in ''|*[!0-7]*) return 1;; esac\n test \"$((0$mode & 022))\" = 0\n}\ntmp_stage_parent_safe() {\n test -d \"$1\" && test ! -L \"$1\" || return 1\n owner=$(stat -c %u \"$1\") || return 1; mode=$(stat -c %a \"$1\") || return 1\n test \"$owner\" = 0 || return 1\n case \"$mode\" in ''|*[!0-7]*) return 1;; esac\n test -w \"$1\" || return 1\n # A root-owned sticky shared /tmp supports a fresh private 0700 stage.\n test \"$((0$mode & 022))\" = 0 || test \"$((0$mode & 01000))\" != 0\n}\nfor path in / /data /data/local /data/local/tmp /data/bin /data/dropbear /etc /etc/dropbear /tmp /var/run /etc/config /etc/init.d /etc/rc.d /etc/hotplug.d /etc/hotplug.d/iface; do meta \"$path\"; done\nfor name in data etc tmp; do if safe_dir \"/$name\"; then fact \"${name}_safe\" 1; else fact \"${name}_safe\" 0; fi; done\nparents_safe=1\nfor path in /data/local /data/local/tmp /data/bin /data/dropbear /etc/dropbear /data/local/tmp/zte-imei-installations; do\n case \"$(path_state \"$path\")\" in present) if ! safe_dir \"$path\"; then parents_safe=0; fi;; missing) :;; *) test \"$parents_safe\" = 0 || parents_safe=not-assessed;; esac\ndone\nfact setup_parents_safe \"$parents_safe\"\nfor name in data etc; do if test -d \"/$name\" && test -w \"/$name\"; then fact \"${name}_writable\" 1; else fact \"${name}_writable\" 0; fi; done\nif test -d /var/run && test -w /var/run; then fact runtime_writable 1; else fact runtime_writable 0; fi\nif test -d /etc/config && test -r /etc/config; then fact config_readable 1; else fact config_readable 0; fi\npresent local_tmp_exists /data/local/tmp\nif tmp_stage_parent_safe /tmp; then fact tmp_private_stage_parent 1; else fact tmp_private_stage_parent 0; fi\ndashboard_safe=1\nfor path in /data/zte-dashboard-runtime /data/zte-dashboard-runtime/dashboards /data/zte-dashboard-runtime/installer; do\n meta \"$path\"\n if test -e \"$path\" || test -L \"$path\"; then\n  if test -d \"$path\" && test ! -L \"$path\" && test \"$(stat -c '%u:%a' \"$path\")\" = 0:700; then :; else dashboard_safe=0; fi\n elif test \"$(path_state \"$path\")\" != missing; then test \"$dashboard_safe\" = 0 || dashboard_safe=not-assessed\n fi\ndone\nfact dashboard_runtime_safe \"$dashboard_safe\"\n",
       "timeoutSeconds": 12,
       "maxBytes": 32768
     },
@@ -386,7 +386,7 @@
         "en": "Pending operations and firmware update markers"
       },
       "category": "safety",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nneed stat\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  if metadata=$(stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\" 2>/dev/null); then printf 'PATH %s %s\\n' \"$1\" \"$metadata\"\n  else printf 'PATH %s not-assessed\\n' \"$1\"; fi\n else printf 'PATH %s %s\\n' \"$1\" \"$(path_state \"$1\")\"; fi\n}\npresent() { case \"$(path_state \"$2\")\" in present) fact \"$1\" 1;; missing) fact \"$1\" 0;; *) fact \"$1\" not-assessed;; esac; }\n\nclear=1\nfor path in /data/zte-dashboard-runtime/installer/lock /data/local/tmp/zte-imei-installations/active /data/local/tmp/zte-imei-installations/lock /data/local/tmp/open-u60-transactions/active /tmp/fota_install_processing /tmp/zte-imei-app.lock /tmp/zte-system-backup-helper.lock /data/zte-vpn/transaction /data/zte-vpn/controller-upgrade /data/zte-launcher-update /data/zte-imei-admin/active /data/zte-imei-screen-ru/.transaction /data/zte-imei-ttl/.transaction; do\n case \"$(path_state \"$path\")\" in present) clear=0; meta \"$path\";; missing) :;; *) test \"$clear\" = 0 || clear=not-assessed;; esac\ndone\nfact no_pending_operations \"$clear\"\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n # Fixed absolute probe paths only. Verify every existing ancestor before\n # treating a missing intermediate directory as proof of absence below it.\n case \"$1\" in /*) ;; *) printf not-assessed; return;; esac\n test -d / && test -r / && test -x / || { printf not-assessed; return; }\n rest=${1#/}; checked=; depth=0\n while test -n \"$rest\"; do\n  part=${rest%%/*}; case \"$rest\" in */*) rest=${rest#*/};; *) rest=;; esac\n  case \"$part\" in ''|.|..) printf not-assessed; return;; esac\n  depth=$((depth+1)); test \"$depth\" -le 32 || { printf not-assessed; return; }\n  checked=\"$checked/$part\"\n  test ! -L \"$checked\" || { printf not-assessed; return; }\n  if test ! -e \"$checked\"; then printf missing; return; fi\n  if test -n \"$rest\"; then\n   test -d \"$checked\" && test -r \"$checked\" && test -x \"$checked\" || { printf not-assessed; return; }\n  else printf present; return; fi\n done\n printf present\n}\nneed stat\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  if metadata=$(stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\" 2>/dev/null); then printf 'PATH %s %s\\n' \"$1\" \"$metadata\"\n  else printf 'PATH %s not-assessed\\n' \"$1\"; fi\n else printf 'PATH %s %s\\n' \"$1\" \"$(path_state \"$1\")\"; fi\n}\npresent() { case \"$(path_state \"$2\")\" in present) fact \"$1\" 1;; missing) fact \"$1\" 0;; *) fact \"$1\" not-assessed;; esac; }\n\nclear=1\nfor path in /data/zte-dashboard-runtime/installer/lock /data/local/tmp/zte-imei-installations/active /data/local/tmp/zte-imei-installations/lock /data/local/tmp/open-u60-transactions/active /tmp/fota_install_processing /tmp/zte-imei-app.lock /tmp/zte-system-backup-helper.lock /data/zte-vpn/transaction /data/zte-vpn/controller-upgrade /data/zte-launcher-update /data/zte-imei-admin/active /data/zte-imei-screen-ru/.transaction /data/zte-imei-ttl/.transaction; do\n case \"$(path_state \"$path\")\" in present) clear=0; meta \"$path\";; missing) :;; *) test \"$clear\" = 0 || clear=not-assessed;; esac\ndone\nfact no_pending_operations \"$clear\"\n",
       "timeoutSeconds": 12,
       "maxBytes": 32768
     },
@@ -921,15 +921,6 @@
         },
         {
           "probe": "discovery-tools",
-          "fact": "discovery_tool_timeout",
-          "equals": "1",
-          "label": {
-            "ru": "Команда timeout",
-            "en": "Command timeout"
-          }
-        },
-        {
-          "probe": "discovery-tools",
           "fact": "discovery_tool_wc",
           "equals": "1",
           "label": {
@@ -966,8 +957,8 @@
         }
       ],
       "limitations": {
-        "ru": "Наблюдаются условия общего Linux ARM64 доступа через уже доступный канал. Нет зависимости от Web API или метки прошивки. Установщик отдельно повторяет CID/boot, ABI, файлы, startup и транзакционные проверки. Это не разрешение записи и не проверка функций модема.",
-        "en": "Observes general Linux ARM64 access prerequisites on an existing channel, independently of Web API or firmware labels. The installer separately repeats CID/boot, ABI, file, startup and transaction checks. This is neither write authorization nor modem-function validation."
+        "ru": "Наблюдаются условия общего Linux ARM64 доступа через уже доступный канал. Нет зависимости от Web API или метки прошивки. Установщик отдельно повторяет CID/boot, ABI, файлы, startup и транзакционные проверки. Это не разрешение записи и не проверка функций модема. Для ограничения проверки запуска payload установщик передаёт собственный проверенный ARM64-инструмент; наличие системной команды timeout не требуется.",
+        "en": "Observes general Linux ARM64 access prerequisites on an existing channel, independently of Web API or firmware labels. The installer separately repeats CID/boot, ABI, file, startup and transaction checks. This is neither write authorization nor modem-function validation. The installer supplies its own verified ARM64 tool to bound payload startup checks; a system timeout command is not required."
       }
     },
     {
@@ -1367,15 +1358,6 @@
         },
         {
           "probe": "discovery-tools",
-          "fact": "discovery_tool_timeout",
-          "equals": "1",
-          "label": {
-            "ru": "Команда timeout",
-            "en": "Command timeout"
-          }
-        },
-        {
-          "probe": "discovery-tools",
           "fact": "discovery_tool_wc",
           "equals": "1",
           "label": {
@@ -1412,8 +1394,8 @@
         }
       ],
       "limitations": {
-        "ru": "Наблюдаются условия общего Linux ARM64 доступа через уже доступный канал. Нет зависимости от Web API или метки прошивки. Установщик отдельно повторяет CID/boot, ABI, файлы, startup и транзакционные проверки. Это не разрешение записи и не проверка функций модема.",
-        "en": "Observes general Linux ARM64 access prerequisites on an existing channel, independently of Web API or firmware labels. The installer separately repeats CID/boot, ABI, file, startup and transaction checks. This is neither write authorization nor modem-function validation."
+        "ru": "Наблюдаются условия общего Linux ARM64 доступа через уже доступный канал. Нет зависимости от Web API или метки прошивки. Установщик отдельно повторяет CID/boot, ABI, файлы, startup и транзакционные проверки. Это не разрешение записи и не проверка функций модема. Для ограничения проверки запуска payload установщик передаёт собственный проверенный ARM64-инструмент; наличие системной команды timeout не требуется.",
+        "en": "Observes general Linux ARM64 access prerequisites on an existing channel, independently of Web API or firmware labels. The installer separately repeats CID/boot, ABI, file, startup and transaction checks. This is neither write authorization nor modem-function validation. The installer supplies its own verified ARM64 tool to bound payload startup checks; a system timeout command is not required."
       }
     },
     {
@@ -2181,15 +2163,6 @@
         },
         {
           "probe": "discovery-tools",
-          "fact": "discovery_tool_timeout",
-          "equals": "1",
-          "label": {
-            "ru": "Команда timeout",
-            "en": "Command timeout"
-          }
-        },
-        {
-          "probe": "discovery-tools",
           "fact": "discovery_tool_wc",
           "equals": "1",
           "label": {
@@ -2226,8 +2199,8 @@
         }
       ],
       "limitations": {
-        "ru": "Наблюдаются условия общего Linux ARM64 доступа через уже доступный канал. Нет зависимости от Web API или метки прошивки. Установщик отдельно повторяет CID/boot, ABI, файлы, startup и транзакционные проверки. Это не разрешение записи и не проверка функций модема.",
-        "en": "Observes general Linux ARM64 access prerequisites on an existing channel, independently of Web API or firmware labels. The installer separately repeats CID/boot, ABI, file, startup and transaction checks. This is neither write authorization nor modem-function validation."
+        "ru": "Наблюдаются условия общего Linux ARM64 доступа через уже доступный канал. Нет зависимости от Web API или метки прошивки. Установщик отдельно повторяет CID/boot, ABI, файлы, startup и транзакционные проверки. Это не разрешение записи и не проверка функций модема. Для ограничения проверки запуска payload установщик передаёт собственный проверенный ARM64-инструмент; наличие системной команды timeout не требуется.",
+        "en": "Observes general Linux ARM64 access prerequisites on an existing channel, independently of Web API or firmware labels. The installer separately repeats CID/boot, ABI, file, startup and transaction checks. This is neither write authorization nor modem-function validation. The installer supplies its own verified ARM64 tool to bound payload startup checks; a system timeout command is not required."
       }
     },
     {

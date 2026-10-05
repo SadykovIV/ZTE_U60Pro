@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline fixtures for exact spec7 shell commands; no device or network."""
+"""Offline fixtures for exact spec8 shell commands; no device or network."""
 import hashlib
 import json
 import os
@@ -18,7 +18,7 @@ CANARY = 'PRIVATE_PASSWORD_IMEI_TOKEN_MUST_NOT_APPEAR'
 class Fixture:
     def __init__(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='discovery-fixture-')
-        self.root = Path(self.tmp.name)
+        self.root = Path(self.tmp.name).resolve()
         self.tools = self.root / 'tools'; self.tools.mkdir()
         self.fs = self.root / 'fs'; self.fs.mkdir()
     def close(self): self.tmp.cleanup()
@@ -71,7 +71,7 @@ class DiscoveryTests(unittest.TestCase):
     def run_probe(self,name):
         result,text,facts=self.f.run(name);self.assertEqual(result.returncode,0,result.stderr.decode());return text,facts
     def test_mirror_shape_and_shell_syntax(self):
-        s=json.loads(SPEC.read_text());self.assertEqual(s['revision'],7);self.assertEqual(len(s['probes']),46)
+        s=json.loads(SPEC.read_text());self.assertEqual(s['revision'],8);self.assertEqual(len(s['probes']),46)
         self.assertEqual(SPEC.read_bytes(),(ROOT/'Windows_x64/Resources/FirmwareResearch/probes.json').read_bytes())
         self.assertEqual(len({p['id'] for p in s['probes']}),46)
         self.assertEqual(len({o['id'] for o in s['observations']}),len(s['observations']))
@@ -235,11 +235,35 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(facts['lua_module_execution_performed'],'0')
         for name in ('lua','nft','iptables','ip6tables','ebtables','dnsmasq'):self.assertEqual(facts['vpn_tool_'+name],'1')
 
-    def test_pending_and_storage_inaccessible_ancestry_is_unknown(self):
-        self.f.tool('stat','print("0")')
-        _,facts=self.run_probe('pending-operations');self.assertEqual(facts['no_pending_operations'],'not-assessed')
+    def test_nested_missing_directories_are_proven_absent_under_readable_parent(self):
+        self.f.tool('stat', 'import os,stat,sys\nv=os.stat(sys.argv[-1]);fmt=sys.argv[2]\nprint("0" if fmt=="%u" else oct(stat.S_IMODE(v.st_mode))[2:] if fmt=="%a" else "0:700" if fmt=="%u:%a" else "metadata")')
+        self.f.directory('/data');self.f.directory('/etc');self.f.directory('/tmp').chmod(0o1777)
+        self.f.directory('/var/run')
+        _,facts=self.run_probe('permissions')
+        self.assertEqual(facts['setup_parents_safe'],'1')
+        self.assertEqual(facts['local_tmp_exists'],'0')
+        self.assertEqual(facts['dashboard_runtime_safe'],'1')
+        self.assertEqual(facts['tmp_safe'],'0')
+        self.assertEqual(facts['tmp_private_stage_parent'],'1')
+        _,facts=self.run_probe('pending-operations');self.assertEqual(facts['no_pending_operations'],'1')
         self.f.directory('/tmp/zte-imei-app.lock')
         _,facts=self.run_probe('pending-operations');self.assertEqual(facts['no_pending_operations'],'0')
+
+    def test_symlink_ancestor_never_certifies_missing_pending_or_safe_install(self):
+        self.f.tool('stat','print("0")')
+        self.f.directory('/data');self.f.directory('/etc');self.f.directory('/tmp')
+        target=self.f.directory('/foreign')
+        (self.f.fs/'data/local').symlink_to(target)
+        _,facts=self.run_probe('permissions');self.assertNotEqual(facts['setup_parents_safe'],'1')
+        _,facts=self.run_probe('pending-operations');self.assertEqual(facts['no_pending_operations'],'not-assessed')
+
+    def test_unreadable_ancestor_remains_unknown_and_storage_not_guessed(self):
+        self.f.tool('stat','print("0")')
+        parent=self.f.directory('/data');parent.chmod(0)
+        try:
+            if os.access(parent,os.R_OK):self.skipTest('Host bypasses read permissions')
+            _,facts=self.run_probe('pending-operations');self.assertEqual(facts['no_pending_operations'],'not-assessed')
+        finally:parent.chmod(0o700)
         _,facts=self.run_probe('storage')
         self.assertEqual(facts['data_free_kib'],'not-assessed');self.assertEqual(facts['data_free_16384'],'not-assessed')
 

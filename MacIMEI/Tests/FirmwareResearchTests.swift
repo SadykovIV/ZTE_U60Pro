@@ -167,7 +167,7 @@ private final class FakeRunner: ResearchProcessRunning {
         try check(unsupported.allSatisfy { $0.state == "blocked" }, "A known firmware profile excluded by current operation is a confirmed blocker")
         let bundledResources = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("Resources")
         let bundled = try ResearchSpecification.load(bundledResources)
-        try check(bundled.probes.count == 46 && bundled.features.count == 19 && bundled.revision == 7 && bundled.observations?.count == 45, "Bundled reviewed specification")
+        try check(bundled.probes.count == 46 && bundled.features.count == 19 && bundled.revision == 8 && bundled.observations?.count == 45, "Bundled reviewed specification")
         var values = [String: [String: String]]()
         for feature in bundled.features { for requirement in feature.requirements { values[requirement.probe, default: [:]][requirement.fact] = requirement.equals } }
         values["boot-protection"]?["restore_readiness"] = "not-assessed"

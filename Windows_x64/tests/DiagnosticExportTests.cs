@@ -55,15 +55,15 @@ internal static class DiagnosticExportTests
         File.AppendAllText(journalPath,"not-json\n{\"timestamp\":\"2026-10-05T00:00:00Z\",\"level\":\"info\",\"message\":\"benign saved event\",\"unknownSecretField\":\"DO_NOT_EXPORT_UNKNOWN_FIELD\",\"operation\":\"PrivateOperationCanary\"}\n");
         var malformed=DiagnosticsExporter.Export(root,Path.Combine(root,"malformed.zip"),new(null,null,null,"test"),[],privacy);
         var malformedFiles=ReadZip(malformed.Path);
-        Check(malformed.Omissions==1 && new[]{"DO_NOT_EXPORT_UNKNOWN_FIELD","PrivateOperationCanary"}.All(x=>!string.Join('\n',malformedFiles.Values.Select(Encoding.UTF8.GetString)).Contains(x)),"malformed events noted and unknown JSON fields/operation labels never copied");
+        Check(malformed.Omissions>=1 && new[]{"DO_NOT_EXPORT_UNKNOWN_FIELD","PrivateOperationCanary"}.All(x=>!string.Join('\n',malformedFiles.Values.Select(Encoding.UTF8.GetString)).Contains(x)),"malformed events noted and unknown JSON fields/operation labels never copied");
         var linkRoot=Path.Combine(root,"link-test");Directory.CreateDirectory(Path.Combine(linkRoot,"Diagnostics","Application"));
         var sensitive=Path.Combine(root,"sensitive-target");File.WriteAllText(sensitive,"PRIVATE_LINK_CANARY");
         File.CreateSymbolicLink(Path.Combine(linkRoot,"Diagnostics","Application","activity.jsonl"),sensitive);
         var linked=DiagnosticsExporter.Export(linkRoot,Path.Combine(root,"links.zip"),new(null,null,null,"test"),[],privacy);
-        Check(linked.Omissions==1 && !string.Join('\n',ReadZip(linked.Path).Values.Select(Encoding.UTF8.GetString)).Contains("PRIVATE_LINK_CANARY"),"linked activity segment is omitted without reading target");
+        Check(linked.Omissions>=1 && !string.Join('\n',ReadZip(linked.Path).Values.Select(Encoding.UTF8.GetString)).Contains("PRIVATE_LINK_CANARY"),"linked activity segment is omitted without reading target");
         var bigRoot=Path.Combine(root,"oversize-test");Directory.CreateDirectory(Path.Combine(bigRoot,"Diagnostics","Application"));
         File.WriteAllBytes(Path.Combine(bigRoot,"Diagnostics","Application","activity.jsonl"),new byte[DiagnosticsExporter.SegmentLimit+1]);
-        Check(DiagnosticsExporter.Export(bigRoot,Path.Combine(root,"oversize.zip"),new(null,null,null,"test"),[],privacy).Omissions==1,"oversized journal safely omitted and reported");
+        Check(DiagnosticsExporter.Export(bigRoot,Path.Combine(root,"oversize.zip"),new(null,null,null,"test"),[],privacy).Omissions>=1,"oversized journal safely omitted and reported");
         var rotationRoot=Path.Combine(root,"rotation-test");Directory.CreateDirectory(Path.Combine(rotationRoot,"Diagnostics","Application"));
         File.WriteAllBytes(Path.Combine(rotationRoot,"Diagnostics","Application","activity.jsonl"),new byte[DiagnosticsExporter.SegmentLimit]);
         DiagnosticsExporter.Append(rotationRoot,new(eventTime,"info","new bounded segment"),privacy);
@@ -98,6 +98,63 @@ internal static class DiagnosticExportTests
         var research=new ResearchReport(1,"synthetic-report",eventTime,eventTime,"complete","none",null,"test",7,[],[],[]);
         await restarted.ExportFirmwareResearchAsync(research,Path.Combine(root,"synthetic-research.zip"));
         Check((await restarted.GetLogsAsync()).Any(x=>x.Message=="Firmware research export: completed"),"research export action recorded without destination data");
+        var combinedRoot=Path.Combine(root,"combined");
+        var cachedPath=Path.Combine(combinedRoot,"FirmwareResearch","latest.json");
+        var cachedTime=new DateTimeOffset(2026,9,1,1,2,3,TimeSpan.Zero);
+        var factualHash=new string('a',64);
+        var cachedReport=new ResearchReport(1,"cached-synthetic-report",cachedTime,cachedTime.AddMinutes(1),"complete","SSH",null,"1.23.old",7,
+            [new("identity",new("Система","System"),"platform","uname -s","success",0,"Linux\npassword="+secret+"\nLPA:1$example.com$CACHE_ACTIVATION_PRIVATE\nFR_FACT firmware_sha256="+factualHash,"",12,cachedTime,false,new Dictionary<string,string>{{"firmware_sha256",factualHash},{"os","Linux"},{"detail",secret},{"activation_code","UNKNOWN_CACHED_ACTIVATION_PRIVATE"},{"token_hash",new string('b',64)},{"activation_code_sha256",new string('c',64)},{"password_sha256",new string('d',64)},{"secret_hash",new string('e',64)}})],[],[],factualHash);
+        ResearchReportFiles.Save(cachedReport,cachedPath);
+        DiagnosticsExporter.Append(combinedRoot,new(eventTime,"info","Combined program action"),privacy);
+        var combined=DiagnosticsExporter.Export(combinedRoot,Path.Combine(root,"combined.zip"),new("SSH","Current cached model","Current cached firmware","1.24.test"),[],privacy);
+        var combinedFiles=ReadZip(combined.Path);
+        Check(combinedFiles.ContainsKey("firmware-research/report.json") && combinedFiles.ContainsKey("firmware-research/probes/identity.txt") && Encoding.UTF8.GetString(combinedFiles["application-journal.jsonl"]).Contains("Combined program action"),"one offline ZIP includes program actions and cached modem probes");
+        var combinedText=string.Join('\n',combinedFiles.Values.Select(Encoding.UTF8.GetString));
+        Check(!combinedText.Contains(secret) && !combinedText.Contains("CACHE_ACTIVATION_PRIVATE") && !combinedText.Contains("UNKNOWN_CACHED_ACTIVATION_PRIVATE") && !combinedText.Contains("PEM_CACHED_PRIVATE_BODY") && !combinedText.Contains("PEM_TRUNCATED_PRIVATE_BODY") && !new[]{'b','c','d','e'}.Any(ch=>combinedText.Contains(new string(ch,64))),"cached probe transcripts and facts are redacted again on common export");
+        using(var cachedJson=JsonDocument.Parse(combinedFiles["firmware-research/report.json"]))
+            Check(cachedJson.RootElement.GetProperty("probes")[0].GetProperty("facts").GetProperty("firmware_sha256").GetString()==factualHash && cachedJson.RootElement.GetProperty("specificationSHA256").GetString()==factualHash,"factual SHA256 values remain exact after redaction");
+        using(var manifest=JsonDocument.Parse(combinedFiles["manifest.json"]))
+        {
+            var origin=manifest.RootElement.GetProperty("sources").GetProperty("firmwareResearch");
+            Check(origin.GetProperty("collectionStartedAt").GetDateTimeOffset()==cachedTime && origin.GetProperty("applicationVersion").GetString()=="1.23.old" && origin.GetProperty("relationToCurrentConnection").GetString()=="not-assessed" && origin.GetProperty("sourceSha256").GetString()==Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(cachedPath))),"cached report timestamps/version/source hash remain separate from current settings");
+            Check(manifest.RootElement.GetProperty("files").EnumerateArray().All(e=>e.GetProperty("sha256").GetString()==Convert.ToHexStringLower(SHA256.HashData(combinedFiles[e.GetProperty("path").GetString()!]))),"merged ZIP hashes cover research files and original application files");
+            Check(combinedFiles.Values.Sum(x=>(long)x.Length)<=32*1024*1024,"combined payload respects the total byte limit");
+        }
+        var missRoot=Path.Combine(root,"missing-research");
+        DiagnosticsExporter.Append(missRoot,new(eventTime,"info","Retained when research unavailable"),privacy);
+        var missing=DiagnosticsExporter.Export(missRoot,Path.Combine(root,"research-missing.zip"),new(null,null,null,"test"),[],privacy);
+        Check(missing.Omissions==1 && !ReadZip(missing.Path).Keys.Any(x=>x.StartsWith("firmware-research/")) && Encoding.UTF8.GetString(ReadZip(missing.Path)["application-journal.jsonl"]).Contains("Retained when research unavailable"),"missing cache produces omission while retaining actions");
+        void OmittedCache(string name,Action<string> create)
+        {
+            var cacheRoot=Path.Combine(root,"cache-"+name);Directory.CreateDirectory(cacheRoot);
+            var cache=Path.Combine(cacheRoot,"FirmwareResearch","latest.json");Directory.CreateDirectory(Path.GetDirectoryName(cache)!);create(cache);
+            var export=DiagnosticsExporter.Export(cacheRoot,Path.Combine(root,"cache-"+name+".zip"),new(null,null,null,"test"),[new(eventTime,"info","Action survives invalid cache")],privacy);
+            var entries=ReadZip(export.Path);
+            Check(export.Omissions>=1 && !entries.Keys.Any(x=>x.StartsWith("firmware-research/")) && Encoding.UTF8.GetString(entries["current-session.jsonl"]).Contains("Action survives invalid cache"),"unsafe cached research omitted: "+name);
+        }
+        OmittedCache("corrupt",p=>File.WriteAllText(p,"PRIVATE_CORRUPT_CANARY"));
+        OmittedCache("null-fields",p=>File.WriteAllText(p,"{\"schemaVersion\":1}"));
+        OmittedCache("oversized",p=>{using var stream=File.Create(p);stream.SetLength(FirmwareResearchEngine.TotalLimit+1);});
+        OmittedCache("unsafe-probe-path",p=>ResearchReportFiles.Save(cachedReport with {Probes=[cachedReport.Probes[0] with {Id="../../private"}]},p));
+        OmittedCache("duplicate-probe-path",p=>ResearchReportFiles.Save(cachedReport with {Probes=[cachedReport.Probes[0],cachedReport.Probes[0]]},p));
+        OmittedCache("expanded-payload",p=>ResearchReportFiles.Save(cachedReport with {Probes=[cachedReport.Probes[0] with {Stdout=string.Concat(Enumerable.Repeat(string.Concat(Enumerable.Repeat("safe detail. ",200))+"\n",3900))}]},p));
+        OmittedCache("leaf-link",p=>File.CreateSymbolicLink(p,cachedPath));
+        OmittedCache("broken-link",p=>File.CreateSymbolicLink(p,Path.Combine(root,"nonexistent-private-cache")));
+        var ancestorRoot=Path.Combine(root,"linked-ancestor");Directory.CreateSymbolicLink(ancestorRoot,combinedRoot);
+        var ancestor=DiagnosticsExporter.Export(ancestorRoot,Path.Combine(root,"cache-ancestor.zip"),new(null,null,null,"test"),[],privacy);
+        Check(ancestor.Omissions>=1 && !ReadZip(ancestor.Path).Keys.Any(x=>x.StartsWith("firmware-research/")),"linked ancestor cannot supply a cached research report");
+        using(var during=new CancellationTokenSource())
+        {
+            IEnumerable<DiagnosticActivity> CancelDuring(){during.Cancel();yield return new(eventTime,"info","synthetic cancellation");}
+            var target=Path.Combine(root,"cancelled-mid-export.zip");
+            try {DiagnosticsExporter.Export(combinedRoot,target,new(null,null,null,"test"),CancelDuring(),privacy,ct:during.Token);Check(false,"mid-export cancellation honored");}
+            catch(OperationCanceledException){Check(!File.Exists(target) && !Directory.GetFiles(root,"cancelled-mid-export.zip.*.tmp").Any(),"mid-export cancellation leaves no partial ZIP");}
+        }
+        ResearchReportFiles.Save(cachedReport,Path.Combine(serviceRoot,"FirmwareResearch","latest.json"));
+        var existingZips=Directory.GetFiles(Path.Combine(serviceRoot,"Diagnostics"),"*.zip").ToHashSet();
+        Check((await restarted.RunAsync(new(ModemOperation.ExportDiagnostics))).Success,"actual common export dispatcher includes cache without transport/resources");
+        var mergedService=ReadZip(Directory.GetFiles(Path.Combine(serviceRoot,"Diagnostics"),"*.zip").Single(p=>!existingZips.Contains(p)));
+        Check(mergedService.ContainsKey("firmware-research/probes/identity.txt") && mergedService.ContainsKey("operation-traces.jsonl"),"real service path exports actions and research together");
         Check(!Directory.EnumerateFiles(root,"*.tmp",SearchOption.AllDirectories).Any(),"all export temporary files cleaned");
         Console.WriteLine($"Diagnostic export: {passed} PASS");
     }
