@@ -713,5 +713,6 @@
   "Проверка подключений завершена.": "Connection checks complete.",
   "Файл SSH не найден: {{0}}": "SSH file not found: {{0}}",
   "Введите IPv4-адрес модема": "Enter the modem IPv4 address",
-  "Некорректный SSH-порт": "Invalid SSH port"
+  "Некорректный SSH-порт": "Invalid SSH port",
+  "Профиль не определён": "Profile not identified"
 }

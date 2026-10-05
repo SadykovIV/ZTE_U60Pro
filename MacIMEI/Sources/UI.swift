@@ -224,7 +224,7 @@ struct ContentView: View {
                 Text(L10n.text("U60 Pro / MU5250"))
                     .font(.system(size: 11, weight: .medium))
                 HStack {
-                    Text(L10n.text(model.skipFirmwareCheck ? "Проверка отключена" : "Профиль B31"))
+                    Text(L10n.text(model.skipFirmwareCheck ? "Проверка отключена" : (model.connected && model.connectedIdentity?.firmwareHash == ModemEngine.firmwareHash ? "Профиль B31" : "Профиль не определён")))
                     Spacer()
                     Text(L10n.text("v\(model.appVersion)"))
                 }
