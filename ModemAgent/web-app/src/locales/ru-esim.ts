@@ -1,4 +1,6 @@
 export const ruEsim: Record<string, string> = {
+  'SIM card and eSIM profiles': 'SIM-карта и профили eSIM',
+  'Ordinary SIM: eSIM management is unavailable.': 'Обычная SIM: управление eSIM недоступно.',
   'Check card and profiles': 'Проверить карту и профили',
   'Checking the SIM card and profiles…': 'Проверяю SIM-карту и профили…',
   'Card type has not been checked.': 'Тип карты ещё не проверен.',

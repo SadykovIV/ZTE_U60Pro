@@ -19,7 +19,16 @@ static void name_copy(char out[129],const char *s){
 }
 int esim_parse_result(const char *line,struct esim_snapshot *out,char **canonical,int require_verified){
  cJSON *root=cJSON_ParseWithOpts(line,NULL,1);if(!root)return 0;int ok=0;
- cJSON *snap=get(root,"snapshot"),*profiles=get(snap,"profiles");
+ cJSON *card=get(root,"card"),*snap=get(root,"snapshot"),*profiles=get(snap,"profiles");
+ if(!cJSON_IsObject(root)||!eq(str(root,"type"),"result")||!cJSON_IsTrue(get(root,"ok"))||get(root,"component_error"))goto end;
+ if(card){
+  if(!cJSON_IsObject(card)||cJSON_GetArraySize(card)!=4||!cJSON_IsTrue(get(card,"cleanup_confirmed")))goto end;
+  if(eq(str(card,"kind"),"ordinary_sim")){
+   if(require_verified||snap||get(root,"error")||get(root,"modem_verified")||get(root,"radio_restored")||!eq(str(card,"management"),"unavailable")||!eq(str(card,"reason"),"isdr_not_found")||!cJSON_IsBool(get(root,"changed"))||cJSON_IsTrue(get(root,"changed"))||!cJSON_IsBool(get(root,"notifications_pending"))||cJSON_IsTrue(get(root,"notifications_pending")))goto end;
+   free(*canonical);*canonical=NULL;out->ordinary=1;out->count=0;out->valid=0;out->cached=0;out->verified=0;ok=1;goto end;
+  }
+  if(!eq(str(card,"kind"),"euicc_confirmed")||!eq(str(card,"management"),"available")||!eq(str(card,"reason"),"eid_and_profiles_read"))goto end;
+ }
  if(!cJSON_IsObject(root)||!eq(str(root,"type"),"result")||!cJSON_IsTrue(get(root,"ok"))||!cJSON_IsObject(snap)||!cJSON_IsTrue(get(snap,"ok"))||!decimal(str(snap,"eid"),32,32)||!cJSON_IsArray(profiles)||(require_verified&&(!cJSON_IsTrue(get(root,"modem_verified"))||!cJSON_IsTrue(get(root,"radio_restored")))))goto end;
  int count=cJSON_GetArraySize(profiles),active=0;if(count<0||count>ESIM_MAX_PROFILES)goto end;
  for(int i=0;i<count;i++){
@@ -31,7 +40,7 @@ int esim_parse_result(const char *line,struct esim_snapshot *out,char **canonica
   snprintf(out->profiles[i].iccid,sizeof out->profiles[i].iccid,"%s",id);name_copy(out->profiles[i].name,name);out->profiles[i].enabled=enabled;
  }
  char *json=cJSON_PrintUnformatted(snap);if(!json)goto end;char *copy=strdup(json);cJSON_free(json);if(!copy)goto end;
- free(*canonical);*canonical=copy;out->count=count;out->valid=1;out->cached=1;out->verified=cJSON_IsTrue(get(root,"modem_verified"));ok=1;
+ free(*canonical);*canonical=copy;out->ordinary=0;out->count=count;out->valid=1;out->cached=1;out->verified=cJSON_IsTrue(get(root,"modem_verified"));ok=1;
 end:cJSON_Delete(root);return ok;
 }
 int esim_parse_progress(const char *line,char stage[40]){
@@ -48,7 +57,7 @@ int esim_parse_error(const char *line,char error[64],char component[64]){
  int ok=eq(str(root,"type"),"result")&&cJSON_IsBool(get(root,"ok"))&&!cJSON_IsTrue(get(root,"ok"));
  if(ok){
   const char *code=str(root,"error");
-  static const char *const known[]={"esim_busy","card_busy","card_open_rejected","card_cleanup_unknown","card_not_ready","card_reset_failed","card_power_restore_failed","operation_lock_failed","snapshot_cleanup_failed","unsupported_device","helper_verification_failed","snapshot_failed","snapshot_changed","profile_not_found","enable_failed","radio_not_online","radio_offline_failed","radio_online_failed","radio_restore_failed","modem_iccid_mismatch","modem_slot_mismatch","modem_readback_failed","radio_read_failed","radio_set_failed","card_changed","postcondition_failed","notification_cleanup_failed","modem_profile_mismatch","modem_read_failed","stream_write_failed","invalid_request","request_missing"};
+  static const char *const known[]={"esim_busy","card_not_euicc","card_busy","card_open_rejected","card_cleanup_unknown","card_not_ready","card_reset_failed","card_power_restore_failed","operation_lock_failed","snapshot_cleanup_failed","unsupported_device","helper_verification_failed","snapshot_failed","snapshot_changed","profile_not_found","enable_failed","radio_not_online","radio_offline_failed","radio_online_failed","radio_restore_failed","modem_iccid_mismatch","modem_slot_mismatch","modem_readback_failed","radio_read_failed","radio_set_failed","card_changed","postcondition_failed","notification_cleanup_failed","modem_profile_mismatch","modem_read_failed","stream_write_failed","invalid_request","request_missing"};
   const char *cause=str(root,"component_error");
   static const char *const components[]={"lock_unavailable","lock_random_failed","lock_owner_failed","lock_metadata_failed","lock_release_failed","lock_ownership_changed","lock_retained","selection_read_failed","selection_mismatch","qmi_connect_error","qmi_open_rejected","qmi_open_unknown","channel_open_outcome_unknown","channel_close_failed","card_cleanup_unknown","card_not_ready","unsupported_channel","qmi_transmit_error","short_apdu_response","snapshot_response_too_large","snapshot_continuation_limit","snapshot_card_status_error","eid_command_error","eid_parse_error","eid_mismatch","profiles_command_error","profiles_parse_error","stdout_error","stdin_error","unterminated_json_line","input_line_too_large","invalid_json_line","invalid_header","invalid_expected_eid","missing_header","invalid_arguments","bridge_operation_failed","already_connected","already_open","session_failed","not_connected","not_open","missing_owned_connection","empty_read_command","invalid_envelope","invalid_function","invalid_aid","aid_not_allowed","invalid_apdu","invalid_hex","unsupported_function"};
   for(unsigned i=0;i<sizeof components/sizeof components[0];i++)if(eq(cause,components[i])){snprintf(component,64,"%s",components[i]);break;}

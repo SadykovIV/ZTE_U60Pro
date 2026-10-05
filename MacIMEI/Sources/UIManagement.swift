@@ -25,7 +25,7 @@ extension ContentView {
                 informationRow("Агент на модеме", info.agentVersion)
                 DisclosureGroup(L10n.text("Идентификаторы и время проверки")) {
                     VStack(spacing: 10) {
-                        informationRow("CID накопителя", info.identity.cid)
+                        informationRow("CID накопителя", info.identity?.cid ?? "—")
                         informationRow("Сеанс загрузки", info.bootID)
                         informationRow("Обновлено", info.collectedAt.formatted(date: .numeric, time: .standard))
                     }.padding(.top, 10)

@@ -61,7 +61,7 @@ public sealed record LauncherStatus(string State, bool Running, bool CanInstall,
 public sealed partial class DeviceFeatureService
 {
     private const string LauncherRoot = "/data/zte-launcher";
-    private const string LauncherManifestHash = "a7e30f5539c6683b8d23ae6eb028a422b732df946c0e01b738679c05febee8f2";
+    private const string LauncherManifestHash = "638952749088173eb8a90656e24a9f34ef19937bf21cd490cc332974df9d2664";
     private static readonly string[] LauncherNames = ["launcher.so", "launcher-run.sh", "launcher-watch.sh", "launcher-service.sh", "launcher-start.sh", "launcher.sha256", "install-launcher.sh"];
     private static readonly HashSet<string> UiHashes = ["e3914e78a8488cb736770f0ac9fb8ce10e0e5222fa50285f08e9e8be90d7f1e9", "16eb92e27f54b5cf5c6b316a6e7a62b782053a2a609d0d4904a7f08a7bc0afa4"];
     private static readonly HashSet<string> InitHashes = ["a30da6481637f1fd94e037373d406e574be7e722937a4965325086740be67e35", "0a462f4021b1306ac5fbf074a674bae9fef952f240436a47468c0126c5d41b50"];

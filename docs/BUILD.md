@@ -113,8 +113,9 @@ python3 tools/audit_public.py
 `python3 tools/package_release.py` создаёт отдельный ELF, архив агента с панелью,
 ZIP приложения, архив сборочных зависимостей и SHA256SUMS в `release/`.
 Для упаковки нужны обе готовые сборки. Скрипт создаёт версионные файлы для
-macOS/Windows, агент 2.7.0-esim.8, `Build-dependencies-1.23.3.tar.gz`, отдельный
-`Third-party-sources-1.23.3.tar.gz`, манифесты и `SHA256SUMS`.
+macOS/Windows, агент текущей версии, архивы Build-dependencies и
+Third-party-sources, манифесты и `SHA256SUMS`. Версии приложения и агента
+берутся из текущих исходников.
 
 Исходные архивы `mihomo-v1.19.31-source.tar.gz` и `opendoas-6.8.2.tar.xz`
 должны находиться в `.cache`, eSIM-sources.tar.gz и его сведения относятся к eSIM; остальные соответствующие исходники и рецепты —

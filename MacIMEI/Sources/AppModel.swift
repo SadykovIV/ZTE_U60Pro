@@ -105,6 +105,7 @@ import AppKit
     @Published var displayInspection: ModemDisplayInspection?
     @Published var displayError = ""
     @Published var esimSnapshot: EsimSnapshot?
+    @Published var esimCard: EsimCardCheck?
     @Published var esimSelectedICCID: String?
     @Published var esimMessage = ""
     @Published var esimError = ""
@@ -240,7 +241,7 @@ import AppKit
         try require(state.imeis.count == 2, "Модем не вернул оба IMEI")
         guard connected, let session = channelSession else { accept(state); return }
         try require(activeChannel == .ssh && session.mode == .ssh && state.identity == connectedIdentity &&
-                    state.identity == session.diagnosticSession?.proof.identity && state.boot == session.diagnosticSession?.proof.bootID,
+                    state.identity == session.diagnosticSession?.readProof.identity && state.boot == session.diagnosticSession?.readProof.bootID,
                     "Устройство, прошивка или сеанс загрузки изменились во время чтения IMEI")
         if let connectedIMEI {
             try require(state.imeis[0] == connectedIMEI, "IMEI выбранного модема изменился. Проверьте подключение заново.")
@@ -318,8 +319,6 @@ import AppKit
     }
     func setup(targets: [String]? = nil) {
         guard !busy && !terminalActive && !systemRestorePending && permitsSSHOperations else { return }
-        guard !webPassword.isEmpty else { append("Введите пароль веб-интерфейса для первоначальной настройки"); return }
-        guard !agentPassword.isEmpty else { append("Введите отдельный пароль агента для подготовки SSH"); return }
         let password = webPassword, agentSecret = agentPassword, suffix = backupSuffix; webPassword = ""; agentPassword = ""; backupSuffix = ""
         let config = connection, root = storage, assets = resources
         let expectedIdentity = connectedIdentity, expectedIMEI = connectedIMEI ?? channelSummary?.primaryIMEI
@@ -343,7 +342,7 @@ import AppKit
                     agentInstallationStatus = nil; screenLocalizationStatus = nil; ttlStatus = nil
                     vpnInspection = nil; vpnError = ""; sshAccountsLoaded = false; sshAccounts = []
                     diagnosticReport = nil; diagnosticText = ""; selectedDiagnostic = "system.log"
-                    append("SSH и агент подготовлены. Совместимость изменения IMEI на этой прошивке не проверена; доступна диагностика.")
+                    append("SSH-доступ готов. Готовность агента и совместимость изменения IMEI проверяются отдельно; доступна диагностика.")
                     if targets != nil { append("Автоматическая смена IMEI после подготовки этой прошивки не выполняется.") }
                 }
                 if let targets, let preparedState = result.state, targets != preparedState.imeis {

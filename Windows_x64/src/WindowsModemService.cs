@@ -21,6 +21,8 @@ public sealed partial class WindowsModemService : IModemService
     private readonly AdbTransport _adb = new();
     private readonly Func<Research.IResearchTransportFactory>? _researchFactory;
     private SshTransport? _ssh;
+    private IRemoteShell? _sshRead;
+    internal Func<IRemoteShell>? SshFactory { get; init; }
     private DeviceFeatureService? _features;
     private ImeiEngine? _imei;
     private DeviceSnapshot _snapshot = new(false,"Нет подключения");
@@ -327,25 +329,36 @@ public sealed partial class WindowsModemService : IModemService
         _skipFirmwareCheck = Param(values,"skip_firmware_check").Equals("true",StringComparison.OrdinalIgnoreCase);
         // The application's working channel is SSH. USB ADB remains available
         // independently for preparing SSH access.
-        _ssh = null; _imei = null; _features = null;
+        _ssh = null; _sshRead = null; _imei = null; _features = null;
         _snapshot = new DeviceSnapshot(false, "SSH не подключён; проверьте доступ или выполните предварительную подготовку.", IpAddress: host);
-        var ssh = new SshTransport(host,_port,KeyPath,KnownHostsPath);
+        var transport = new SshTransport(host,_port,KeyPath,KnownHostsPath);
+        IRemoteShell ssh = SshFactory?.Invoke() ?? transport;
         var imei = new ImeiEngine(ssh,_storage,_resources);
-        var identity = await imei.MeasuredIdentityAsync(ct);
-        _ssh = ssh; _imei = imei; _features = new DeviceFeatureService(ssh,_resources,_storage);
-        var supported = identity.FirmwareHash == ImeiEngine.FirmwareHash && identity.RouterHash == ImeiEngine.RouterHash;
+        var identity = await SshReadProof.ReadAsync(ssh,ct);
+        identity.Verify(await SshReadProof.ReadAsync(ssh,ct));
+        _ssh = transport; _sshRead = ssh; _imei = imei; _features = new DeviceFeatureService(ssh,_resources,_storage);
+        var supported = identity.Uid == "0" && identity.System == "Linux" && identity.Architecture == "aarch64" && identity.Cid is not null && identity.BootId is not null && identity.FirmwareHash == ImeiEngine.FirmwareHash && identity.RouterHash == ImeiEngine.RouterHash;
         _snapshot = new DeviceSnapshot(true,supported ? "Подключено по SSH" : "Подключено по SSH · доступ подтверждён; функции проверяются отдельно",
             IpAddress:host,ConnectionMode:"SSH",Serial:identity.Cid);
         await HydrateConnectedAsync(supported && Param(values,"access_only")!="true",ct);
         await File.WriteAllTextAsync(Path.Combine(_storage,"connection.json"),JsonSerializer.Serialize(new { host, port = _port, key_path = _keyPath, known_hosts_path = _knownHostsPath }),ct);
         return supported ? "SSH подключён; CID и прошивка проверены." :
-            "SSH подключён: root и устройство подтверждены. Установка доступа проверяется отдельно; IMEI и компоненты этой прошивки не разрешены автоматически.";
+            "SSH подключён. Доступные сведения прочитаны; установка и изменение настроек проверяются отдельно.";
     }
     private async Task<string> RefreshDeviceAsync(CancellationToken ct)
     {
         RequireSsh();
-        var info = await _ssh!.RunAsync("ubus call system board",timeout:TimeSpan.FromSeconds(20),ct:ct);
-        if (!info.Success) throw new IOException("Не удалось прочитать сведения о модеме.");
+        var shell = _sshRead ?? _ssh!;
+        var info = await shell.RunAsync("ubus call system board",timeout:TimeSpan.FromSeconds(20),ct:ct);
+        if (!info.Success)
+        {
+            var basic=await shell.RunAsync("uname -s; uname -r; uname -m",timeout:TimeSpan.FromSeconds(15),ct:ct);
+            if(!basic.Success||basic.Stdout.Length>4096)throw new IOException("Не удалось прочитать сведения о модеме.");
+            var fields=AdbShellOutput.NormalizeText(new UTF8Encoding(false,true).GetString(basic.Stdout)).TrimEnd('\n').Split('\n');
+            if(fields.Length!=3||fields.Any(x=>x.Length==0||x.Length>256||x.Any(char.IsControl)))throw new InvalidDataException("Некорректные сведения системы.");
+            _snapshot=_snapshot with {Model=null,Firmware=null,Details=new Dictionary<string,string>{{"Система",fields[0]},{"Ядро",fields[1]},{"Архитектура",fields[2]}}};
+            return "Сведения о модеме обновлены.";
+        }
         using var doc = JsonDocument.Parse(info.Stdout);
         var root = doc.RootElement;
         string? property(string name) => root.TryGetProperty(name,out var value) ? value.ToString() : null;

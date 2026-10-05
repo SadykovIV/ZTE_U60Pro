@@ -43,7 +43,7 @@ with tempfile.TemporaryDirectory(prefix='manager-ui-', dir=root / '.build') as d
     with (app / 'Info.plist').open('wb') as handle:
         plistlib.dump({'CFBundleIdentifier': 'local.zte.manager-ui-preview',
                       'CFBundleExecutable': 'ManagerUIPreview', 'CFBundleName': 'Manager UI Preview',
-                      'CFBundleVersion': '42', 'CFBundleShortVersionString': '1.24.4',
+                      'CFBundleVersion': '43', 'CFBundleShortVersionString': '1.24.4',
                       'NSHighResolutionCapable': False, 'LSUIElement': True}, handle)
     binary = app / 'MacOS/ManagerUIPreview'
     sources = [str(p) for p in sorted((root / 'Sources').glob('*.swift')) if p.name not in ['AppModel.swift', 'AppModelConnections.swift', 'Main.swift']]

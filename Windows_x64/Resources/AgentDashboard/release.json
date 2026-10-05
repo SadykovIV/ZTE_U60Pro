@@ -1,6 +1,6 @@
 {
-  "version": "2.9.0-esim.3",
-  "agent_sha256": "b23d57c223e898df9d26574fdfbd01a0b6f4d3835ebe9752ed642b0484625ef7",
+  "version": "2.9.0-esim.4",
+  "agent_sha256": "9def1ae625eeee2d3357c5583b441c3a910ef546513d10c80355536b3b5146e7",
   "esim": true,
   "web_download_requires_modem_internet": true
 }

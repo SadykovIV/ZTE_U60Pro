@@ -2,9 +2,8 @@
 //!
 //! A validated EID and profile inventory, including an empty inventory, prove
 //! accessible eUICC management only after the caller has completed cleanup.
-//! Failed Open/SELECT/APDU requests do not identify an ordinary physical SIM.
-//! `absent` and `unavailable` are reserved protocol states: this path does not
-//! yet have the independent evidence required to emit either of them.
+//! Only an explicit SELECT 6A82 on an owned channel, ready SIM and confirmed
+//! Close produce ordinary_sim/unavailable. QMI errors never identify card type.
 
 use super::Error;
 use serde::Serialize;
@@ -24,6 +23,15 @@ impl Status {
             kind: "euicc_confirmed",
             management: "available",
             reason: "eid_and_profiles_read",
+            cleanup_confirmed: true,
+        }
+    }
+
+    pub(super) fn ordinary() -> Self {
+        Self {
+            kind: "ordinary_sim",
+            management: "unavailable",
+            reason: "isdr_not_found",
             cleanup_confirmed: true,
         }
     }

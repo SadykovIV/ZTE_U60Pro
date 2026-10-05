@@ -89,6 +89,7 @@ impl HelperDiagnostics {
             Error::new(match code {
                 "lock_unavailable" => "card_busy",
                 "qmi_open_rejected" => "card_open_rejected",
+                "card_not_euicc" => "card_not_euicc",
                 "card_not_ready" => "card_not_ready",
                 _ => fallback,
             })
@@ -116,6 +117,7 @@ fn known_helper_code(code: &str) -> Option<&'static str> {
         "channel_close_failed",
         "card_cleanup_unknown",
         "card_not_ready",
+        "card_not_euicc",
         "unsupported_channel",
         "qmi_transmit_error",
         "short_apdu_response",
@@ -404,6 +406,9 @@ impl super::Runtime for LocalRuntime {
         super::radio::refresh(expected_iccid, relay)
     }
     fn snapshot(&mut self) -> Result<super::model::Snapshot> {
+        self.inspect()?.require_euicc()
+    }
+    fn inspect(&mut self) -> Result<super::model::Inspection> {
         self.check_deadline()?;
         let started = std::time::Instant::now();
         self.event(super::trace::Event::ComponentStart(
@@ -412,7 +417,7 @@ impl super::Runtime for LocalRuntime {
         let mut child = ChildPipe::spawn(&self.helper, &["snapshot".into()], false)?;
         let result = (|| {
             let value = child.read()?.ok_or(Error::new("snapshot_missing"))?;
-            let snapshot = super::model::Snapshot::parse(value)?;
+            let snapshot = super::model::Inspection::parse(value)?;
             if child.read()?.is_some() {
                 return Err(Error::new("unexpected_component_output"));
             }
@@ -797,5 +802,27 @@ mod diagnostic_tests {
         ));
         let mut runtime = LocalRuntime::new(script.0.clone(), PathBuf::from("unused"));
         assert_eq!(runtime.snapshot().unwrap_err().code, "card_cleanup_unknown");
+    }
+    #[test]
+    fn ordinary_result_requires_clean_exit_and_no_cleanup_failure() {
+        let wire="{\"ok\":true,\"card\":{\"kind\":\"ordinary_sim\",\"management\":\"unavailable\",\"reason\":\"isdr_not_found\",\"cleanup_confirmed\":true}}";
+        for (status, marker) in [
+            (0, ""),
+            (1, ""),
+            (
+                0,
+                "{\"event\":\"cleanup_failed\",\"stage\":\"channel_close\"}",
+            ),
+        ] {
+            let script = Script::new(&format!(
+                "printf '%s\\n' '{wire}'\nprintf '%s\\n' '{marker}' >&2\nexit {status}"
+            ));
+            let mut runtime = LocalRuntime::new(script.0.clone(), PathBuf::from("never-run-lpac"));
+            let inspected = runtime.inspect();
+            assert_eq!(inspected.is_ok(), status == 0 && marker.is_empty());
+            if let Ok(value) = inspected {
+                assert_eq!(value, super::super::model::Inspection::Ordinary);
+            }
+        }
     }
 }

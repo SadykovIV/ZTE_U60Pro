@@ -12,4 +12,9 @@ The bridge modes `snapshot` and `bridge` are internal private-pipe protocols.
 They disclose full EID/ICCID/APDU data to the authorized parent process, not to
 logs. Use the desktop application or authenticated agent UI for normal operation.
 No startup install hook, SIM remap or radio cycle is part of the bridge.
-Supported product configuration: removable 9eSIM V0, slot1, MU5250 B31.
+Hardware reference: removable 9eSIM V0, physical slot1, MU5250 B31.
+The bridge checks the selected physical slot through QMI and does not require
+a firmware hash. A ready ordinary SIM with SELECT ISD-R status 6A82 and a
+confirmed channel close returns an ordinary_sim result without a snapshot.
+An exchange failure remains unknown. A process-owned card flock is released
+by the kernel on exit; the bridge does not retain a global modem lock.

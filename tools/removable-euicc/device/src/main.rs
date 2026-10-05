@@ -6,7 +6,7 @@ mod platform;
 mod qmi;
 
 use adapter::{expected_eid, Result, Session, MAX_LINE};
-use platform::{AppLock, RealDevice};
+use platform::{CardLock, RealDevice};
 use serde_json::{json, Value};
 use std::io::{self, BufRead, Write};
 
@@ -50,16 +50,14 @@ fn bridge(
     output: &mut impl Write,
     session: &mut Session<RealDevice>,
 ) -> Result<()> {
-    let result = (|| {
-        emit(output, &session.snapshot()?)?;
+    // The bridge accepts only a confirmed eUICC snapshot.
+    emit(output, &session.euicc_snapshot()?)?;
+    (|| {
         while let Some(message) = read_line(input)? {
             emit(output, &session.handle(&message))?;
         }
         Ok(())
-    })();
-    // EOF, malformed input and broken stdout all reach explicit cleanup.
-    session.disconnect()?;
-    result
+    })()
 }
 
 fn run(mode: &str) -> Result<()> {
@@ -75,21 +73,15 @@ fn run(mode: &str) -> Result<()> {
     } else {
         None
     };
-    let mut lock = AppLock::acquire()?;
+    let _lock = CardLock::acquire()?;
     let mut session = Session::new(RealDevice, expected);
-    let result = if mode == "snapshot" {
-        session.snapshot().and_then(|v| emit(&mut output, &v))
-    } else {
-        bridge(&mut input, &mut output, &mut session)
-    };
-    let close = session.disconnect();
-    if session.cleanup_failed {
-        lock.retain();
-        eprintln!("{{\"event\":\"lock_retained\",\"reason\":\"channel_cleanup_unknown\"}}");
+    if mode == "snapshot" {
+        // snapshot() closes before returning either card classification.
+        return session.snapshot().and_then(|v| emit(&mut output, &v));
     }
-    let release = lock.release();
-    close?;
-    release?;
+    let result = bridge(&mut input, &mut output, &mut session);
+    // EOF, protocol errors and broken stdout reach one explicit bridge close.
+    session.disconnect()?;
     result?;
     if session.operation_failed {
         return Err("bridge_operation_failed");

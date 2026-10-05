@@ -58,18 +58,19 @@ enum ConnectionOverview {
         guard session.mode == .ssh, let shell = session.diagnosticSession, shell.transport == "ssh" else {
             throw IMEIError.message("Для подключения к модему требуется SSH")
         }
-        let sections = session.summary.fields["accessProfile"] == "linux-arm64-access" ? sections.intersection([.information]) : sections
+        let profile = session.summary.fields["accessProfile"]
+        let sections = (profile == "linux-arm64-access" || profile == "read-only-ssh") ? sections.intersection([.information]) : sections
         let readers = ConnectionOverviewReaders(
             information: {
                 let result = try shell.run(ModemInformationManager.command, timeout: 30)
                 try require(result.status == 0, "Не удалось прочитать сведения: " + ActivityJournal.redact(String(decoding: result.stderr.prefix(2048), as: UTF8.self)))
-                return try ModemInformationManager.parse(String(decoding: result.stdout, as: UTF8.self), identity: shell.proof.identity, boot: shell.proof.bootID)
+                return try ModemInformationManager.parse(String(decoding: result.stdout, as: UTF8.self), identity: shell.readProof.identity, boot: shell.readProof.bootID ?? "")
             },
             display: { try ModemDisplayManager(engine: engine).inspect() },
             vpn: { try VPNSettingsManager(engine: engine).inspect() },
-            ttl: { try readTTL(engine: engine, cid: shell.proof.identity.cid) },
+            ttl: { guard let cid = shell.readProof.cid else { throw IMEIError.message("Для этой проверки нужен CID") }; return try readTTL(engine: engine, cid: cid) },
             screen: { try ScreenLocalization(engine: engine).perform(.status) },
-            access: { try readAccess(engine: engine, cid: shell.proof.identity.cid) },
+            access: { guard let cid = shell.readProof.cid else { throw IMEIError.message("Для этой проверки нужен CID") }; return try readAccess(engine: engine, cid: cid) },
             agent: { try readAgent(engine: engine) },
             applications: { try ModemApplications(engine: engine).inventoryWithManagedApps() }
         )
@@ -77,9 +78,8 @@ enum ConnectionOverview {
             // The session verifies its original transport. Separately bind the
             // manager's engine to that same device and boot before using SSH.
             if session.mode == .ssh {
-                let current = try engine.accessIdentity()
-                try require(current.0 == shell.proof.identity && current.1 == shell.proof.bootID,
-                            "Устройство, прошивка или сеанс загрузки SSH изменились; обновление разделов остановлено")
+                let current = try SSHReadProof.parse(engine.remote(SSHReadProof.command, timeout: 15))
+                try shell.readProof.verify(current)
             }
         }
     }
@@ -92,7 +92,7 @@ enum ConnectionOverview {
             throw IMEIError.message("Для подключения к модему требуется SSH")
         }
         let summary = try session.readSummary()
-        try require(summary.identity == shell.proof.identity && summary.bootID == shell.proof.bootID,
+        try require(summary.identity == shell.readProof.identity && summary.bootID == shell.readProof.bootID,
                     "Сведения подключения не совпадают с проверенным сеансом модема")
         var snapshot = ConnectionOverviewSnapshot(summary: summary, limitedToADB: false, sections: sections)
         func verify() throws { try shell.verify(); try verifyEngine() }

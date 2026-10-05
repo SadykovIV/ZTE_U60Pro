@@ -12,7 +12,7 @@ public static class EsimDiagnostics
     private static readonly HashSet<string> Errors = [
         "operation_failed", "operation_busy", "cancelled", "transport_timeout", "agent_exit_failed", "identity_changed", "temporary_cleanup_failed",
         "http_tls_failed", "http_dns_failed", "http_timeout", "http_connection_failed", "http_response_too_large", "http_cancelled",
-        "card_busy", "card_open_rejected", "card_cleanup_unknown", "card_not_ready",
+        "card_not_euicc", "card_busy", "card_open_rejected", "card_cleanup_unknown", "card_not_ready",
         "card_reset_failed", "card_power_restore_failed",
         "esim_busy", "operation_lock_failed", "launcher_operation_refused", "radio_read_failed", "radio_not_online", "radio_set_failed", "radio_offline_failed", "radio_restore_failed", "modem_readback_failed", "modem_slot_mismatch", "modem_iccid_mismatch",
         "bridge_already_open", "bridge_cleanup_failed", "bridge_missing", "card_changed", "component_already_closed", "component_closed", "component_eof", "component_exit_failed", "component_start_failed",
@@ -78,6 +78,7 @@ public static class EsimDiagnostics
         "card_busy" => "Карта занята другой операцией. Дождитесь её завершения и перечитайте профили.",
         "card_open_rejected" => "Модем отказал в открытии канала карты. Немного подождите и перечитайте профили. Операция с профилем не повторялась.",
         "card_cleanup_unknown" => "Закрытие канала карты не подтверждено. Перед повторной попыткой перезагрузите модем и перечитайте профили. Не удаляйте блокировку карты вручную.",
+        "card_not_euicc" => "Управление eSIM недоступно для выбранной SIM-карты.",
         "card_not_ready" => "Выбранное приложение SIM ещё не готово. Подождите и перечитайте профили. Операция с профилем не повторялась.",
         "card_reset_failed" => "Перезапуск SIM не подтверждён. Перечитайте профили и проверьте результат переключения. Автоматического повтора не было.",
         "card_power_restore_failed" => "Включение SIM не подтверждено. Перезагрузите модем перед повторной попыткой, затем перечитайте профили.",

@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 private enum TestError: Error { case failed(String) }
 private func check(_ ok: @autoclosure () throws -> Bool, _ reason: String) throws { if try !ok() { throw TestError.failed(reason) } }
@@ -86,6 +87,35 @@ private func resultLine(_ s: EsimSnapshot, changed: Bool = false, modemVerified:
                 var invalid = base; invalid["card"] = card
                 try rejects { var d = EsimRPCDecoder(); _ = try d.consume(JSONSerialization.data(withJSONObject: invalid)); _ = try d.finish(exitCode:0, operation:.list, before:nil) }
             }
+        }
+        try test("ordinary SIM is a successful read without profiles and never permits mutations") {
+            let ordinary: [String: Any] = ["type":"result", "ok":true, "card":["kind":"ordinary_sim", "management":"unavailable", "reason":"isdr_not_found", "cleanup_confirmed":true], "changed":false, "notifications_pending":false]
+            let line = try JSONSerialization.data(withJSONObject: ordinary)
+            var d = EsimRPCDecoder(); _ = try d.consume(line)
+            let result = try d.finish(exitCode:0, operation:.list, before:nil)
+            try check(result.snapshot == nil && result.card?.kind == "ordinary_sim", "ordinary SIM was converted into eUICC")
+            try rejects { _ = try d.finish(exitCode:0, operation:.enable("890000000000000001"), before:snapshot([profile()])) }
+            for (key, value): (String, Any) in [("changed", true), ("notifications_pending", true), ("snapshot", try JSONSerialization.jsonObject(with: JSONEncoder().encode(snapshot()))), ("error", "snapshot_failed"), ("component_error", "unrecognized_private_error"), ("snapshot", NSNull()), ("radio_restored", NSNull()), ("error", NSNull())] {
+                var invalid = ordinary; invalid[key] = value
+                try rejects { var bad = EsimRPCDecoder(); _ = try bad.consume(JSONSerialization.data(withJSONObject: invalid)); _ = try bad.finish(exitCode:0, operation:.list, before:nil) }
+            }
+            for (key, value): (String, Any) in [("cleanup_confirmed", false), ("reason", "read_failed"), ("management", "available")] {
+                var invalid = ordinary; var card = invalid["card"] as! [String: Any]; card[key] = value; invalid["card"] = card
+                try rejects { var bad = EsimRPCDecoder(); _ = try bad.consume(JSONSerialization.data(withJSONObject: invalid)); _ = try bad.finish(exitCode:0, operation:.list, before:nil) }
+            }
+        }
+        try test("card reading has no dependency on operator certificates") {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("esim-resources-" + UUID().uuidString)
+            let dir = root.appendingPathComponent("Esim")
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let agent = Data("synthetic agent bytes".utf8)
+            try agent.write(to: dir.appendingPathComponent("zte-agent-esim"))
+            let hash = SHA256.hash(data: agent).map { String(format: "%02x", $0) }.joined()
+            try JSONSerialization.data(withJSONObject: ["zte-agent-esim":hash]).write(to: dir.appendingPathComponent("SHA256.json"))
+            let resources = try EsimResources(root: root)
+            try check(resources.agent == agent, "read resources require unrelated CA")
+            try rejects { _ = try resources.certificatePEM() }
         }
         try test("duplicate final and progress after final rejected") {
             var d = EsimRPCDecoder(); _ = try d.consume(resultLine(snapshot()))

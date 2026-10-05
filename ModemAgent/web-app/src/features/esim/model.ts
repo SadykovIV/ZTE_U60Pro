@@ -9,7 +9,7 @@ export interface EsimRequest {
   confirmation_code?: string; iccid?: string; confirm_delete?: true
 }
 export type CardReason = 'busy' | 'open_rejected' | 'cleanup_unknown' | 'not_ready' | 'unsupported_device' | 'read_failed' | 'operation_failed'
-export type CardStatus = { kind: 'euicc_confirmed'; management: 'available'; reason: 'eid_and_profiles_read'; cleanup_confirmed: true } |
+export type CardStatus = { kind: 'ordinary_sim'; management: 'unavailable'; reason: 'isdr_not_found'; cleanup_confirmed: true } | { kind: 'euicc_confirmed'; management: 'available'; reason: 'eid_and_profiles_read'; cleanup_confirmed: true } |
   { kind: 'unknown'; management: 'unknown'; reason: CardReason; cleanup_confirmed: false }
 export interface EsimResult { ok: boolean; snapshot?: Snapshot; changed?: boolean; notifications_pending?: boolean; modem_verified?: boolean; radio_restored?: boolean; error?: string; component_error?: unknown; card?: unknown }
 export const unknownCard = (reason: CardReason = 'read_failed'): CardStatus => ({ kind: 'unknown', management: 'unknown', reason, cleanup_confirmed: false })
@@ -26,13 +26,19 @@ export function parsedCard(value: unknown, successful: boolean): CardStatus | un
   if (successful && card.kind === 'euicc_confirmed' && card.management === 'available' && card.reason === 'eid_and_profiles_read' && card.cleanup_confirmed === true) {
     return { kind: 'euicc_confirmed', management: 'available', reason: 'eid_and_profiles_read', cleanup_confirmed: true }
   }
+  if (successful && card.kind === 'ordinary_sim' && card.management === 'unavailable' && card.reason === 'isdr_not_found' && card.cleanup_confirmed === true) return { kind: 'ordinary_sim', management: 'unavailable', reason: 'isdr_not_found', cleanup_confirmed: true }
   if (!successful && card.kind === 'unknown' && card.management === 'unknown' && card.cleanup_confirmed === false &&
       typeof card.reason === 'string' && ['busy', 'open_rejected', 'cleanup_unknown', 'not_ready', 'unsupported_device', 'read_failed', 'operation_failed'].includes(card.reason)) {
     return unknownCard(card.reason as CardReason)
   }
   throw new Error('unconfirmed')
 }
-export function verifiedCard(request: EsimRequest, result: EsimResult): { snapshot: Snapshot; card: CardStatus } {
+export function verifiedCard(request: EsimRequest, result: EsimResult): { snapshot: Snapshot | null; card: CardStatus } {
+  const card = parsedCard(result.card, result.ok === true)
+  if (card?.kind === 'ordinary_sim') {
+    if (request.operation !== 'list' || result.ok !== true || 'snapshot' in result || 'error' in result || 'component_error' in result || 'modem_verified' in result || 'radio_restored' in result || result.changed !== false || result.notifications_pending !== false) throw new Error('unconfirmed')
+    return { snapshot: null, card }
+  }
   // In particular, a legacy success is not inferred from EID or metadata alone.
   const snapshot = verifiedResult(request, result)
   return { snapshot, card: parsedCard(result.card, true) ?? { kind: 'euicc_confirmed', management: 'available', reason: 'eid_and_profiles_read', cleanup_confirmed: true } }
@@ -41,6 +47,7 @@ export function cardMessage(card: CardStatus | null, checking: boolean): string 
   if (checking) return 'Checking the SIM card and profiles…'
   if (!card) return 'Card type has not been checked.'
   if (card.kind === 'euicc_confirmed') return 'eUICC confirmed: EID and profiles were read, and the card channel was closed.'
+  if (card.kind === 'ordinary_sim') return 'Ordinary SIM: eSIM management is unavailable.'
   return 'Card type is unknown. This response does not identify an ordinary SIM card.'
 }
 export function domain(value: string): boolean {
@@ -83,7 +90,7 @@ export const mask = (id: string) => id.slice(0, 4) + '••••' + id.slice(-
 export const profileName = (p: Profile) => p.nickname || p.name || p.service_provider || mask(p.iccid)
 export function verifiedResult(request: EsimRequest, result: EsimResult): Snapshot {
   if (result.ok !== true || result.component_error !== undefined || !validSnapshot(result.snapshot)) throw new Error('unconfirmed')
-  parsedCard(result.card, true)
+  if (parsedCard(result.card, true)?.kind === 'ordinary_sim') throw new Error('unconfirmed')
   const after = result.snapshot, before = request.expected_snapshot
   if (request.operation === 'list') return after
   if (!before || before.eid !== after.eid || typeof result.changed !== 'boolean' || request.operation !== 'enable' && !result.changed) throw new Error('unconfirmed')

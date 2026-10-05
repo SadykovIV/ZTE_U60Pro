@@ -16,7 +16,7 @@ public enum VpnPasswordMode { Main, Custom, Preserve }
 public sealed partial class DeviceFeatureService
 {
     private const string VpnRoot = "/data/zte-vpn";
-    private const string VpnHelperHash = "7a8b84c3502e711c6b66c943f883a984dd9ed82da41455fc083ed0cc7d44b6fb";
+    private const string VpnHelperHash = "1c0e3e6d308a6c4b161faf896a00437b8e011fe5b7eff7969b9870c85d8d0c5c";
     private const string LegacyPublicVpnHelperHash = "f620dab27f951c7de2de77a89376975b51c79f57f8a8a24cec95392c9c61eea4";
     private const string LegacyPagesVpnHelperHash = "3142fb503e64ddba79d523be3c87f0344d6efa78673e30a4b740714d8e9389ca";
     private const string LegacyDirectRadioVpnHelperHash = "cdb01d27775d61bcb3ae14a8d124ccbab683f940f1dcfd2adffa43a6b7b462f0";
@@ -24,8 +24,8 @@ public sealed partial class DeviceFeatureService
     // Controller pinned in the preserved 2.7.0-esim.8 build receipt. Read status only.
     private const string LegacyRecoveryVpnHelperHash = "1cc33e3825a556a825e83392675c254ef22f738660d1016ae1413f7669f88231";
     private const string VpnAgentHash = AgentPackage.Sha256;
-    private const string DashboardHash = "45b8b910e3f9521c612b90e68dca7f1c5dbe4a19d81b6747871086e6168b4ead";
-    private const string LauncherHash = "be95cd58b44c062c618dd4b227022bfb96e196173770e18790d0b59148e40cd9";
+    private const string DashboardHash = "c804a8ecced9ed3478ee50021b95d3bcd02394f23ba09f10c5c3691f44cd9546";
+    private const string LauncherHash = "3e8338319bc2eb3764fdfa4efbbb6966ddce185a951f8b9122c15025804fbd2a";
     private static readonly string[] VpnInstallNames = ["install.sh", "manager.sh", "firewall.sh", "configure.lua", "nft-guard.nft", "dnsmasq.conf", "service.sh", "vpnctl", "mihomo"];
     private static readonly string[] VpnIntegrationNames = ["upgrade-controller.sh", "vpnctl", "manager.sh", "configure.lua", "update-agent.sh", "dashboard-install.sh", "payload.sha256", "dashboard.tar.gz", "dashboard-uhttpd", "start-dashboard.sh", "dashboard-html.sh", "preserve-dashboard-assets.sh", "stop-owned-listener.sh", "update-rc-local.sh", "launcher.so", "launcher-run.sh", "launcher-watch.sh", "launcher-service.sh", "launcher-start.sh", "launcher.sha256", "install-launcher.sh"];
     private static bool CanReadVpnStatus(string hash) => hash is VpnHelperHash or LegacyRadioVpnHelperHash or

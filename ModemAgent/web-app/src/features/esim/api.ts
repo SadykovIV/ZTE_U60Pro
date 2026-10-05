@@ -5,7 +5,7 @@ import { safeEsimErrors } from './errors'
 
 interface Job { job_id: string; state: 'running' | 'complete'; stage?: string; result?: EsimResult | null; logs?: unknown[] }
 export const capabilities = () => req('GET', '/api/esim/capabilities')
-export async function runOperation(request: EsimRequest, progress: (stage: string, safeLog?: string) => void, signal: AbortSignal): Promise<{ snapshot: Snapshot; card: CardStatus; pending: boolean }> {
+export async function runOperation(request: EsimRequest, progress: (stage: string, safeLog?: string) => void, signal: AbortSignal): Promise<{ snapshot: Snapshot | null; card: CardStatus; pending: boolean }> {
   // Never retry POST after an ambiguous network outcome.
   const bytes = new Uint8Array(16)
   window.crypto.getRandomValues(bytes)

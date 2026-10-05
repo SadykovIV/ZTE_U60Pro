@@ -20,11 +20,14 @@ public sealed partial class MainWindow
     private Button? _esimRead, _esimDownload, _esimEnable, _esimDelete, _esimQr, _esimInstall, _esimInstallPage;
     private TextBlock? _esimProgress, _esimCardStatus;
     private bool _esimCardChecked, _esimChecking;
+    private EsimCardStatus? _esimCard;
+    private string? _esimCardTarget;
+    private string EsimTarget() => $"{_snapshot?.IpAddress}|{_snapshot?.Serial}|{_snapshot?.ConnectionMode}|{_snapshot?.IsConnected}";
     private string _esimStatus = "Прочитайте профили, чтобы разрешить изменения.";
 
     private void BuildEsim()
     {
-        AddCard("Физическая eUICC", "Съёмная eUICC в физическом SIM-слоте 1. Проверено с 9eSIM V0 на ZTE MU5250 B31.", panel =>
+        AddCard("SIM-карта", "Съёмная eUICC в физическом SIM-слоте 1. Проверено с 9eSIM V0 на ZTE MU5250 B31.", panel =>
         {
             panel.Children.Add(Muted("Встроенная eSIM ZTE и обычные SIM-карты не поддерживаются. Загрузка использует интернет компьютера."));
             panel.Children.Add(Muted("Для загрузки профиля оператора нужна съёмная eUICC. Обычная SIM не становится eUICC после сканирования QR. Ошибка чтения не определяет тип карты."));
@@ -127,6 +130,7 @@ public sealed partial class MainWindow
     }
     private string EsimCardLabel() => _esimChecking ? "Карта: проверка…"
         : _esimAuthorized && _esimSnapshot is not null ? "Карта: eUICC подтверждена"
+        : _esimCardTarget == EsimTarget() && _esimCard?.Kind == "ordinary_sim" ? "Карта: обычная SIM. Управление eSIM недоступно."
         : _esimCardChecked ? "Карта: тип не определён. Повторите проверку."
         : "Карта ещё не проверена.";
     private string? EsimActivationInput() => _esimManual ? EsimValidation.ComposeManual(_esimAddress?.Text, _esimMatchingId?.Text) : _esimCode?.Text?.Trim();
@@ -167,10 +171,10 @@ public sealed partial class MainWindow
     private async Task RunEsimUiAsync(EsimRequest request)
     {
         if (_busy) return;
-        _esimAuthorized = false; _esimCardChecked = true; _esimChecking = true;
+        _esimAuthorized = false; _esimCard = null; _esimCardChecked = true; _esimChecking = true;
         ClearEsimSecrets(); SetBusy(true);
         _esimStatus = "Проверка карты…";
-        bool inProgress = true;
+        bool inProgress = true, succeeded = false;
         try
         {
             var progress = new Progress<string>(stage => Dispatcher.UIThread.Post(() =>
@@ -181,21 +185,24 @@ public sealed partial class MainWindow
             }));
             var result = await _service.RunEsimAsync(request, progress, _lifetime.Token);
             if (!result.Ok) throw new EsimException(result.Error, result.ComponentError);
-            _ = EsimCardStatus.FromAcceptedResult(result);
-            EsimValidation.Postcondition(request, result.Snapshot!);
+            var card = EsimCardStatus.FromAcceptedResult(result, request.Operation);
+            if (result.Snapshot is not null) EsimValidation.Postcondition(request, result.Snapshot);
             if (request.Operation == "enable" && (result.ModemVerified != true || result.RadioRestored != true)) throw new EsimException("postcondition_failed");
             _esimSnapshot = result.Snapshot;
-            _esimAuthorized = true;
-            _esimStatus = request.Operation switch { "download" => "Профиль установлен отключённым. Выберите его для включения.", "enable" => "Профиль активен, модем перечитал SIM и восстановил мобильное радио. Регистрация в сети ещё не проверена.", "delete" => "Профиль удалён с карты.", _ => "Профили прочитаны. Можно выбрать профиль или загрузить новый." };
+            _esimCard = card; _esimCardTarget = EsimTarget();
+            _esimAuthorized = result.Snapshot is not null;
+            if (_esimSnapshot is null) _esimSelected = null;
+            succeeded = true;
+            _esimStatus = card.Kind == "ordinary_sim" ? "Карта: обычная SIM. Управление eSIM недоступно." : request.Operation switch { "download" => "Профиль установлен отключённым. Выберите его для включения.", "enable" => "Профиль активен, модем перечитал SIM и восстановил мобильное радио. Регистрация в сети ещё не проверена.", "delete" => "Профиль удалён с карты.", _ => "Профили прочитаны. Можно выбрать профиль или загрузить новый." };
             if (result.NotificationsPending) _esimStatus += " " + Localization.Translate("Уведомления оператору остались в очереди карты.");
         }
         catch (Exception error)
         {
-            _esimAuthorized = false; _esimSnapshot = null; _esimSelected = null;
+            _esimAuthorized = false; _esimCard = null; _esimSnapshot = null; _esimSelected = null;
             var code = error is EsimException esim ? esim.Code : "operation_failed";
             _esimStatus = Localization.Translate(EsimDiagnostics.FailureMessage(code)) + " " + Localization.Translate("Код: {code}. Подробности — в журнале eSIM.").Replace("{code}", code, StringComparison.Ordinal);
         }
-        finally { inProgress = false; _esimChecking = false; ClearEsimSecrets(); SetBusy(false); SetStatus(_esimStatus, !_esimAuthorized); if (_page == 8) RenderPage(); }
+        finally { inProgress = false; _esimChecking = false; ClearEsimSecrets(); SetBusy(false); SetStatus(_esimStatus, !succeeded); if (_page == 8) RenderPage(); }
     }
 
     private async Task ShowEsimJournalAsync()

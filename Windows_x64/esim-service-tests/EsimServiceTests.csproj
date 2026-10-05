@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+ <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><NuGetAudit>false</NuGetAudit></PropertyGroup>
+ <ItemGroup>
+  <Compile Include="../src/WindowsModemService.Esim.cs" Link="WindowsModemService.Esim.cs" />
+  <Compile Include="../src/Esim/EsimModels.cs" Link="EsimModels.cs" />
+  <Compile Include="../src/Esim/EsimProtocol.cs" Link="EsimProtocol.cs" />
+  <Compile Include="../src/Esim/EsimReadBinding.cs" Link="EsimReadBinding.cs" />
+  <Compile Include="../src/Esim/EsimJournal.cs" Link="EsimJournal.cs" />
+  <Compile Include="../src/Esim/EsimHttpRelay.cs" Link="EsimHttpRelay.cs" />
+ </ItemGroup>
+</Project>

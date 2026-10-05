@@ -58,6 +58,12 @@ public static class EsimProtocol
                     }
                     if (ok)
                     {
+                        if (card?.Kind == "ordinary_sim")
+                        {
+                            if (root.TryGetProperty("snapshot", out _) || root.TryGetProperty("error", out _) || request.Operation != "list" || modemVerified is not null || radioRestored is not null || root.GetProperty("changed").GetBoolean() || root.GetProperty("notifications_pending").GetBoolean()) throw new EsimException();
+                            result = new(true, null, false, false, Card: card);
+                            break;
+                        }
                         if (snapshot is null) throw new EsimException();
                         EsimValidation.Postcondition(request, snapshot);
                         var changed = root.GetProperty("changed").GetBoolean();

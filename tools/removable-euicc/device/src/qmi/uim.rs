@@ -13,6 +13,7 @@ use super::qrtr::{QrtrClient, SERVICE_UIM};
 use super::tlv::{self, Tlv};
 
 const MSG_GET_CARD_STATUS: u16 = 0x002F;
+const MSG_GET_SLOT_STATUS: u16 = 0x0047;
 const MSG_SEND_APDU: u16 = 0x003B;
 const MSG_CLOSE_LOGICAL_CHANNEL: u16 = 0x003F;
 const MSG_OPEN_LOGICAL_CHANNEL: u16 = 0x0042;
@@ -100,6 +101,58 @@ fn parse_open_response(tlvs: &[Tlv]) -> Result<u8, OpenChannelError> {
         .ok_or(unknown)
 }
 
+fn unique_field(values: &[Tlv], tag: u8) -> Result<&[u8], String> {
+    let mut fields = values.iter().filter(|t| t.tag == tag);
+    let first = fields.next().ok_or("required TLV missing")?;
+    if fields.next().is_some() {
+        return Err("duplicate TLV".into());
+    }
+    Ok(&first.value)
+}
+fn checked_result(values: &[Tlv]) -> Result<(), String> {
+    if unique_field(values, 2)? != [0, 0, 0, 0] {
+        return Err("QMI operation failed".into());
+    }
+    Ok(())
+}
+fn open_request() -> [Tlv; 1] {
+    [tlv::u8_tlv(0x01, SLOT)]
+}
+
+fn selected_slot1(data: &[u8]) -> Result<(), String> {
+    let count = *data.first().ok_or("slot status empty")?;
+    if !(1..=8).contains(&count) {
+        return Err("slot count invalid".into());
+    }
+    let mut position = 1;
+    let mut matched = false;
+    for physical in 1..=count {
+        let row = data
+            .get(position..position + 10)
+            .ok_or("slot status truncated")?;
+        let card = u32::from_le_bytes(row[..4].try_into().unwrap());
+        let active = u32::from_le_bytes(row[4..8].try_into().unwrap());
+        let logical = row[8];
+        let size = row[9] as usize;
+        position += 10;
+        data.get(position..position + size)
+            .ok_or("slot identifier truncated")?;
+        position += size;
+        if card > 2 || active > 1 {
+            return Err("slot status invalid".into());
+        }
+        if physical == 1 {
+            matched = card == 2 && active == 1 && logical == 1;
+        } else if active == 1 && logical == 1 {
+            return Err("alternate slot selected".into());
+        }
+    }
+    if position != data.len() || !matched {
+        return Err("physical slot1 not selected".into());
+    }
+    Ok(())
+}
+
 pub struct UimClient {
     qmi: QrtrClient,
 }
@@ -135,31 +188,49 @@ impl UimClient {
 
     /// `UIM_GET_CARD_STATUS` — read-only.
     pub fn card_status(&mut self) -> Result<Vec<Card>, String> {
-        let tlvs = self.qmi.request(MSG_GET_CARD_STATUS, &[])?;
-        tlv::check_result(&tlvs)?;
-        let value = tlv::find(&tlvs, 0x10).ok_or("card status TLV missing")?;
+        let tlvs = self.qmi.request_exact(MSG_GET_CARD_STATUS, &[])?;
+        checked_result(&tlvs)?;
+        let value = unique_field(&tlvs, 0x10)?;
         parse_card_status(value)
     }
 
-    /// `UIM_OPEN_LOGICAL_CHANNEL` — selects `aid` and returns the channel id.
+    /// No vendor cache/ubus dependency: validate the actual physical-to-logical route.
+    pub fn selected_physical_slot1(&mut self) -> Result<(), String> {
+        let response = self.qmi.request_exact(MSG_GET_SLOT_STATUS, &[])?;
+        checked_result(&response)?;
+        selected_slot1(unique_field(&response, 0x10)?)
+    }
+
+    pub fn slot1_ready(&mut self) -> Result<bool, String> {
+        let cards = self.card_status()?;
+        Ok(cards.first().is_some_and(|card| {
+            card.is_present()
+                && card
+                    .applications
+                    .iter()
+                    .any(|app| matches!(app.app_type, 1 | 2) && app.state == 7)
+        }))
+    }
+
+    /// `UIM_OPEN_LOGICAL_CHANNEL` with omitted AID allocates an owned channel
+    /// without selecting ISD-R. A later explicit SELECT can return 6A82 without
+    /// obscuring ownership. Qualcomm qmi_uimi_open_logical_channel documents
+    /// the omitted-AID behavior; sending an empty AID TLV is not equivalent.
     ///
     /// The caller owns the returned channel and must close it on every path;
     /// the card has a small fixed number of channels and a leaked one is only
     /// recovered by a modem reset.
-    pub fn open_logical_channel(&mut self, aid: &[u8]) -> Result<u8, OpenChannelError> {
+    pub fn open_logical_channel(&mut self) -> Result<u8, OpenChannelError> {
         let tlvs = self
             .qmi
-            .request_exact(
-                MSG_OPEN_LOGICAL_CHANNEL,
-                &[tlv::seq8_tlv(0x10, aid), tlv::u8_tlv(0x01, SLOT)],
-            )
+            .request_exact(MSG_OPEN_LOGICAL_CHANNEL, &open_request())
             .map_err(|_| OpenChannelError::unknown())?;
         parse_open_response(&tlvs)
     }
 
     /// `UIM_CLOSE_LOGICAL_CHANNEL`.
     pub fn close_logical_channel(&mut self, channel: u8) -> Result<(), String> {
-        let tlvs = self.qmi.request(
+        let tlvs = self.qmi.request_exact(
             MSG_CLOSE_LOGICAL_CHANNEL,
             &[
                 tlv::u8_tlv(0x01, SLOT),
@@ -169,7 +240,7 @@ impl UimClient {
                 },
             ],
         )?;
-        tlv::check_result(&tlvs)
+        checked_result(&tlvs)
     }
 
     /// `UIM_POWER_OFF_SIM` — deactivates the card in its slot.
@@ -198,7 +269,7 @@ impl UimClient {
 
     /// `UIM_SEND_APDU` — returns the raw response including SW1/SW2.
     pub fn send_apdu(&mut self, channel: u8, command: &[u8]) -> Result<Vec<u8>, String> {
-        let tlvs = self.qmi.request(
+        let tlvs = self.qmi.request_exact(
             MSG_SEND_APDU,
             &[
                 tlv::u8_tlv(0x10, channel),
@@ -206,9 +277,13 @@ impl UimClient {
                 tlv::u8_tlv(0x01, SLOT),
             ],
         )?;
-        tlv::check_result(&tlvs)?;
-        let value = tlv::find(&tlvs, 0x10).ok_or("send apdu: response TLV missing")?;
-        Ok(tlv::read_seq16(value)?.to_vec())
+        checked_result(&tlvs)?;
+        let value = unique_field(&tlvs, 0x10)?;
+        let bytes = tlv::read_seq16(value)?;
+        if value.len() != bytes.len() + 2 {
+            return Err("APDU trailing bytes".into());
+        }
+        Ok(bytes.to_vec())
     }
 }
 
@@ -223,6 +298,9 @@ fn parse_card_status(data: &[u8]) -> Result<Vec<Card>, String> {
         r.u16()?;
     }
     let card_count = r.u8()?;
+    if card_count == 0 || card_count > 8 {
+        return Err("card count invalid".into());
+    }
     let mut cards = Vec::with_capacity(card_count as usize);
     for _ in 0..card_count {
         let state = r.u8()?;
@@ -231,6 +309,9 @@ fn parse_card_status(data: &[u8]) -> Result<Vec<Card>, String> {
         r.u8()?; // upuk retries
         let error = r.u8()?;
         let app_count = r.u8()?;
+        if app_count > 32 {
+            return Err("application count invalid".into());
+        }
         let mut applications = Vec::with_capacity(app_count as usize);
         for _ in 0..app_count {
             let app_type = r.u8()?;
@@ -259,6 +340,9 @@ fn parse_card_status(data: &[u8]) -> Result<Vec<Card>, String> {
             error,
             applications,
         });
+    }
+    if r.pos != data.len() {
+        return Err("trailing card status".into());
     }
     Ok(cards)
 }
@@ -459,5 +543,49 @@ mod tests {
     #[test]
     fn rejects_empty_card_status() {
         assert!(parse_card_status(&[]).is_err());
+    }
+    #[test]
+    fn open_has_only_slot_no_empty_aid_or_fci() {
+        assert_eq!(tlv::encode(&open_request()), vec![1, 1, 0, 1]);
+    }
+    fn slot_rows(rows: &[(u32, u32, u8)]) -> Vec<u8> {
+        let mut data = vec![rows.len() as u8];
+        for (present, active, logical) in rows {
+            data.extend(present.to_le_bytes());
+            data.extend(active.to_le_bytes());
+            data.extend([*logical, 0]);
+        }
+        data
+    }
+    #[test]
+    fn physical_route_requires_selected_present_slot1_and_no_competing_route() {
+        let good = slot_rows(&[(2, 1, 1), (1, 0, 0)]);
+        assert!(selected_slot1(&good).is_ok()); // no ICCID needed for empty eUICC
+        for rows in [
+            vec![(2, 0, 1)],
+            vec![(1, 1, 1)],
+            vec![(2, 1, 2)],
+            vec![(2, 1, 1), (2, 1, 1)],
+            vec![(9, 1, 1)],
+        ] {
+            assert!(selected_slot1(&slot_rows(&rows)).is_err());
+        }
+        for end in 0..good.len() {
+            assert!(selected_slot1(&good[..end]).is_err());
+        }
+        let mut trailing = good.clone();
+        trailing.push(0);
+        assert!(selected_slot1(&trailing).is_err());
+    }
+    #[test]
+    fn result_and_payload_duplicates_are_not_capability_proof() {
+        for response in [
+            vec![],
+            vec![result_tlv(0, 3)],
+            vec![result_tlv(0, 0), result_tlv(0, 0)],
+        ] {
+            assert!(checked_result(&response).is_err());
+        }
+        assert!(unique_field(&[tlv::u8_tlv(0x10, 1), tlv::u8_tlv(0x10, 1)], 0x10).is_err());
     }
 }

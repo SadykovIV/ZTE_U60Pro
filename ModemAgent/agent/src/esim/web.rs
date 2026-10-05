@@ -284,7 +284,7 @@ fn run(request: Request, relay: &mut WebRelay, deadline: Instant) -> Result<supe
     relay.progress("checking_card")?;
     resources::check_device()?;
     let _operation = super::operation_lock::OperationLock::acquire()?;
-    let mut resources = resources::Resources::extract()?;
+    let mut resources = resources::Resources::extract_for(request.operation == super::model::Operation::List)?;
     relay.root = Some(resources.gsma_root.clone());
     let mut runtime =
         LocalRuntime::with_deadline(resources.helper.clone(), resources.lpac.clone(), deadline);
@@ -433,10 +433,13 @@ mod tests {
             if value["data"]["state"] == "complete" {
                 assert_eq!(value["data"]["result"]["ok"], false);
                 assert_eq!(value["data"]["result"]["error"], "bridge_cleanup_failed");
-                assert_eq!(value["data"]["result"]["card"], json!({
-                    "kind":"unknown", "management":"unknown",
-                    "reason":"cleanup_unknown", "cleanup_confirmed":false
-                }));
+                assert_eq!(
+                    value["data"]["result"]["card"],
+                    json!({
+                        "kind":"unknown", "management":"unknown",
+                        "reason":"cleanup_unknown", "cleanup_confirmed":false
+                    })
+                );
                 break;
             }
             assert!(Instant::now() < until);

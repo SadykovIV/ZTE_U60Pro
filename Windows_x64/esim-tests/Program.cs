@@ -162,8 +162,8 @@ await session.Dispatch(() =>
         Click(window,"EsimRead");
         Check(fake.Requests.Count == 1 && fake.Requests[0].Operation == "list", "dedicated eSIM button checks card and profiles once");
         Check(Find<TextBlock>(window,"EsimCardType").Text == Localization.Translate("Карта: eUICC подтверждена"), "accepted legacy snapshot confirms type");
-        Check(Label(window, Localization.Translate("Физическая eUICC")), "localized eSIM heading");
-        if(language=="en") Check(Label(window,"Physical eUICC profiles"),"English page subtitle");
+        Check(Label(window, Localization.Translate("SIM-карта")), "localized eSIM heading");
+        if(language=="en") Check(Label(window,"SIM card"),"English neutral page title");
         var profiles = Find<ListBox>(window,"EsimProfiles");
         Check(profiles.ItemCount == 2, "active and disabled profile visible");
         var rows = profiles.Items.Cast<string>().ToArray();
@@ -223,6 +223,17 @@ await session.Dispatch(() =>
         Click(window,"EsimRead");
         Check(fake.Requests.Count == requestsBeforeInformation + 1 && fake.Requests.Last().Operation == "list", "dedicated eSIM read remains available after general refresh");
         Check(Find<TextBlock>(window,"EsimCardType").Text == Localization.Translate("Карта: eUICC подтверждена"),"dedicated eSIM refresh restores confirmed status");
+        using(var ordinaryDoc=JsonDocument.Parse("{\"kind\":\"ordinary_sim\",\"management\":\"unavailable\",\"reason\":\"isdr_not_found\",\"cleanup_confirmed\":true}"))
+            fake.Override=new(true,null,false,false,Card:EsimCardStatus.Parse(ordinaryDoc.RootElement,true));
+        Click(window,"EsimRead");
+        Check(Find<TextBlock>(window,"EsimCardType").Text==Localization.Translate("Карта: обычная SIM. Управление eSIM недоступно."),"ordinary SIM shown as successful checked result");
+        Check(Find<ListBox>(window,"EsimProfiles").ItemCount==0,"ordinary card clears old profile list");
+        Capture(window,language+"-ordinary-sim.png");
+        foreach(var name in new[]{"EsimEnable","EsimDelete","EsimDownload"}) Check(!Find<Button>(window,name).IsEnabled,"ordinary denies mutation "+name);
+        fake.Override=new(false,null,false,false,"card_open_rejected"); Click(window,"EsimRead");
+        Check(Find<TextBlock>(window,"EsimCardType").Text==Localization.Translate("Карта: тип не определён. Повторите проверку."),"error after ordinary returns unknown");
+        fake.Override=null; Click(window,"EsimRead");
+        Check(Find<TextBlock>(window,"EsimCardType").Text==Localization.Translate("Карта: eUICC подтверждена"),"fresh eUICC replaces ordinary/error status");
         var closingAddress=Find<TextBox>(window,"EsimSmdpAddress"); var closingMatching=Find<TextBox>(window,"EsimMatchingId"); var closingConfirmation=Find<TextBox>(window,"EsimConfirmationCode");
         closingAddress.Text="example.com"; closingMatching.Text="unsubmitted-test"; closingConfirmation.Text="confirmation-test";
         window.Close(); Pump();
@@ -252,6 +263,7 @@ static class Fixture
 sealed class FakeModem : IModemService
 {
     public EsimSnapshot Current=Fixture.Snapshot;
+    public EsimResult? Override;
     public List<EsimRequest> Requests=[];
     public bool RefreshSuccess = true;
     public TaskCompletionSource<EsimResult>? Pending;
@@ -259,6 +271,7 @@ sealed class FakeModem : IModemService
     {
         Requests.Add(request); progress?.Report("verifying");
         if(Pending is not null)return Pending.Task;
+        if(Override is not null)return Task.FromResult(Override);
         if(request.Operation=="delete")Current=Current with{Profiles=Current.Profiles.Where(p=>p.Iccid!=request.Iccid).ToArray()};
         if(request.Operation=="enable")Current=Current with{Profiles=Current.Profiles.Select(p=>p with{State=p.Iccid==request.Iccid?"enabled":"disabled",Enabled=p.Iccid==request.Iccid}).ToArray()};
         return Task.FromResult(new EsimResult(true,Current,request.Operation!="list",false, ModemVerified:request.Operation=="enable", RadioRestored:request.Operation=="enable"));

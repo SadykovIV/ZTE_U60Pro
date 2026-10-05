@@ -32,6 +32,7 @@ enum EsimFailure: Error, LocalizedError {
         case .invalidSnapshot: return "Карта вернула некорректный список профилей. Обновите список."
         case .targetChanged: return "Карта или выбранное подключение изменились. Обновите список профилей."
         case .backend(let code):
+            if code == "card_not_euicc" { return "Карта не поддерживает управление eSIM. Проверьте карту заново." }
             if code == "radio_restore_failed" { return "Включение радио после авиарежима не подтверждено. Проверьте авиарежим на модеме и обновите список профилей. Автоматического повтора не было." }
             if let message = EsimLog.cardMessage(code) { return message }
             return "Ошибка eSIM: " + EsimLog.backendError(code) + ". Результат не подтверждён. Перечитайте профили перед следующим действием."
@@ -125,11 +126,14 @@ struct EsimCardCheck: Decodable, Sendable {
         management = try values.decode(String.self, forKey: .management)
         reason = try values.decode(String.self, forKey: .reason)
         cleanupConfirmed = try values.decode(Bool.self, forKey: .cleanupConfirmed)
-        guard ["euicc_confirmed", "unknown", "absent"].contains(kind),
-              ["available", "unavailable", "unknown"].contains(management),
-              ["eid_and_profiles_read", "busy", "open_rejected", "cleanup_unknown", "not_ready", "unsupported_device", "read_failed", "operation_failed"].contains(reason),
-              kind != "euicc_confirmed" || (management == "available" && reason == "eid_and_profiles_read" && cleanupConfirmed),
-              management != "available" || kind == "euicc_confirmed" else { throw EsimFailure.protocolError }
+        let valid: Bool
+        switch kind {
+        case "euicc_confirmed": valid = management == "available" && reason == "eid_and_profiles_read" && cleanupConfirmed
+        case "ordinary_sim": valid = management == "unavailable" && reason == "isdr_not_found" && cleanupConfirmed
+        case "unknown": valid = management == "unknown" && !cleanupConfirmed && ["busy", "open_rejected", "cleanup_unknown", "not_ready", "unsupported_device", "read_failed", "operation_failed"].contains(reason)
+        default: valid = false
+        }
+        guard valid else { throw EsimFailure.protocolError }
     }
 }
 
@@ -156,12 +160,20 @@ struct EsimRPCResult: Decodable, Sendable {
         modemVerified = try fields.decodeIfPresent(Bool.self, forKey: .modemVerified)
         radioRestored = try fields.decodeIfPresent(Bool.self, forKey: .radioRestored)
         error = try fields.decodeIfPresent(String.self, forKey: .error)
-        componentError = EsimLog.componentError(try fields.decodeIfPresent(String.self, forKey: .componentError))
+        componentError = try fields.decodeIfPresent(String.self, forKey: .componentError)
+        if ok && card?.kind == "ordinary_sim" {
+            guard ![CodingKeys.snapshot, .modemVerified, .radioRestored, .componentError, .error].contains(where: fields.contains) else { throw EsimFailure.protocolError }
+        }
     }
-    func accepted(for operation: EsimOperation, before: EsimSnapshot?) throws -> EsimSnapshot {
+    func accepted(for operation: EsimOperation, before: EsimSnapshot?) throws -> EsimSnapshot? {
         guard type == "result" else { throw EsimFailure.protocolError }
         guard ok else { throw EsimFailure.backend(EsimLog.backendError(error)) }
         guard componentError == nil else { throw EsimFailure.protocolError }
+        if card?.kind == "ordinary_sim" {
+            guard !operation.mutates, snapshot == nil, changed == false, notificationsPending == false,
+                  error == nil, modemVerified == nil, radioRestored == nil else { throw EsimFailure.protocolError }
+            return nil
+        }
         guard let current = snapshot, let changed, notificationsPending != nil else { throw EsimFailure.protocolError }
         try current.validate()
         if let card { guard card.kind == "euicc_confirmed", card.management == "available", card.cleanupConfirmed else { throw EsimFailure.protocolError } }
@@ -325,7 +337,7 @@ struct EsimProgressDetail {
 enum EsimLog {
     // Pinned literal catalog from ModemAgent/esim-build/progress-error-codes.json.
     static let backendErrors: Set<String> = [
-        "card_busy", "card_open_rejected", "card_cleanup_unknown", "card_not_ready",
+        "card_busy", "card_open_rejected", "card_cleanup_unknown", "card_not_ready", "card_not_euicc",
         "card_reset_failed", "card_power_restore_failed",
         "operation_lock_failed", "launcher_operation_refused", "radio_read_failed", "radio_not_online", "radio_set_failed", "radio_offline_failed", "radio_restore_failed", "modem_readback_failed", "modem_slot_mismatch", "modem_iccid_mismatch", "esim_busy",
         "bridge_already_open",

@@ -778,5 +778,21 @@
   "Диагностический ZIP включает сохранённое исследование устройства и действия программы. Новое исследование запускается отдельно.": "The diagnostic ZIP includes the saved device survey and application activity. Run a new device survey separately.",
   "Сохранённое исследование и действия программы в одном архиве.": "Saved device survey and application activity in one archive.",
   "Отчёт сохраняется локально и включается в общий диагностический ZIP. Экспорт доступен после отключения модема или перезапуска программы; пароли и личные идентификаторы скрываются.": "The report is saved locally and included in the common diagnostic ZIP. Export is available after disconnecting or restarting the application; passwords and personal identifiers are redacted.",
-  "Включены действия программы, очищенные трассировки и доступное сохранённое исследование модема. Свежий сбор с модема не выполнялся.": "Application activity, redacted operation traces and the available saved device survey are included. No fresh data was collected from the modem."
+  "Включены действия программы, очищенные трассировки и доступное сохранённое исследование модема. Свежий сбор с модема не выполнялся.": "Application activity, redacted operation traces and the available saved device survey are included. No fresh data was collected from the modem.",
+  "SIM-карта": "SIM card",
+  "Карта: обычная SIM. Управление eSIM недоступно.": "Card: ordinary SIM. eSIM management is unavailable.",
+  "Управление eSIM недоступно для выбранной SIM-карты.": "eSIM management is unavailable for the selected SIM card.",
+  "Неверный ответ проверки SSH.": "Invalid SSH verification response.",
+  "Неполный ответ проверки SSH.": "Incomplete SSH verification response.",
+  "Некорректные сведения SSH.": "Invalid SSH information.",
+  "Устройство или сеанс SSH изменились; дальнейшее чтение остановлено.": "The device or SSH session changed; reading stopped.",
+  "Не удалось проверить сеанс SSH.": "Could not verify the SSH session.",
+  "Введите отдельный пароль агента для установки.": "Enter a separate password for the agent installation.",
+  "Не удалось проверить существующий сеанс SSH.": "Could not verify the existing SSH session.",
+  "SSH проверен. Установка агента доступна отдельно.": "SSH is verified. Agent installation is available separately.",
+  "SSH подключён. Доступные сведения прочитаны; установка и изменение настроек проверяются отдельно.": "SSH is connected. Available information was read; installation and settings changes are checked separately.",
+  "Некорректные сведения системы.": "Invalid system information.",
+  "Архитектура": "Architecture",
+  "Подготовка: ": "Preparation: ",
+  "Доступ SSH подтверждён; установка не выполнялась. Агент устанавливается отдельно. ": "SSH access is verified; no installation was performed. The agent is installed separately. "
 }

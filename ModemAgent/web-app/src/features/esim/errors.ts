@@ -1,6 +1,6 @@
 // Fixed backend codes; arbitrary diagnostic text is never displayed.
 export const safeEsimErrors = new Set([
-  "card_busy", "card_open_rejected", "card_cleanup_unknown", "card_not_ready",
+  "card_not_euicc", "card_busy", "card_open_rejected", "card_cleanup_unknown", "card_not_ready",
   "card_reset_failed", "card_power_restore_failed",
   "operation_lock_failed", "launcher_operation_refused", "radio_read_failed", "radio_not_online", "radio_set_failed", "radio_offline_failed", "radio_restore_failed", "modem_readback_failed", "modem_slot_mismatch", "modem_iccid_mismatch", "esim_busy",
   "bridge_already_open",
@@ -122,6 +122,7 @@ export function failureMessage(code: string): string {
     case 'card_busy': return 'The card is busy with another operation. Wait for it to finish, then read profiles again.'
     case 'card_open_rejected': return 'The modem refused to open the card channel. Wait a moment, then read profiles again. No profile operation was retried.'
     case 'card_cleanup_unknown': return 'Card channel cleanup is unconfirmed. Restart the modem before retrying, then read profiles again. Do not remove the card lock manually.'
+    case 'card_not_euicc': return 'Ordinary SIM: eSIM management is unavailable.'
     case 'card_not_ready': return 'The selected SIM application is not ready. Wait, then read profiles again. No profile operation was retried.'
     case 'card_reset_failed': return 'The SIM restart is unconfirmed. Read profiles again and check the switch result. No automatic retry was made.'
     case 'card_power_restore_failed': return 'SIM power restoration is unconfirmed. Restart the modem before trying again, then read profiles again.'

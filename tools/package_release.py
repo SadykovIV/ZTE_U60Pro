@@ -4,14 +4,15 @@ from pathlib import Path
 import gzip
 import hashlib
 import json
+import re
 import shutil
 import tarfile
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / 'release'
 RES = ROOT / 'MacIMEI/Resources'
-VERSION = '1.23.3'
-AGENT_VERSION = '2.7.0-esim.8'
+VERSION = re.search(r'<Version>([^<]+)</Version>', (ROOT / 'Windows_x64/src/ZteImeiStudio.Windows.csproj').read_text()).group(1)
+AGENT_VERSION = re.search(r'static let version = "([^"]+)"', (ROOT / 'MacIMEI/Sources/BundledAgent.swift').read_text()).group(1)
 RELEASE_URL = f'https://github.com/SadykovIV/ZTE_U60Pro/releases/download/v{VERSION}/'
 OUT.mkdir(exist_ok=True)
 
@@ -156,7 +157,7 @@ artifacts.append(source_archive)
 artifacts.append(copy_artifact(ROOT / 'MacIMEI/dist/build-manifest.json', 'macOS-build-manifest.json'))
 artifacts.append(copy_artifact(ROOT / f'Windows_x64/dist/windows-{VERSION}-build-manifest.json', 'Windows-build-manifest.json'))
 release_manifest = OUT / 'release-manifest.json'
-release_manifest.write_text(json.dumps({'version': VERSION, 'previousRelease': 'v1.23.2', 'agentVersion': AGENT_VERSION,
+release_manifest.write_text(json.dumps({'version': VERSION, 'previousRelease': 'v1.23.3', 'agentVersion': AGENT_VERSION,
                                       'vpnctlVersion': '1.3.0', 'esim': {'card': 'physical removable eUICC',
                                       'testedCard': '9eSIM V0', 'testedFirmware': 'CN_ZTE_MU5250V1.0.0B31',
                                       'builtInZteSupported': False, 'qmiEs10LicenseStatus': 'unspecified'},

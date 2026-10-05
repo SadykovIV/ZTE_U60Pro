@@ -5,7 +5,7 @@ use std::io::{Read, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
-pub const BRIDGE_HASH: &str = "d6c2b0b6946bafe0b89d5bf1f5a64069ea33cb34fd25625292cdbd287a137508";
+pub const BRIDGE_HASH: &str = "67d5f32928c5279db50d390ce51322e2602bb68a158ed1fbf0cfe3f831e6e12e";
 pub const LPAC_HASH: &str = "92aaeb96bd02e8f3e7ab9847b15e3fae31795b244fcab92f70b595719b18718d";
 const BRIDGE: &[u8] = include_bytes!("../../resources/esim/bridge");
 const LPAC: &[u8] = include_bytes!("../../resources/esim/lpac");
@@ -26,6 +26,12 @@ pub fn check_device() -> Result<()> {
     if !cfg!(all(target_os = "linux", target_arch = "aarch64")) || unsafe { libc::geteuid() } != 0 {
         return Err(Error::new("unsupported_device"));
     }
+    Ok(())
+}
+/// The tested power/radio reset remains firmware-specific. APDU inventory and
+/// card operations use real QMI route/capability checks instead of this hash.
+pub fn check_radio_device() -> Result<()> {
+    check_device()?;
     let mut f = fs::File::open("/firmware/image/modem.b16")
         .map_err(|_| Error::new("firmware_check_failed"))?;
     let mut digest = Sha256::new();
@@ -55,7 +61,17 @@ pub struct Resources {
 }
 impl Resources {
     pub fn extract() -> Result<Self> {
-        verify()?;
+        Self::extract_for(false)
+    }
+    /// Listing needs only the card helper; operator TLS and lpac are unrelated.
+    pub fn extract_for(read_only: bool) -> Result<Self> {
+        if read_only {
+            if hash(BRIDGE) != BRIDGE_HASH {
+                return Err(Error::new("resource_integrity_failed"));
+            }
+        } else {
+            verify()?;
+        }
         let mut random = [0u8; 16];
         fs::File::open("/dev/urandom")
             .and_then(|mut f| f.read_exact(&mut random))
@@ -80,6 +96,9 @@ impl Resources {
             (&r.lpac, LPAC, LPAC_HASH),
             (&r.gsma_root, GSMA_ROOT, GSMA_HASH),
         ] {
+            if read_only && path != &r.helper {
+                continue;
+            }
             let mut file = OpenOptions::new()
                 .write(true)
                 .create_new(true)

@@ -23,6 +23,34 @@ pub struct Snapshot {
     pub profiles: Vec<Profile>,
 }
 
+/// A read may prove an ordinary SIM without inventing an eUICC inventory.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Inspection {
+    Euicc(Snapshot),
+    Ordinary,
+}
+impl Inspection {
+    pub fn parse(value: Value) -> Result<Self> {
+        if value.get("card").is_some() {
+            let expected = serde_json::json!({"ok":true,"card":{
+                "kind":"ordinary_sim","management":"unavailable",
+                "reason":"isdr_not_found","cleanup_confirmed":true}});
+            if value != expected {
+                return Err(Error::new("invalid_snapshot"));
+            }
+            Ok(Self::Ordinary)
+        } else {
+            Snapshot::parse(value).map(Self::Euicc)
+        }
+    }
+    pub fn require_euicc(self) -> Result<Snapshot> {
+        match self {
+            Self::Euicc(snapshot) => Ok(snapshot),
+            Self::Ordinary => Err(Error::new("card_not_euicc")),
+        }
+    }
+}
+
 fn decimal(s: &str, lo: usize, hi: usize) -> bool {
     (lo..=hi).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_digit())
 }

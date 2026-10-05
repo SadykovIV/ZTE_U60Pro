@@ -1,10 +1,10 @@
 {
-  "agent_version": "2.9.0-esim.3",
-  "agent_sha256": "b23d57c223e898df9d26574fdfbd01a0b6f4d3835ebe9752ed642b0484625ef7",
+  "agent_version": "2.9.0-esim.4",
+  "agent_sha256": "9def1ae625eeee2d3357c5583b441c3a910ef546513d10c80355536b3b5146e7",
   "lpac_version": "2.3.0 + pinned stdio backports",
   "lpac_commit": "c2fcf5e4b21c712d54e35a11da2ad9ad134fb821",
   "lpac_linux_sha256": "92aaeb96bd02e8f3e7ab9847b15e3fae31795b244fcab92f70b595719b18718d",
-  "qmi_bridge_sha256": "d6c2b0b6946bafe0b89d5bf1f5a64069ea33cb34fd25625292cdbd287a137508",
+  "qmi_bridge_sha256": "67d5f32928c5279db50d390ce51322e2602bb68a158ed1fbf0cfe3f831e6e12e",
   "qmi_component": {
     "component": "QMI/ES10 transport",
     "license_status": "license_unspecified",
@@ -18,8 +18,8 @@
       },
       {
         "path": "tools/removable-euicc/device/src/qmi/qrtr.rs",
-        "sha256": "efe64b5a3e1b922bd5c12744fc50c8645c186abca91cc98fb759e8d0ecce589d",
-        "size": 11444
+        "sha256": "5a3acb6643dbfbde1bd1b0b7157d733174711f4b351fad4ebb3e683c8ede8587",
+        "size": 13319
       },
       {
         "path": "tools/removable-euicc/device/src/qmi/tlv.rs",
@@ -28,8 +28,8 @@
       },
       {
         "path": "tools/removable-euicc/device/src/qmi/uim.rs",
-        "sha256": "63ab27d583a08de9660ad2e23c3d4d0b208f3903c17170ddb738f564faccd552",
-        "size": 15300
+        "sha256": "b7635056a72a1f79494a97b148a75b482a09777394d5b432e2962da973a046c3",
+        "size": 19828
       },
       {
         "path": "tools/removable-euicc/device/src/euicc/bertlv.rs",
@@ -53,7 +53,7 @@
       }
     ]
   },
-  "qmi_component_manifest_sha256": "75700b88a17d6bd0c154034f8f9d3b4b030443316bf814dbf31c458a3c6734a5",
+  "qmi_component_manifest_sha256": "0e7691fdbede6f9dd37183c5358bb1aca914d2e4365148fef532ee4b79830faa",
   "license_status": {
     "qmi_es10": "license_unspecified"
   },
@@ -63,7 +63,7 @@
     "sha256": "29c00a9cc4bd76f5190141be668230acf00ad008871fad72a200e17f40d4883b"
   },
   "source_archive_files": 448,
-  "source_archive_sha256": "43464b4ee82630802bfc82ca1cac880a0c5fe730a3a4bbce3dc609c3f8df357d",
+  "source_archive_sha256": "9f6e1103230b1087454dfe87e8ef6f0b2f1f1c7f70ecb8cd8be6480e89d821ca",
   "gsma_pem_sha256": "7364a2ac4d2b5f77c1b83ee7e1c535e8fc806c67ee42e73ad97c35464d203477",
   "gsma_roots": [
     {

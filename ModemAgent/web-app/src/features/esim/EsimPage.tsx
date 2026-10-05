@@ -11,6 +11,7 @@ import { failureMessage, safeEsimErrors } from './errors'
 
 export default function EsimPage() {
   const { t } = useI18n()
+  const [operations, setOperations] = useState<string[]>([])
   const [ready, setReady] = useState(false), [busy, setBusy] = useState(false)
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null), [selected, setSelected] = useState('')
   const [card, setCard] = useState<CardStatus | null>(null)
@@ -28,7 +29,8 @@ export default function EsimPage() {
     capabilities().then(value => {
       const operations = value.operations
       if (!controller.signal.aborted) {
-        const supported = value.protocol === 1 && Array.isArray(operations) && ['list', 'download', 'enable', 'delete'].every(op => operations.includes(op))
+        const supported = value.protocol === 1 && Array.isArray(operations) && operations.includes('list')
+        setOperations(supported ? operations.filter((op: unknown): op is string => typeof op === 'string' && ['list', 'download', 'enable', 'delete'].includes(op)) : [])
         setReady(supported)
         if (!supported) { setFailed(true); setMessage('Install the eSIM agent and refresh this page.') }
       }
@@ -50,8 +52,8 @@ export default function EsimPage() {
       setSnapshot(result.snapshot)
       setCard(result.card)
       append(`${((Date.now()-started)/1000).toFixed(1)}s · ${request.operation} · verified${result.pending ? ' · notifications_pending' : ''}`)
-      setSelected(result.snapshot.profiles.some(p => p.iccid === selected) ? selected : '')
-      setMessage(result.pending ? 'Profiles verified. Operator notifications are pending; refresh before another operation.' : request.operation === 'list' ? 'Profiles read from the physical eUICC.' : request.operation === 'enable' ? 'The profile is active, the SIM was reread and normal radio mode was verified. Check mobile network registration separately.' : 'The profile change was verified on the card. Check mobile network registration separately.')
+      setSelected(result.snapshot?.profiles.some(p => p.iccid === selected) ? selected : '')
+      setMessage(result.card.kind === 'ordinary_sim' ? 'Ordinary SIM: eSIM management is unavailable.' : result.pending ? 'Profiles verified. Operator notifications are pending; refresh before another operation.' : request.operation === 'list' ? 'Profiles read from the physical eUICC.' : request.operation === 'enable' ? 'The profile is active, the SIM was reread and normal radio mode was verified. Check mobile network registration separately.' : 'The profile change was verified on the card. Check mobile network registration separately.')
     } catch (error) {
       if (!lifetime.current?.signal.aborted) {
         const code = error instanceof Error && safeEsimErrors.has(error.message) ? error.message : ''
@@ -62,7 +64,7 @@ export default function EsimPage() {
     } finally { working.current = false; if (!lifetime.current?.signal.aborted) setBusy(false) }
   }
   async function mutate(operation: 'download' | 'enable' | 'delete') {
-    if (!snapshot || busy || working.current || decoding) return
+    if (!snapshot || busy || working.current || decoding || !operations.includes(operation)) return
     const title = operation === 'download' ? t('Install eSIM profile?') : operation === 'enable' ? t(profile?.enabled ? 'Reread the active SIM?' : 'Make this profile active?') : t('Delete this profile?')
     const body = operation === 'download' ? t('The profile will be installed disabled. The modem needs internet access. The code may be single-use.') :
       `${profile ? profileName(profile) + ' · ' + mask(profile.iccid) : ''}\n${operation === 'delete' ? t('Deletion cannot be undone. The operator may require a new activation code.') : t('The modem will enter flight mode, reread the SIM and restore normal radio mode. Mobile connectivity will be interrupted.')}`
@@ -86,7 +88,7 @@ export default function EsimPage() {
     finally { if (!lifetime.current?.signal.aborted) setDecoding(false) }
   }
   return <div className="space-y-4">
-    <div><h1 className="text-xl font-semibold text-ink">{t('eSIM')}</h1><p className="mt-1 text-sm text-ink2">{t('Physical eUICC profile management')}</p></div>
+    <div><h1 className="text-xl font-semibold text-ink">{t('eSIM')}</h1><p className="mt-1 text-sm text-ink2">{t('SIM card and eSIM profiles')}</p></div>
     <Card title={t('Physical eUICC only')}>
       <p className="text-sm text-ink2">{t('Requires a removable eUICC in the physical SIM slot. Tested: 9eSIM V0 on MU5250 B31. Ordinary SIM cards and built-in ZTE eSIM are not supported.')}</p>
       <p className="mt-2 text-sm text-ink2">{t('Web downloads use the modem internet connection. If the card is empty and the modem is offline, use the macOS or Windows app with computer internet access.')}</p>
@@ -97,13 +99,13 @@ export default function EsimPage() {
         {(card?.kind === 'unknown' || !card && !busy) && <p className="mt-2 text-xs">{t('An ordinary operator SIM cannot store downloaded eSIM profiles. A failed check may also mean a busy card, restricted modem access or a communication error.')}</p>}
       </div>
       {snapshot && <p className="mb-3 text-xs text-ink3">{t('Card EID')}: {mask(snapshot.eid)}</p>}
-      {!snapshot && <p className="text-sm text-ink3">{t('Read profiles to enable installation and profile selection.')}</p>}
+      {!snapshot && card?.kind !== 'ordinary_sim' && <p className="text-sm text-ink3">{t('Read profiles to enable installation and profile selection.')}</p>}
       {snapshot?.profiles.length === 0 && <p className="text-sm text-ink3">{t('No profiles installed.')}</p>}
       <div className="space-y-2">{snapshot?.profiles.map(p => <button key={p.iccid} disabled={busy} onClick={() => setSelected(p.iccid)} aria-pressed={selected === p.iccid} className={`flex w-full items-center justify-between gap-3 rounded-lg border p-3 text-left ${selected === p.iccid ? 'border-accent bg-accent/10' : 'border-line/10 bg-surface2/50'}`}>
         <span className="min-w-0"><span className="block break-words text-sm font-semibold text-ink">{profileName(p)}</span><span className="mt-1 block break-words text-xs text-ink3">{p.service_provider} · {mask(p.iccid)}</span></span>
         <Chip tone={p.enabled ? 'ok' : 'default'}>{p.state === 'enabled' ? t('Active') : p.state === 'disabled' ? t('Disabled') : t('Unknown')}</Chip>
       </button>)}</div>
-      <div className="mt-4 flex flex-wrap gap-2"><Button variant="primary" disabled={busy || !profile || profile.state === 'unknown'} onClick={() => void mutate('enable')}>{t(profile?.enabled ? 'Reread SIM' : 'Make active')}</Button><Button variant="danger" disabled={busy || !profile || profile.state !== 'disabled'} onClick={() => void mutate('delete')}>{t('Delete profile')}</Button></div>
+      <div className="mt-4 flex flex-wrap gap-2"><Button variant="primary" disabled={!operations.includes('enable') || busy || !profile || profile.state === 'unknown'} onClick={() => void mutate('enable')}>{t(profile?.enabled ? 'Reread SIM' : 'Make active')}</Button><Button variant="danger" disabled={!operations.includes('delete') || busy || !profile || profile.state !== 'disabled'} onClick={() => void mutate('delete')}>{t('Delete profile')}</Button></div>
       <p className="mt-2 text-xs text-ink3">{t('Only a disabled profile can be deleted.')}</p>
     </Card>
     <Card title={t('Add eSIM profile')}>
@@ -112,7 +114,7 @@ export default function EsimPage() {
         {mode === 'manual' ? <><Field label={t('SM-DP+ Address')}><Input autoComplete="off" spellCheck={false} value={address} disabled={busy} onChange={e => { inputRevision.current++; setAddress(e.target.value) }} placeholder={t('Example: rsp.example.com')} /></Field><Field label={t('Activation code (Matching ID)')}><Input type="password" autoComplete="new-password" value={matching} disabled={busy} onChange={e => { inputRevision.current++; setMatching(e.target.value) }} /></Field></> : <><Field label={t('Full LPA code')}><Input type="password" autoComplete="new-password" value={lpa} disabled={busy || decoding} onChange={e => { inputRevision.current++; setLpa(e.target.value) }} /></Field><Field label={t('Load QR image')}><input type="file" accept="image/png,image/jpeg,image/webp" disabled={busy || decoding} onChange={e => { const file = e.target.files?.[0]; e.target.value = ''; void loadQR(file) }} className="w-full text-sm text-ink2" /></Field></>}
         <Field label={t('Operator confirmation code (if required)')}><Input type="password" autoComplete="new-password" value={confirmation} disabled={busy} onChange={e => { inputRevision.current++; setConfirmation(e.target.value) }} /></Field>
         <p className="text-xs text-ink3">{t('New profiles are installed disabled. QR images and activation codes are not saved.')}</p>
-        <Button variant="primary" disabled={!ready || !snapshot || busy || decoding || !code || !confirmationValid} onClick={() => void mutate('download')}>{t('Install profile')}</Button>
+        <Button variant="primary" disabled={!operations.includes('download') || !ready || !snapshot || busy || decoding || !code || !confirmationValid} onClick={() => void mutate('download')}>{t('Install profile')}</Button>
       </div>
     </Card>
     {message && <div role="status" className={`rounded-xl border p-3 text-sm ${failed ? 'border-danger/25 bg-danger/8 text-danger' : 'border-line/10 bg-surface text-ink2'}`}>{t(message)}</div>}

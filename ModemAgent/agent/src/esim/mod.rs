@@ -13,7 +13,7 @@ pub mod web;
 mod web_http;
 
 use children::{emit, read_json, LocalRuntime};
-use model::{notification_arguments, sequence_numbers, Operation, Request, Snapshot};
+use model::{notification_arguments, sequence_numbers, Inspection, Operation, Request, Snapshot};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
@@ -66,6 +66,9 @@ pub trait Relay {
 }
 pub trait Runtime {
     fn snapshot(&mut self) -> Result<Snapshot>;
+    fn inspect(&mut self) -> Result<Inspection> {
+        self.snapshot().map(Inspection::Euicc)
+    }
     fn begin(&mut self, expected: &Snapshot) -> Result<()>;
     fn command(&mut self, arguments: &[String], http: &mut dyn Relay) -> Result<Value>;
     fn end(&mut self) -> Result<()>;
@@ -151,7 +154,7 @@ impl<R: BufRead, W: Write> Relay for Rpc<'_, R, W> {
 }
 
 struct Outcome {
-    snapshot: Snapshot,
+    snapshot: Option<Snapshot>,
     changed: bool,
     notifications_pending: bool,
     modem_verified: Option<bool>,
@@ -193,16 +196,24 @@ fn notifications(
 fn perform(request: &Request, runtime: &mut impl Runtime, rpc: &mut dyn Relay) -> Result<Outcome> {
     request.validate()?;
     rpc.progress("reading_profiles")?;
-    let before = runtime.snapshot()?;
-    before.validate()?;
+    let inspection = runtime.inspect()?;
     if request.operation == Operation::List {
+        let snapshot = match inspection {
+            Inspection::Euicc(snapshot) => {
+                snapshot.validate()?;
+                Some(snapshot)
+            }
+            Inspection::Ordinary => None,
+        };
         return Ok(Outcome {
-            snapshot: before,
+            snapshot,
             changed: false,
             notifications_pending: false,
             modem_verified: None,
         });
     }
+    let before = inspection.require_euicc()?;
+    before.validate()?;
     let expected = request
         .expected_snapshot
         .as_ref()
@@ -227,7 +238,7 @@ fn perform(request: &Request, runtime: &mut impl Runtime, rpc: &mut dyn Relay) -
                 .radio(true));
         }
         return Ok(Outcome {
-            snapshot: after,
+            snapshot: Some(after),
             changed: false,
             notifications_pending: false,
             modem_verified: Some(true),
@@ -304,7 +315,7 @@ fn perform(request: &Request, runtime: &mut impl Runtime, rpc: &mut dyn Relay) -
         }
     }
     Ok(Outcome {
-        snapshot: after,
+        snapshot: Some(after),
         changed: true,
         notifications_pending: pending,
         modem_verified: (request.operation == Operation::Enable).then_some(true),
@@ -348,7 +359,8 @@ fn run_rpc(input: &mut impl BufRead, output: &mut (impl Write + Send)) -> Result
             rpc.progress("checking_card")?;
             resources::check_device()?;
             let _operation = operation_lock::OperationLock::acquire()?;
-            let mut resources = resources::Resources::extract()?;
+            let mut resources =
+                resources::Resources::extract_for(request.operation == Operation::List)?;
             let mut runtime = LocalRuntime::new(resources.helper.clone(), resources.lpac.clone());
             runtime.set_trace(trace.clone());
             let result = perform(&request, &mut runtime, &mut rpc);
@@ -383,12 +395,26 @@ fn run_rpc(input: &mut impl BufRead, output: &mut (impl Write + Send)) -> Result
 fn final_value(result: Result<Outcome>) -> (Value, i32) {
     match result {
         Ok(outcome) => {
-            if let Err(error) = outcome.snapshot.validate() {
-                return final_value(Err(error));
-            }
-            let mut value = json!({"type":"result","ok":true,"snapshot":outcome.snapshot,
+            let status = if let Some(snapshot) = &outcome.snapshot {
+                if let Err(error) = snapshot.validate() {
+                    return final_value(Err(error));
+                }
+                card::Status::confirmed()
+            } else {
+                if outcome.changed
+                    || outcome.notifications_pending
+                    || outcome.modem_verified.is_some()
+                {
+                    return final_value(Err(Error::new("invalid_snapshot")));
+                }
+                card::Status::ordinary()
+            };
+            let mut value = json!({"type":"result","ok":true,
                 "changed":outcome.changed,"notifications_pending":outcome.notifications_pending,
-                "card":card::Status::confirmed()});
+                "card":status});
+            if let Some(snapshot) = outcome.snapshot {
+                value["snapshot"] = json!(snapshot);
+            }
             if let Some(verified) = outcome.modem_verified {
                 value["modem_verified"] = json!(verified);
                 value["radio_restored"] = json!(true);
@@ -464,7 +490,7 @@ pub fn early_entry() -> Option<i32> {
     }
     if arguments == ["--esim-radio-restore"] {
         let checked = (|| {
-            resources::check_device()?;
+            resources::check_radio_device()?;
             let _operation = operation_lock::OperationLock::acquire()?;
             let before = radio_qmi::mode()?;
             if before != 0 && before != 1 {

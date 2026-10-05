@@ -35,7 +35,7 @@ public sealed class EsimRequest
 }
 public sealed record EsimResult(bool Ok, EsimSnapshot? Snapshot, bool Changed, bool NotificationsPending, string Error = "operation_failed", bool? ModemVerified = null, bool? RadioRestored = null, string? ComponentError = null, EsimCardStatus? Card = null);
 
-/// <summary>Fixed capability metadata, never a physical ordinary-SIM inference or a write grant.</summary>
+/// <summary>Fixed capability metadata, ordinary means ISD-R was not found in the checked context, never a write grant.</summary>
 public sealed record EsimCardStatus
 {
     public string Kind { get; }
@@ -59,17 +59,23 @@ public sealed record EsimCardStatus
         if (flag.ValueKind is not (JsonValueKind.True or JsonValueKind.False)) throw new EsimException();
         bool cleanup = flag.GetBoolean();
         bool valid = success
-            ? kind == "euicc_confirmed" && management == "available" && reason == "eid_and_profiles_read" && cleanup
+            ? cleanup && (kind == "euicc_confirmed" && management == "available" && reason == "eid_and_profiles_read" || kind == "ordinary_sim" && management == "unavailable" && reason == "isdr_not_found")
             : kind == "unknown" && management == "unknown" && FailureReasons.Contains(reason) && !cleanup;
-        // Reserved absent/unavailable states require a future evidence contract.
+        // Reserved absent state requires a future evidence contract.
         if (!valid) throw new EsimException();
         return new(kind, management, reason, cleanup);
     }
 
     /// <summary>Call only after service completion: process exit, identity and owned cleanup have passed.</summary>
-    public static EsimCardStatus FromAcceptedResult(EsimResult result)
+    public static EsimCardStatus FromAcceptedResult(EsimResult result, string operation = "list")
     {
-        if (!result.Ok || result.Snapshot is null || result.ComponentError is not null) throw new EsimException();
+        if (!result.Ok || result.ComponentError is not null) throw new EsimException();
+        if (result.Card is { Kind: "ordinary_sim", Management: "unavailable", Reason: "isdr_not_found", CleanupConfirmed: true } ordinary)
+        {
+            if (operation != "list" || result.Snapshot is not null || result.Changed || result.NotificationsPending || result.ModemVerified is not null || result.RadioRestored is not null) throw new EsimException();
+            return ordinary;
+        }
+        if (result.Snapshot is null) throw new EsimException();
         EsimValidation.Snapshot(result.Snapshot);
         if (result.Card is { } card)
         {

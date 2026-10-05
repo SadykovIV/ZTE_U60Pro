@@ -82,7 +82,7 @@ test('every type banner is translated and cleanup unconfirmed alone never gives 
 
 // Execute the production page's hooks and event handlers without browser/network.
 // State persists across render calls; the explicit operation uses a controlled promise.
-function pageFixture() {
+function pageFixture(advertised = ['list', 'enable', 'download', 'delete']) {
   let cursor = 0, effects = [], cleanups = [], mounted = false, operationCalls = 0, capabilityCalls = 0, resolve, reject
   const state = [], refs = new Set(), listeners = new Map()
   function useState(initial) { const i = cursor++; if (!(i in state)) state[i] = initial; return [state[i], value => { state[i] = typeof value === 'function' ? value(state[i]) : value }] }
@@ -92,7 +92,7 @@ function pageFixture() {
   const module = load('EsimPage', { react: { useState, useRef, useEffect: effect => { if (!mounted) effects.push(effect) } },
     'react/jsx-runtime': { jsx: node, jsxs: node }, '../../i18n': { useI18n: () => ({ t: x => x }) }, '../../ui/controls': ui,
     '../../ui/primitives': { Card: 'card', Chip: 'chip' }, '../../ui/feedback': { confirm: async () => true },
-    './api': { capabilities: async () => { capabilityCalls++; return { protocol: 1, operations: ['list', 'enable', 'download', 'delete'] } },
+    './api': { capabilities: async () => { capabilityCalls++; return { protocol: 1, operations: advertised } },
       runOperation: () => { operationCalls++; return new Promise((yes, no) => { resolve = yes; reject = no }) } },
     './model': model, './qr': { decodeImage: async () => { throw Error('not used') } }, './journal': journal, './errors': errors
   }, { window: { addEventListener: (name, fn) => listeners.set(name, fn), removeEventListener: name => listeners.delete(name) } }, 'tsx')
@@ -130,4 +130,34 @@ test('unmounted page does not accept a late card result or send another operatio
   page.resolve({ snapshot: snapshot([profile]), card: confirmed(), pending: false }); await settle()
   assert.doesNotMatch(JSON.stringify(page.render()), /EID and profiles were read|99999999|89000000000000000001/)
   assert.equal(page.calls, 1)
+})
+
+const ordinary = () => ({ kind: 'ordinary_sim', management: 'unavailable', reason: 'isdr_not_found', cleanup_confirmed: true })
+const ordinaryResult = () => ({ ok: true, changed: false, notifications_pending: false, card: ordinary() })
+test('ordinary is successful list only, absent snapshot and exact cleanup proof', () => {
+  const value = model.verifiedCard(request, ordinaryResult())
+  assert.equal(value.snapshot, null); assert.equal(value.card.kind, 'ordinary_sim')
+  for (const extra of [{ error: null }, { error: 'card_cleanup_unknown' }, { snapshot: null }, { snapshot: snapshot() }, { changed: true }, { notifications_pending: true }, { modem_verified: false }, { radio_restored: true }, { component_error: null }, { ok: false }]) assert.throws(() => model.verifiedCard(request, { ...ordinaryResult(), ...extra }))
+  for (const operation of ['download', 'enable', 'delete']) assert.throws(() => model.verifiedCard({ ...request, operation }, ordinaryResult()))
+  assert.throws(() => model.verifiedCard(request, { ...ordinaryResult(), card: { ...ordinary(), cleanup_confirmed: false } }))
+})
+test('card change eUICC to ordinary clears profiles and writes; later error remains unknown', async () => {
+  const page = pageFixture(); page.mount(); await settle(); page.clickCheck()
+  page.resolve({ snapshot: snapshot([profile]), card: confirmed(), pending: false }); await settle()
+  page.clickCheck(); page.resolve({ snapshot: null, card: ordinary(), pending: false }); await settle()
+  let tree = page.render(); assert.match(JSON.stringify(tree), /Ordinary SIM: eSIM management is unavailable/)
+  assert.doesNotMatch(JSON.stringify(tree), /99999999|89000000000000000001|EID and profiles were read/)
+  for (const label of ['Make active', 'Delete profile', 'Install profile']) assert.equal(page.elements(tree).find(e => e.type === 'button' && e.props.children === label).props.disabled, true)
+  page.clickCheck(); page.reject(new model.EsimOperationError('card_open_rejected', unknown('open_rejected'))); await settle()
+  tree = page.render(); assert.match(JSON.stringify(tree), /Card type is unknown/); assert.doesNotMatch(JSON.stringify(tree), /Ordinary SIM: eSIM management is unavailable/)
+  assert.equal(page.calls, 3); page.unmount()
+})
+
+test('list capability does not depend on advertised write support', async () => {
+  const page = pageFixture(['list']); page.mount(); await settle(); page.clickCheck()
+  page.resolve({ snapshot: snapshot([profile]), card: confirmed(), pending: false }); await settle()
+  let elements = page.elements(page.render()); elements.find(e => e.type === 'button' && e.props['aria-pressed'] === false).props.onClick()
+  elements = page.elements(page.render())
+  for (const label of ['Make active', 'Delete profile', 'Install profile']) assert.equal(elements.find(e => e.type === 'button' && e.props.children === label).props.disabled, true)
+  assert.equal(page.calls, 1); page.unmount()
 })

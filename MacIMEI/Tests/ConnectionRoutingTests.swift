@@ -46,6 +46,11 @@ private final class SSH: RemoteTransport {
         try check(input == nil && !command.contains("chmod") && !command.contains("setup-agent.sh"), "SSH probe mutation")
         if status != 0 { return CommandResult(status: status, stdout: Data(), stderr: Data(message.utf8)) }
         if interrupted { throw CommandFailure(message: "SSH connection lost", partial: CommandResult(status: 255, stdout: Data(), stderr: Data())) }
+        if command == SSHReadProof.command {
+            identityReads += 1
+            let currentBoot = reboot && identityReads > 1 ? "10112233-4455-6677-8899-aabbccddeeff" : boot
+            return CommandResult(status: 0, stdout: Data((malformed ? "invalid" : "ZTE_SSH_READ_V1\n0\nLinux\naarch64\n" + cidValue + "\n" + currentBoot + "\n" + firmware + "\n" + ModemEngine.routerHash + "\n").utf8), stderr: Data())
+        }
         if command.contains(DiagnosticTransportSelector.identityCommand) {
             identityReads += 1
             return CommandResult(status: 0, stdout: malformed ? Data("invalid".utf8) : try rawProof(cidValue, reboot: reboot && identityReads > 1).accessProof(includeWeb: command.contains("ubus call zwrt_web")), stderr: Data())
@@ -246,7 +251,7 @@ private final class Fixture {
         try test("production manual SSH exposes verified shell and never logs in to APIs") {
             let f = try Fixture(); f.ssh.status = 0
             let result = try f.router().select(mode: .ssh)
-            try check(result.actualMode == .ssh && result.session?.diagnosticSession?.proof.identity.cid == cid && f.agent.calls.isEmpty && f.web.calls.isEmpty && f.adb.calls.isEmpty, "Manual SSH contacted another channel")
+            try check(result.actualMode == .ssh && result.session?.diagnosticSession?.proof?.identity.cid == cid && f.agent.calls.isEmpty && f.web.calls.isEmpty && f.adb.calls.isEmpty, "Manual SSH contacted another channel")
             _ = try result.session!.requireSSH()
             let data = try result.session!.readSummary()
             try check(data.identity?.cid == cid && data.fields["detailsUnavailable"] != nil, "Partial summary lost identity")
@@ -276,7 +281,7 @@ private final class Fixture {
         }
         try test("physical USB accepts unverified firmware read-only without policy override") {
             let f = try Fixture(), result = try f.router().select(mode: .adb)
-            try check(result.actualMode == .adb && result.session?.diagnosticSession?.proof.identity.firmwareHash == firmware && !f.engine.connection.skipFirmwareCheck, "USB diagnostics changed write policy")
+            try check(result.actualMode == .adb && result.session?.diagnosticSession?.proof?.identity.firmwareHash == firmware && !f.engine.connection.skipFirmwareCheck, "USB diagnostics changed write policy")
             try check(f.ssh.calls.isEmpty && f.web.calls.isEmpty && f.agent.calls.isEmpty && f.adb.calls.allSatisfy { $0 == ["devices", "-l"] || $0[2] == "shell" }, "USB probe mutations or fallback")
         }
         try test("network ADB is excluded and multiple unknown USB devices refuse before shell") {

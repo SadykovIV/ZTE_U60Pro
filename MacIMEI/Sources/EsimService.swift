@@ -85,7 +85,8 @@ final class EsimSSHProcess {
 struct EsimResources {
     var agent: Data
     var agentSHA: String
-    var ca: Data
+    private let directory: URL
+    private let hashes: [String: String]
     init(root: URL) throws {
         let directory = root.appendingPathComponent("Esim")
         do {
@@ -96,11 +97,16 @@ struct EsimResources {
                 guard hashes[name] == actual else { throw EsimFailure.resources }
                 return bytes
             }
-            agent = try checked("zte-agent-esim"); ca = try checked("gsma-rsp-roots.pem")
+            agent = try checked("zte-agent-esim")
             guard !agent.isEmpty, let pin = hashes["zte-agent-esim"] else { throw EsimFailure.resources }
             agentSHA = pin
-            _ = try EsimHTTPSRelay(certificatePEM: ca)
+            self.directory = directory; self.hashes = hashes
         } catch { throw EsimFailure.resources }
+    }
+    func certificatePEM() throws -> Data {
+        guard let bytes = try? Data(contentsOf: directory.appendingPathComponent("gsma-rsp-roots.pem")),
+              hashes["gsma-rsp-roots.pem"] == SHA256.hash(data: bytes).map({ String(format: "%02x", $0) }).joined() else { throw EsimFailure.resources }
+        return bytes
     }
 }
 
@@ -139,7 +145,6 @@ struct EsimService {
         set -eu
         test "$(id -u)" = 0
         test "$(uname -m)" = aarch64
-        test "$(sha256sum /firmware/image/modem.b16 | cut -d ' ' -f 1)" = \(ModemEngine.firmwareHash)
         umask 077
         mkdir \(path)
         trap '\(cleanup)' EXIT
@@ -161,6 +166,7 @@ struct EsimService {
         let child = try EsimSSHProcess(connection: connection, command: "\(path)/agent --esim-rpc")
         var decoder = EsimRPCDecoder()
         var httpFailure: EsimNetworkFailure?
+        var httpRelay: EsimHTTPSRelay?
         decoder.allowsHTTP = operation.mutates
         do {
             try child.send(request)
@@ -176,7 +182,8 @@ struct EsimService {
                     let httpStart = ProcessInfo.processInfo.systemUptime
                     log("host_http_start id=\(id) request_bytes=\(httpRequest.httpBody?.count ?? 0)")
                     progress("Ожидаю HTTPS-ответ оператора…")
-                    let relay = try EsimHTTPSRelay(certificatePEM: assets.ca)
+                    if httpRelay == nil { httpRelay = try EsimHTTPSRelay(certificatePEM: assets.certificatePEM()) }
+                    let relay = httpRelay!
                     // While this thread relays HTTPS, agent heartbeats remain in
                     // its pipe. A local metadata-only timer reports that wait.
                     let waiting = DispatchSource.makeTimerSource(queue: .global(qos: .utility))

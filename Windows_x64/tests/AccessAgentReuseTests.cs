@@ -19,7 +19,7 @@ internal static class AccessAgentReuseTests
         async Task Test(string name,Func<Task> work){try{await work();Console.WriteLine("PASS "+name);passed++;}catch(Exception error){Console.WriteLine("FAIL "+name+" ("+error.GetType().Name+")");failed++;}}
         try
         {
-            foreach(var scenario in new[]{"previous","previous-public","latest","unknown-hash","mapped-mismatch","wrong-password","changed-boot","changed-process","changed-hash","generic-old","duplicate-process"})
+            foreach(var scenario in new[]{"previous","previous-public","latest","unknown-hash","mapped-mismatch","wrong-password","changed-boot","changed-process","changed-hash","generic-old","duplicate-process","no-cid-nonroot","no-metadata"})
                 await Test("PrepareAsync existing reuse "+scenario,async()=>
                 {
                     var storage=Path.Combine(root,scenario);Directory.CreateDirectory(Path.Combine(storage,"SSH"));File.WriteAllText(Path.Combine(storage,"SSH","id_ed25519"),"synthetic-key");File.WriteAllText(Path.Combine(storage,"SSH","known_hosts"),"synthetic-host");
@@ -27,13 +27,13 @@ internal static class AccessAgentReuseTests
                     var adb=new AdbTransport((_,_,_)=>{adbCalls++;throw new Exception("Unexpected ADB/install fallback");});
                     var engine=new OnboardingEngine("192.168.0.1",storage,Path.GetFullPath("Windows_x64/Resources"),adb)
                         {WebFactory=()=>new ModemWebClient("192.168.0.1",wire),ExistingSshFactory=()=>remote};
-                    var success=scenario is "previous" or "previous-public" or "latest";
+                    var success=scenario!="changed-boot";
                     try
                     {
-                        var result=await engine.PrepareAsync("synthetic-web-password","synthetic-agent-password","");
-                        Need(success && result.AlreadyConfigured && result.AccessOnly && result.Profile=="b31" && result.Cid==Cid);
-                        Need(result.ReusedAgentVersion==(scenario is "previous" or "previous-public"?"2.7.0-esim.8":AgentPackage.Version));
-                        Need(remote.AuthCalls==1 && remote.ProofCalls==2 && remote.IdentityCalls==2);
+                        var result=await engine.PrepareAsync("","","");
+                        Need(success && result.AlreadyConfigured && result.AccessOnly && result.Profile=="read-only-ssh" && result.Cid==(scenario is "no-cid-nonroot" or "no-metadata"?null:Cid));
+                        Need(result.ReusedAgentVersion is null);
+                        Need(remote.AuthCalls==0 && remote.ProofCalls==0 && remote.IdentityCalls==2 && wire.Calls==0);
                     }
                     catch(InvalidDataException){Need(!success);}
                     Need(adbCalls==0 && wire.Backups==0 && remote.Uploads==0 && !Directory.Exists(Path.Combine(storage,"SetupBackups")) && !File.Exists(Path.Combine(storage,"setup-pending.json")));
@@ -53,7 +53,23 @@ internal static class AccessAgentReuseTests
                     var marker=Regex.Match(arguments[3],"__ZTE_RESULT_[A-F0-9]{32}__").Value;return Task.FromResult(Reply(Remote.Identity(false,false)+"\n"+marker+"0\n"));
                 });
                 var engine=new OnboardingEngine("192.168.0.1",storage,Path.GetFullPath("Windows_x64/Resources"),adb){ExistingSshFactory=()=>remote,WebFactory=()=>new ModemWebClient("192.168.0.1",web)};
-                var result=await engine.PrepareAsync("","synthetic-agent-password","");Need(result.AlreadyConfigured&&result.AccessOnly&&identities==2&&remote.IdentityCalls==2&&web.Calls==0);
+                var result=await engine.PrepareAsync("","synthetic-agent-password","");Need(result.AlreadyConfigured&&result.AccessOnly&&identities==0&&remote.IdentityCalls==2&&web.Calls==0);
+            });
+            await Test("SSH reuse preserves selected custom key paths and port without agent assets",async()=>
+            {
+                var storage=Path.Combine(root,"custom");Directory.CreateDirectory(storage);
+                var key=Path.Combine(storage,"custom-key");var hosts=Path.Combine(storage,"custom-hosts");File.WriteAllText(key,"fixture");File.WriteAllText(hosts,"fixture");
+                var remote=new Remote("no-cid-nonroot");
+                var engine=new OnboardingEngine("192.0.2.1",storage,Path.Combine(root,"absent-resources"),new AdbTransport((_,_,_)=>throw new Exception("Unexpected USB")))
+                    {ExistingKeyPath=key,ExistingKnownHostsPath=hosts,ExistingPort=2200,ExistingSshFactory=()=>remote};
+                var result=await engine.PrepareAsync("","","");Need(result.KeyPath==key&&result.KnownHostsPath==hosts&&result.Port==2200&&result.Cid is null&&result.ReusedAgentVersion is null&&remote.AuthCalls==0);
+            });
+            await Test("Actual readonly shell does not require modem files root or ARM64",async()=>
+            {
+                var info=new ProcessStartInfo("/bin/sh"){RedirectStandardOutput=true,RedirectStandardError=true,UseShellExecute=false};info.ArgumentList.Add("-c");info.ArgumentList.Add(SshReadProof.Command);
+                using var process=Process.Start(info)!;var stdout=process.StandardOutput.ReadToEndAsync();var stderr=process.StandardError.ReadToEndAsync();
+                await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));_ = await stderr;
+                Need(process.ExitCode==0);var proof=SshReadProof.Parse(Encoding.UTF8.GetBytes(await stdout));Need(proof.System=="Darwin"&&proof.Cid is null&&proof.BootId is null);
             });
             await Test("Pending setup blocks early reuse before SSH/agent proof",async()=>
             {
@@ -99,7 +115,7 @@ internal static class AccessAgentReuseTests
                 var text=File.ReadAllText("Windows_x64/src/WindowsModemService.Administration.cs");
                 var check=text.IndexOf("if (setup.AlreadyConfigured)",StringComparison.Ordinal);var dashboard=text.IndexOf("InstallDashboardForCurrentAgentAsync",StringComparison.Ordinal);
                 Need(check>=0&&check<dashboard&&text[check..dashboard].Contains("return ",StringComparison.Ordinal));
-                Need(text.Contains("[\"access_only\"] = setup.Profile == \"linux-arm64-access\"",StringComparison.Ordinal));return Task.CompletedTask;
+                Need(text.Contains("[\"access_only\"] = setup.AccessOnly || setup.Profile == \"linux-arm64-access\"",StringComparison.Ordinal));return Task.CompletedTask;
             });
         }
         finally{Directory.Delete(root,true);}
@@ -114,6 +130,14 @@ internal static class AccessAgentReuseTests
         public Task<RemoteResult> RunAsync(string command,byte[]? stdin=null,TimeSpan? timeout=null,CancellationToken ct=default)
         {
             Commands.Add(command);Need(!command.Contains("synthetic-agent-password",StringComparison.Ordinal));
+            if(command==SshReadProof.Command)
+            {
+                IdentityCalls++;
+                var missing=scenario is "no-cid-nonroot" or "no-metadata";
+                var value=scenario=="no-metadata"?"ZTE_SSH_READ_V1\n?\n?\n?\n?\n?\n?\n?\n":
+                    "ZTE_SSH_READ_V1\n"+(missing?"1000":"0")+"\nLinux\n"+(missing?"armv7l":"aarch64")+"\n"+(missing?"?":Cid)+"\n"+(scenario=="changed-boot"&&IdentityCalls>1?"22222222-2222-2222-2222-222222222222":Boot)+"\n"+(missing?"?":ImeiEngine.FirmwareHash)+"\n"+(missing?"absent":ImeiEngine.RouterHash)+"\n";
+                return Task.FromResult(Reply(value));
+            }
             if(command.Contains("observed_hash()",StringComparison.Ordinal)){IdentityCalls++;return Task.FromResult(Reply(Identity(command.Contains("ubus",StringComparison.Ordinal),scenario=="generic-old",scenario=="changed-boot"&&IdentityCalls>1)));}
             if(command.Contains("AGENT_ACCESS_PROOF",StringComparison.Ordinal))
             {

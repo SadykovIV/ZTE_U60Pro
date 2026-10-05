@@ -5,9 +5,9 @@
   "LICENSE-libeuicc-LGPL-2.1.txt": "b673293d21e887eaa9b971696b33f0f9141839900c65c83e560afa469d291ba6",
   "LICENSE-lpac-AGPL-3.0.txt": "8486a10c4393cee1c25392769ddd3b2d6c242d6ec7928e1414efff7dfb2f07ef",
   "NOTICE-QMI-ES10.txt": "0a4fbc7c40b920492af75db765de3334d90648f9737046430b289951129b5fe5",
-  "PROVENANCE.json": "5469f0a7dbdadcc092a26d9ab6f1d6d7f99e3191caafdb9a64c157ae524dce67",
-  "README.md": "ff9bca203b0a2af9d4712fac7ee4d2166883143ac2988f140882b067a101420b",
-  "eSIM-sources.tar.gz": "43464b4ee82630802bfc82ca1cac880a0c5fe730a3a4bbce3dc609c3f8df357d",
+  "PROVENANCE.json": "4e9c289cc120bf0ad318fef30901ce9e9be278d24398e58aa11bc2595e2d1cee",
+  "README.md": "915aec9810cb2f63abfbc795deee37007ae647c62f568b243366ace2686b1921",
+  "eSIM-sources.tar.gz": "9f6e1103230b1087454dfe87e8ef6f0b2f1f1c7f70ecb8cd8be6480e89d821ca",
   "gsma-rsp-roots.pem": "7364a2ac4d2b5f77c1b83ee7e1c535e8fc806c67ee42e73ad97c35464d203477",
-  "zte-agent-esim": "b23d57c223e898df9d26574fdfbd01a0b6f4d3835ebe9752ed642b0484625ef7"
+  "zte-agent-esim": "9def1ae625eeee2d3357c5583b441c3a910ef546513d10c80355536b3b5146e7"
 }

@@ -80,10 +80,11 @@ final class ReadOnlyChannelSession: @unchecked Sendable {
     let mode: ConnectionMode
     let summary: ConnectionDeviceSummary
     let diagnosticSession: DiagnosticSession?
+    let sshEndpoint: String?
     private let refresh: () throws -> ConnectionDeviceSummary
-    init(mode: ConnectionMode, summary: ConnectionDeviceSummary, diagnosticSession: DiagnosticSession? = nil,
+    init(mode: ConnectionMode, summary: ConnectionDeviceSummary, diagnosticSession: DiagnosticSession? = nil, sshEndpoint: String? = nil,
          readSummary: @escaping () throws -> ConnectionDeviceSummary) {
-        self.mode = mode; self.summary = summary; self.diagnosticSession = diagnosticSession; self.refresh = readSummary
+        self.mode = mode; self.summary = summary; self.diagnosticSession = diagnosticSession; self.sshEndpoint = sshEndpoint; self.refresh = readSummary
     }
     func readSummary() throws -> ConnectionDeviceSummary {
         let current = try refresh()
@@ -178,7 +179,7 @@ final class ConnectionRouter {
             return ConnectionProbeFailure(state: .trustRejected, message: "Ключ сервера SSH не подтверждён или изменился. Автоматический переход на другой канал остановлен.")
         }
         let lower = (error.localizedDescription + partial).lowercased()
-        if lower.contains("устройство, прошивка или сеанс загрузки изменились") || lower.contains("устройство веб-интерфейса изменилось") {
+        if lower.contains("устройство или сеанс ssh изменились") || lower.contains("устройство, прошивка или сеанс загрузки изменились") || lower.contains("устройство веб-интерфейса изменилось") {
             return ConnectionProbeFailure(state: .identityMismatch, message: message)
         }
         if ["permission denied", "authentication", "вход отклонён", "пароль", "password", "unauthorized"].contains(where: lower.contains) {
@@ -190,6 +191,7 @@ final class ConnectionRouter {
         if let identity = summary.identity, !expected.cids.isEmpty, !expected.cids.contains(identity.cid) {
             return ConnectionProbeFailure(state: .identityMismatch, message: "CID канала относится к другому модему.")
         }
+        if summary.fields["sshReadOnly"] == "1" { return nil }
         if !expected.imeis.isEmpty {
             guard let imei = summary.primaryIMEI else { return ConnectionProbeFailure(state: .identityUnverified, message: "Канал не сообщил IMEI для сверки ожидаемого модема.") }
             if !expected.imeis.contains(imei) { return ConnectionProbeFailure(state: .identityMismatch, message: "IMEI канала относится к другому модему.") }
@@ -317,15 +319,29 @@ final class ConnectionRouter {
         if let web = proof.webIdentity { fields["firmware"] = web.firmware; fields["innerVersion"] = web.inner }
         return ConnectionDeviceSummary(identity: proof.identity, webIdentity: proof.webIdentity, bootID: proof.bootID, fields: fields)
     }
+    static func sshEndpoint(_ connection: Connection) -> String {
+        [connection.host, connection.port, connection.keyPath, connection.knownHostsPath].joined(separator: "\n")
+    }
+    private static func summary(_ proof: SSHReadProof) -> ConnectionDeviceSummary {
+        var fields = ["sshReadOnly": "1", "accessProfile": "read-only-ssh"]
+        if let value = proof.uid { fields["uid"] = value }
+        if let value = proof.system { fields["system"] = value }
+        if let value = proof.architecture { fields["architecture"] = value }
+        if let value = proof.routerHash { fields["routerSHA256"] = value }
+        if proof.uid == "0", proof.system == "Linux", proof.architecture == "aarch64", let complete = proof.completeProof {
+            fields["accessProfile"] = AccessIdentity.profile(complete, experimental: false)
+        }
+        return ConnectionDeviceSummary(identity: proof.identity, bootID: proof.bootID, fields: fields)
+    }
     private static func shellSummary(_ session: DiagnosticSession) throws -> ConnectionDeviceSummary {
-        var result = summary(session.proof)
+        var result = summary(session.readProof)
         let response = try session.run(ModemInformationManager.command, timeout: 30)
         if response.status != 0 {
             result.fields["detailsUnavailable"] = "Расширенные сведения недоступны в этом сеансе"
             return result
         }
         try require(response.stdout.count <= 1_048_576, "Слишком большой ответ сведений модема")
-        guard let info = try? ModemInformationManager.parse(String(decoding: response.stdout, as: UTF8.self), identity: session.proof.identity, boot: session.proof.bootID) else {
+        guard let info = try? ModemInformationManager.parse(String(decoding: response.stdout, as: UTF8.self), identity: session.readProof.identity, boot: session.readProof.bootID ?? "") else {
             result.fields["detailsUnavailable"] = "Формат расширенных сведений не распознан"
             return result
         }
@@ -338,32 +354,29 @@ final class ConnectionRouter {
     private static func sshSession(engine: ModemEngine, remote: RemoteTransport, expected: DiagnosticDeviceExpectation) throws -> ReadOnlyChannelSession {
         do { try engine.connection.validate() }
         catch { throw ConnectionProbeFailure(state: .authenticationRequired, message: "SSH ещё не настроен: " + ActivityJournal.redact(error.localizedDescription)) }
-        let command = expected.requiresWeb ? DiagnosticTransportSelector.identityCommand(requireWeb: true) : AccessIdentity.optionalWebCommand
-        let read: () throws -> DiagnosticDeviceProof = {
-            let result = try remote.run(command, input: nil, timeout: 15)
+        let read: () throws -> SSHReadProof = {
+            let result = try remote.run(SSHReadProof.command, input: nil, timeout: 15)
             guard result.status == 0 else {
                 let text = String(decoding: result.stderr + result.stdout, as: UTF8.self)
                 if DiagnosticTransportSelector.hostTrustFailure(text) { throw ConnectionProbeFailure(state: .trustRejected, message: "Ключ SSH изменился или не подтверждён") }
-                if result.status != 255 && result.status != -1 { throw ConnectionProbeFailure(state: .trustRejected, message: "SSH отвечает, но полная идентификация устройства не подтверждена") }
+                if result.status != 255 && result.status != -1 { throw ConnectionProbeFailure(state: .identityUnverified, message: "Не удалось проверить сеанс SSH") }
                 throw CommandFailure(message: "SSH недоступен: " + ActivityJournal.redact(text), partial: result)
             }
-            do { return try AccessIdentity.parseObservation(result.stdout, requireWeb: expected.requiresWeb) }
-            catch { throw ConnectionProbeFailure(state: .trustRejected, message: "SSH вернул неполную или некорректную идентификацию устройства") }
+            do { return try SSHReadProof.parse(result.stdout) }
+            catch { throw ConnectionProbeFailure(state: .trustRejected, message: "SSH вернул некорректный ответ проверки сеанса") }
         }
         let proof = try read()
         let initial = summary(proof)
         if let failure = binding(initial, expected: expected) { throw failure }
-        let session = DiagnosticSession(transport: "ssh", reason: "Проверенный SSH выбран при проверке каналов", proof: proof, readIdentity: read) { command, timeout in
+        let session = DiagnosticSession(reason: "SSH с проверенным ключом сервера; доступные сведения сверяются перед чтением", proof: proof, readIdentity: read) { command, timeout in
             let result = try remote.run(command, input: nil, timeout: timeout)
             try require(result.status != 255, "Связь SSH потеряна. Повторно проверьте каналы; текущая операция не переключается автоматически.")
             return result
         }
         try session.verify()
-        return ReadOnlyChannelSession(mode: .ssh, summary: initial, diagnosticSession: session) { try shellSummary(session) }
+        return ReadOnlyChannelSession(mode: .ssh, summary: initial, diagnosticSession: session, sshEndpoint: Self.sshEndpoint(engine.connection)) { try shellSummary(session) }
     }
-    private static func physicalSerials(_ adb: ADBClient) throws -> [String] {
-        try adb.discovery().readyUSBSerials
-    }
+    private static func physicalSerials(_ adb: ADBClient) throws -> [String] { try adb.discovery().readyUSBSerials }
     private static func adbSession(_ adb: ADBClient, expected: DiagnosticDeviceExpectation) throws -> ReadOnlyChannelSession {
         let discovery = try adb.discovery(), serials = discovery.readyUSBSerials
         guard !serials.isEmpty else { throw ConnectionProbeFailure(state: .unavailable, message: discovery.explanation + " Проверка не включает ADB автоматически.") }

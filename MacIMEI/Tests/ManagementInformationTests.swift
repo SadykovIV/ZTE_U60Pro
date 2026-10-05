@@ -50,6 +50,10 @@ private final class Stub: RemoteTransport {
     var calls=0, identities=0, reboot=false, transportFailure=false, finish: (() throws -> Void)?
     func run(_ command: String,input:Data?,timeout:TimeInterval) throws -> CommandResult {
         calls += 1
+        if command == SSHReadProof.command {
+            identities += 1
+            return CommandResult(status:0,stdout:Data(("ZTE_SSH_READ_V1\n0\nLinux\naarch64\n" + identity.cid + "\n" + (reboot && identities > 1 ? "3a2fb1c5-1bbf-4d3b-92a8-3daaf5510601" : boot) + "\n" + ModemEngine.firmwareHash + "\n" + ModemEngine.routerHash + "\n").utf8),stderr:Data())
+        }
         if command.hasPrefix("sha256sum /firmware") || command == DiagnosticTransportSelector.identityCommand {
             identities += 1
             return CommandResult(status:0,stdout:Data((ModemEngine.firmwareHash+" /firmware/image/modem.b16\n"+ModemEngine.routerHash+" /usr/bin/diag-router\n"+identity.cid+"\n"+(reboot && identities>1 ? "3a2fb1c5-1bbf-4d3b-92a8-3daaf5510601" : boot)+"\n").utf8),stderr:Data())
@@ -73,6 +77,25 @@ private final class Stub: RemoteTransport {
             try check(value.cpuCount==4 && value.memoryAvailableKiB==1024000 && value.uptimeSeconds==12345.67,"Numeric values")
             try check(value.volumes.map(\.mount)==["/","/data","/tmp"] && value.readOnlyMounts==["/"],"Bind files must not count as disks")
             try check(value.agentVersion.contains("2.4.1") && value.batteryPercent==78 && value.identity==identity,"Agent/battery/identity")
+        }
+        try test("Actual information shell continues without ubus and never invents identity") {
+            let tools = #"""
+            ubus() { return 127; }
+            uname() { printf 'armv7l\n'; }
+            awk() { printf '2\n'; }
+            cut() { printf '0.01 0.02 0.03\n'; }
+            df() { printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/root 1000 200 800 20%% /\n'; }
+            sha256sum() { return 1; }
+            cat() { case "$1" in
+              /proc/uptime) printf '100.00 20.00\n';;
+              /proc/meminfo) printf 'MemTotal: 1024 kB\nMemFree: 512 kB\nMemAvailable: 600 kB\n';;
+              /proc/mounts) printf '/dev/root / ext4 rw 0 0\n';;
+              *) return 1;; esac; }
+            """#
+            let result=try HostProcessRunner().run(URL(fileURLWithPath:"/bin/sh"),["-c",tools+"\n"+ModemInformationManager.command],timeout:10)
+            try check(result.status==0,"Missing optional vendor API stopped information")
+            let value=try ModemInformationManager.parse(String(decoding:result.stdout,as:UTF8.self),identity:nil,boot:"")
+            try check(value.identity==nil && value.architecture=="armv7l" && value.cpuCount==2 && value.memoryAvailableKiB==600,"Generic information or optional identity lost")
         }
         try test("Text sections normalize ADB CRLF and CRCRLF without changing values") {
             for eol in ["\n", "\r\n", "\r\r\n"] {

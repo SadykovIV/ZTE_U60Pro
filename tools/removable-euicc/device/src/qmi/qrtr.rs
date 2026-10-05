@@ -35,11 +35,46 @@ pub const SERVICE_UIM: u32 = 0x0B;
 /// Kernel `struct sockaddr_qrtr`. The 2 bytes of padding after `family` are
 /// part of the C layout on both sides, so `repr(C)` matches the kernel.
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 struct SockAddrQrtr {
     family: u16,
     node: u32,
     port: u32,
+}
+
+/// Require one service v1 endpoint and the discovery end marker.
+/// The modem node/port are discovered, not assumed from a firmware hash.
+fn lookup_packet(
+    service: u32,
+    packet: &[u8],
+    selected: &mut Option<SockAddrQrtr>,
+) -> Result<bool, String> {
+    if packet.len() != 20 {
+        return Ok(false);
+    }
+    let word = |at| u32::from_le_bytes(packet[at..at + 4].try_into().unwrap());
+    if word(0) != CTRL_NEW_SERVER {
+        return Ok(false);
+    }
+    if word(4) == 0 && word(8) == 0 && word(12) == 0 && word(16) == 0 {
+        return Ok(true);
+    }
+    if word(4) != service || word(8) & 0xff != 1 {
+        return Ok(false);
+    }
+    let endpoint = SockAddrQrtr {
+        family: AF_QIPCRTR as u16,
+        node: word(12),
+        port: word(16),
+    };
+    if endpoint.node == 0 || endpoint.port == 0 || endpoint.port == PORT_CONTROL {
+        return Err("invalid UIM endpoint".into());
+    }
+    if selected.is_some_and(|old| old != endpoint) {
+        return Err("ambiguous UIM endpoint".into());
+    }
+    *selected = Some(endpoint);
+    Ok(false)
 }
 
 /// A blocking QMI client bound to one QRTR service.
@@ -182,32 +217,22 @@ impl QrtrClient {
         packet.extend_from_slice(&0u32.to_le_bytes()); // port: any
         self.send_to(&control, &packet)?;
 
-        // The name server replays every matching server, plus unrelated
-        // announcements. Take the first entry for the service we asked for.
         let deadline = Instant::now() + timeout;
         let mut buf = [0u8; 256];
+        let mut selected = None;
         while Instant::now() < deadline {
-            let (n, _) = self.recv_from(&mut buf)?;
-            if n < 20 {
+            self.set_recv_timeout(
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .max(Duration::from_millis(1)),
+            )?;
+            let (n, from) = self.recv_from(&mut buf)?;
+            if from.node != control.node || from.port != PORT_CONTROL {
                 continue;
             }
-            if u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) != CTRL_NEW_SERVER {
-                continue;
+            if lookup_packet(service, &buf[..n], &mut selected)? {
+                return selected.ok_or("UIM version1 endpoint missing".into());
             }
-            if u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]) != service {
-                continue;
-            }
-            let node = u32::from_le_bytes([buf[12], buf[13], buf[14], buf[15]]);
-            let port = u32::from_le_bytes([buf[16], buf[17], buf[18], buf[19]]);
-            // A NEW_SERVER with node/port 0 is the end-of-list marker.
-            if node == 0 && port == 0 {
-                continue;
-            }
-            return Ok(SockAddrQrtr {
-                family: AF_QIPCRTR as u16,
-                node,
-                port,
-            });
         }
         Err(format!("QMI service 0x{service:02X} not found on QRTR"))
     }
@@ -250,6 +275,11 @@ impl QrtrClient {
         let deadline = Instant::now() + self.timeout;
         let mut buf = vec![0u8; 65536];
         while Instant::now() < deadline {
+            self.set_recv_timeout(
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .max(Duration::from_millis(1)),
+            )?;
             let (n, from) = self.recv_from(&mut buf)?;
             if from.node != self.server.node || from.port != self.server.port {
                 continue;
@@ -315,5 +345,27 @@ mod tests {
     #[test]
     fn qmi_header_is_seven_bytes() {
         assert_eq!(QMI_HEADER_LEN, 1 + 2 + 2 + 2);
+    }
+    #[test]
+    fn discovery_accepts_unique_v1_any_instance_and_refuses_ambiguity() {
+        let packet = |instance: u32, node: u32, port: u32| {
+            [4u32, 11, instance, node, port]
+                .into_iter()
+                .flat_map(u32::to_le_bytes)
+                .collect::<Vec<_>>()
+        };
+        let mut selected = None;
+        assert!(!lookup_packet(11, &packet(0x101, 5, 77), &mut selected).unwrap());
+        assert_eq!(selected.unwrap().node, 5);
+        assert!(!lookup_packet(11, &packet(0x101, 5, 77), &mut selected).unwrap());
+        assert!(lookup_packet(11, &packet(1, 3, 78), &mut selected).is_err());
+        let mut selected = None;
+        assert!(!lookup_packet(11, &packet(2, 3, 77), &mut selected).unwrap());
+        assert!(selected.is_none());
+        let end = [4u32, 0, 0, 0, 0]
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect::<Vec<_>>();
+        assert!(lookup_packet(11, &end, &mut selected).unwrap());
     }
 }

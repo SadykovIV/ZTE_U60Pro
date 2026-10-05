@@ -10,29 +10,33 @@ public sealed partial class WindowsModemService
 {
     private partial async Task<string> PrepareSshAsync(IReadOnlyDictionary<string,string>? parameters,CancellationToken ct)
     {
-        if (_ssh is not null && !File.Exists(Path.Combine(_storage,"setup-pending.json"))) throw new InvalidOperationException("SSH уже подключён; предварительная подготовка не требуется.");
         var host = Param(parameters,"host",_host);
+        var key = Param(parameters,"key_path",KeyPath);
+        var knownHosts = Param(parameters,"known_hosts_path",KnownHostsPath);
         var webPassword = parameters?.GetValueOrDefault("web_password") ?? "";
         var agentPassword = parameters?.GetValueOrDefault("agent_password") ?? "";
         var backupKeySuffix = parameters?.GetValueOrDefault("backup_key_suffix") ?? "";
         var skipFirmware = Param(parameters,"skip_firmware_check") == "true";
-        if (string.IsNullOrEmpty(agentPassword))
-            throw new ArgumentException("Для подготовки нужен пароль агента. Без пароля Web используется только уже доступный единственный root USB ADB.");
         var onboarding = new OnboardingEngine(host,_storage,_resources,_adb,skipFirmware,
-            progress: message => Log("info","Подготовка: " + message));
+            progress: message => Log("info","Подготовка: " + message)) {
+                ExistingKeyPath = key, ExistingKnownHostsPath = knownHosts, ExistingPort = _port,
+                ExistingSshFactory = _ssh is not null && host == _host && key == KeyPath && knownHosts == KnownHostsPath
+                    ? () => _sshRead ?? _ssh : null,
+            };
         var setup = await onboarding.PrepareAsync(webPassword,agentPassword,backupKeySuffix,ct);
         _host = host;
+        _port = setup.Port;
         _keyPath = setup.KeyPath;
         _knownHostsPath = setup.KnownHostsPath;
         var connection = new Dictionary<string,string> {
             ["host"] = host, ["mode"] = "SSH", ["key_path"] = _keyPath,
             ["known_hosts_path"] = _knownHostsPath,
             ["skip_firmware_check"] = skipFirmware ? "true" : "false",
-            ["access_only"] = setup.Profile == "linux-arm64-access" ? "true" : "false",
+            ["access_only"] = setup.AccessOnly || setup.Profile == "linux-arm64-access" ? "true" : "false",
         };
         var message = await ConnectAsync(connection,ct);
         if (setup.AlreadyConfigured)
-            return "Доступ SSH подтверждён. Существующий агент " + setup.ReusedAgentVersion + " сохранён; установка не выполнялась. " + message;
+            return "Доступ SSH подтверждён; установка не выполнялась. Агент устанавливается отдельно. " + message;
         if (setup.Profile != "linux-arm64-access" && setup.FirmwareHash == DeviceFeatureService.FirmwareHash)
         {
             try

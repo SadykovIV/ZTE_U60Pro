@@ -27,7 +27,7 @@ struct ModemInformation: Sendable {
     var batteryPercent: Int?
     var batteryState: String
     var agentVersion: String
-    var identity: Identity
+    var identity: Identity?
     var bootID: String
 }
 
@@ -81,7 +81,7 @@ final class ModemInformationManager {
     static let command = #"""
     set -eu
     printf '__INFO_SCHEMA__\n1\n__INFO_BOARD__\n'
-    ubus call system board
+    ubus call system board 2>/dev/null || printf '{}\n'
     printf '__INFO_DEVICE__\n'
     ubus call zwrt_web device_info '{}' || printf '{}\n'
     printf '__INFO_ARCH__\n'
@@ -105,15 +105,22 @@ final class ModemInformationManager {
     printf '__INFO_END__\n'
     """#
     func inspect(readOnly: Bool = false) throws -> ModemInformation {
-        let (identity, boot) = try readOnly ? engine.diagnosticIdentity() : engine.identity()
+        if readOnly {
+            let before = try SSHReadProof.parse(engine.remote(SSHReadProof.command, timeout: 15))
+            let response = try engine.remote(Self.command, timeout: 30)
+            let result = try Self.parse(String(decoding: response, as: UTF8.self), identity: before.identity, boot: before.bootID ?? "")
+            try before.verify(SSHReadProof.parse(engine.remote(SSHReadProof.command, timeout: 15)))
+            return result
+        }
+        let (identity, boot) = try engine.identity()
         let response = try engine.remote(Self.command, timeout: 30)
         try require(response.count <= 1024 * 1024, "Ответ со сведениями о модеме слишком большой")
         let result = try Self.parse(String(decoding: response, as: UTF8.self), identity: identity, boot: boot)
-        let after = try readOnly ? engine.diagnosticIdentity() : engine.identity()
+        let after = try engine.identity()
         try require(after.0 == identity && after.1 == boot, "Модем перезагрузился во время чтения сведений. Обновите данные.")
         return result
     }
-    static func parse(_ text: String, identity: Identity, boot: String) throws -> ModemInformation {
+    static func parse(_ text: String, identity: Identity?, boot: String) throws -> ModemInformation {
         try require(text.utf8.count <= 1024 * 1024, "Ответ со сведениями о модеме слишком большой")
         let expected = ["SCHEMA", "BOARD", "DEVICE", "ARCH", "CPU", "UPTIME", "LOAD", "MEMORY", "DISKS", "MOUNTS", "BATTERY", "AGENT", "END"].map { "__INFO_" + $0 + "__" }
         var sections: [String: String] = [:], current: String?, seen = [String]()
@@ -232,17 +239,15 @@ final class ModemInformationManager {
         if truncated { bytes.append(Data("\n[Вывод ограничен 512 КиБ]\n".utf8)) }
         return (bytes, status, truncated)
     }
-    /// Reuse the existing identity protocol, but never its automatic ADB selector.
     private func sshDiagnosticSession(expected: DiagnosticDeviceExpectation) throws -> DiagnosticSession {
-        let command = DiagnosticTransportSelector.identityCommand(requireWeb: expected.requiresWeb)
-        let read: () throws -> DiagnosticDeviceProof = {
-            let result = try self.engine.transport.run(command, input: nil, timeout: 15)
-            try require(result.status == 0, "Не удалось подтвердить идентификацию через SSH; другой канал не запрашивался")
-            return try DiagnosticTransportSelector.parseIdentity(result.stdout, requireWeb: expected.requiresWeb)
+        let read: () throws -> SSHReadProof = {
+            let result = try self.engine.transport.run(SSHReadProof.command, input: nil, timeout: 15)
+            try require(result.status == 0, "Не удалось проверить сеанс SSH; другой канал не запрашивался")
+            return try SSHReadProof.parse(result.stdout)
         }
         let proof = try read()
-        try require(expected.matches(proof), "SSH подключён к другому модему; сбор остановлен")
-        return DiagnosticSession(transport: "ssh", reason: "Диагностика использует только SSH с проверенной идентификацией модема.", proof: proof, readIdentity: read) { command, timeout in
+        try require(proof.matches(expected), "SSH подключён к другому модему; сбор остановлен")
+        return DiagnosticSession(reason: "Диагностика использует SSH с проверенным ключом сервера", proof: proof, readIdentity: read) { command, timeout in
             let result = try self.engine.transport.run(command, input: nil, timeout: timeout)
             try require(result.status != 255, "Соединение SSH потеряно; другой канал не запрашивался")
             return result
@@ -256,7 +261,7 @@ final class ModemInformationManager {
         do {
             let expected = try DiagnosticDeviceExpectation.load(root: engine.root, identity: expectedIdentity, web: expectedWebIdentity, imei: expectedIMEI)
             if let preferredSession {
-                try require(expected.matches(preferredSession.proof), "Выбранный канал относится к другому модему; переключение транспорта запрещено")
+                try require(preferredSession.readProof.matches(expected) && (preferredSession.proof?.webIdentity.map { expected.imeis.isEmpty || expected.imeis.contains($0.imei) } ?? true), "Выбранный канал относится к другому модему; переключение транспорта запрещено")
                 try preferredSession.verify()
                 session = preferredSession
             } else {
@@ -267,7 +272,7 @@ final class ModemInformationManager {
             selectionError = ActivityJournal.sanitize(error.localizedDescription)
             warnings.append("Сбор не начат: " + selectionError!)
         }
-        if let session, session.proof.identity.firmwareHash != ModemEngine.firmwareHash {
+        if let session, session.readProof.firmwareHash != ModemEngine.firmwareHash {
             warnings.append("Прошивка отличается от B31. Выполнено только чтение диагностики; разрешение на запись не изменено.")
         }
         let id = UUID().uuidString.lowercased(), directory = engine.root.appendingPathComponent("Diagnostics/" + id)
@@ -305,7 +310,7 @@ final class ModemInformationManager {
             catch { warnings.append("Итоговая проверка устройства недоступна: " + ActivityJournal.sanitize(error.localizedDescription)) }
         }
         if connectionFailures >= 3 { warnings.append("Соединение недоступно. Сохранён частичный набор; остальные разделы помечены как пропущенные.") }
-        let report = DiagnosticReport(id: id, created: ISO8601DateFormatter().string(from: Date()), identity: session?.proof.identity, bootID: session?.proof.bootID ?? "не определён", warnings: warnings, files: files, url: directory, transport: session?.transport ?? preferredSession?.transport ?? "none", selectionReason: session?.selectionReason ?? selectionError, identityVerified: verified, connectionError: selectionError)
+        let report = DiagnosticReport(id: id, created: ISO8601DateFormatter().string(from: Date()), identity: session?.readProof.identity, bootID: session?.readProof.bootID ?? "не определён", warnings: warnings, files: files, url: directory, transport: session?.transport ?? preferredSession?.transport ?? "none", selectionReason: session?.selectionReason ?? selectionError, identityVerified: verified, connectionError: selectionError)
         try saveJSON(report, directory.appendingPathComponent("manifest.json"))
         try? ActivityJournal(root: engine.root).record(operationID: engine.logDirectory.lastPathComponent, category: "diagnostics", title: "Диагностический набор сохранён", result: warnings.isEmpty && files.allSatisfy { $0.effectiveOutcome == .succeeded } ? "completed" : "warning", details: ["reportID":id,"transport":report.transport ?? "none", "selectionReason": report.selectionReason ?? "", "summary":report.outcomeSummary, "warnings":warnings.joined(separator: "\n")])
         return report

@@ -94,13 +94,14 @@ def main():
     sources, count = source_archive()
     readme = '''# eSIM для физической eUICC
 
-Версия агента: 2.9.0-esim.3. Приложения: ZTE U60Pro Manager 1.24.4.
+Версия агента: 2.9.0-esim.4. Приложения: ZTE U60Pro Manager 1.24.4.
 
 Нужна съёмная физическая eUICC в SIM-слоте модема. Проверено: 9eSIM V0,
-ZTE MU5250, CN_ZTE_MU5250V1.0.0B31. Обычная SIM и встроенная eSIM ZTE
-этим компонентом не поддерживаются. Этот адаптер управления eSIM требует
-проверенной прошивки. Проверка устройства и диагностический доступ работают
-независимо от этого ограничения; режим discovery не разрешает управление SIM.
+ZTE MU5250, CN_ZTE_MU5250V1.0.0B31. Обычная SIM распознаётся отдельно:
+управление профилями для неё недоступно. Встроенная eSIM ZTE этим
+компонентом не поддерживается. Чтение, установка и удаление профилей
+проверяют доступ к eUICC через QMI. Переключение с перезапуском радио
+пока требует проверенной прошивки B31.
 
 Откройте eSIM в левом меню, подключитесь по SSH и запросите профили.
 Для установки вставьте LPA-код, выберите изображение QR или переключитесь
@@ -160,7 +161,7 @@ PROVENANCE.json и LICENSE-SCOPE.md уточняют состав и сферу 
         'LICENSE-SCOPE.md': (ROOT / 'LICENSE-SCOPE.md').read_bytes(),
     }
     provenance = {
-        'agent_version': '2.9.0-esim.3', 'agent_sha256': sha(agent),
+        'agent_version': '2.9.0-esim.4', 'agent_sha256': sha(agent),
         'lpac_version': '2.3.0 + pinned stdio backports',
         'lpac_commit': 'c2fcf5e4b21c712d54e35a11da2ad9ad134fb821',
         'lpac_linux_sha256': sha((ROOT/'ModemAgent/agent/resources/esim/lpac').read_bytes()),

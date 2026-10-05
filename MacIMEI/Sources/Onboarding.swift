@@ -29,7 +29,7 @@ struct ADBAccessResult: Codable, Sendable {
 struct SetupResult: Sendable {
     var connection: Connection
     var state: DeviceState?
-    var identity: Identity
+    var identity: Identity?
     var firmware: String
     var suffix: String
 }
@@ -219,38 +219,39 @@ final class OnboardingEngine: @unchecked Sendable {
     /// Verify access without logging in to either HTTP service, uploading a
     /// helper, or interpreting SSH reachability as agent/NV readiness.
     func prepareSSH(expectedIdentity: Identity? = nil, expectedIMEI: String? = nil) throws -> SetupResult? {
-        try locked {
-            try require(!fm.fileExists(atPath: diagnosticPending.path), "Сначала завершите включение ADB для диагностики")
-            try require(!fm.fileExists(atPath: pending.path), "Сначала продолжите незавершённую настройку с паролями веб-интерфейса и агента. Журнал установки сохранён.")
-            update("Проверяю существующий SSH-доступ…", 0.1)
-            let expected = try DiagnosticDeviceExpectation.load(root: root, identity: expectedIdentity, web: nil, imei: expectedIMEI)
-            let own = Connection(host: host, port: "2222", keyPath: root.appendingPathComponent("SSH/id_ed25519").path, knownHostsPath: root.appendingPathComponent("SSH/known_hosts").path, skipFirmwareCheck: currentConnection.skipFirmwareCheck)
-            var seen = Set<String>()
-            let command = DiagnosticTransportSelector.identityCommand(requireWeb: expected.requiresWeb)
-            for candidate in [currentConnection, own] {
-                let key = [candidate.host, candidate.port, candidate.keyPath, candidate.knownHostsPath].joined(separator: "\n")
-                guard seen.insert(key).inserted else { continue }
-                let ssh: RemoteTransport = sshFactory?(candidate) ?? SSHTransport(candidate)
-                let first: CommandResult
-                do { first = try ssh.run(command, input: nil, timeout: 15) }
-                catch {
-                    let partial = (error as? CommandFailure).map { String(decoding: $0.partial.stderr + $0.partial.stdout, as: UTF8.self) } ?? ""
-                    try require(!DiagnosticTransportSelector.hostTrustFailure(error.localizedDescription + partial), "Проверка ключа SSH не пройдена. Подготовка остановлена без изменения модема.")
-                    continue
-                }
-                let detail = String(decoding: first.stderr + first.stdout, as: UTF8.self)
-                try require(!DiagnosticTransportSelector.hostTrustFailure(detail), "Проверка ключа SSH не пройдена. Подготовка остановлена без изменения модема.")
-                if first.status == 255 || first.status == -1 { continue }
-                try require(first.status == 0, "SSH отвечает, но не подтвердил root-доступ и идентификацию модема")
-                let proof = try DiagnosticTransportSelector.parseIdentity(first.stdout, requireWeb: expected.requiresWeb)
-                try require(expected.matches(proof) && (expectedIdentity == nil || expectedIdentity == proof.identity), "SSH подключён к другому модему или прошивке; подготовка остановлена")
-                let second = try ssh.run(command, input: nil, timeout: 15)
-                try require(second.status == 0 && (try DiagnosticTransportSelector.parseIdentity(second.stdout, requireWeb: expected.requiresWeb)) == proof, "Во время проверки SSH изменился модем, прошивка или загрузка")
-                update("SSH проверен. Готовность агента и IMEI проверяются отдельно.", 1)
-                return SetupResult(connection: candidate, state: nil, identity: proof.identity, firmware: proof.webIdentity?.firmware ?? "unknown", suffix: "")
+        try locked { try reuseSSH(expectedIdentity: expectedIdentity, expectedIMEI: expectedIMEI) }
+    }
+    private func reuseSSH(expectedIdentity: Identity?, expectedIMEI: String?) throws -> SetupResult? {
+        try require(!fm.fileExists(atPath: diagnosticPending.path), "Сначала завершите включение ADB для диагностики")
+        try require(!fm.fileExists(atPath: pending.path), "Сначала продолжите незавершённую настройку. Журнал установки сохранён.")
+        update("Проверяю существующий SSH-доступ…", 0.1)
+        let expected = try DiagnosticDeviceExpectation.load(root: root, identity: expectedIdentity, web: nil, imei: expectedIMEI)
+        let own = Connection(host: host, port: "2222", keyPath: root.appendingPathComponent("SSH/id_ed25519").path, knownHostsPath: root.appendingPathComponent("SSH/known_hosts").path, skipFirmwareCheck: currentConnection.skipFirmwareCheck)
+        var seen = Set<String>()
+        for candidate in [currentConnection, own] {
+            let key = [candidate.host, candidate.port, candidate.keyPath, candidate.knownHostsPath].joined(separator: "\n")
+            guard seen.insert(key).inserted else { continue }
+            let ssh: RemoteTransport = sshFactory?(candidate) ?? SSHTransport(candidate)
+            let first: CommandResult
+            do { first = try ssh.run(SSHReadProof.command, input: nil, timeout: 15) }
+            catch {
+                let partial = (error as? CommandFailure).map { String(decoding: $0.partial.stderr + $0.partial.stdout, as: UTF8.self) } ?? ""
+                try require(!DiagnosticTransportSelector.hostTrustFailure(error.localizedDescription + partial), "Проверка ключа SSH не пройдена. Подготовка остановлена без изменения модема.")
+                continue
             }
-            return nil
+            let detail = String(decoding: first.stderr + first.stdout, as: UTF8.self)
+            try require(!DiagnosticTransportSelector.hostTrustFailure(detail), "Проверка ключа SSH не пройдена. Подготовка остановлена без изменения модема.")
+            if first.status == 255 || first.status == -1 { continue }
+            try require(first.status == 0, "Не удалось проверить существующий сеанс SSH")
+            let proof = try SSHReadProof.parse(first.stdout)
+            try require(proof.matches(expected), "SSH подключён к другому модему; подготовка остановлена")
+            let second = try ssh.run(SSHReadProof.command, input: nil, timeout: 15)
+            try require(second.status == 0, "Повторная проверка SSH не завершена")
+            try proof.verify(SSHReadProof.parse(second.stdout))
+            update("SSH проверен. Готовность агента и IMEI проверяются отдельно.", 1)
+            return SetupResult(connection: candidate, state: nil, identity: proof.identity, firmware: "unknown", suffix: "")
         }
+        return nil
     }
     func inspectSSH(_ connection: Connection, expected: WebIdentity) throws -> DeviceState {
         let engine = try ModemEngine(root: root, resources: resources, connection: connection, transport: sshFactory?(connection))
@@ -548,7 +549,7 @@ final class OnboardingEngine: @unchecked Sendable {
     func run(webPassword: String, agentPassword: String, expectedIdentity: Identity? = nil, expectedIMEI: String? = nil) throws -> SetupResult {
         try locked {
             try require(!fm.fileExists(atPath: diagnosticPending.path), "Сначала завершите включение ADB для диагностики")
-            try require(!agentPassword.isEmpty && !agentPassword.contains("\0"), "Введите отдельный пароль агента")
+            if !fm.fileExists(atPath: pending.path), let reused = try reuseSSH(expectedIdentity: expectedIdentity, expectedIMEI: expectedIMEI) { return reused }
             let expected = try DiagnosticDeviceExpectation.load(root: root, identity: expectedIdentity, web: nil, imei: expectedIMEI)
             func validateExpectedDevice(_ device: Identity) throws {
                 try require(expected.cids.isEmpty || expected.cids.contains(device.cid), "CID отличается от ожидаемого модема или незавершённой установки")
@@ -556,6 +557,7 @@ final class OnboardingEngine: @unchecked Sendable {
             }
             let hashes = try verifyAssets()
             if let access = try runExistingUSBAccess(hashes: hashes, webPassword: webPassword, agentPassword: agentPassword, expected: expected, expectedIdentity: expectedIdentity) { return access }
+            try require(!agentPassword.isEmpty && !agentPassword.contains("\0"), "Введите отдельный пароль агента")
             try require(!webPassword.isEmpty && !webPassword.contains("\0"), "Для включения ADB через штатный Web нужен его пароль")
             let (identity, encryptedBackup, directory) = try prepareRawBackup(password: webPassword, expectedIMEI: expected.imeis.first)
             var journal: SetupJournal

@@ -28,6 +28,7 @@ import SwiftUI
         precondition(ModemSection.allCases.map(\.rawValue) == ["Об устройстве", "Память"])
         precondition(AdministrationSection.allCases.last == .activity)
         model.loadEsimPreview(force: true)
+        let previewSnapshot = model.esimSnapshot
         model.agentInstallationStatus = AgentInstallationStatus(hash: BundledAgent.sha256, running: true, startupReady: true)
         model.applicationInventory = .init(storage: [], memoryTotalKiB: 1048576,
             memoryAvailableKiB: 512000, installedPackages: [], opkgWritable: false,
@@ -68,6 +69,7 @@ import SwiftUI
                 ("modem", AnyView(ContentView(model: model, verifiedCatalog: catalog, page: .modem))),
                 ("agent-esim", AnyView(ContentView(model: model, verifiedCatalog: catalog, preparationSection: .agent))),
                 ("esim", AnyView(ContentView(model: model, verifiedCatalog: catalog, page: .esim))),
+                ("esim-ordinary", AnyView(ContentView(model: model, verifiedCatalog: catalog, page: .esim))),
                 ("launcher-esim", AnyView(ContentView(model: model, verifiedCatalog: catalog, page: .display, launcherSection: .esim))),
                 ("esim-progress", AnyView(ContentView(model: model, verifiedCatalog: catalog, page: .esim))),
                 ("catalog", AnyView(ContentView(model: model, verifiedCatalog: catalog, page: .applications, applicationSection: .available))),
@@ -83,6 +85,9 @@ import SwiftUI
             ]
             let filter = ProcessInfo.processInfo.environment["ZTE_UI_PREVIEW_FILTER"]
             for (screen, rootView) in screens where filter == nil || screen.hasPrefix(filter!) {
+                model.esimSnapshot = screen == "esim-ordinary" ? nil : previewSnapshot
+                model.esimCard = screen == "esim-ordinary" ? try JSONDecoder().decode(EsimCardCheck.self, from: Data(#"{"kind":"ordinary_sim","management":"unavailable","reason":"isdr_not_found","cleanup_confirmed":true}"#.utf8)) : nil
+                model.esimAuthorization = screen == "esim-ordinary" ? model.esimTargetKey : nil
                 model.displayPages = ModemLauncherPages(pages: [.esim, .info])
                 model.displaySavedPages = .defaultPages
                 model.displayPagesDraftEdited = true

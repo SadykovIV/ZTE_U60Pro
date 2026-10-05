@@ -126,6 +126,38 @@ foreach (var frame in new[] {
     bool rejected = false; try { await Parse(frame); } catch { rejected = true; }
     Check(rejected, "metadata cannot replace valid inventory or contradict the result");
 }
+var ordinaryCard = new { kind = "ordinary_sim", management = "unavailable", reason = "isdr_not_found", cleanup_confirmed = true };
+var ordinaryFrame = CardFrame(true, ordinaryCard);
+var ordinaryResult = EsimProtocol.Completed(await Parse(ordinaryFrame), 0);
+Check(ordinaryResult.Snapshot is null && !ordinaryResult.Changed && !ordinaryResult.NotificationsPending && EsimCardStatus.FromAcceptedResult(ordinaryResult).Kind == "ordinary_sim", "ordinary result is successful read without inventory or write grant");
+foreach (var operation in new[] { "download", "enable", "delete" })
+{
+    bool rejected = false; try { EsimCardStatus.FromAcceptedResult(ordinaryResult, operation); } catch { rejected = true; }
+    Check(rejected, "ordinary result cannot satisfy mutation");
+}
+foreach (var replacement in new[] {
+    "\"error\":null,", "\"error\":\"card_cleanup_unknown\",", "\"snapshot\":null,", "\"snapshot\":" + JsonSerializer.Serialize(emptyCard) + ",",
+    "\"modem_verified\":false,", "\"radio_restored\":true,", "\"component_error\":null,"
+})
+{
+    bool rejected = false; try { await Parse(ordinaryFrame.Replace("{\"type\"", "{" + replacement + "\"type\"")); } catch { rejected = true; }
+    Check(rejected, "ordinary rejects extra evidence or inventory");
+}
+foreach (var frame in new[] { ordinaryFrame.Replace("\"changed\":false", "\"changed\":true"), ordinaryFrame.Replace("\"notifications_pending\":false", "\"notifications_pending\":true"), CardFrame(false, ordinaryCard), ordinaryFrame.Replace("\"cleanup_confirmed\":true", "\"cleanup_confirmed\":false") })
+{
+    bool rejected = false; try { await Parse(frame); } catch { rejected = true; }
+    Check(rejected, "ordinary requires complete nonmutating cleanup proof");
+}
+Check(EsimDiagnostics.SafeError("card_not_euicc") == "card_not_euicc", "ordinary mutation refusal remains fixed");
+foreach (var boot in new[] { "unavailable", "01234567-89ab-cdef-0123-456789abcdef" })
+    Check(EsimReadBinding.Parse(0, Encoding.UTF8.GetBytes(boot + "\n")) == boot, "optional read binding accepts unavailable or exact boot, no CID");
+foreach (var output in new[] { "", "secret", "unavailable\nextra", "01234567-89AB-cdef-0123-456789abcdef", new string('x', 65) })
+{
+    bool rejected = false; try { EsimReadBinding.Parse(0, Encoding.UTF8.GetBytes(output)); } catch { rejected = true; }
+    Check(rejected, "read binding malformed response cannot authorize");
+}
+try { EsimReadBinding.Parse(1, "unavailable"u8.ToArray()); throw new Exception("accepted failed binding"); }
+catch (EsimException) { Check(true, "read binding requires successful SSH command"); }
 foreach (var phrase in new[] { "Проверить карту и профили", "Карта: eUICC подтверждена", "Карта: тип не определён. Повторите проверку.", "Карта ещё не проверена." })
     Check(english.TryGetValue(phrase, out var translated) && translated != phrase, "card status has English translation");
 Console.WriteLine(JsonSerializer.Serialize(new { ok = true, checks, deviceAccess = false, networkAccess = false }));

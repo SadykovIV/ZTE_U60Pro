@@ -44,6 +44,7 @@ impl Device for B31 {
     }
 }
 pub fn ready() -> Result<()> {
+    super::resources::check_radio_device()?;
     if super::radio_qmi::mode()? != 0 {
         return Err(Error::new("radio_not_online"));
     }
@@ -112,6 +113,7 @@ impl<D: Device> Drop for Restore<'_, D> {
     }
 }
 pub fn refresh(expected: &str, relay: &mut dyn Relay) -> Result<()> {
+    super::resources::check_radio_device()?;
     cycle(&mut B31, expected, relay)
 }
 fn wait_card_ready(device: &mut impl Device, expected: &str) -> Result<()> {

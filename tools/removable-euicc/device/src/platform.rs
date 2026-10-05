@@ -1,26 +1,27 @@
 use crate::adapter::{CardIo, Device, Result};
-use crate::euicc::es10;
 use crate::qmi::uim::{OpenChannelError, UimClient};
-use serde_json::Value;
-use std::fs::{self, DirBuilder, OpenOptions};
-use std::io::{Read, Write};
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::fs::{File, OpenOptions};
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::path::Path;
 
 pub struct RealDevice;
 impl Device for RealDevice {
     type Card = UimClient;
-    fn guard(&mut self) -> Result<()> {
-        selection_guard()
-    }
     fn connect(&mut self) -> Result<UimClient> {
         UimClient::connect().map_err(|_| "qmi_connect_error")
     }
 }
 impl CardIo for UimClient {
+    fn guard(&mut self) -> Result<()> {
+        self.selected_physical_slot1()
+            .map_err(|_| "selection_mismatch")
+    }
     fn open(&mut self) -> std::result::Result<u8, OpenChannelError> {
-        self.open_logical_channel(&es10::ISD_R_AID)
+        self.open_logical_channel()
+    }
+    fn ordinary_ready(&mut self) -> Result<bool> {
+        self.slot1_ready().map_err(|_| "card_not_ready")
     }
     fn close(&mut self, channel: u8) -> Result<()> {
         self.close_logical_channel(channel)
@@ -32,149 +33,129 @@ impl CardIo for UimClient {
     }
 }
 
-fn output(program: &str, args: &[&str]) -> Result<Vec<u8>> {
-    let out = Command::new(program)
-        .args(args)
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .map_err(|_| "selection_read_failed")?;
-    if !out.status.success() || out.stdout.len() > 262_144 {
-        return Err("selection_read_failed");
-    }
-    Ok(out.stdout)
-}
-fn cache(key: &str) -> Result<()> {
-    let bytes = output("uci", &["-q", "get", key])?;
-    let text = std::str::from_utf8(&bytes).map_err(|_| "selection_read_failed")?;
-    if text.trim() != "1" {
-        return Err("selection_mismatch");
-    }
-    Ok(())
-}
-pub fn slot_value(v: &Value, want: u64) -> bool {
-    v.as_u64() == Some(want) || v.as_str() == Some(if want == 0 { "0" } else { "1" })
-}
-fn getter(method: &str, want: u64) -> Result<()> {
-    let data = output(
-        "ubus",
-        &["-t", "10", "call", "zwrt_zte_mdm.api", method, "{}"],
-    )?;
-    let value: Value = serde_json::from_slice(&data).map_err(|_| "selection_read_failed")?;
-    if !slot_value(&value["current_sim_slot"], want) {
-        return Err("selection_mismatch");
-    }
-    Ok(())
-}
-pub fn selection_guard() -> Result<()> {
-    const ACTIVE: &str = "zwrt_zte_mdm.sim_info.sim_active_card_id";
-    const TEMP: &str = "zwrt_zte_mdm.sim_info.simcard_active_slot_temp";
-    cache(ACTIVE)?;
-    cache(TEMP)?;
-    getter("get_sim_info", 1)?;
-    getter("zte_get_current_slot_info", 0)?;
-    cache(ACTIVE)?;
-    cache(TEMP)?;
-    Ok(())
-}
-
-/// Cross-process lock shared with MacIMEI. Existing locks are never reclaimed.
-pub struct AppLock {
-    path: PathBuf,
-    token: Vec<u8>,
-    dev: u64,
-    ino: u64,
-    retain: bool,
-    released: bool,
-}
-impl AppLock {
+/// Serializes card sessions only. The kernel releases this lease on process
+/// exit, including failure/crash. An unknown card outcome remains an error;
+/// it never becomes a permanent lock on unrelated modem operations.
+pub struct CardLock(File);
+impl CardLock {
     pub fn acquire() -> Result<Self> {
-        Self::at(Path::new("/tmp/zte-imei-app.lock"))
+        Self::at(Path::new("/tmp/zte-euicc-card.lock"), 0)
     }
-    fn at(path: &Path) -> Result<Self> {
-        let mut random = [0u8; 16];
-        fs::File::open("/dev/urandom")
-            .and_then(|mut f| f.read_exact(&mut random))
-            .map_err(|_| "lock_random_failed")?;
-        let token = format!("euicc-{}-{}", std::process::id(), es10::hex(&random)).into_bytes();
-        DirBuilder::new()
-            .mode(0o700)
-            .create(path)
-            .map_err(|_| "lock_unavailable")?;
-        let owner = path.join("owner");
-        if OpenOptions::new()
+    fn at(path: &Path, owner: u32) -> Result<Self> {
+        let file = OpenOptions::new()
+            .read(true)
             .write(true)
-            .create_new(true)
+            .create(true)
             .mode(0o600)
-            .open(&owner)
-            .and_then(|mut f| f.write_all(&token))
-            .is_err()
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(path)
+            .map_err(|_| "lock_unavailable")?;
+        let m = file.metadata().map_err(|_| "lock_metadata_failed")?;
+        if !m.is_file()
+            || m.uid() != owner
+            || m.mode() & 0o777 != 0o600
+            || m.nlink() != 1
+            || m.len() != 0
         {
-            // Only the directory just created by this call is eligible here.
-            let _ = fs::remove_file(&owner);
-            let _ = fs::remove_dir(path);
-            return Err("lock_owner_failed");
+            return Err("lock_metadata_failed");
         }
-        let m = fs::symlink_metadata(path).map_err(|_| "lock_metadata_failed")?;
-        Ok(Self {
-            path: path.to_owned(),
-            token,
-            dev: m.dev(),
-            ino: m.ino(),
-            retain: false,
-            released: false,
-        })
-    }
-    pub fn retain(&mut self) {
-        self.retain = true;
-    }
-    pub fn release(&mut self) -> Result<()> {
-        if self.released {
-            return Ok(());
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            return Err("lock_unavailable");
         }
-        if self.retain {
-            return Err("lock_retained");
-        }
-        let m = fs::symlink_metadata(&self.path).map_err(|_| "lock_release_failed")?;
-        if !m.is_dir()
-            || m.dev() != self.dev
-            || m.ino() != self.ino
-            || fs::read(self.path.join("owner")).ok().as_deref() != Some(&self.token)
-        {
-            return Err("lock_ownership_changed");
-        }
-        fs::remove_file(self.path.join("owner")).map_err(|_| "lock_release_failed")?;
-        fs::remove_dir(&self.path).map_err(|_| "lock_release_failed")?;
-        self.released = true;
-        Ok(())
+        Ok(Self(file))
     }
 }
-impl Drop for AppLock {
+impl Drop for CardLock {
     fn drop(&mut self) {
-        if !self.retain && !std::thread::panicking() {
-            let _ = self.release();
-        }
+        // Do not unlink: a second inode would defeat serialization.
+        let _ = unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
     #[test]
-    fn selected_slot_numbers_are_exact() {
-        assert!(slot_value(&json!(1), 1));
-        assert!(slot_value(&json!("0"), 0));
-        for v in [json!(true), json!(null), json!("01"), json!(2), json!(1.0)] {
-            assert!(!slot_value(&v, 1));
-        }
+    fn card_lease_releases_after_failed_scope_and_never_touches_shared_directory() {
+        let dir = std::env::temp_dir().join(format!("euicc-flock-{}", std::process::id()));
+        std::fs::create_dir(&dir).unwrap();
+        let common = dir.join("zte-imei-app.lock");
+        std::fs::create_dir(&common).unwrap();
+        std::fs::write(common.join("owner"), b"old-unrelated-owner").unwrap();
+        let path = dir.join("card.lock");
+        let uid = unsafe { libc::geteuid() };
+        let failed = (|| -> Result<()> {
+            let _lock = CardLock::at(&path, uid)?;
+            assert!(CardLock::at(&path, uid).is_err());
+            Err("qmi_open_unknown")
+        })();
+        assert_eq!(failed, Err("qmi_open_unknown"));
+        drop(CardLock::at(&path, uid).unwrap());
+        assert!(path.is_file());
+        assert_eq!(
+            std::fs::read(common.join("owner")).unwrap(),
+            b"old-unrelated-owner"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]
-    fn lock_refuses_existing_and_releases_only_own() {
-        let p = std::env::temp_dir().join(format!("euicc-test-{}", std::process::id()));
-        let mut l = AppLock::at(&p).unwrap();
-        assert!(AppLock::at(&p).is_err());
-        l.release().unwrap();
-        assert!(!p.exists());
+    fn card_lease_refuses_symlink_weak_mode_and_nonempty_file() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let dir = std::env::temp_dir().join(format!("euicc-flock-bad-{}", std::process::id()));
+        std::fs::create_dir(&dir).unwrap();
+        let p = dir.join("lock");
+        let link = dir.join("link");
+        std::fs::write(&p, b"").unwrap();
+        symlink(&p, &link).unwrap();
+        let uid = unsafe { libc::geteuid() };
+        assert!(CardLock::at(&link, uid).is_err());
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o666)).unwrap();
+        assert!(CardLock::at(&p, uid).is_err());
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::write(&p, b"unexpected").unwrap();
+        assert!(CardLock::at(&p, uid).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn child_lock_fixture() {
+        let Ok(path) = std::env::var("ZTE_CARD_FLOCK_FIXTURE") else {
+            return;
+        };
+        let _lease = CardLock::at(Path::new(&path), unsafe { libc::geteuid() }).unwrap();
+        use std::io::Write;
+        println!("CARD_LEASE_READY");
+        std::io::stdout().flush().unwrap();
+        std::thread::sleep(std::time::Duration::from_secs(30));
+    }
+    #[test]
+    fn kernel_releases_card_lease_when_owner_process_dies() {
+        use std::io::BufRead;
+        use std::process::{Command, Stdio};
+        let path = std::env::temp_dir().join(format!("euicc-death-{}", std::process::id()));
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "platform::tests::child_lock_fixture",
+                "--nocapture",
+            ])
+            .env("ZTE_CARD_FLOCK_FIXTURE", &path)
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut output = std::io::BufReader::new(child.stdout.take().unwrap());
+        let mut line = String::new();
+        loop {
+            line.clear();
+            assert_ne!(output.read_line(&mut line).unwrap(), 0);
+            if line.trim() == "CARD_LEASE_READY" {
+                break;
+            }
+        }
+        let uid = unsafe { libc::geteuid() };
+        assert!(CardLock::at(&path, uid).is_err());
+        child.kill().unwrap();
+        child.wait().unwrap();
+        drop(CardLock::at(&path, uid).unwrap());
+        std::fs::remove_file(path).unwrap();
     }
 }

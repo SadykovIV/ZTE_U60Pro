@@ -476,10 +476,6 @@ import AppKit
     func preparePreferredSSH() {
         guard canPrepareModem else { return }
         preparationError = ""
-        guard !agentPassword.isEmpty else {
-            preparationError = "Введите пароль агента. Пароль Web нужен только если работающий root USB ADB отсутствует."
-            append(preparationError); return
-        }
         let config = connection, root = storage, assets = resources
         let webSecret = webPassword, agentSecret = agentPassword, suffix = backupSuffix, expected = connectedIdentity
         backupSuffix = ""

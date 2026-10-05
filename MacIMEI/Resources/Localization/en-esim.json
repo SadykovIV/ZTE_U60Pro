@@ -133,5 +133,11 @@
   "Тип SIM-карты определить не удалось. Ошибка чтения не означает, что карта обычная.": "SIM card type could not be determined. A read error does not identify an ordinary SIM.",
   "Тип SIM-карты ещё не проверен. Нажмите «Проверить карту и профили».": "SIM card type has not been checked. Click “Check card and profiles”.",
   "Управление eSIM доступно на физической eUICC в SIM-слоте. Обычная SIM-карта оператора не поддерживает установку профилей eSIM. Встроенная карта ZTE не поддерживается. Проверено: 9eSIM V0 и MU5250 B31.": "eSIM management requires a physical eUICC in the SIM slot. An ordinary operator SIM cannot install eSIM profiles. The built-in ZTE card is not supported. Tested with 9eSIM V0 and MU5250 B31.",
-  "Нажмите «Проверить карту и профили», чтобы определить доступность eSIM и прочитать профили.": "Click Check card and profiles to check eSIM management and read the profiles."
+  "Нажмите «Проверить карту и профили», чтобы определить доступность eSIM и прочитать профили.": "Click Check card and profiles to check eSIM management and read the profiles.",
+  "Управление профилями доступно на съёмной SIM-карте с eUICC. Тип карты определяется по её ответу. Встроенная eSIM ZTE не поддерживается.": "Profile management is available on a removable SIM card with eUICC. The card type is determined from its response. Built-in ZTE eSIM is not supported.",
+  "Вставлена обычная SIM-карта оператора. Установка профилей eSIM недоступна.": "A regular operator SIM card is inserted. Installing eSIM profiles is unavailable.",
+  "SIM-карта": "SIM card",
+  "Управление профилями eSIM недоступно": "eSIM profile management is unavailable",
+  "Установить профиль на эту eUICC? Код оператора может быть одноразовым. Профиль останется выключенным.": "Install this profile on this eUICC? The operator code may be single use. The profile will remain disabled.",
+  "Карта не поддерживает управление eSIM. Проверьте карту заново.": "This SIM does not support eSIM management. Check the card again."
 }

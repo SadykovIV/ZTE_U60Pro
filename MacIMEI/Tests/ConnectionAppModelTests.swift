@@ -87,8 +87,7 @@ private func snapshot() -> ConnectionOverviewSnapshot {
             m.channelStatuses = [ConnectionChannelStatus(mode: .web, state: .authenticationRequired, message: "Штатный Web ответил; нужен пароль")]
             m.connectionsChecked = true
             try check(m.isStockWebAvailable && m.canPrepareModem && !m.connected && !m.canManage, "Web discovery readiness wrong")
-            m.preparePreferredSSH()
-            try check(m.operationTask == nil && !m.busy && m.preparationError.contains("пароль"), "Empty preparation credentials triggered transport")
+            try check(m.webPassword.isEmpty && m.agentPassword.isEmpty && m.canPrepareModem, "Preparation requires unrelated credentials before checking reusable SSH")
             for state in [ConnectionChannelState.unavailable, .invalidPassword, .rateLimited, .identityMismatch, .trustRejected, .unsupported, .notChecked] {
                 m.channelStatuses[0].state = state
                 try check(!m.isStockWebAvailable && !m.canPrepareModem, "Unverified/unavailable Web enabled preparation")
@@ -449,6 +448,30 @@ private func snapshot() -> ConnectionOverviewSnapshot {
             try check(!m.terminalActive && m.canManage, "Closing terminal did not restore controls")
             m.markConnectionUnavailable("fixture disconnect")
             try check(!m.terminalSession.active && m.opkgCommand.isEmpty && m.opkgFeeds == nil && m.opkgFeedsDraft.isEmpty && m.terminalError.isEmpty, "Disconnect retained terminal/device drafts")
+        }
+        try test("SIM type remains unknown until a successful card result") {
+            let m = try model(); m.acceptChannelSelection(selection(.ssh))
+            try check(m.canReadEsim && !m.canWriteEsim && !m.hasOrdinarySIM && m.esimCardStatus.contains("ещё не проверен"), "Unprobed SIM was classified or writable")
+            m.esimError = "fixture transport error"
+            try check(!m.hasOrdinarySIM && m.esimCardStatus.contains("не удалось"), "Transport error became an ordinary SIM")
+        }
+        try test("Ordinary SIM clears profile access and is tied to the selected SSH target") {
+            let m = try model(); m.acceptChannelSelection(selection(.ssh))
+            m.esimCard = try JSONDecoder().decode(EsimCardCheck.self, from: Data(#"{"kind":"ordinary_sim","management":"unavailable","reason":"isdr_not_found","cleanup_confirmed":true}"#.utf8))
+            m.esimAuthorization = m.esimTargetKey
+            try check(m.hasOrdinarySIM && m.canReadEsim && !m.canWriteEsim && m.esimCardStatus.contains("обычная SIM"), "Ordinary SIM still allows profile writes")
+            m.port = "2200"
+            try check(!m.hasOrdinarySIM && !m.canWriteEsim && m.esimCardStatus.contains("ещё не проверен"), "Ordinary card result survived target change")
+            m.clearEsim()
+            try check(m.esimCard == nil && m.esimSnapshot == nil && m.esimAuthorization == nil, "Card state survived clear")
+        }
+        try test("SIM read does not depend on firmware override or unrelated recovery flags") {
+            let m = try model(); m.acceptChannelSelection(selection(.ssh))
+            m.setFirmwareCheckSkipped(true); m.acceptChannelSelection(selection(.ssh))
+            m.pendingOperation = true; m.setupPending = true; m.systemRestorePending = true
+            try check(m.canReadEsim && !m.canWriteEsim, "Card read inherited unrelated write restrictions")
+            m.busy = true; try check(!m.canReadEsim, "Card read escaped active operation serialization"); m.busy = false
+            m.terminalActive = true; try check(!m.canReadEsim, "Card read escaped an active manual terminal")
         }
         print("PASS ConnectionAppModelTests \(count) groups")
     }

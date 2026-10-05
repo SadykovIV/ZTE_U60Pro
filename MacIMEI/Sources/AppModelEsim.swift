@@ -2,26 +2,26 @@ import Foundation
 
 @MainActor extension AppModel {
     var esimTargetKey: String {
-        [host, port, keyPath, knownHostsPath, sshSelectionContext.identity?.cid ?? "", sshSelectionContext.identity?.firmwareHash ?? "", activeChannel?.rawValue ?? ""].joined(separator: "\n")
+        [host, port, keyPath, knownHostsPath, channelSession?.summary.bootID ?? "", activeChannel?.rawValue ?? ""].joined(separator: "\n")
     }
-    var canReadEsim: Bool { canReadModem && !esimPreview && !pendingOperation && !setupPending && !systemRestorePending && !skipFirmwareCheck }
-    var canWriteEsim: Bool { canManage && !esimPreview && !skipFirmwareCheck && esimAuthorization == esimTargetKey && esimSnapshot?.writeReady == true }
+    var canReadEsim: Bool { canReadModem && !esimPreview }
+    var canWriteEsim: Bool { canReadEsim && esimAuthorization == esimTargetKey && esimSnapshot?.writeReady == true }
+    var hasOrdinarySIM: Bool { esimCard?.kind == "ordinary_sim" && esimAuthorization == esimTargetKey }
     var esimCardStatus: String {
         if esimOperationActive { return "Тип SIM-карты: проверка…" }
+        if hasOrdinarySIM { return "Вставлена обычная SIM-карта оператора. Установка профилей eSIM недоступна." }
         if esimSnapshot != nil && esimAuthorization == esimTargetKey { return "Тип SIM-карты: физическая eUICC подтверждена." }
         if !esimError.isEmpty { return "Тип SIM-карты определить не удалось. Ошибка чтения не означает, что карта обычная." }
         return "Тип SIM-карты ещё не проверен. Нажмите «Проверить карту и профили»."
     }
-    func clearEsim() { esimSnapshot = nil; esimAuthorization = nil; esimSelectedICCID = nil; esimMessage = ""; esimError = "" }
+    func clearEsim() { esimSnapshot = nil; esimCard = nil; esimAuthorization = nil; esimSelectedICCID = nil; esimMessage = ""; esimError = "" }
     func performEsim(_ operation: EsimOperation) {
         guard operation.mutates ? canWriteEsim : canReadEsim else { return }
-        let before = esimSnapshot, config = connection, target = sshSelectionContext, key = esimTargetKey
-        let root = storage, assets = resources, logID = UUID()
-        // An explicit selected SSH identity is required for this bounded B31 workflow.
-        guard target.identity != nil || target.session?.summary.identity != nil else { esimError = "Проверьте SSH-подключение к модему перед чтением eSIM."; return }
+        let before = esimSnapshot, config = connection, session = channelSession, key = esimTargetKey
+        let assets = resources, logID = UUID()
         do { _ = try operation.request(snapshot: before); try config.validate() }
         catch { esimError = EsimFailure.invalidInput.localizedDescription; return }
-        esimAuthorization = nil; esimError = ""; esimMessage = "Проверяю карту…"; busy = true; progress = 0; esimOperationActive = true; esimLogID = logID
+        esimAuthorization = nil; esimCard = nil; esimError = ""; esimMessage = "Проверяю карту…"; busy = true; progress = 0; esimOperationActive = true; esimLogID = logID
         append("eSIM · " + operation.name + " · Начинаю операцию; подробный ход появится в журнале.")
         let report: @Sendable (String) -> Void = { [weak self] stage in
             guard let target = self else { return }
@@ -41,22 +41,21 @@ import Foundation
             guard let self else { return }
             do {
                 let result = try await Task.detached(priority: .userInitiated) {
-                    let engine = try ModemEngine(root: root, resources: assets, connection: config)
-                    return try engine.locked {
-                        try target.verify(engine)
-                        return try EsimService(connection: config, resources: assets).perform(operation, expected: before, journal: journal, progress: report)
-                    }
+                    if let session { _ = try session.requireSSH() }
+                    let result = try EsimService(connection: config, resources: assets).perform(operation, expected: before, journal: journal, progress: report)
+                    if let session { _ = try session.requireSSH() }
+                    return result
                 }.value
                 guard self.esimTargetKey == key else { throw EsimFailure.targetChanged }
-                self.esimSnapshot = result.snapshot; self.esimAuthorization = key
+                self.esimSnapshot = result.snapshot; self.esimCard = result.card; self.esimAuthorization = key
                 if !((result.snapshot?.profiles.contains { $0.iccid == self.esimSelectedICCID }) ?? false) { self.esimSelectedICCID = nil }
-                self.esimMessage = operation.name == "enable" ? "Профиль активен, SIM перечитана, радио включено. Регистрация в мобильной сети проверяется отдельно." : operation.name == "download" ? "Профиль установлен и выключен. Выберите его для активации." : operation.name == "delete" ? "Профиль удалён. Список перечитан с карты." : "Все профили прочитаны с карты."
+                self.esimMessage = self.hasOrdinarySIM ? "Вставлена обычная SIM-карта оператора. Установка профилей eSIM недоступна." : operation.name == "enable" ? "Профиль активен, SIM перечитана, радио включено. Регистрация в мобильной сети проверяется отдельно." : operation.name == "download" ? "Профиль установлен и выключен. Выберите его для активации." : operation.name == "delete" ? "Профиль удалён. Список перечитан с карты." : "Все профили прочитаны с карты."
                 if result.notificationsPending == true { self.esimMessage += " Уведомления оператору ещё не доставлены." }
                 self.progress = 1
                 // Only allowlisted metadata and fixed error codes are journaled.
                 self.append("Операция eSIM завершена", progress: 1)
             } catch {
-                self.esimAuthorization = nil; self.esimSnapshot = nil; self.esimSelectedICCID = nil
+                self.esimAuthorization = nil; self.esimSnapshot = nil; self.esimCard = nil; self.esimSelectedICCID = nil
                 let failure = error as? EsimFailure ?? .transport
                 self.esimError = failure.localizedDescription
                 self.esimMessage = ""

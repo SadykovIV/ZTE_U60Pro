@@ -81,3 +81,78 @@ extension ModemEngine {
         return (proof.identity, proof.bootID)
     }
 }
+
+
+/// Facts observed over an authenticated, host-key-checked SSH connection.
+/// Missing facts reduce attribution; they never authorize an installer or write.
+struct SSHReadProof: Equatable, Sendable {
+    var uid: String?
+    var system: String?
+    var architecture: String?
+    var cid: String?
+    var bootID: String?
+    var firmwareHash: String?
+    var routerHash: String?
+    var identity: Identity? {
+        guard let cid, let firmwareHash else { return nil }
+        return Identity(cid: cid, firmwareHash: firmwareHash)
+    }
+    var completeProof: DiagnosticDeviceProof? {
+        guard let identity, let routerHash, let bootID else { return nil }
+        return DiagnosticDeviceProof(identity: identity, routerHash: routerHash, bootID: bootID)
+    }
+    init(uid: String? = nil, system: String? = nil, architecture: String? = nil, cid: String? = nil,
+         bootID: String? = nil, firmwareHash: String? = nil, routerHash: String? = nil) {
+        self.uid = uid; self.system = system; self.architecture = architecture; self.cid = cid
+        self.bootID = bootID; self.firmwareHash = firmwareHash; self.routerHash = routerHash
+    }
+    init(_ proof: DiagnosticDeviceProof) {
+        self.init(cid: proof.identity.cid, bootID: proof.bootID, firmwareHash: proof.identity.firmwareHash, routerHash: proof.routerHash)
+    }
+    /// Compare every fact initially observed. An unavailable fact stays unknown.
+    func verify(_ current: SSHReadProof) throws {
+        for (before, after) in [(uid,current.uid),(system,current.system),(architecture,current.architecture),
+                                (cid,current.cid),(bootID,current.bootID),(firmwareHash,current.firmwareHash),(routerHash,current.routerHash)] {
+            if let before { try require(after == before, "Устройство или сеанс SSH изменились; дальнейшее чтение остановлено") }
+        }
+    }
+    func matches(_ expected: DiagnosticDeviceExpectation) -> Bool {
+        // SSH host-key authentication binds the selected endpoint. Compare a
+        // saved hardware fact when the current device can expose that fact.
+        cid.map { expected.cids.isEmpty || expected.cids.contains($0) } ?? true
+    }
+    static let command = """
+    export PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C
+    zte_read_fact() { value=$("$@" 2>/dev/null) || value=; case "$value" in ''|*[!A-Za-z0-9_.-]*) printf '?\\n';; *) test "${#value}" -le 128 && printf '%s\\n' "$value" || printf '?\\n';; esac; }
+    zte_read_hash() {
+      p=$1
+      if test -L "$p"; then printf '?\\n'
+      elif test -f "$p" && test -r "$p"; then
+        h=$(sha256sum "$p" 2>/dev/null) || h=
+        h=${h%% *}; case "$h" in ''|*[!0-9a-f]*) printf '?\\n';; *) test "${#h}" = 64 && printf '%s\\n' "$h" || printf '?\\n';; esac
+      elif test ! -e "$p" && test -r "${p%/*}" && test -x "${p%/*}"; then printf 'absent\\n'
+      else printf '?\\n'; fi
+    }
+    printf 'ZTE_SSH_READ_V1\\n'
+    zte_read_fact id -u
+    zte_read_fact uname -s
+    zte_read_fact uname -m
+    zte_read_fact cat /sys/block/mmcblk0/device/cid
+    zte_read_fact cat /proc/sys/kernel/random/boot_id
+    zte_read_hash /firmware/image/modem.b16
+    zte_read_hash /usr/bin/diag-router
+    """
+    static func parse(_ bytes: Data) throws -> Self {
+        try require(bytes.count <= 4096 && !bytes.contains(0), "Неверный ответ проверки SSH")
+        let lines = CommandText.decode(bytes).split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let fields = lines.last == "" ? Array(lines.dropLast()) : lines
+        try require(fields.count == 8 && fields[0] == "ZTE_SSH_READ_V1", "Неполный ответ проверки SSH")
+        let values = Array(fields.dropFirst()).map { $0 == "?" ? nil : Optional($0) }
+        func valid(_ value: String?, pattern: String) -> Bool { value == nil || value!.range(of: pattern, options: .regularExpression) != nil }
+        try require(valid(values[0], pattern: "^[0-9]{1,10}$") && valid(values[1], pattern: "^[A-Za-z0-9_.-]{1,128}$") &&
+                    valid(values[2], pattern: "^[A-Za-z0-9_.-]{1,128}$") && valid(values[3], pattern: "^[0-9a-f]{32}$") &&
+                    valid(values[4], pattern: "^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$") &&
+                    valid(values[5], pattern: "^(?:absent|[0-9a-f]{64})$") && valid(values[6], pattern: "^(?:absent|[0-9a-f]{64})$"), "Некорректные сведения SSH")
+        return Self(uid:values[0],system:values[1],architecture:values[2],cid:values[3],bootID:values[4],firmwareHash:values[5],routerHash:values[6])
+    }
+}

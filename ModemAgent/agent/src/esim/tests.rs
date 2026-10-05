@@ -263,6 +263,7 @@ struct FakeRuntime {
     radio_calls: usize,
     fail_radio: bool,
     fail_radio_ready: bool,
+    ordinary: bool,
 }
 impl FakeRuntime {
     fn new(before: Snapshot, after: Snapshot, results: Vec<Result<Value>>) -> Self {
@@ -278,10 +279,18 @@ impl FakeRuntime {
             radio_calls: 0,
             fail_radio: false,
             fail_radio_ready: false,
+            ordinary: false,
         }
     }
 }
 impl Runtime for FakeRuntime {
+    fn inspect(&mut self) -> Result<Inspection> {
+        if self.ordinary {
+            Ok(Inspection::Ordinary)
+        } else {
+            self.snapshot().map(Inspection::Euicc)
+        }
+    }
     fn snapshot(&mut self) -> Result<Snapshot> {
         Ok(self
             .snapshots
@@ -509,14 +518,12 @@ fn notification_cleanup_preserves_unknown_channel_and_first_component_cause() {
         let before = snapshot(&[(ONE, "disabled")]);
         let after = snapshot(&[(ONE, "enabled")]);
         let r = request("enable", &before);
-        let mut rt = FakeRuntime::new(
-            before,
-            after.clone(),
-            vec![queue(&[]), ok(), queue(&[])],
-        );
+        let mut rt = FakeRuntime::new(before, after.clone(), vec![queue(&[]), ok(), queue(&[])]);
         rt.fail_end = Some(2);
         rt.end_error = Some(Error::new(cleanup_code).component(Some("qmi_open_unknown")));
-        let error = perform(&r, &mut rt, &mut FakeRelay::default()).err().unwrap();
+        let error = perform(&r, &mut rt, &mut FakeRelay::default())
+            .err()
+            .unwrap();
         assert_eq!(error.code, expected_code);
         assert_eq!(error.component_error, Some("qmi_open_unknown"));
         assert_eq!(
@@ -527,7 +534,13 @@ fn notification_cleanup_preserves_unknown_channel_and_first_component_cause() {
         assert_eq!(rt.ends, 2);
         assert_eq!(rt.radio_calls, 1);
         assert_eq!(rt.commands.len(), 3, "no command or mutation retry");
-        assert_eq!(rt.commands.iter().filter(|args| args.get(1).map(String::as_str) == Some("enable")).count(), 1);
+        assert_eq!(
+            rt.commands
+                .iter()
+                .filter(|args| args.get(1).map(String::as_str) == Some("enable"))
+                .count(),
+            1
+        );
         let (result, exit) = final_value(Err(error));
         assert_eq!(exit, 1);
         assert_eq!(result["error"], expected_code);
@@ -569,14 +582,24 @@ fn card_check_empty_euicc_is_confirmed_without_extra_card_operations() {
     let result = perform(&r, &mut runtime, &mut FakeRelay::default()).unwrap();
     let (value, exit) = final_value(Ok(result));
     assert_eq!(exit, 0);
-    assert_eq!(value["card"], json!({
-        "kind":"euicc_confirmed", "management":"available",
-        "reason":"eid_and_profiles_read", "cleanup_confirmed":true
-    }));
+    assert_eq!(
+        value["card"],
+        json!({
+            "kind":"euicc_confirmed", "management":"available",
+            "reason":"eid_and_profiles_read", "cleanup_confirmed":true
+        })
+    );
     assert_eq!(value["snapshot"], serde_json::to_value(&before).unwrap());
-    assert_eq!(runtime.snapshots.len(), 2, "only the existing snapshot is read");
+    assert_eq!(
+        runtime.snapshots.len(),
+        2,
+        "only the existing snapshot is read"
+    );
     assert!(runtime.commands.is_empty());
-    assert_eq!((runtime.begins, runtime.ends, runtime.radio_calls), (0, 0, 0));
+    assert_eq!(
+        (runtime.begins, runtime.ends, runtime.radio_calls),
+        (0, 0, 0)
+    );
     assert!(!value["card"].to_string().contains(&before.eid));
 }
 
@@ -585,13 +608,33 @@ fn card_check_failures_never_claim_plain_sim_absence_or_available_management() {
     for (code, component, reason) in [
         ("card_busy", Some("lock_unavailable"), "busy"),
         ("esim_busy", None, "busy"),
-        ("card_open_rejected", Some("qmi_open_rejected"), "open_rejected"),
-        ("card_cleanup_unknown", Some("qmi_open_unknown"), "cleanup_unknown"),
-        ("snapshot_cleanup_failed", Some("channel_close_failed"), "cleanup_unknown"),
+        (
+            "card_open_rejected",
+            Some("qmi_open_rejected"),
+            "open_rejected",
+        ),
+        (
+            "card_cleanup_unknown",
+            Some("qmi_open_unknown"),
+            "cleanup_unknown",
+        ),
+        (
+            "snapshot_cleanup_failed",
+            Some("channel_close_failed"),
+            "cleanup_unknown",
+        ),
         ("snapshot_failed", Some("qmi_transmit_error"), "read_failed"),
-        ("snapshot_failed", Some("snapshot_card_status_error"), "read_failed"),
+        (
+            "snapshot_failed",
+            Some("snapshot_card_status_error"),
+            "read_failed",
+        ),
         ("snapshot_failed", Some("eid_parse_error"), "read_failed"),
-        ("snapshot_failed", Some("profiles_parse_error"), "read_failed"),
+        (
+            "snapshot_failed",
+            Some("profiles_parse_error"),
+            "read_failed",
+        ),
         ("card_not_ready", None, "not_ready"),
         ("job_deadline_exceeded", None, "read_failed"),
         ("unsupported_firmware", None, "unsupported_device"),
@@ -600,9 +643,15 @@ fn card_check_failures_never_claim_plain_sim_absence_or_available_management() {
     ] {
         let (value, exit) = final_value(Err(Error::new(code).component(component)));
         assert_eq!(exit, 1);
-        assert_eq!(value["card"], json!({"kind":"unknown", "management":"unknown",
-            "reason":reason, "cleanup_confirmed":false}), "{code}");
-        assert!(!value["card"].to_string().contains("PRIVATE_UNRECOGNIZED_CANARY"));
+        assert_eq!(
+            value["card"],
+            json!({"kind":"unknown", "management":"unknown",
+            "reason":reason, "cleanup_confirmed":false}),
+            "{code}"
+        );
+        assert!(!value["card"]
+            .to_string()
+            .contains("PRIVATE_UNRECOGNIZED_CANARY"));
     }
 }
 
@@ -625,7 +674,10 @@ fn card_check_invalid_success_snapshot_is_not_a_positive_detection() {
     let mut malformed = snapshot(&[]);
     malformed.eid = "INVALID_EID".into();
     let (value, exit) = final_value(Ok(Outcome {
-        snapshot: malformed, changed: false, notifications_pending: false, modem_verified: None,
+        snapshot: Some(malformed),
+        changed: false,
+        notifications_pending: false,
+        modem_verified: None,
     }));
     assert_eq!(exit, 1);
     assert_eq!(value["ok"], false);
@@ -807,4 +859,84 @@ fn interactive_rpc_emits_waiting_while_http_reply_is_pending_without_line_interl
         drop(output);
     });
     join.join().unwrap();
+}
+
+#[test]
+fn ordinary_list_success_has_no_snapshot_and_never_starts_lpac_or_radio() {
+    let before = snapshot(&[]);
+    let mut rt = FakeRuntime::new(before.clone(), before, vec![]);
+    rt.ordinary = true;
+    let request: Request =
+        serde_json::from_value(json!({"protocol":1,"operation":"list"})).unwrap();
+    let (value, exit) = final_value(perform(&request, &mut rt, &mut FakeRelay::default()));
+    assert_eq!(exit, 0);
+    assert_eq!(
+        value,
+        json!({"type":"result","ok":true,"changed":false,"notifications_pending":false,
+        "card":{"kind":"ordinary_sim","management":"unavailable","reason":"isdr_not_found","cleanup_confirmed":true}})
+    );
+    assert_eq!((rt.begins, rt.ends, rt.radio_calls), (0, 0, 0));
+    assert!(rt.commands.is_empty());
+    assert_eq!(rt.snapshots.len(), 3);
+}
+#[test]
+fn ordinary_fresh_read_refuses_every_mutation_before_lpac_and_radio() {
+    for operation in ["download", "enable", "delete"] {
+        let before = snapshot(&[(ONE, "disabled")]);
+        let r = request(operation, &before);
+        let mut rt = FakeRuntime::new(before.clone(), before, vec![]);
+        rt.ordinary = true;
+        assert_eq!(
+            perform(&r, &mut rt, &mut FakeRelay::default())
+                .err()
+                .unwrap()
+                .code,
+            "card_not_euicc"
+        );
+        assert!(rt.commands.is_empty());
+        assert_eq!((rt.begins, rt.ends, rt.radio_calls), (0, 0, 0));
+    }
+}
+#[test]
+fn ordinary_helper_shape_is_exact_and_cannot_authorize_a_mutation() {
+    let good = json!({"ok":true,"card":{"kind":"ordinary_sim","management":"unavailable","reason":"isdr_not_found","cleanup_confirmed":true}});
+    assert_eq!(
+        Inspection::parse(good.clone()).unwrap(),
+        Inspection::Ordinary
+    );
+    for (key, value) in [
+        ("cleanup_confirmed", json!(false)),
+        ("management", json!("available")),
+        ("reason", json!("qmi_error")),
+        ("kind", json!("euicc_confirmed")),
+    ] {
+        let mut bad = good.clone();
+        bad["card"][key] = value;
+        assert!(Inspection::parse(bad).is_err());
+    }
+    for key in ["eid", "profiles", "snapshot", "private"] {
+        let mut bad = good.clone();
+        bad[key] = Value::Null;
+        assert!(Inspection::parse(bad).is_err());
+    }
+    let (bad, exit) = final_value(Ok(Outcome {
+        snapshot: None,
+        changed: true,
+        notifications_pending: false,
+        modem_verified: None,
+    }));
+    assert_eq!(exit, 1);
+    assert_eq!(bad["error"], "invalid_snapshot");
+}
+
+#[test]
+fn read_only_resources_extract_only_bridge_no_lpac_or_ca() {
+    let mut resources = resources::Resources::extract_for(true).unwrap();
+    assert!(resources.helper.is_file());
+    assert!(!resources.lpac.exists());
+    assert!(!resources.gsma_root.exists());
+    let directory = resources.helper.parent().unwrap().to_owned();
+    assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
+    resources.cleanup().unwrap();
+    assert!(!directory.exists());
 }

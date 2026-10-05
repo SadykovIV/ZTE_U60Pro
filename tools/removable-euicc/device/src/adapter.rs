@@ -9,14 +9,15 @@ const MAX_APDU: usize = 65_500;
 const MAX_RESPONSE: usize = 2 * 1024 * 1024;
 
 pub trait CardIo {
+    fn guard(&mut self) -> Result<()>;
     fn open(&mut self) -> std::result::Result<u8, OpenChannelError>;
+    fn ordinary_ready(&mut self) -> Result<bool>;
     fn close(&mut self, channel: u8) -> Result<()>;
     fn transmit(&mut self, channel: u8, command: &[u8]) -> Result<Vec<u8>>;
 }
 
 pub trait Device {
     type Card: CardIo;
-    fn guard(&mut self) -> Result<()>;
     fn connect(&mut self) -> Result<Self::Card>;
 }
 
@@ -102,8 +103,9 @@ impl<D: Device> Session<D> {
         if self.cleanup_failed || self.operation_failed {
             return Err("session_failed");
         }
-        self.device.guard()?;
-        self.card = Some(self.device.connect()?);
+        let mut card = self.device.connect()?;
+        card.guard()?;
+        self.card = Some(card);
         Ok(())
     }
 
@@ -228,10 +230,55 @@ impl<D: Device> Session<D> {
         Ok(eid)
     }
 
+    /// An explicit SELECT separates application absence from Open ownership.
+    fn select_isdr(&mut self) -> Result<bool> {
+        // Keep the ISO CLA and QMI channel TLV consistent even on a modem
+        // that does not rewrite the CLA from the optional channel field.
+        let channel = self.channel.ok_or("not_open")?;
+        if !(1..=3).contains(&channel) {
+            return Err("unsupported_channel");
+        }
+        let mut command = vec![channel, 0xa4, 0x04, 0x0c, es10::ISD_R_AID.len() as u8];
+        command.extend_from_slice(&es10::ISD_R_AID);
+        let response = self.transmit(&command)?;
+        let (data, sw) = es10::split_status(&response).map_err(|_| "short_apdu_response")?;
+        // P2=0C requests no response data. Other SWs, trailing data and transport
+        // errors remain unknown; never infer ordinary SIM from a failed Open.
+        if !data.is_empty() {
+            return Err("snapshot_card_status_error");
+        }
+        match sw {
+            0x9000 => Ok(true),
+            0x6a82 => Ok(false),
+            _ => Err("snapshot_card_status_error"),
+        }
+    }
+
+    pub fn euicc_snapshot(&mut self) -> Result<Value> {
+        let value = self.snapshot()?;
+        if value.get("card").is_some() {
+            return Err("card_not_euicc");
+        }
+        Ok(value)
+    }
+
     pub fn snapshot(&mut self) -> Result<Value> {
         let result = (|| {
             self.connect()?;
             self.open()?;
+            if !self.select_isdr()? {
+                if !self
+                    .card
+                    .as_mut()
+                    .ok_or("not_connected")?
+                    .ordinary_ready()?
+                {
+                    return Err("card_not_ready");
+                }
+                self.card.as_mut().ok_or("not_connected")?.guard()?;
+                return Ok(json!({"ok":true,"card":{"kind":"ordinary_sim",
+                    "management":"unavailable","reason":"isdr_not_found","cleanup_confirmed":true}}));
+            }
             let eid = self.read_eid()?;
             let data = self.read_response(
                 &es10::get_profiles_request().map_err(|_| "profiles_command_error")?,
@@ -243,7 +290,7 @@ impl<D: Device> Session<D> {
                 "nickname": p.nickname, "service_provider": p.service_provider, "name": p.name
             })).collect();
             // Selection cache is checked again before returning private data.
-            self.device.guard()?;
+            self.card.as_mut().ok_or("not_connected")?.guard()?;
             Ok(json!({"ok": true, "eid": eid, "profiles": rows}))
         })();
         let cleanup = self.disconnect();
@@ -289,9 +336,15 @@ impl<D: Device> Session<D> {
                 }
                 // Guard again immediately before opening, and bind this owned
                 // channel to the expected EID before forwarding host APDUs.
-                self.device.guard()?;
+                self.card.as_mut().ok_or("not_connected")?.guard()?;
                 let channel = self.open()?;
-                if let Err(error) = self.read_eid() {
+                let identified = (|| {
+                    if !self.select_isdr()? {
+                        return Err("card_not_euicc");
+                    }
+                    self.read_eid()
+                })();
+                if let Err(error) = identified {
                     self.close()?;
                     return Err(error);
                 }
@@ -352,8 +405,10 @@ mod tests {
         closes: usize,
         transmissions: usize,
         fail_guard: bool,
+        not_ready: bool,
         fail_close: bool,
         fail_open: bool,
+        fail_transmit: bool,
         rejected_open: Option<u16>,
         returned_channel: Option<u8>,
         commands: Vec<Vec<u8>>,
@@ -363,6 +418,12 @@ mod tests {
     struct MockCard(Rc<RefCell<Counts>>);
     impl Device for Mock {
         type Card = MockCard;
+        fn connect(&mut self) -> Result<MockCard> {
+            self.0.borrow_mut().connects += 1;
+            Ok(MockCard(self.0.clone()))
+        }
+    }
+    impl CardIo for MockCard {
         fn guard(&mut self) -> Result<()> {
             let mut c = self.0.borrow_mut();
             c.guards += 1;
@@ -372,12 +433,6 @@ mod tests {
                 Ok(())
             }
         }
-        fn connect(&mut self) -> Result<MockCard> {
-            self.0.borrow_mut().connects += 1;
-            Ok(MockCard(self.0.clone()))
-        }
-    }
-    impl CardIo for MockCard {
         fn open(&mut self) -> std::result::Result<u8, OpenChannelError> {
             let mut c = self.0.borrow_mut();
             c.opens += 1;
@@ -391,6 +446,9 @@ mod tests {
             } else {
                 Ok(c.returned_channel.unwrap_or(1))
             }
+        }
+        fn ordinary_ready(&mut self) -> Result<bool> {
+            Ok(!self.0.borrow().not_ready)
         }
         fn close(&mut self, _: u8) -> Result<()> {
             let mut c = self.0.borrow_mut();
@@ -406,6 +464,9 @@ mod tests {
                 let mut c = self.0.borrow_mut();
                 c.transmissions += 1;
                 c.commands.push(cmd.to_vec());
+                if c.fail_transmit {
+                    return Err("qmi_transmit_error");
+                }
                 if let Some(response) = c.responses.pop_front() {
                     return Ok(response);
                 }
@@ -461,15 +522,16 @@ mod tests {
         let (mut s, c) = setup();
         s.expected = Some("2".repeat(32));
         assert_eq!(s.snapshot(), Err("eid_mismatch"));
-        assert_eq!(c.borrow().transmissions, 1);
+        assert_eq!(c.borrow().transmissions, 2);
         assert_eq!(c.borrow().closes, 1);
     }
     #[test]
-    fn guard_refuses_before_qmi() {
+    fn route_guard_refuses_before_open() {
         let (mut s, c) = setup();
         c.borrow_mut().fail_guard = true;
         assert!(s.snapshot().is_err());
-        assert_eq!(c.borrow().connects, 0);
+        assert_eq!(c.borrow().connects, 1);
+        assert_eq!(c.borrow().opens, 0);
     }
     #[test]
     fn duplicate_connect_and_open_never_overwrite_ownership() {
@@ -638,7 +700,107 @@ mod tests {
         s.handle(&msg("connect", ""));
         s.expected = Some("2".repeat(32));
         assert_eq!(s.handle(&open_msg())["payload"]["ecode"], -1);
+        assert_eq!(c.borrow().transmissions, 2);
+        assert_eq!(c.borrow().closes, 1);
+    }
+    #[test]
+    fn ordinary_sim_select_not_found_is_success_without_eid_or_profiles() {
+        let (mut s, c) = setup();
+        c.borrow_mut().responses.push_back(vec![0x6a, 0x82]);
+        let value = s
+            .snapshot()
+            .expect("explicit SELECT not found is a normal card result");
+        assert_eq!(
+            value,
+            json!({"ok":true,"card":{"kind":"ordinary_sim",
+            "management":"unavailable","reason":"isdr_not_found","cleanup_confirmed":true}})
+        );
         assert_eq!(c.borrow().transmissions, 1);
         assert_eq!(c.borrow().closes, 1);
+    }
+    #[test]
+    fn select_status_other_than_not_found_is_unknown_and_closes() {
+        let (mut s, c) = setup();
+        c.borrow_mut().responses.push_back(vec![0x69, 0x85]);
+        assert_eq!(s.snapshot(), Err("snapshot_card_status_error"));
+        assert_eq!(c.borrow().transmissions, 1);
+        assert_eq!(c.borrow().closes, 1);
+    }
+
+    #[test]
+    fn ordinary_requires_ready_and_confirmed_close() {
+        for (not_ready, fail_close, expected) in [
+            (true, false, "card_not_ready"),
+            (false, true, "channel_close_failed"),
+        ] {
+            let (mut session, counts) = setup();
+            let mut c = counts.borrow_mut();
+            c.not_ready = not_ready;
+            c.fail_close = fail_close;
+            c.responses.push_back(vec![0x6a, 0x82]);
+            drop(c);
+            assert_eq!(session.snapshot(), Err(expected));
+            assert_eq!(counts.borrow().transmissions, 1);
+            assert_eq!(counts.borrow().closes, 1);
+        }
+    }
+    #[test]
+    fn malformed_or_transport_select_never_becomes_ordinary() {
+        for response in [
+            vec![],
+            vec![0x6a],
+            vec![0, 0x6a, 0x82],
+            vec![0x61, 0x10],
+            vec![0x6c, 0],
+            vec![0x6e, 0],
+        ] {
+            let (mut session, counts) = setup();
+            counts.borrow_mut().responses.push_back(response);
+            assert!(session.snapshot().is_err());
+            assert_eq!(counts.borrow().transmissions, 1, "no SELECT retries");
+            assert_eq!(counts.borrow().closes, 1);
+        }
+        let (mut session, counts) = setup();
+        counts.borrow_mut().fail_transmit = true;
+        assert_eq!(session.snapshot(), Err("qmi_transmit_error"));
+        assert_eq!(counts.borrow().transmissions, 1);
+        assert_eq!(counts.borrow().closes, 1);
+    }
+    #[test]
+    fn repeated_ordinary_reads_close_each_channel_and_bridge_refuses_card() {
+        let (mut session, counts) = setup();
+        for _ in 0..2 {
+            counts.borrow_mut().responses.push_back(vec![0x6a, 0x82]);
+            assert_eq!(session.snapshot().unwrap()["card"]["kind"], "ordinary_sim");
+        }
+        assert_eq!((counts.borrow().opens, counts.borrow().closes), (2, 2));
+        counts.borrow_mut().responses.push_back(vec![0x6a, 0x82]);
+        assert_eq!(session.euicc_snapshot(), Err("card_not_euicc"));
+        assert_eq!(counts.borrow().transmissions, 3);
+    }
+    #[test]
+    fn explicit_select_cla_matches_each_owned_channel() {
+        for channel in 1..=3 {
+            let (mut session, counts) = setup();
+            counts.borrow_mut().returned_channel = Some(channel);
+            counts.borrow_mut().responses.push_back(vec![0x6a, 0x82]);
+            assert_eq!(session.snapshot().unwrap()["card"]["kind"], "ordinary_sim");
+            let c = counts.borrow();
+            assert_eq!(&c.commands[0][..5], &[channel, 0xa4, 4, 0x0c, 16]);
+            assert_eq!(&c.commands[0][5..], &es10::ISD_R_AID);
+            assert_eq!((c.opens, c.closes, c.transmissions), (1, 1, 1));
+        }
+    }
+    #[test]
+    fn positive_card_uses_select_eid_profiles_in_order() {
+        let (mut session, counts) = setup();
+        let value = session.snapshot().unwrap();
+        assert!(value.get("card").is_none());
+        let commands = &counts.borrow().commands;
+        assert_eq!(&commands[0][..5], &[1, 0xa4, 4, 0x0c, 16]);
+        assert_eq!(&commands[0][5..], &es10::ISD_R_AID);
+        assert_eq!(commands[1], es10::get_eid_request().unwrap());
+        assert_eq!(commands[2], es10::get_profiles_request().unwrap());
+        assert_eq!(commands.len(), 3);
     }
 }

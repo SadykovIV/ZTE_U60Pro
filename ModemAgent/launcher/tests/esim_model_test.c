@@ -24,5 +24,13 @@ int main(void){
  assert(esim_parse_error("{\"type\":\"result\",\"ok\":false,\"error\":\"card_busy\",\"component_error\":\"secret-123\"}",error,component)&&!strcmp(error,"card_busy")&&!component[0]);
  assert(!esim_parse_error("{\"type\":\"result\",\"ok\":true}",error,component));
  assert(!esim_parse_error("{\"type\":\"result\",\"ok\":null}",error,component));
+ const char *ordinary="{\"type\":\"result\",\"ok\":true,\"changed\":false,\"notifications_pending\":false,\"card\":{\"kind\":\"ordinary_sim\",\"management\":\"unavailable\",\"reason\":\"isdr_not_found\",\"cleanup_confirmed\":true}}";
+ assert(esim_parse_result(ordinary,s,&canonical,0));assert(s->ordinary&&!s->valid&&!s->cached&&!s->count&&!canonical);
+ assert(!esim_parse_result(ordinary,s,&canonical,1));
+ const char *fields[]={"\"error\":null,","\"error\":\"card_cleanup_unknown\",","\"snapshot\":null,","\"modem_verified\":false,","\"radio_restored\":true,","\"component_error\":null,"};
+ for(unsigned i=0;i<sizeof fields/sizeof fields[0];i++){snprintf(b,sizeof b,"{%s%s",fields[i],ordinary+1);assert(!esim_parse_result(b,s,&canonical,0));}
+ snprintf(b,sizeof b,"{\"type\":\"result\",\"ok\":true,\"snapshot\":{\"ok\":true,\"eid\":\"89000000000000000000000000000000\",\"profiles\":[]}}");
+ assert(esim_parse_result(b,s,&canonical,0));assert(!s->ordinary&&s->valid&&s->cached&&!s->count&&canonical);
+ assert(esim_parse_error("{\"type\":\"result\",\"ok\":false,\"error\":\"card_not_euicc\"}",error,component)&&!strcmp(error,"card_not_euicc"));
  free(canonical);free(s);puts("eSIM parser: valid, malformed, duplicate, fresh modem proof and stage contract passed");
 }

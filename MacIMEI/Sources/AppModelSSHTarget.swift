@@ -8,7 +8,14 @@ struct SSHSelectionContext: @unchecked Sendable {
     var session: ReadOnlyChannelSession?
 
     func verify(_ engine: ModemEngine) throws {
-        if let session { _ = try session.requireSSH() }
+        if let session {
+            let shell = try session.requireSSH()
+            if let endpoint = session.sshEndpoint {
+                try require(endpoint == ConnectionRouter.sshEndpoint(engine.connection), "Параметры SSH изменились. Подключитесь заново.")
+                try shell.readProof.verify(SSHReadProof.parse(engine.remote(SSHReadProof.command, timeout: 15)))
+                return // Operation-specific managers still check write privileges.
+            }
+        }
         let expected = identity ?? session?.summary.identity
         if let expected {
             let current = try engine.accessIdentity().0

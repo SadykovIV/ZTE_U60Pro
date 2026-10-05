@@ -50,17 +50,24 @@ struct DiagnosticDeviceExpectation {
 final class DiagnosticSession {
     let transport: String
     let selectionReason: String
-    let proof: DiagnosticDeviceProof
-    private let readIdentity: () throws -> DiagnosticDeviceProof
+    let proof: DiagnosticDeviceProof?
+    let readProof: SSHReadProof
+    private let verifyIdentity: () throws -> Void
     private let execute: (String, TimeInterval) throws -> CommandResult
     init(transport: String, reason: String, proof: DiagnosticDeviceProof,
          readIdentity: @escaping () throws -> DiagnosticDeviceProof,
          execute: @escaping (String, TimeInterval) throws -> CommandResult) {
         self.transport = transport; self.selectionReason = reason; self.proof = proof
-        self.readIdentity = readIdentity; self.execute = execute
+        self.readProof = SSHReadProof(proof)
+        self.verifyIdentity = { try require(try readIdentity() == proof, "Устройство, прошивка или сеанс загрузки изменились; дальнейшее чтение остановлено") }; self.execute = execute
+    }
+    init(reason: String, proof: SSHReadProof, readIdentity: @escaping () throws -> SSHReadProof,
+         execute: @escaping (String, TimeInterval) throws -> CommandResult) {
+        self.transport = "ssh"; self.selectionReason = reason; self.proof = proof.completeProof; self.readProof = proof
+        self.verifyIdentity = { try proof.verify(readIdentity()) }; self.execute = execute
     }
     func verify() throws {
-        try require(try readIdentity() == proof, "Устройство, прошивка или сеанс загрузки изменились; дальнейшее чтение остановлено")
+        try verifyIdentity()
     }
     func run(_ command: String, timeout: TimeInterval) throws -> CommandResult {
         try verify()

@@ -254,8 +254,13 @@ private final class UnavailableSSH: RemoteTransport {
     private func output(_ value: String, status: Int32 = 0) -> CommandResult {CommandResult(status:status,stdout:Data(value.utf8),stderr:Data())}
     func run(_ command: String, input: Data?, timeout: TimeInterval) throws -> CommandResult {
         calls.append(command)
-        if let accessFailure, command.hasPrefix(AccessIdentity.command) { return accessFailure }
+        if let accessFailure, command.hasPrefix(AccessIdentity.command) || command == SSHReadProof.command { return accessFailure }
         if !ready {throw IMEIError.message("Synthetic SSH unavailable")}
+        if command == SSHReadProof.command {
+            accessProofReads += 1
+            let boot = changeAccessBoot && accessProofReads > 1 ? "11234567-89ab-4cde-8f01-23456789abcd" : "01234567-89ab-4cde-8f01-23456789abcd"
+            return output("ZTE_SSH_READ_V1\n0\nLinux\naarch64\n" + accessCID + "\n" + boot + "\n" + firmware + "\n" + accessRouter + "\n")
+        }
         if command.hasPrefix(AccessIdentity.command) {
             accessProofReads += 1
             identityReads += 1
@@ -464,9 +469,9 @@ private struct Fixture {
             let f = try Fixture(data: Data("invalid archive must not be read".utf8)); defer { f.remove() }
             f.web.accepted = false; f.ssh.ready = true; f.ssh.malformedSnapshot = true; f.ssh.authenticationAccepted = false
             let result = try f.engine.prepareSSH(expectedIdentity: Identity(cid: testCID, firmwareHash: ModemEngine.firmwareHash))
-            try check(result?.identity.cid == testCID && result?.state == nil && result?.suffix == "", "Access-only proof overstated NV or backup readiness")
+            try check(result?.identity?.cid == testCID && result?.state == nil && result?.suffix == "", "Access-only proof overstated NV or backup readiness")
             try check(f.web.requests.isEmpty && f.host.calls.allSatisfy { $0 == ["devices", "-l"] || $0 == ["-d", "get-serialno"] } && f.ssh.accessProofReads == 2, "SSH preparation touched HTTP or host installer")
-            try check(f.ssh.calls.allSatisfy { $0 == DiagnosticTransportSelector.identityCommand(requireWeb: false) }, "SSH probe performed an extra operation")
+            try check(f.ssh.calls.allSatisfy { $0 == SSHReadProof.command }, "SSH probe performed an extra operation")
             try check(!FileManager.default.fileExists(atPath: f.engine.pending.path), "Read-only preparation created installation intent")
         }
         run("Unavailable SSH preparation returns nil without web login or ADB activation") {
@@ -494,12 +499,12 @@ private struct Fixture {
             let f = try Fixture(); defer { f.remove() }; f.ssh.ready = true
             f.ssh.info["integrate_version"] = "STD_PL_MU5250V1.0.0B02"; f.ssh.info["wa_inner_version"] = "BD_STDPLMU5250V1.0.0B02"
             f.ssh.firmware = OnboardingEngine.b02FirmwareHash
-            try check(try f.engine.prepareSSH()?.identity.firmwareHash == OnboardingEngine.b02FirmwareHash, "Access-only B02 identity incorrectly needs override")
+            try check(try f.engine.prepareSSH()?.identity?.firmwareHash == OnboardingEngine.b02FirmwareHash, "Access-only B02 identity incorrectly needs override")
             var connection = f.engine.currentConnection; connection.skipFirmwareCheck = true
             let manager = try OnboardingEngine(root: f.root, resources: f.resources, connection: connection, backupSuffix: testBackupSuffix, web: f.engine.web, runner: f.host, sshFactory: { _ in f.ssh }, researchRunner: MockResearch())
-            try check(try manager.prepareSSH()?.identity.firmwareHash == OnboardingEngine.b02FirmwareHash, "Known B02 SSH not recognized")
+            try check(try manager.prepareSSH()?.identity?.firmwareHash == OnboardingEngine.b02FirmwareHash, "Known B02 SSH not recognized")
             f.ssh.firmware = String(repeating: "0", count: 64)
-            try check(try manager.prepareSSH()?.identity.firmwareHash == f.ssh.firmware, "Unknown firmware should allow measured access")
+            try check(try manager.prepareSSH()?.identity?.firmwareHash == f.ssh.firmware, "Unknown firmware should allow measured access")
             try check(f.web.requests.isEmpty && f.host.calls.allSatisfy { $0 == ["devices", "-l"] || $0 == ["-d", "get-serialno"] } && f.ssh.authenticationCalls == 0 && f.ssh.uploads.isEmpty, "B02 access probe inferred agent/NV readiness")
         }
         run("SSH preparation preserves pending setup and requires explicit continuation") {
@@ -525,18 +530,19 @@ private struct Fixture {
         run("Missing separate agent password stops before web login or installation") {
             let f = try Fixture(); defer { f.remove() }
             try rejects("пароль агента") { _ = try f.engine.run(webPassword: testPassword, agentPassword: "") }
-            try check(f.web.requests.isEmpty && f.ssh.calls.isEmpty && f.host.calls.allSatisfy { $0 == ["devices", "-l"] || $0 == ["-d", "get-serialno"] }, "Empty agent credential triggered setup")
+            try check(f.web.requests.isEmpty && f.ssh.calls.allSatisfy { $0 == SSHReadProof.command } && f.host.calls.allSatisfy { $0 == ["devices", "-l"] || $0 == ["-d", "get-serialno"] }, "Empty agent credential triggered setup")
         }
         run("SSH preparation preserves a known API IMEI without requiring a CID") {
             let f = try Fixture(); defer { f.remove() }; f.ssh.ready = true
-            try check(try f.engine.prepareSSH(expectedIMEI: testIMEI)?.identity.cid == testCID, "Matching API IMEI rejected")
-            try rejects("другому модему") { _ = try f.engine.prepareSSH(expectedIMEI: "353490068701230") }
+            try check(try f.engine.prepareSSH(expectedIMEI: testIMEI)?.identity?.cid == testCID, "Matching API IMEI rejected")
+            _ = try f.engine.prepareSSH(expectedIMEI: "353490068701230")
+            try check(!f.ssh.calls.contains { $0.contains("ubus") }, "Ordinary SSH reuse called vendor identity RPC")
             try check(f.web.requests.isEmpty && f.host.calls.allSatisfy { $0 == ["devices", "-l"] || $0 == ["-d", "get-serialno"] } && f.ssh.uploads.isEmpty, "IMEI continuity probe mutated device")
         }
         run("Preparation refuses another web IMEI before fresh backup or device writes") {
             let f = try Fixture(); defer { f.remove() }
             try rejects("другому модему") { _ = try f.engine.run(webPassword: testPassword, agentPassword: testPassword, expectedIMEI: "353490068701230") }
-            try check(f.web.backupCount == 0 && f.web.uploadedData == nil && f.web.restoreCount == 0 && f.host.calls.allSatisfy { $0 == ["devices", "-l"] || $0 == ["-d", "get-serialno"] } && f.ssh.calls.isEmpty, "Different web target reached preparation")
+            try check(f.web.backupCount == 0 && f.web.uploadedData == nil && f.web.restoreCount == 0 && f.host.calls.allSatisfy { $0 == ["devices", "-l"] || $0 == ["-d", "get-serialno"] } && f.ssh.calls.allSatisfy { $0 == SSHReadProof.command }, "Different web target reached preparation")
         }
         run("Known CID mismatch blocks existing ADB and SSH before helper or stage writes") {
             for viaSSH in [false, true] {
@@ -562,7 +568,7 @@ private struct Fixture {
         run("Rejected password stops before identity backup or host commands") {
             let f = try Fixture(); defer { f.remove() }; f.web.accepted=false
             try rejects("Вход отклонён") { _ = try f.engine.run(password:testPassword) }
-            try check(f.web.methods == ["web_login_info","web_login"] && f.host.calls.allSatisfy { $0 == ["devices", "-l"] || $0 == ["-d", "get-serialno"] } && f.ssh.calls.isEmpty, "No further action")
+            try check(f.web.methods == ["web_login_info","web_login"] && f.host.calls.allSatisfy { $0 == ["devices", "-l"] || $0 == ["-d", "get-serialno"] } && f.ssh.calls.allSatisfy { $0 == SSHReadProof.command }, "No further action")
             try check(!FileManager.default.fileExists(atPath:f.engine.pending.path), "No write journal")
         }
         run("Missing cookie zero session and invalid challenge fail login") {
@@ -733,7 +739,7 @@ private struct Fixture {
             f.host.deviceListSequence=["List of devices attached\n", "List of devices attached\n", f.host.deviceList]
             f.host.onInstall={ [weak host=f.host,weak ssh=f.ssh] in ssh?.ready=true;ssh?.installedJournal=host?.remoteJournal ?? "" }
             let result=try f.engine.run(password:testPassword)
-            try check(result.state == nil && result.identity.cid == testCID,"Final verified modem state")
+            try check(result.state == nil && result.identity?.cid == testCID,"Final verified modem state")
             try check(f.web.backupCount == 1 && f.web.restoreCount == 1 && f.host.installerCalls == 1,"Backup and restore/install exactly once")
             try check(f.ssh.authenticationCalls == 2 && f.ssh.commitCalls == 1,"Access and commit both authenticate the new agent")
             try check(!FileManager.default.fileExists(atPath:f.engine.pending.path),"Completed setup clears pending journal")
@@ -748,7 +754,7 @@ private struct Fixture {
             f.host.fullInstaller = true; f.host.identityMode = true; f.host.deviceList = "List of devices attached\nABC device transport_id:1\n"
             f.host.onInstall = { [weak host = f.host, weak ssh = f.ssh] in ssh?.ready = true; ssh?.installedJournal = host?.remoteJournal ?? "" }
             let result = try f.engine.run(password: testPassword)
-            try check(result.identity.cid == testCID && f.host.calls.contains(["-d", "get-serialno"]), "USB selector fallback not used")
+            try check(result.identity?.cid == testCID && f.host.calls.contains(["-d", "get-serialno"]), "USB selector fallback not used")
             try check(f.web.directCount == 0 && f.web.restoreCount == 0 && !f.web.methods.contains("list:zwrt_bsp.usb"), "Working ADB triggered activation")
         }
         run("Working root ADB with unknown hashes reaches structural preflight without activation or restore") {
@@ -845,9 +851,9 @@ private struct Fixture {
         run("Existing SSH agent fast path does not upload restore or install") {
             let f=try Fixture();defer {f.remove()};f.ssh.ready=true
             let result=try f.engine.run(password:testPassword)
-            try check(result.state == nil && result.identity.cid == testCID,"Existing pair verified via NV and API")
+            try check(result.state == nil && result.identity?.cid == testCID,"Existing pair verified via NV and API")
             try check(f.web.uploadedData == nil && f.web.restoreCount == 0 && f.host.calls.allSatisfy { $0 == ["devices", "-l"] || $0 == ["-d", "get-serialno"] },"No ADB/bootstrap mutations on existing access")
-            try check(f.ssh.authenticationCalls == 1 && f.ssh.commitCalls == 0,"Existing credentials verified without reinstallation")
+            try check(f.ssh.authenticationCalls == 0 && f.ssh.commitCalls == 0,"Access-only reuse attempted agent authentication")
         }
         run("Actual run reuses released previous agent only with current B31 identity and login") {
             for previous in [AccessAgentReusePolicy.previousSHA256, AccessAgentReusePolicy.publishedPreviousSHA256] {
@@ -858,11 +864,11 @@ private struct Fixture {
             try savePrivate(Data("synthetic-hosts".utf8), URL(fileURLWithPath: f.engine.currentConnection.knownHostsPath))
             let result = try f.engine.run(webPassword: "", agentPassword: testPassword)
             try check(result.state == nil && result.connection.keyPath == f.engine.currentConnection.keyPath, "Reuse returned wrong connection or NV state")
-            try check(f.ssh.authenticationCalls == 1 && f.ssh.processProofCalls == 2 && f.host.installerCalls == 0 && f.host.pushCount == 0 && f.host.stage.isEmpty && f.web.requests.isEmpty, "Reuse installed, skipped login, or used web")
+            try check(f.ssh.authenticationCalls == 0 && f.ssh.processProofCalls == 0 && f.host.installerCalls == 0 && f.host.pushCount == 0 && f.host.stage.isEmpty && f.web.requests.isEmpty, "Reuse installed, skipped login, or used web")
             try check(!FileManager.default.fileExists(atPath: f.engine.pending.path) && !f.ssh.calls.contains { $0.contains("--snapshot") || $0.contains("zte_nv") || $0.contains("--commit") }, "Reuse created installation or NV work")
             }
         }
-        run("Actual run refuses unknown or mismatched mapped agent before auth and installation") {
+        run("SSH reuse does not inspect unknown or mismatched agent") {
             for mappedMismatch in [false, true] {
                 let f = try Fixture(); defer { f.remove() }
                 f.host.identityMode = true; f.host.deviceList = "List of devices attached\nABC device usb:1\n"; f.ssh.ready = true
@@ -870,11 +876,11 @@ private struct Fixture {
                 if mappedMismatch { f.ssh.agentMappedHash = String(repeating: "b", count: 64) }
                 try savePrivate(Data("key".utf8), URL(fileURLWithPath: f.engine.currentConnection.keyPath))
                 try savePrivate(Data("hosts".utf8), URL(fileURLWithPath: f.engine.currentConnection.knownHostsPath))
-                try rejects("сборка") { _ = try f.engine.run(webPassword: "", agentPassword: testPassword) }
+                _ = try f.engine.run(webPassword: "", agentPassword: "")
                 try check(f.ssh.authenticationCalls == 0 && f.host.installerCalls == 0 && f.host.pushCount == 0 && f.host.stage.isEmpty, "Unknown binary permitted auth/install")
             }
         }
-        run("Actual run refuses old agent on generic and B02 access without applying") {
+        run("SSH reuse permits generic and B02 read-only access without agent checks") {
             for generic in [true, false] {
                 let f = try Fixture(); defer { f.remove() }
                 f.host.identityMode = true; f.host.deviceList = "List of devices attached\nABC device usb:1\n"; f.ssh.ready = true
@@ -884,20 +890,17 @@ private struct Fixture {
                 try savePrivate(Data("hosts".utf8), URL(fileURLWithPath: f.engine.currentConnection.knownHostsPath))
                 var connection = f.engine.currentConnection; connection.skipFirmwareCheck = !generic
                 let manager = try OnboardingEngine(root: f.root, resources: f.resources, connection: connection, runner: f.host, sshFactory: { _ in f.ssh }, researchRunner: MockResearch())
-                try rejects("сборка") { _ = try manager.run(webPassword: "", agentPassword: testPassword) }
+                _ = try manager.run(webPassword: "", agentPassword: "")
                 try check(f.ssh.authenticationCalls == 0 && f.host.installerCalls == 0 && f.host.pushCount == 0, "Scoped historical policy widened")
             }
         }
-        run("Actual run failed login process change and reboot never fall through to install") {
-            for kind in 0..<3 {
-                let f = try Fixture(); defer { f.remove() }
-                f.host.identityMode = true; f.host.deviceList = "List of devices attached\nABC device usb:1\n"; f.ssh.ready = true
-                f.ssh.agentDiskHash = AccessAgentReusePolicy.previousSHA256
-                f.ssh.authenticationAccepted = kind != 0; f.ssh.changeProcessAfterAuth = kind == 1; f.ssh.changeBootAfterAuthentication = kind == 2
-                try savePrivate(Data("key".utf8), URL(fileURLWithPath: f.engine.currentConnection.keyPath))
-                try savePrivate(Data("hosts".utf8), URL(fileURLWithPath: f.engine.currentConnection.knownHostsPath))
-                try rejects { _ = try f.engine.run(webPassword: "", agentPassword: testPassword) }
-                try check(f.ssh.authenticationCalls == 1 && f.host.installerCalls == 0 && f.host.pushCount == 0 && f.host.stage.isEmpty, "Failure reached installer or retried login")
+        run("SSH reuse ignores unavailable agent credentials but rejects changed SSH boot") {
+            for changed in [false, true] {
+                let f = try Fixture(); defer { f.remove() }; f.ssh.ready = true
+                f.ssh.authenticationAccepted = false; f.ssh.agentProcessValid = false; f.ssh.changeAccessBoot = changed
+                if changed { try rejects { _ = try f.engine.run(webPassword: "", agentPassword: "") } }
+                else { _ = try f.engine.run(webPassword: "", agentPassword: "") }
+                try check(f.ssh.authenticationCalls == 0 && f.ssh.processProofCalls == 0 && f.host.installerCalls == 0 && f.host.pushCount == 0, "Reuse inspected agent or installed")
             }
         }
         run("Actual run new-install verification never accepts previous binary") {
@@ -918,7 +921,7 @@ private struct Fixture {
             }
             try check(!FileManager.default.fileExists(atPath: f.resources.appendingPathComponent("VPN").path), "Fixture unexpectedly provides optional VPN resources")
             let result = try f.engine.run(password: testPassword)
-            try check(result.identity.cid == testCID && f.host.installerCalls == 1 && f.ssh.authenticationCalls == 1 && f.ssh.commitCalls == 1, "Preparation did not complete verified SSH and agent installation")
+            try check(result.identity?.cid == testCID && f.host.installerCalls == 1 && f.ssh.authenticationCalls == 1 && f.ssh.commitCalls == 1, "Preparation did not complete verified SSH and agent installation")
             let staged = Set(f.host.uploads.keys.map { URL(fileURLWithPath: $0).lastPathComponent })
             try check(staged == Set(["zte-agent", "dropbear", "setup-agent.sh", "start_zte_imei_studio.sh", "id_ed25519.pub", "start-agent.sh"]), "Preparation staged optional application components")
             let commands = f.host.calls.map { $0.joined(separator: " ") } + f.ssh.calls
@@ -944,7 +947,7 @@ private struct Fixture {
             try check(pending.installRequested && pending.restoreRequested && pending.phase == "install-requested","Intent persisted before lost ack")
             f.host.shellCode="0";f.ssh.probesAvailable=false
             let result=try f.engine.run(password:testPassword)
-            try check(result.identity.cid == testCID && f.web.restoreCount == 1 && f.host.installerCalls == 1,"Resume does not replay writes")
+            try check(result.identity?.cid == testCID && f.web.restoreCount == 1 && f.host.installerCalls == 1,"Resume does not replay writes")
             try check(f.ssh.authenticationCalls == 2 && f.ssh.commitCalls == 1 && !FileManager.default.fileExists(atPath:f.engine.pending.path),"Resumed install checked and committed")
         }
         run("Agent authentication failure leaves installation pending and uncommitted") {
@@ -1062,20 +1065,20 @@ private struct Fixture {
             var connection = f.engine.currentConnection; connection.skipFirmwareCheck = true
             let manager = try OnboardingEngine(root: f.root, resources: f.resources, connection: connection, backupSuffix: testBackupSuffix, web: f.engine.web, runner: f.host, sshFactory: { _ in f.ssh }, researchRunner: MockResearch())
             let result = try manager.run(password: testPassword)
-            try check(result.state == nil && result.identity.firmwareHash == OnboardingEngine.b02FirmwareHash && result.firmware.hasSuffix("B02"), "B02 falsely reported NV readiness")
+            try check(result.state == nil && result.identity?.firmwareHash == OnboardingEngine.b02FirmwareHash && result.firmware.hasSuffix("B02"), "B02 falsely reported NV readiness")
             try check(f.web.restoreCount == 0 && f.web.uploadedData == nil && f.host.installerCalls == 1 && f.ssh.authenticationCalls >= 1 && f.ssh.commitCalls == 1, "Unverified bootstrap or missing access checks")
             try check(!f.ssh.calls.contains { $0.contains("--snapshot") || $0.contains("zte_nv") || $0.contains("zte_config") }, "B02 used NV/EFS helper")
             let repeated = try manager.run(password: testPassword)
             try check(repeated.state == nil && f.host.installerCalls == 1, "Existing B02 access reinstalled or implied NV compatibility")
         }
-        run("B02 access rejects a reboot during authentication before accepting readiness") {
+        run("B02 access reuse rejects a reboot before accepting readiness") {
             let f = try Fixture(); defer { f.remove() }
             f.web.info["integrate_version"] = "STD_PL_MU5250V1.0.0B02"; f.web.info["wa_inner_version"] = "BD_STDPLMU5250V1.0.0B02"
-            f.ssh.info = f.web.info; f.ssh.firmware = OnboardingEngine.b02FirmwareHash; f.ssh.ready = true; f.ssh.changeBootAfterAuthentication = true
+            f.ssh.info = f.web.info; f.ssh.firmware = OnboardingEngine.b02FirmwareHash; f.ssh.ready = true; f.ssh.changeAccessBoot = true
             var connection = f.engine.currentConnection; connection.skipFirmwareCheck = true
             let manager = try OnboardingEngine(root: f.root, resources: f.resources, connection: connection, backupSuffix: testBackupSuffix, web: f.engine.web, runner: f.host, sshFactory: { _ in f.ssh }, researchRunner: MockResearch())
-            try rejects("изменился модем") { _ = try manager.run(password: testPassword) }
-            try check(f.ssh.identityReads == 2 && f.ssh.commitCalls == 0 && f.host.installerCalls == 0, "Changed boot accepted or mutated")
+            try rejects("сеанс SSH изменились") { _ = try manager.run(password: testPassword) }
+            try check(f.ssh.accessProofReads == 2 && f.ssh.commitCalls == 0 && f.host.installerCalls == 0, "Changed boot accepted or mutated")
         }
         run("Read-only installer preflight failure precedes stage and uploads") {
             let f = try Fixture(); defer { f.remove() }
@@ -1176,7 +1179,7 @@ private struct Fixture {
                 f.ssh.firmware = f.host.identityFirmware; f.ssh.accessRouter = f.host.identityRouter
                 f.host.onInstall = { [weak host = f.host, weak ssh = f.ssh] in ssh?.ready = true; ssh?.installedJournal = host?.remoteJournal ?? "" }
                 let result = try f.engine.run(webPassword: "", agentPassword: testPassword)
-                try check(result.state == nil && result.identity.firmwareHash == f.host.identityFirmware && f.host.installerCalls == 1 && f.ssh.commitCalls == 1, "Unknown access installation incomplete")
+                try check(result.state == nil && result.identity?.firmwareHash == f.host.identityFirmware && f.host.installerCalls == 1 && f.ssh.commitCalls == 1, "Unknown access installation incomplete")
                 let startup = String(decoding: f.host.uploads[f.host.stage + "/start-agent.sh"]!, as: UTF8.self)
                 try check(startup.contains("export ZTE_AGENT_MODE='discovery'") && startup.contains("export ZTE_AGENT_BIND='192.0.2.1:9090'"), "Generic agent not constrained to discovery and selected address")
                 try check(f.web.requests.isEmpty && f.web.backupCount == 0 && f.web.restoreCount == 0 && !f.ssh.calls.contains { $0.contains("zte_nv") || $0.contains("--snapshot") || $0.contains("get_imei") }, "Unknown access called Web activation or NV")

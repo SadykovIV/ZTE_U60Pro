@@ -79,7 +79,6 @@ extension OnboardingEngine {
         if let expectedIdentity { try require(proof.identity == expectedIdentity, "Устройство или прошивка изменились") }
         let profile = AccessIdentity.profile(proof, experimental: currentConnection.skipFirmwareCheck)
         if profile == "linux-arm64-access" { try require(serials.count == 1, "Для generic подготовки нужен единственный USB-модем") }
-        let startupData = try Self.agentStartup(password: agentPassword, discovery: profile == "linux-arm64-access", discoveryHost: host)
         func verify() throws {
             let currentUSB = try adb.discovery().readyUSBSerials
             if profile == "linux-arm64-access" {
@@ -112,14 +111,12 @@ extension OnboardingEngine {
                 try require(response.status == 0, "Существующий SSH ответил без полной идентификации")
                 let fresh = try AccessIdentity.parse(response.stdout)
                 try require(fresh.identity == proof.identity && fresh.routerHash == proof.routerHash && fresh.bootID == proof.bootID, "SSH и USB относятся к разным устройствам")
-                let reusedHash = try verifyAccessAgent(ssh, proof: proof, profile: profile, expectedHash: hashes["zte-agent"]!, password: agentPassword, reuseExisting: true)
                 try verify()
-                if reusedHash != hashes["zte-agent"]! {
-                    update("Существующий SSH и агент проверены. Установлена предыдущая версия агента; обновление доступно отдельно.", 1)
-                }
+                update("SSH проверен. Готовность агента и IMEI проверяются отдельно.", 1)
                 return SetupResult(connection: connection, state: nil, identity: proof.identity, firmware: proof.webIdentity?.firmware ?? "unknown", suffix: "")
             }
         }
+        let startupData = try Self.agentStartup(password: agentPassword, discovery: profile == "linux-arm64-access", discoveryHost: host)
         // A fresh bounded inventory is evidence only. The installer still repeats
         // its exact structural preflight; saved or imported reports grant nothing.
         if saved == nil {
