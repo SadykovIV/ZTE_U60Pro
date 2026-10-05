@@ -831,5 +831,11 @@
   "В проверенном бэкапе уже есть включение ADB. Запрашивается одна штатная перезагрузка без восстановления бэкапа.": "The verified backup already enables ADB. Requesting one stock reboot without restoring the backup.",
   "Некорректный Backup-key suffix.": "Invalid Backup-key suffix.",
   "Не подтверждён штатный USB-блок rc.local; восстановление не запускалось.": "The stock USB block in rc.local could not be verified; restoration was not started.",
-  "Дополнительные обращения к USB в rc.local не поддерживаются.": "Additional USB references in rc.local are not supported."
+  "Дополнительные обращения к USB в rc.local не поддерживаются.": "Additional USB references in rc.local are not supported.",
+  "Некорректный идентификатор журнала установки": "Invalid installation journal identifier",
+  "Некорректный путь журнала установки": "Invalid installation journal path",
+  "Пути журнала установки не согласованы": "Installation journal paths do not match",
+  "Принудительная подготовка: переустановить агент и SSH": "Force preparation: reinstall the agent and SSH",
+  "Сначала сохраняется резервная копия. Агент получит введённый пароль; временные файлы удаляются после проверки. Незавершённая операция продолжается в сохранённом режиме.": "A backup is saved first. The agent will use the entered password; temporary files are removed after verification. An unfinished operation keeps its saved mode.",
+  "Предыдущая принудительная подготовка отменена; исходное состояние подтверждено. Повторите подготовку, чтобы начать новую попытку.": "The previous forced preparation was rolled back and the original state was verified. Start preparation again to make a new attempt."
 }

@@ -10,7 +10,7 @@ hash() { sha256sum "$1" | awk '{print $1}'; }
 case "$cid" in *[!a-f0-9]*|'') fail CID;; esac
 [ "${#cid}" = 32 ] && [ "$(cat /sys/block/mmcblk0/device/cid)" = "$cid" ] || fail CID
 [ "$(hash /firmware/image/modem.b16)" = 604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263 ] || fail PROFILE
-for pending in /data/local/tmp/zte-imei-installations/active /data/local/tmp/open-u60-transactions/active /tmp/fota_install_processing /data/zte-vpn/transaction /data/zte-vpn/controller-upgrade; do
+for pending in /data/zte-imei-studio/installations/active /data/local/tmp/zte-imei-installations/active /data/local/tmp/open-u60-transactions/active /tmp/fota_install_processing /data/zte-vpn/transaction /data/zte-vpn/controller-upgrade; do
   [ ! -e "$pending" ] && [ ! -L "$pending" ] || fail PENDING
  done
 partition() {
@@ -29,7 +29,7 @@ partition() {
 }
 config_paths() {
   set -- etc/config etc/rc.local
-  for path in etc/dropbear etc/ssh etc/passwd etc/group etc/shadow etc/zte-imei-admin etc/init.d etc/rc.d etc/hotplug.d/iface/99-zte-imei-ttl data/dropbear data/zte-imei-admin data/zte-imei-ttl data/zte-imei-screen-ru data/zte-imei-apps/ssclash/.ssclash data/local/tmp/start_zte_agent.sh data/local/tmp/start_dropbear.sh data/local/tmp/start_dashboard.sh data/local/tmp/dashboard-html.sh data/local/tmp/start_zte_imei_studio.sh data/local/tmp/start_ttl.sh data/zte-vpn/profiles data/zte-vpn/config.json data/zte-vpn/active data/zte-vpn/configured data/zte-vpn/cid data/zte-vpn/owner data/zte-vpn/backup data/zte-vpn/manager.sh data/zte-vpn/firewall.sh data/zte-vpn/configure.lua data/zte-vpn/nft-guard.nft data/zte-vpn/dnsmasq.conf data/zte-vpn/service.sh data/zte-vpn/network-init.sha256; do
+  for path in etc/dropbear etc/ssh etc/passwd etc/group etc/shadow etc/zte-imei-admin etc/init.d etc/rc.d etc/hotplug.d/iface/99-zte-imei-ttl data/dropbear data/zte-imei-studio/start_zte_agent.sh data/zte-imei-studio/start_zte_imei_studio.sh data/zte-imei-studio/bin data/zte-imei-admin data/zte-imei-ttl data/zte-imei-screen-ru data/zte-imei-apps/ssclash/.ssclash data/local/tmp/start_zte_agent.sh data/local/tmp/start_dropbear.sh data/local/tmp/start_dashboard.sh data/local/tmp/dashboard-html.sh data/local/tmp/start_zte_imei_studio.sh data/local/tmp/start_ttl.sh data/zte-vpn/profiles data/zte-vpn/config.json data/zte-vpn/active data/zte-vpn/configured data/zte-vpn/cid data/zte-vpn/owner data/zte-vpn/backup data/zte-vpn/manager.sh data/zte-vpn/firewall.sh data/zte-vpn/configure.lua data/zte-vpn/nft-guard.nft data/zte-vpn/dnsmasq.conf data/zte-vpn/service.sh data/zte-vpn/network-init.sha256; do
     if [ -e "/$path" ] || [ -L "/$path" ]; then set -- "$@" "$path"; fi
   done
   tar -cf - -C / "$@"
@@ -39,7 +39,7 @@ case "$mode" in
     case "$name" in
       modem) bytes=20971520;;
       userData) bytes=$(du -sk /data | awk '{print $1 * 1024}');;
-      configuration) bytes=$(du -sk /etc /data/zte-imei-admin /data/zte-imei-ttl /data/zte-imei-screen-ru /data/zte-imei-apps/ssclash/.ssclash /data/dropbear /data/zte-vpn 2>/dev/null | awk '{n += $1} END {printf "%.0f", n * 1024 + 1048576}');;
+      configuration) bytes=$(du -sk /etc /data/zte-imei-admin /data/zte-imei-ttl /data/zte-imei-screen-ru /data/zte-imei-apps/ssclash/.ssclash /data/dropbear /data/zte-imei-studio/bin /data/zte-imei-studio/start_zte_agent.sh /data/zte-imei-studio/start_zte_imei_studio.sh /data/zte-vpn 2>/dev/null | awk '{n += $1} END {printf "%.0f", n * 1024 + 1048576}');;
       *) fail KIND;;
     esac
     case "$bytes" in ''|*[!0-9]*) fail ESTIMATE;; esac
@@ -67,6 +67,8 @@ trap 'exit 1' HUP INT TERM
 if [ "$mode" = userData ]; then
   cat >"$work/exclude" <<'EXCLUSIONS'
 data/local/tmp
+data/zte-imei-studio/installations
+data/zte-imei-studio/stage-*
 data/cache
 data/log
 data/logs

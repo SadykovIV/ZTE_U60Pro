@@ -5,6 +5,7 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate {
     @MainActor static var model: AppModel?
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if Self.model?.busy == true { Self.model?.append("Дождитесь завершения операции перед закрытием приложения."); return .terminateCancel }
+        Self.model?.clearPreparationCredentials()
         Self.model?.closeTerminal()
         return .terminateNow
     }

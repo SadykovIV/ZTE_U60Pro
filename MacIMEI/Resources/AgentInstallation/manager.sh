@@ -5,7 +5,10 @@ umask 077
 root=$(printenv ZTE_AGENT_TEST_ROOT || true)
 base="$root/data/zte-agent-installer"
 binary="$root/data/zte-agent"
-startup="$root/data/local/tmp/start_zte_agent.sh"
+startup="$root/data/zte-imei-studio/start_zte_agent.sh"
+if test ! -e "$startup" && test ! -L "$startup"; then
+    startup="$root/data/local/tmp/start_zte_agent.sh"
+fi
 action=$1
 hash() { sha256sum "$1" | awk '{print $1}'; }
 plain() { test -f "$1" && test ! -L "$1" && test "$(stat -c %u "$1")" = 0; }

@@ -152,6 +152,7 @@ struct ContentView: View {
         .preferredColorScheme(.dark)
         .environment(\.locale, Locale(identifier: interfaceLanguage))
         .onAppear { model.refreshBackups() }
+        .onDisappear { model.clearPreparationCredentials() }
         .sheet(isPresented: $aboutPresented) { aboutSheet }
         .onChange(of: page) { model.recordNavigation($0.rawValue) }
     }
@@ -398,11 +399,9 @@ struct ContentView: View {
                 Text(L10n.text("MU5250 / U60 Pro")).font(.system(size: 11)).foregroundStyle(StudioStyle.secondary)
             }
             HStack(alignment: .bottom, spacing: 14) {
-                StudioField(label: "АДРЕС МОДЕМА", placeholder: "192.168.0.1", text: $model.host)
-                    .onChange(of: model.host) { _ in model.invalidateChannelConnection() }
-                StudioField(label: "SSH-ПОРТ", placeholder: "2222", text: $model.port)
+                StudioField(label: "АДРЕС МОДЕМА", placeholder: "192.168.0.1", text: Binding(get: { model.host }, set: { model.editConnectionHost($0) }))
+                StudioField(label: "SSH-ПОРТ", placeholder: "2222", text: Binding(get: { model.port }, set: { model.editConnectionPort($0) }))
                     .frame(width: 100)
-                    .onChange(of: model.port) { _ in model.invalidateChannelConnection() }
             }.disabled(model.busy)
             DisclosureGroup(L10n.text("Первоначальная подготовка SSH"), isExpanded: $preparationCredentialsExpanded) {
                 VStack(alignment: .leading, spacing: 12) {
@@ -411,6 +410,10 @@ struct ContentView: View {
                         connectionPasswordField("ПАРОЛЬ АГЕНТА", placeholder: "Текущий или новый пароль", text: $model.agentPassword)
                     }
                     Text(L10n.text("Уже работающий SSH проверяется без этих паролей. Пароль Web нужен только для включения ADB, пароль агента — для новой установки."))
+                        .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
+                    Toggle(L10n.text("Принудительная подготовка: переустановить агент и SSH"), isOn: $model.forcePreparation)
+                        .disabled(model.setupPending)
+                    Text(L10n.text("Сначала сохраняется резервная копия. Агент получит введённый пароль; временные файлы удаляются после проверки. Незавершённая операция продолжается в сохранённом режиме."))
                         .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
                     connectionPasswordField("КЛЮЧ БЭКАПА (НЕОБЯЗАТЕЛЬНО)", placeholder: "Пусто — проверка известного ключа", text: $model.backupSuffix)
                     Text(L10n.text("Пустое поле использует известный ключ как кандидат. Ключ, архив и штатный USB-блок проверяются перед восстановлением; ручное значение не подменяется."))
@@ -426,8 +429,8 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     Text(L10n.text("При подготовке ключ и доверие SSH создаются автоматически. Здесь можно выбрать файлы для уже подготовленного модема."))
                         .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
-                    pathSetting(label: "ПРИВАТНЫЙ SSH-КЛЮЧ", placeholder: "Путь к id_ed25519", text: $model.keyPath, action: model.chooseKey)
-                    pathSetting(label: "ИЗВЕСТНЫЕ SSH-ХОСТЫ", placeholder: "Путь к known_hosts", text: $model.knownHostsPath, action: model.chooseKnownHosts)
+                    pathSetting(label: "ПРИВАТНЫЙ SSH-КЛЮЧ", placeholder: "Путь к id_ed25519", text: Binding(get: { model.keyPath }, set: { model.editConnectionKeyPath($0) }), action: model.chooseKey)
+                    pathSetting(label: "ИЗВЕСТНЫЕ SSH-ХОСТЫ", placeholder: "Путь к known_hosts", text: Binding(get: { model.knownHostsPath }, set: { model.editConnectionKnownHostsPath($0) }), action: model.chooseKnownHosts)
                 }.padding(.top, 10).disabled(model.busy)
             } label: {
                 Label(L10n.text("Параметры SSH"), systemImage: "key.horizontal")

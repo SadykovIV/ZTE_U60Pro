@@ -116,7 +116,7 @@ if test "$mode" = recover; then
 fi
 valid_user "$user" || fail USER_NAME
 ! exists "$base/active" || fail RECOVERY_PENDING
-for pending in /data/local/tmp/zte-imei-installations/active /data/local/tmp/open-u60-transactions/active /tmp/fota_install_processing; do ! exists "$pending" || fail OTHER_TRANSACTION; done
+for pending in /data/zte-imei-studio/installations/active /data/local/tmp/zte-imei-installations/active /data/local/tmp/open-u60-transactions/active /tmp/fota_install_processing; do ! exists "$pending" || fail OTHER_TRANSACTION; done
 entry=$(awk -F: -v name="$user" '$1==name {print; n++} END{if(n!=1)exit 1}' /etc/passwd) || fail UNKNOWN_USER
 uid=$(printf '%s\n' "$entry" | cut -d: -f3); gid=$(printf '%s\n' "$entry" | cut -d: -f4)
 case "$uid:$gid" in *[!0-9:]*) fail UID;; esac

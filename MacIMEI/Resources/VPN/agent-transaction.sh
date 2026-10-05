@@ -15,6 +15,7 @@ targets='data/zte-agent
 data/open-u60-manifest.json
 data/www
 data/www.current
+data/zte-imei-studio/start_zte_agent.sh
 data/local/tmp/start_zte_agent.sh
 data/local/tmp/start_dashboard.sh
 data/local/tmp/dashboard-html.sh
@@ -99,7 +100,7 @@ restore|complete)
             if [ -f "$transaction/present/$name" ]; then
                 rm -rf "$staged"
                 cp -a "$transaction/before/$name" "$staged"
-                case "$target" in etc/rc.local|data/local/tmp/start_*.sh) sh -n "$staged" ;; esac
+                case "$target" in etc/rc.local|data/local/tmp/start_*.sh|data/zte-imei-studio/start_*.sh) sh -n "$staged" ;; esac
                 if [ -d "$destination" ] && [ ! -L "$destination" ]; then
                     # Keep the failed directory until its replacement is ready.
                     failed="$transaction/failed-$name"
@@ -118,6 +119,9 @@ restore|complete)
             fi
             for service in dropbear zte_agent dashboard; do
                 startup="/data/local/tmp/start_${service}.sh"
+                if [ "$service" = zte_agent ] && [ -f /data/zte-imei-studio/start_zte_agent.sh ]; then
+                    startup=/data/zte-imei-studio/start_zte_agent.sh
+                fi
                 if [ -f "$startup" ]; then sh "$startup"; fi
             done
         fi

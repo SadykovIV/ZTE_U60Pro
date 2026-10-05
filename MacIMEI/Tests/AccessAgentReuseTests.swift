@@ -20,8 +20,15 @@ import Darwin
         }
         let valid = ["ZTE_AGENT_MODE=discovery", "ZTE_AGENT_BIND=192.0.2.1:9090"]
         let good = try run(valid)
+        let exact = Data(("AGENT_ACCESS_READY 123 5678 " + hash + " " + hash + "\n").utf8)
+        try require(good.stdout == exact, "Discovery proof did not emit exactly five fields and one LF")
         try require(good.status == 0 && AccessAgentProcessProof.parse(good.stdout, allowedHashes: [hash]).diskHash == hash, "Valid mapped process refused")
         print("PASS actual shell validates disk, mapped executable, PID/starttime and discovery environment")
+        let normal = try run([], discovery: false)
+        try require(normal.status == 0 && normal.stdout == exact && AccessAgentProcessProof.parse(normal.stdout, allowedHashes: [hash]).startTime == "5678", "Normal proof shell or parser rejected exact LF output")
+        let literalNewline = Data(("AGENT_ACCESS_READY 123 5678 " + hash + " " + hash + "\\n").utf8)
+        try require((try? AccessAgentProcessProof.parse(literalNewline, allowedHashes: [hash])) == nil, "Literal backslash-n accepted as a mapped hash")
+        print("PASS normal-mode actual shell emits five fields and LF; literal backslash-n is rejected")
         for invalid in [valid + ["ZTE_AGENT_MODE=normal"], ["ZTE_AGENT_MODE=normal"] + valid, valid + ["ZTE_AGENT_MODE=discovery"], valid + ["ZTE_AGENT_BIND=192.0.2.2:9090"], valid + ["ZTE_AGENT_BIND=192.0.2.1:9090"], ["ZTE_AGENT_MODE=normal", valid[1]], [valid[0]]] {
             try require(run(invalid).status == 72, "Duplicate/invalid environment granted discovery")
         }
@@ -38,6 +45,6 @@ import Darwin
         try require(AccessAgentReusePolicy.allowedHashes(latest: hash, proof: proof, profile: "b31", reuseExisting: false) == [hash], "New install policy widened")
         try require(AccessAgentReusePolicy.allowedHashes(latest: hash, proof: proof, profile: "linux-arm64-access", reuseExisting: true) == [hash], "Generic policy widened")
         print("PASS access-only historical policy remains separate from generic and new installation")
-        print("RESULT 5 groups passed; 0 failed")
+        print("RESULT 6 groups passed; 0 failed")
     }
 }

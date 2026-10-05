@@ -30,7 +30,8 @@ print({'%u':'0', '%a':format(stat.S_IMODE(info.st_mode),'o'), '%h':str(info.st_n
 """)
         helper.chmod(0o700)
         token = str(uuid.uuid4())
-        self.stage = self.data / "local/tmp" / ("zte-imei-setup-" + token)
+        self.anchor = self.data / "zte-imei-studio"
+        self.stage = self.anchor / ("stage-" + token)
         self.owner = token + " " + "a" * 32 + " b31 " + "b" * 64 + " " + "c" * 64
         source = (Path(__file__).resolve().parents[1] / "Sources/Onboarding.swift").read_text()
         match = re.search(r'static func stagePreparationCommand[\s\S]*?"""\n([\s\S]*?)\n        """', source)
@@ -62,14 +63,14 @@ print({'%u':'0', '%a':format(stat.S_IMODE(info.st_mode),'o'), '%h':str(info.st_n
     def test_symlink_parent_rejected_without_writing_target(self):
         outside = self.root / "outside"
         outside.mkdir()
-        (self.data / "local").symlink_to(outside)
+        self.anchor.symlink_to(outside)
         result = self.run_stage()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("STAGE_DIRECTORY", result.stderr)
         self.assertEqual(list(outside.iterdir()), [])
 
     def test_writable_parent_rejected_before_stage_creation(self):
-        parent = self.data / "local"
+        parent = self.anchor
         parent.mkdir()
         parent.chmod(0o777)
         result = self.run_stage()
@@ -78,7 +79,8 @@ print({'%u':'0', '%a':format(stat.S_IMODE(info.st_mode),'o'), '%h':str(info.st_n
         self.assertFalse(self.stage.exists())
 
     def test_foreign_owner_or_missing_marker_cannot_be_claimed(self):
-        self.stage.mkdir(parents=True, mode=0o700)
+        self.anchor.mkdir(mode=0o700)
+        self.stage.mkdir(mode=0o700)
         result = self.run_stage()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("STAGE_OWNER_FILE", result.stderr)
@@ -89,6 +91,32 @@ print({'%u':'0', '%a':format(stat.S_IMODE(info.st_mode),'o'), '%h':str(info.st_n
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("STAGE_OWNER", result.stderr)
         self.assertEqual(marker.read_text(), "foreign\n")
+
+    def test_stock_writable_directories_are_untouched(self):
+        legacy = [self.data / "local", self.data / "local/tmp", self.data / "bin", self.data / "dropbear"]
+        for path in legacy:
+            path.mkdir(exist_ok=True)
+            path.chmod(0o777)
+        result = self.run_stage()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(stat.S_IMODE(self.anchor.stat().st_mode), 0o700)
+        for path in legacy:
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o777)
+        self.assertEqual(list((self.data / "local/tmp").iterdir()), [])
+
+    def test_anchor_0755_is_not_silently_hardened(self):
+        self.anchor.mkdir(mode=0o755)
+        result = self.run_stage()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(stat.S_IMODE(self.anchor.stat().st_mode), 0o755)
+        self.assertFalse(self.stage.exists())
+
+    def test_foreign_stage_path_rejected_before_creation(self):
+        self.script = self.script.replace(str(self.stage), str(self.data / "foreign"))
+        result = self.run_stage()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("STAGE_PATH", result.stderr)
+        self.assertFalse((self.data / "foreign").exists())
 
     def test_launched_installer_stage_is_never_reopened_for_upload(self):
         self.assertEqual(self.run_stage().returncode, 0)

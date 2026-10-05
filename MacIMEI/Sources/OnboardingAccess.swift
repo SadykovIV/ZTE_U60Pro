@@ -14,14 +14,17 @@ struct AccessSetupJournal: Codable {
     var adbSerial: String
     var phase = "prepared"
     var installRequested = false
+    var forceReinstall: Bool?
     var remoteJournal: String?
+    var remoteStage: String?
 
     func validate(root: URL) throws {
         let validPhase = ["prepared", "install-requested", "ready", "complete"].contains(phase)
-        let expectedRemote = "/data/local/tmp/zte-imei-installations/" + id
+        let paths = try SetupRemotePaths(id: id, installRequested: installRequested, stage: remoteStage, journal: remoteJournal)
+        let expectedRemote = paths.journal
         try require(intent == "linux-arm64-access" && UUID(uuidString: id) != nil && validPhase &&
                     (installRequested == (phase != "prepared")) &&
-                    (remoteJournal == nil || remoteJournal == expectedRemote) &&
+                    (remoteJournal == nil || !installRequested || remoteJournal == expectedRemote) &&
                     (!["ready", "complete"].contains(phase) || remoteJournal == expectedRemote),
                     "Некорректный журнал доступа; повторная установка не запускалась")
         let expectedDirectory = root.appendingPathComponent("SetupBackups/" + id).standardizedFileURL
@@ -33,7 +36,7 @@ extension OnboardingEngine {
     /// Caller holds the host operation lock. A responding root USB device is
     /// evaluated before any web login, backup activation or installer mutation.
     func runExistingUSBAccess(hashes: [String: String], webPassword: String, agentPassword: String,
-                              expected: DiagnosticDeviceExpectation, expectedIdentity: Identity?, completedBootstrapID: String? = nil) throws -> SetupResult? {
+                              expected: DiagnosticDeviceExpectation, expectedIdentity: Identity?, completedBootstrapID: String? = nil, forceReinstall: Bool = false) throws -> SetupResult? {
         var bootstrap: SetupJournal?
         var saved: AccessSetupJournal?
         if fm.fileExists(atPath: pending.path) {
@@ -62,6 +65,9 @@ extension OnboardingEngine {
             }
         }
         try require(completedBootstrapID == nil || bootstrap != nil, "Журнал подтверждённого ADB отсутствует; установка не запускалась")
+        // A checkbox never changes the mode of a saved operation.
+        let reinstall = saved != nil ? saved!.forceReinstall == true : bootstrap != nil ? bootstrap!.forceReinstall == true : forceReinstall
+        let installFlags = reinstall ? ["--reinstall"] : []
         let adb = ADBClient(binary: assets.appendingPathComponent("adb"), runner: runner)
         let serials: [String]
         do { serials = try adb.discovery().readyUSBSerials }
@@ -111,7 +117,7 @@ extension OnboardingEngine {
         if let saved {
             try require(saved.cid == proof.identity.cid && saved.bootID == proof.bootID && saved.firmwareHash == proof.identity.firmwareHash && saved.routerHash == proof.routerHash && saved.installerProfile == profile, "Незавершённая подготовка относится к другому устройству, загрузке или компонентам")
         }
-        if saved == nil {
+        if saved == nil && !reinstall {
             let own = Connection(host: host, port: "2222", keyPath: root.appendingPathComponent("SSH/id_ed25519").path,
                 knownHostsPath: root.appendingPathComponent("SSH/known_hosts").path, skipFirmwareCheck: currentConnection.skipFirmwareCheck)
             for connection in [own, currentConnection] where fm.isReadableFile(atPath: connection.keyPath) && fm.isReadableFile(atPath: connection.knownHostsPath) {
@@ -153,15 +159,21 @@ extension OnboardingEngine {
         }
         let id = saved?.id ?? UUID().uuidString.lowercased()
         let directory = root.appendingPathComponent("SetupBackups/" + id)
-        let stage = "/data/local/tmp/zte-imei-setup-" + id
-        let remoteJournal = "/data/local/tmp/zte-imei-installations/" + id
+        let paths = try SetupRemotePaths(id: id, installRequested: saved?.installRequested ?? false, stage: saved?.remoteStage, journal: saved?.remoteJournal)
+        let stage = paths.stage
+        let remoteJournal = paths.journal
         let policy = AccessIdentity.policyArguments(proof, profile: profile)
         let owner = ([id] + policy).joined(separator: " ")
         var journal = saved ?? AccessSetupJournal(id: id, cid: proof.identity.cid, bootID: proof.bootID, firmwareHash: proof.identity.firmwareHash,
             routerHash: proof.routerHash, installerProfile: profile, directory: directory.path, adbSerial: serial)
+        if saved == nil { journal.forceReinstall = reinstall }
         let key: URL
         if journal.installRequested {
             let phase = try adb.shell(serial, "cat " + shellQuote(remoteJournal + "/state"))
+            if phase == "rolled-back" && reinstall {
+                try reconcileForcedRollback(adb, serial: serial, paths: paths, id: id, policy: policy, directory: directory)
+                throw IMEIError.message(Self.rollbackRestoredMessage)
+            }
             try require(phase == "ready" || phase == "complete", "Результат прежней установки не подтверждён. Журнал сохранён; установка автоматически не повторяется.")
             key = root.appendingPathComponent("SSH/id_ed25519")
             try require(fm.fileExists(atPath: key.path), "Ключ незавершённой установки недоступен")
@@ -176,7 +188,7 @@ extension OnboardingEngine {
             let installer = try String(contentsOf: assets.appendingPathComponent("setup-agent.sh"), encoding: .utf8)
             update("Проверяю условия установки доступа…", 0.5)
             try verify()
-            let answer = try adb.shell(serial, "sh -c " + shellQuote(installer) + " -- " + (["--preflight"] + policy).map(shellQuote).joined(separator: " "), timeout: 60)
+            let answer = try adb.shell(serial, "sh -c " + shellQuote(installer) + " -- " + (installFlags + ["--preflight"] + policy).map(shellQuote).joined(separator: " "), timeout: 60)
             try require(answer == "INSTALL_PREFLIGHT " + profile + " imei_config=unknown", "Условия установки не подтверждены")
             try verify()
             try secureDirectory(directory)
@@ -195,17 +207,25 @@ extension OnboardingEngine {
             try pushStaged(adb, serial: serial, source: key.appendingPathExtension("pub"), stage: stage, name: "id_ed25519.pub", owner: owner)
             try pushStaged(adb, serial: serial, source: startup, stage: stage, name: "start-agent.sh", owner: owner)
             try verify()
+            journal.remoteStage = paths.stage; journal.remoteJournal = paths.journal
             journal.installRequested = true; journal.phase = "install-requested"; try saveJSON(journal, pending)
             _ = try adb.shell(serial, "set -eu; umask 077; set -C; printf '%s\\n' " + shellQuote(owner) + " > " + shellQuote(stage + "/.install-requested"))
             let publicData = try Data(contentsOf: key.appendingPathExtension("pub"))
-            let arguments = [stage + "/setup-agent.sh", stage, proof.identity.cid, hashes["zte-agent"]!, hashes["dropbear"]!, digest(publicData)] + Array(policy.dropFirst())
+            let arguments = [stage + "/setup-agent.sh"] + installFlags + [stage, proof.identity.cid, hashes["zte-agent"]!, hashes["dropbear"]!, digest(publicData)] + Array(policy.dropFirst())
             update("Устанавливаю доступ по собственному SSH-ключу…", 0.65)
-            let installAnswer = try adb.shell(serial, "sh " + arguments.map(shellQuote).joined(separator: " "), timeout: 100)
+            let installAnswer: String
+            do { installAnswer = try adb.shell(serial, "sh " + arguments.map(shellQuote).joined(separator: " "), timeout: 100) }
+            catch {
+                if reinstall, (try? reconcileForcedRollback(adb, serial: serial, paths: paths, id: id, policy: policy, directory: directory)) != nil {
+                    throw IMEIError.message(Self.rollbackRestoredMessage)
+                }
+                throw error
+            }
             try require(installAnswer.split(separator: "\n").contains(Substring("INSTALL_READY " + remoteJournal)), "Установщик не подтвердил готовность; автоматического повтора нет")
             journal.phase = "ready"; journal.remoteJournal = remoteJournal; try saveJSON(journal, pending)
         }
         try verify()
-        let hostPublic = try adb.shell(serial, "/data/bin/dropbearkey -y -f /etc/dropbear/dropbear_ed25519_host_key")
+        let hostPublic = try adb.shell(serial, shellQuote(paths.dropbearKey) + " -y -f /etc/dropbear/dropbear_ed25519_host_key")
         let keys = hostPublic.split(separator: "\n").filter { $0.hasPrefix("ssh-ed25519 ") }
         try require(keys.count == 1, "Не получен однозначный SSH host key")
         let fields = keys[0].split(separator: " ")
@@ -224,13 +244,12 @@ extension OnboardingEngine {
         try sshVerify()
         try verifyAccessAgent(ssh, proof: proof, profile: profile, expectedHash: hashes["zte-agent"]!, password: agentPassword)
         try sshVerify()
-        let commit = [stage + "/setup-agent.sh", "--commit", remoteJournal] + policy
-        let answer = try ssh.run("sh " + commit.map(shellQuote).joined(separator: " "), input: nil, timeout: 40)
+        let answer = try ssh.run(paths.commitCommand(id: id, policy: policy), input: nil, timeout: 40)
         try require(answer.status == 0 && CommandText.decode(answer.stdout).split(separator: "\n").contains(Substring("INSTALL_COMMITTED " + remoteJournal)), "Журнал установки не завершён; он сохранён для проверки")
         try sshVerify()
         journal.phase = "complete"; journal.remoteJournal = remoteJournal
         try saveJSON(journal, directory.appendingPathComponent("setup-result.json")); try fm.removeItem(at: pending)
-        _ = try? adb.shell(serial, "rm -f " + ["zte-agent", "dropbear", "setup-agent.sh", "start_zte_imei_studio.sh", "id_ed25519.pub", "start-agent.sh", "zte-timeout", ".owner", ".install-requested"].map { shellQuote(stage + "/" + $0) }.joined(separator: " ") + "; rmdir " + shellQuote(stage))
+        _ = try? adb.shell(serial, "rm -f " + ["zte-agent", "dropbear", "setup-agent.sh", "start_zte_imei_studio.sh", "id_ed25519.pub", "start-agent.sh", "zte-timeout", "legacy-agent.private.sh", ".owner", ".install-requested"].map { shellQuote(stage + "/" + $0) }.joined(separator: " ") + "; rmdir " + shellQuote(stage))
         update("SSH и агент проверены. Операции с NV, картой и прошивкой проверяются отдельно.", 1)
         return SetupResult(connection: connection, state: nil, identity: proof.identity, firmware: proof.webIdentity?.firmware ?? "unknown", suffix: "")
     }

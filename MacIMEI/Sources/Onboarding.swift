@@ -8,9 +8,11 @@ struct SetupJournal: Codable {
     var directory: String
     var restoreRequested = false
     var installRequested = false
+    var forceReinstall: Bool?
     var adbSerial: String?
     var cid: String?
     var remoteJournal: String?
+    var remoteStage: String?
     var newAgent: Bool?
     var installerProfile: String?
     var firmwareHash: String?
@@ -19,6 +21,69 @@ struct SetupJournal: Codable {
     var directADBOutcome: String?
     var intent: String?
     var diagnosticRebootRequested: Bool?
+}
+/// Only these two exact layouts are resumable. Old journals without path
+/// metadata keep their original staged installer once dispatch was requested.
+struct SetupRemotePaths {
+    static let anchor = "/data/zte-imei-studio"
+    let stage: String
+    let journal: String
+    let dropbearKey: String
+
+    init(id: String, installRequested: Bool, stage: String?, journal: String?) throws {
+        try require(UUID(uuidString: id) != nil, "Некорректный идентификатор журнала установки")
+        let oldStage = "/data/local/tmp/zte-imei-setup-" + id
+        let oldJournal = "/data/local/tmp/zte-imei-installations/" + id
+        let newStage = Self.anchor + "/stage-" + id
+        let newJournal = Self.anchor + "/installations/" + id
+        try require(stage == nil || stage == oldStage || stage == newStage,
+                    "Некорректный путь журнала установки")
+        try require(journal == nil || journal == oldJournal || journal == newJournal,
+                    "Некорректный путь журнала установки")
+        try require(!(stage == oldStage && journal == newJournal) && !(stage == newStage && journal == oldJournal),
+                    "Пути журнала установки не согласованы")
+        let legacy = installRequested && stage != newStage && journal != newJournal
+        self.stage = legacy ? oldStage : newStage
+        self.journal = legacy ? oldJournal : newJournal
+        self.dropbearKey = legacy ? "/data/bin/dropbearkey" : Self.anchor + "/bin/dropbearkey"
+    }
+
+    func commitCommand(id: String, policy: [String]) -> String {
+        let arguments = (["--commit", journal] + policy).map(shellQuote).joined(separator: " ")
+        guard stage.hasPrefix("/data/local/tmp/zte-imei-setup-") else {
+            return "sh " + shellQuote(stage + "/setup-agent.sh") + " " + arguments
+        }
+        let owner = ([id] + policy).joined(separator: " ")
+        // A previously dispatched installer must retain its original script.
+        // Validate its old parent/stage ownership before executing through FD9.
+        return """
+        set -eu
+        fail() { printf 'INSTALL_ERROR COMMIT_STAGE_UNSAFE\\n' >&2; exit 1; }
+        safe_dir() {
+          test -d "$1" && test ! -L "$1" && test "$(stat -c %u "$1")" = 0 || fail
+          mode=$(stat -c %a "$1") || fail
+          case "$mode" in ''|*[!0-7]*) fail;; esac
+          test "$((0$mode & 0022))" = 0 || fail
+        }
+        safe_file() {
+          test -f "$1" && test ! -L "$1" && test "$(stat -c %u "$1")" = 0 && test "$(stat -c %h "$1")" = 1 || fail
+        }
+        for parent in /data /data/local /data/local/tmp; do safe_dir "$parent"; done
+        stage=\(shellQuote(stage)); owner=\(shellQuote(owner))
+        safe_dir "$stage"
+        test "$(stat -c %a "$stage")" = 700 || fail
+        for name in .owner .install-requested; do
+          file="$stage/$name"; safe_file "$file"
+          test "$(stat -c %a "$file")" = 600 && test "$(stat -c %s "$file")" = \(owner.utf8.count + 1) && test "$(cat "$file")" = "$owner" || fail
+        done
+        script="$stage/setup-agent.sh"; safe_file "$script"
+        case "$(stat -c %a "$script")" in 600|700) ;; *) fail;; esac
+        original=$(stat -c %d:%i:%u:%a:%h "$script") || fail
+        exec 9<"$script" || fail
+        test "$(stat -Lc %d:%i:%u:%a:%h /proc/self/fd/9)" = "$original" && test ! -L "$script" && test "$(stat -c %d:%i:%u:%a:%h "$script")" = "$original" || fail
+        sh /proc/self/fd/9 \(arguments)
+        """
+    }
 }
 struct ADBAccessResult: Codable, Sendable {
     var identity: Identity
@@ -299,10 +364,13 @@ final class OnboardingEngine: @unchecked Sendable {
         fail() { printf 'INSTALL_ERROR STAGE_%s\\n' "$1" >&2; exit 1; }
         safe_dir() { test -d "$1" && test ! -L "$1" && test "$(stat -c %u "$1")" = 0 || fail DIRECTORY; mode=$(stat -c %a "$1"); case "$mode" in ''|*[!0-7]*) fail MODE;; esac; test "$((0$mode & 0022))" = 0 || fail MODE; }
         safe_dir /data
-        for parent in /data/local /data/local/tmp; do
-          if test ! -e "$parent" && test ! -L "$parent"; then mkdir -m 755 "$parent"; fi
-          safe_dir "$parent"
-        done
+        anchor=/data/zte-imei-studio
+        if test ! -e "$anchor" && test ! -L "$anchor"; then mkdir -m 700 "$anchor"; fi
+        safe_dir "$anchor"
+        test "$(stat -c %a "$anchor")" = 700 || fail MODE
+        case "$stage" in "$anchor"/stage-*) suffix=${stage#"$anchor"/stage-};; *) fail PATH;; esac
+        test -n "$suffix" || fail PATH
+        case "$suffix" in *[!a-fA-F0-9-]*) fail PATH;; esac
         if test ! -e "$stage" && test ! -L "$stage"; then
           mkdir -m 700 "$stage"
           printf '%s\\n' "$owner" > "$stage/.owner"
@@ -587,17 +655,63 @@ final class OnboardingEngine: @unchecked Sendable {
     /// Compatibility entry point whose caller explicitly supplies one password
     /// for both services. New UI flows pass the two credentials separately.
     func run(password: String) throws -> SetupResult { try run(webPassword: password, agentPassword: password) }
-    func run(webPassword: String, agentPassword: String, expectedIdentity: Identity? = nil, expectedIMEI: String? = nil) throws -> SetupResult {
+    static let rollbackRestoredMessage = "Предыдущая принудительная подготовка отменена; исходное состояние подтверждено. Повторите подготовку, чтобы начать новую попытку."
+    /// Only the bundled read-only verifier can release a failed forced intent.
+    /// A state file or a lost apply response alone is never proof of rollback.
+    func reconcileForcedRollback(_ adb: ADBClient, serial: String, paths: SetupRemotePaths, id: String,
+                                 policy: [String], directory: URL) throws {
+        try require(paths.stage == SetupRemotePaths.anchor + "/stage-" + id,
+                    "Откат незавершённой установки не подтверждён")
+        let original = try Data(contentsOf: pending)
+        let installer = try String(contentsOf: assets.appendingPathComponent("setup-agent.sh"), encoding: .utf8)
+        let arguments = ["--verify-rollback", paths.journal] + policy
+        let output = try adb.shell(serial, "sh -c " + shellQuote(installer) + " -- " + arguments.map(shellQuote).joined(separator: " "), timeout: 60)
+        try require(output == "INSTALL_ROLLBACK_VERIFIED " + paths.journal && (try Data(contentsOf: pending)) == original,
+                    "Откат незавершённой установки не подтверждён")
+        try savePrivate(original, directory.appendingPathComponent("setup-rolled-back.json"))
+        try savePrivate(Data((output + "\n").utf8), directory.appendingPathComponent("rollback-verification.txt"))
+        try fm.removeItem(at: pending)
+    }
+    func run(webPassword: String, agentPassword: String, expectedIdentity: Identity? = nil, expectedIMEI: String? = nil, forceReinstall: Bool = false) throws -> SetupResult {
         try locked {
             try require(!fm.fileExists(atPath: diagnosticPending.path), "Сначала завершите включение ADB для диагностики")
-            if !fm.fileExists(atPath: pending.path), let reused = try reuseSSH(expectedIdentity: expectedIdentity, expectedIMEI: expectedIMEI) { return reused }
+            if !forceReinstall && !fm.fileExists(atPath: pending.path), let reused = try reuseSSH(expectedIdentity: expectedIdentity, expectedIMEI: expectedIMEI) { return reused }
             let expected = try DiagnosticDeviceExpectation.load(root: root, identity: expectedIdentity, web: nil, imei: expectedIMEI)
             func validateExpectedDevice(_ device: Identity) throws {
                 try require(expected.cids.isEmpty || expected.cids.contains(device.cid), "CID отличается от ожидаемого модема или незавершённой установки")
                 if let expectedIdentity { try require(device == expectedIdentity, "Прошивка ожидаемого модема изменилась; подготовка остановлена") }
             }
             let hashes = try verifyAssets()
-            if let access = try runExistingUSBAccess(hashes: hashes, webPassword: webPassword, agentPassword: agentPassword, expected: expected, expectedIdentity: expectedIdentity) { return access }
+            if let access = try runExistingUSBAccess(hashes: hashes, webPassword: webPassword, agentPassword: agentPassword, expected: expected, expectedIdentity: expectedIdentity, forceReinstall: forceReinstall) { return access }
+            // A previously dispatched restore needs no new Web authentication
+            // once the same modem has returned as verified root USB ADB.
+            if fm.fileExists(atPath: pending.path), var prior = try? readJSON(SetupJournal.self, pending),
+               prior.intent == nil, prior.restoreRequested, !prior.installRequested {
+                let directory = URL(fileURLWithPath: prior.directory).standardizedFileURL
+                _ = try SetupRemotePaths(id: prior.id, installRequested: false, stage: prior.remoteStage, journal: prior.remoteJournal)
+                try require(["restore-requested", "adb-ready"].contains(prior.phase) &&
+                            directory.deletingLastPathComponent() == root.appendingPathComponent("SetupBackups").standardizedFileURL &&
+                            UUID(uuidString: directory.lastPathComponent) != nil,
+                            "Некорректный журнал подтверждённого ADB; установка не запускалась")
+                let adb = ADBClient(binary: assets.appendingPathComponent("adb"), runner: runner)
+                if let (serial, device) = try findADB(adb, expected: prior.identity) {
+                    try validateExpectedDevice(device)
+                    let fresh = try adb.identityDetails(serial, expected: prior.identity, skipFirmwareCheck: true)
+                    try require(fresh.identity == device && (prior.cid == nil || prior.cid == device.cid) &&
+                                (prior.firmwareHash == nil || prior.firmwareHash == device.firmwareHash) &&
+                                (prior.routerHash == nil || prior.routerHash == fresh.routerHash),
+                                "Подтверждённый ADB относится к другому устройству; установка не запускалась")
+                    prior.phase = "adb-ready"; prior.cid = device.cid; prior.adbSerial = serial
+                    prior.firmwareHash = device.firmwareHash; prior.routerHash = fresh.routerHash
+                    try saveJSON(prior, pending)
+                    let bound = try DiagnosticDeviceExpectation.load(root: root, identity: device, web: prior.identity)
+                    guard let result = try runExistingUSBAccess(hashes: hashes, webPassword: "", agentPassword: agentPassword,
+                        expected: bound, expectedIdentity: device, completedBootstrapID: prior.id, forceReinstall: forceReinstall) else {
+                        throw IMEIError.message("Для продолжения установки нужен тот же USB ADB; новая установка не запускалась")
+                    }
+                    return result
+                }
+            }
             try require(!agentPassword.isEmpty && !agentPassword.contains("\0"), "Введите отдельный пароль агента")
             try require(!webPassword.isEmpty && !webPassword.contains("\0"), "Для включения ADB через штатный Web нужен его пароль")
             let identity = try prepareWebIdentity(password: webPassword, expectedIMEI: expected.imeis.first)
@@ -605,17 +719,19 @@ final class OnboardingEngine: @unchecked Sendable {
             var journal: SetupJournal
             if fm.fileExists(atPath: pending.path) {
                 journal = try readJSON(SetupJournal.self, pending)
+                _ = try SetupRemotePaths(id: journal.id, installRequested: journal.installRequested, stage: journal.remoteStage, journal: journal.remoteJournal)
                 try require(journal.identity == identity && UUID(uuidString: journal.id) != nil, "Незавершённая настройка относится к другому устройству")
                 let savedDirectory = URL(fileURLWithPath: journal.directory).standardizedFileURL
                 try require(savedDirectory.deletingLastPathComponent() == root.appendingPathComponent("SetupBackups").standardizedFileURL && UUID(uuidString: savedDirectory.lastPathComponent) != nil, "Некорректный путь бэкапа незавершённой настройки")
                 if !journal.restoreRequested && !journal.installRequested { journal.directory = directory.path; try saveJSON(journal, pending) }
             } else {
                 journal = SetupJournal(id: UUID().uuidString.lowercased(), identity: identity, phase: "prepared", directory: directory.path)
+                journal.forceReinstall = forceReinstall
                 try saveJSON(journal, pending)
             }
             // Existing verified SSH+agent is sufficient; do not restore a backup just to enable ADB again.
             let own = Connection(host: host, port: "2222", keyPath: root.appendingPathComponent("SSH/id_ed25519").path, knownHostsPath: root.appendingPathComponent("SSH/known_hosts").path, skipFirmwareCheck: currentConnection.skipFirmwareCheck)
-            for candidate in [own, currentConnection] {
+            for candidate in [own, currentConnection] where journal.forceReinstall != true {
                 let ssh: RemoteTransport = sshFactory?(candidate) ?? SSHTransport(candidate)
                 let probe = try? ssh.run("test -x /data/zte-agent && pidof zte-agent >/dev/null && printf ZTE_AGENT_PRESENT", input: nil, timeout: 15)
                 if probe?.status == 0 && probe?.stdout == Data("ZTE_AGENT_PRESENT".utf8) {
@@ -656,7 +772,7 @@ final class OnboardingEngine: @unchecked Sendable {
                 journal.firmwareHash = deviceID.firmwareHash; journal.routerHash = fresh.routerHash
                 try saveJSON(journal, pending)
                 let bound = try DiagnosticDeviceExpectation.load(root: root, identity: deviceID, web: identity)
-                guard let result = try runExistingUSBAccess(hashes: hashes, webPassword: webPassword, agentPassword: agentPassword, expected: bound, expectedIdentity: deviceID, completedBootstrapID: journal.id) else {
+                guard let result = try runExistingUSBAccess(hashes: hashes, webPassword: webPassword, agentPassword: agentPassword, expected: bound, expectedIdentity: deviceID, completedBootstrapID: journal.id, forceReinstall: forceReinstall) else {
                     throw IMEIError.message("USB ADB был подтверждён, но сейчас недоступен. Восстановление автоматически не повторяется.")
                 }
                 return result
@@ -665,13 +781,19 @@ final class OnboardingEngine: @unchecked Sendable {
             if let cid = journal.cid { try require(cid == deviceID.cid, "CID отличается от незавершённой установки") }
             if let previous = journal.installerProfile { try require(previous == profile && journal.firmwareHash == deviceID.firmwareHash && journal.routerHash == ModemEngine.routerHash, "Профиль прошивки изменился после начала установки") }
             journal.cid = deviceID.cid; journal.adbSerial = serial
+            let paths = try SetupRemotePaths(id: journal.id, installRequested: journal.installRequested, stage: journal.remoteStage, journal: journal.remoteJournal)
             if journal.installRequested {
-                let remoteJournal = "/data/local/tmp/zte-imei-installations/" + journal.id
+                let remoteJournal = paths.journal
                 let phase = try adb.shell(serial, "cat " + shellQuote(remoteJournal + "/state"))
+                if phase == "rolled-back" && journal.forceReinstall == true {
+                    try reconcileForcedRollback(adb, serial: serial, paths: paths, id: journal.id,
+                        policy: [deviceID.cid, profile, deviceID.firmwareHash, ModemEngine.routerHash], directory: URL(fileURLWithPath: journal.directory))
+                    throw IMEIError.message(Self.rollbackRestoredMessage)
+                }
                 try require(phase == "ready" || phase == "complete", "Предыдущая установка прервалась до готовности. Журнал сохранён: " + remoteJournal)
                 let key = root.appendingPathComponent("SSH/id_ed25519")
                 try require(fm.fileExists(atPath: key.path), "Отсутствует собственный ключ незавершённой установки")
-                let connection = try pinSSH(adb: adb, serial: serial, expected: identity, deviceID: deviceID, key: key)
+                let connection = try pinSSH(adb: adb, serial: serial, expected: identity, deviceID: deviceID, key: key, dropbearKey: paths.dropbearKey)
                 let (sshIdentity, state) = try inspectSetupSSH(connection, expected: identity, password: agentPassword)
                 try require(sshIdentity == deviceID, "SSH CID отличается от проверенного USB-модема")
                 journal.remoteJournal = remoteJournal
@@ -682,13 +804,14 @@ final class OnboardingEngine: @unchecked Sendable {
             }
             let installer = try String(contentsOf: assets.appendingPathComponent("setup-agent.sh"), encoding: .utf8)
             let policyArguments = [deviceID.cid, profile, deviceID.firmwareHash, ModemEngine.routerHash]
+            let installFlags = journal.forceReinstall == true ? ["--reinstall"] : []
             update(profile == "b31" ? "Проверяю условия установки для B31…" : "Проверяю условия экспериментальной установки доступа для B02…", 0.55)
-            let preflight = try adb.shell(serial, "sh -c " + shellQuote(installer) + " -- " + (["--preflight"] + policyArguments).map(shellQuote).joined(separator: " "), timeout: 60)
+            let preflight = try adb.shell(serial, "sh -c " + shellQuote(installer) + " -- " + (installFlags + ["--preflight"] + policyArguments).map(shellQuote).joined(separator: " "), timeout: 60)
             try require(preflight == "INSTALL_PREFLIGHT " + profile + " imei_config=unknown", "Установщик не подтвердил предварительную проверку этой прошивки")
             journal.installerProfile = profile; journal.firmwareHash = deviceID.firmwareHash; journal.routerHash = ModemEngine.routerHash
             try saveJSON(journal, pending)
             let key = try createKey(), pub = key.appendingPathExtension("pub"), publicData = try Data(contentsOf: pub)
-            let stage = "/data/local/tmp/zte-imei-setup-" + journal.id
+            let stage = paths.stage
             let owner = [journal.id, deviceID.cid, profile, deviceID.firmwareHash, ModemEngine.routerHash].joined(separator: " ")
             try require(try adb.identity(serial, expected: identity, skipFirmwareCheck: currentConnection.skipFirmwareCheck) == deviceID, "CID изменился перед передачей установщика")
             update("Подготавливаю временный каталог установки…", 0.6)
@@ -700,30 +823,39 @@ final class OnboardingEngine: @unchecked Sendable {
             for name in ["zte-agent", "dropbear", "setup-agent.sh", "start_zte_imei_studio.sh"] { try pushStaged(adb, serial: serial, source: assets.appendingPathComponent(name), stage: stage, name: name, owner: owner) }
             try pushStaged(adb, serial: serial, source: pub, stage: stage, name: "id_ed25519.pub", owner: owner)
             try pushStaged(adb, serial: serial, source: startup, stage: stage, name: "start-agent.sh", owner: owner)
+            journal.remoteStage = paths.stage; journal.remoteJournal = paths.journal
             journal.installRequested = true; journal.phase = "install-requested"; try saveJSON(journal, pending)
             _ = try adb.shell(serial, "set -eu; umask 077; set -C; printf '%s\\n' " + shellQuote(owner) + " > " + shellQuote(stage + "/.install-requested"))
-            let arguments = [stage + "/setup-agent.sh", stage, deviceID.cid, hashes["zte-agent"]!, hashes["dropbear"]!, digest(publicData), profile, deviceID.firmwareHash, ModemEngine.routerHash]
-            let installOutput = try adb.shell(serial, "sh " + arguments.map(shellQuote).joined(separator: " "), timeout: 100)
+            let arguments = [stage + "/setup-agent.sh"] + installFlags + [stage, deviceID.cid, hashes["zte-agent"]!, hashes["dropbear"]!, digest(publicData), profile, deviceID.firmwareHash, ModemEngine.routerHash]
+            let installOutput: String
+            do { installOutput = try adb.shell(serial, "sh " + arguments.map(shellQuote).joined(separator: " "), timeout: 100) }
+            catch {
+                if journal.forceReinstall == true,
+                   (try? reconcileForcedRollback(adb, serial: serial, paths: paths, id: journal.id, policy: policyArguments, directory: URL(fileURLWithPath: journal.directory))) != nil {
+                    throw IMEIError.message(Self.rollbackRestoredMessage)
+                }
+                throw error
+            }
             try savePrivate(Data(installOutput.utf8), URL(fileURLWithPath: journal.directory).appendingPathComponent("installation.log"))
             guard let ready = installOutput.split(separator: "\n").first(where: { $0.hasPrefix("INSTALL_READY ") }) else { throw IMEIError.message("Установщик не подтвердил готовность") }
             let remoteJournal = String(ready.dropFirst("INSTALL_READY ".count))
-            try require(remoteJournal == "/data/local/tmp/zte-imei-installations/" + journal.id, "Неожиданный путь журнала установщика")
+            try require(remoteJournal == paths.journal, "Неожиданный путь журнала установщика")
             journal.remoteJournal = remoteJournal; journal.newAgent = installOutput.split(separator: "\n").contains("INSTALL_AGENT new"); journal.phase = "ready"; try saveJSON(journal, pending)
-            let connection = try pinSSH(adb: adb, serial: serial, expected: identity, deviceID: deviceID, key: key)
+            let connection = try pinSSH(adb: adb, serial: serial, expected: identity, deviceID: deviceID, key: key, dropbearKey: paths.dropbearKey)
             update(profile == "b31" ? "Проверяю SSH, агент и чтение IMEI…" : "Проверяю SSH, идентичность модема и вход в агент…", 0.88)
             let (sshIdentity, state) = try inspectSetupSSH(connection, expected: identity, password: agentPassword)
             try require(sshIdentity == deviceID, "После установки подключён другой модем")
             try commitIfReady(journal: &journal, connection: connection, password: agentPassword)
             try saveJSON(journal, URL(fileURLWithPath: journal.directory).appendingPathComponent("setup-result.json")); try fm.removeItem(at: pending)
             // Credentials in this owned staging directory are no longer needed. Device recovery snapshots remain private.
-            _ = try? adb.shell(serial, "rm -f " + ["zte-agent","dropbear","setup-agent.sh","start_zte_imei_studio.sh","id_ed25519.pub","start-agent.sh",".owner",".install-requested"].map { shellQuote(stage + "/" + $0) }.joined(separator: " ") + "; rmdir " + shellQuote(stage))
+            _ = try? adb.shell(serial, "rm -f " + ["zte-agent","dropbear","setup-agent.sh","start_zte_imei_studio.sh","id_ed25519.pub","start-agent.sh","legacy-agent.private.sh",".owner",".install-requested"].map { shellQuote(stage + "/" + $0) }.joined(separator: " ") + "; rmdir " + shellQuote(stage))
             update("SSH и агент настроены. Совместимость операций с NV проверяется отдельно.", 1)
             return SetupResult(connection: connection, state: state, identity: deviceID, firmware: identity.firmware, suffix: "")
         }
     }
-    func pinSSH(adb: ADBClient, serial: String, expected: WebIdentity, deviceID: Identity, key: URL) throws -> Connection {
+    func pinSSH(adb: ADBClient, serial: String, expected: WebIdentity, deviceID: Identity, key: URL, dropbearKey: String) throws -> Connection {
         try require(try adb.identity(serial, expected: expected, skipFirmwareCheck: currentConnection.skipFirmwareCheck) == deviceID, "CID изменился перед чтением SSH host key")
-        let publicHost = try adb.shell(serial, "/data/bin/dropbearkey -y -f /etc/dropbear/dropbear_ed25519_host_key")
+        let publicHost = try adb.shell(serial, shellQuote(dropbearKey) + " -y -f /etc/dropbear/dropbear_ed25519_host_key")
         let hostKeys = publicHost.split(separator: "\n").filter { $0.hasPrefix("ssh-ed25519 ") }
         try require(hostKeys.count == 1, "Не получен однозначный SSH host key по USB")
         let fields = hostKeys[0].split(separator: " ")
@@ -736,8 +868,8 @@ final class OnboardingEngine: @unchecked Sendable {
     func commitIfReady(journal: inout SetupJournal, connection: Connection, password: String) throws {
         guard journal.installRequested else { return }
         guard let cid = journal.cid else { throw IMEIError.message("В журнале установки отсутствует CID") }
-        let remoteJournal = journal.remoteJournal ?? "/data/local/tmp/zte-imei-installations/" + journal.id
-        let script = "/data/local/tmp/zte-imei-setup-" + journal.id + "/setup-agent.sh"
+        let paths = try SetupRemotePaths(id: journal.id, installRequested: journal.installRequested, stage: journal.remoteStage, journal: journal.remoteJournal)
+        let remoteJournal = paths.journal
         let ssh: RemoteTransport = sshFactory?(connection) ?? SSHTransport(connection)
         if journal.newAgent == nil {
             let query = try ssh.run("if test -f " + shellQuote(remoteJournal + "/present/data_zte-agent") + "; then printf EXISTING; else printf NEW; fi", input: nil, timeout: 15)
@@ -747,9 +879,9 @@ final class OnboardingEngine: @unchecked Sendable {
         if journal.newAgent == true {
             try authenticateAgent(transport: ssh, password: password)
         }
-        var arguments = [script, "--commit", remoteJournal, cid]
-        if let profile = journal.installerProfile, let firmware = journal.firmwareHash, let router = journal.routerHash { arguments += [profile, firmware, router] }
-        let command = "sh " + arguments.map(shellQuote).joined(separator: " ")
+        var policy = [cid]
+        if let profile = journal.installerProfile, let firmware = journal.firmwareHash, let router = journal.routerHash { policy += [profile, firmware, router] }
+        let command = paths.commitCommand(id: journal.id, policy: policy)
         let r = try ssh.run(command, input: nil, timeout: 40)
         try require(r.status == 0 && String(decoding: r.stdout, as: UTF8.self).contains("INSTALL_COMMITTED " + remoteJournal), "Установка готова, но её журнал не удалось завершить")
         journal.remoteJournal = remoteJournal; journal.phase = "complete"

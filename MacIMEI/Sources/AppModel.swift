@@ -26,6 +26,7 @@ import AppKit
     var channelSession: ReadOnlyChannelSession?
     @Published var skipFirmwareCheck = false
     @Published var backupSuffix = ""
+    @Published var forcePreparation = false
     @Published var setupPending = false
     @Published var keyPath = ""
     @Published var knownHostsPath = ""
@@ -319,7 +320,7 @@ import AppKit
     }
     func setup(targets: [String]? = nil) {
         guard !busy && !terminalActive && !systemRestorePending && permitsSSHOperations else { return }
-        let password = webPassword, agentSecret = agentPassword, suffix = backupSuffix; webPassword = ""; agentPassword = ""; backupSuffix = ""
+        let password = webPassword, agentSecret = agentPassword, suffix = backupSuffix
         let config = connection, root = storage, assets = resources
         let expectedIdentity = connectedIdentity, expectedIMEI = connectedIMEI ?? channelSummary?.primaryIMEI
         busy = true; progress = 0
@@ -334,7 +335,7 @@ import AppKit
                 }.value
                 keyPath = result.connection.keyPath; knownHostsPath = result.connection.knownHostsPath; port = result.connection.port
                 try saveJSON(result.connection, root.appendingPathComponent("connection.json"))
-                backupSuffix = result.suffix; accessReady = true; connectedIdentity = result.identity
+                accessReady = true; connectedIdentity = result.identity
                 if let state = result.state { accept(state) }
                 else {
                     connected = false; currentIMEI1 = ""; currentIMEI2 = ""; firmware = result.firmware
@@ -566,8 +567,8 @@ import AppKit
         if selectedBackupID == nil || !backups.contains(where: { $0.id == selectedBackupID }) { selectedBackupID = backups.first?.id }
     }
     func revealBackups() { try? secureDirectory(storage.appendingPathComponent("Backups")); NSWorkspace.shared.open(storage.appendingPathComponent("Backups")) }
-    func chooseKey() { let p = NSOpenPanel(); p.title = L10n.text("Закрытый SSH-ключ установленного агента"); p.canChooseDirectories = false; p.showsHiddenFiles = true; if p.runModal() == .OK, let url = p.url { keyPath = url.path; invalidateChannelConnection(clearIdentity: false) } }
-    func chooseKnownHosts() { let p = NSOpenPanel(); p.title = L10n.text("Файл с проверенным ключом SSH-сервера модема"); p.canChooseDirectories = false; p.showsHiddenFiles = true; if p.runModal() == .OK, let url = p.url { knownHostsPath = url.path; invalidateChannelConnection(clearIdentity: false) } }
+    func chooseKey() { let p = NSOpenPanel(); p.title = L10n.text("Закрытый SSH-ключ установленного агента"); p.canChooseDirectories = false; p.showsHiddenFiles = true; if p.runModal() == .OK, let url = p.url { editConnectionKeyPath(url.path) } }
+    func chooseKnownHosts() { let p = NSOpenPanel(); p.title = L10n.text("Файл с проверенным ключом SSH-сервера модема"); p.canChooseDirectories = false; p.showsHiddenFiles = true; if p.runModal() == .OK, let url = p.url { editConnectionKnownHostsPath(url.path) } }
     func importBackup() {
         guard !busy && !pendingOperation else { return }
         let p = NSOpenPanel(); p.title = L10n.text("Папка бэкапа приложения или исходного IMEI-бэкапа проекта"); p.canChooseDirectories = true; p.canChooseFiles = false

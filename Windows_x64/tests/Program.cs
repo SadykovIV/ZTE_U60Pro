@@ -3,6 +3,10 @@ using System.Text;
 using System.Text.Json;
 using ZteImeiStudio.Windows.Core;
 
+if (args.Contains("--force-preparation-only")) { await ForcePreparationTests.RunAsync(); return; }
+
+if (args.Contains("--installation-layout-only")) { await OnboardingLayoutTests.RunAsync(); return; }
+
 if (args.Contains("--template-guard-only")) { BackupTemplateTests.Run(); return; }
 
 if (args.Contains("--backup-key-only")) { await BackupKeyVerificationTests.RunAsync(); return; }

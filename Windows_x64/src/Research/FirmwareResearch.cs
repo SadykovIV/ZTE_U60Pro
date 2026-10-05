@@ -18,7 +18,7 @@ public sealed record ResearchObservation(string Id,ResearchText Title,string Pro
 public sealed record ResearchObservationResult(string Id,ResearchText Title,string Probe,string Fact,string Status,string? Value,string SourceStatus,int? ExitCode);
 public sealed record ResearchSpec(int SchemaVersion,int Revision,ResearchProfile[] Profiles,ResearchProbe[] Probes,ResearchFeature[] Features,ResearchObservation[]? Observations=null)
 {
-    public const string ExpectedSpecificationSha256="1b37362f46c4f8940a19d37b65312156eb8b6b370c556493340233252519e406";
+    public const string ExpectedSpecificationSha256="9fa14a7aaabbde7c93ed3a8d63356395f2d0c540e88b7661cb532989b8152580";
     public string? Sha256 { get; private set; }
     public static readonly JsonSerializerOptions Json=new() { PropertyNameCaseInsensitive=true,PropertyNamingPolicy=JsonNamingPolicy.CamelCase,WriteIndented=true };
     public static ResearchSpec Load(string path)
@@ -326,7 +326,7 @@ public static class ResearchReportFiles
     }
     // Common and standalone exports share one bounded payload and path policy.
     // The optional cleaner operates on text fields, never serialized JSON or SHA256 facts.
-    public static IReadOnlyDictionary<string,byte[]> BuildExportFiles(ResearchReport report,Func<string,string>? clean=null,CancellationToken ct=default)
+    public static IReadOnlyDictionary<string,byte[]> BuildExportFiles(ResearchReport report,Func<string,string>? clean=null,CancellationToken ct=default,Func<string,string>? cleanApplicationVersion=null)
     {
         ct.ThrowIfCancellationRequested();
         if(report.SchemaVersion!=1 || report.StartedAt==default || report.CompletedAt<report.StartedAt || report.SpecificationRevision<1 ||
@@ -355,7 +355,7 @@ public static class ResearchReportFiles
             return p with {Id=Id(p.Id),Title=T(p.Title),Category=C(p.Category),Command=C(p.Command),Status=C(p.Status),Stdout=C(p.Stdout),Stderr=C(p.Stderr),Facts=p.Facts.ToDictionary(x=>x.Key,x=>Fact(x.Key,x.Value))};
         }).ToArray();
         if(probes.Select(p=>p.Id).Distinct().Count()!=probes.Length)throw new InvalidDataException("Duplicate research probe path.");
-        report=report with {Id=C(report.Id),Outcome=C(report.Outcome),Channel=C(report.Channel),Profile=report.Profile is null?null:C(report.Profile),ApplicationVersion=C(report.ApplicationVersion),RequestedMode=C(report.RequestedMode),BindingStrength=C(report.BindingStrength),Probes=probes,
+        report=report with {Id=C(report.Id),Outcome=C(report.Outcome),Channel=C(report.Channel),Profile=report.Profile is null?null:C(report.Profile),ApplicationVersion=cleanApplicationVersion?.Invoke(report.ApplicationVersion)??C(report.ApplicationVersion),RequestedMode=C(report.RequestedMode),BindingStrength=C(report.BindingStrength),Probes=probes,
             Features=report.Features.Select(f=>f is null || f.Reasons is null?throw new InvalidDataException("Invalid research feature."):f with {Id=C(f.Id),Title=T(f.Title),State=C(f.State),Reasons=f.Reasons.Select(T).ToArray(),Limitations=T(f.Limitations)}).ToArray(),
             Omissions=report.Omissions.Select(C).ToArray(),Observations=report.Observations?.Select(o=>o is null?throw new InvalidDataException("Invalid research observation."):o with {Id=C(o.Id),Title=T(o.Title),Probe=C(o.Probe),Fact=C(o.Fact),Status=C(o.Status),Value=o.Value is null?null:Fact(o.Fact,o.Value),SourceStatus=C(o.SourceStatus)}).ToArray()};
         var files=new SortedDictionary<string,byte[]> { ["report.json"]=JsonSerializer.SerializeToUtf8Bytes(report,ResearchSpec.Json),

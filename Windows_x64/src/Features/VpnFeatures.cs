@@ -23,13 +23,15 @@ public sealed partial class DeviceFeatureService
     private const string LegacyRadioVpnHelperHash = "9e8b1a737888468a4be6a010a915524b84440037802c6cfc6a5e251abf0e81ce";
     // Controller pinned in the preserved 2.7.0-esim.8 build receipt. Read status only.
     private const string LegacyRecoveryVpnHelperHash = "1cc33e3825a556a825e83392675c254ef22f738660d1016ae1413f7669f88231";
+    // Public 1.24.4 build 42 controller. It may only serve a status request.
+    private const string LegacyCardStatusVpnHelperHash = "7a8b84c3502e711c6b66c943f883a984dd9ed82da41455fc083ed0cc7d44b6fb";
     private const string VpnAgentHash = AgentPackage.Sha256;
     private const string DashboardHash = "c804a8ecced9ed3478ee50021b95d3bcd02394f23ba09f10c5c3691f44cd9546";
     private const string LauncherHash = "3e8338319bc2eb3764fdfa4efbbb6966ddce185a951f8b9122c15025804fbd2a";
     private static readonly string[] VpnInstallNames = ["install.sh", "manager.sh", "firewall.sh", "configure.lua", "nft-guard.nft", "dnsmasq.conf", "service.sh", "vpnctl", "mihomo"];
     private static readonly string[] VpnIntegrationNames = ["upgrade-controller.sh", "vpnctl", "manager.sh", "configure.lua", "update-agent.sh", "dashboard-install.sh", "payload.sha256", "dashboard.tar.gz", "dashboard-uhttpd", "start-dashboard.sh", "dashboard-html.sh", "preserve-dashboard-assets.sh", "stop-owned-listener.sh", "update-rc-local.sh", "launcher.so", "launcher-run.sh", "launcher-watch.sh", "launcher-service.sh", "launcher-start.sh", "launcher.sha256", "install-launcher.sh"];
     private static bool CanReadVpnStatus(string hash) => hash is VpnHelperHash or LegacyRadioVpnHelperHash or
-        LegacyDirectRadioVpnHelperHash or LegacyPagesVpnHelperHash or LegacyPublicVpnHelperHash or LegacyRecoveryVpnHelperHash;
+        LegacyDirectRadioVpnHelperHash or LegacyPagesVpnHelperHash or LegacyPublicVpnHelperHash or LegacyRecoveryVpnHelperHash or LegacyCardStatusVpnHelperHash;
     // Literal errors from the pinned controller; an arbitrary JSON string is not a log message.
     private static string VpnErrorCode(JsonElement reply) => StringProperty(reply, "code") switch
     {

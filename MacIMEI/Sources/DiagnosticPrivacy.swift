@@ -40,7 +40,7 @@ extension ActivityJournal {
             if command.contains("--preflight") || command.contains("setup-agent.sh") {
                 markers += lines.filter {
                     $0.range(of: #"^INSTALL_ERROR [A-Z][A-Z0-9_]{0,95}$"#, options: .regularExpression) != nil ||
-                    $0.range(of: #"^INSTALL_INCOMPLETE /data/local/tmp/zte-imei-installations/[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}$"#, options: .regularExpression) != nil
+                    $0.range(of: #"^INSTALL_INCOMPLETE /data/(?:local/tmp/zte-imei-installations|zte-imei-studio/installations)/[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}$"#, options: .regularExpression) != nil
                 }
             }
             return Array(markers.prefix(4)).joined(separator: "\n") + (markers.isEmpty ? "" : "\n") + "[Вывод операции с учётными данными исключён]"

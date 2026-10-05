@@ -63,7 +63,7 @@
     "sha256": "29c00a9cc4bd76f5190141be668230acf00ad008871fad72a200e17f40d4883b"
   },
   "source_archive_files": 448,
-  "source_archive_sha256": "9f6e1103230b1087454dfe87e8ef6f0b2f1f1c7f70ecb8cd8be6480e89d821ca",
+  "source_archive_sha256": "479978b8499c88d596d0fa8d0b4e51be9b69269af2a531ecf604a0ac8ce416a4",
   "gsma_pem_sha256": "7364a2ac4d2b5f77c1b83ee7e1c535e8fc806c67ee42e73ad97c35464d203477",
   "gsma_roots": [
     {

@@ -54,7 +54,7 @@ final class ModemApplications {
     static let remoteRoot = "/data/zte-imei-apps/ssclash"
     static let servicePath = "/etc/init.d/zte_imei_ssclash"
     static let serviceTemplateHash = "7c8586a6a743b180b118bad214e9ca48f6bff8231ca6676d719f7a181198f7b8"
-    static let removalScriptHash = "7497bace3fea997bd9b079efe8bb8caa722a53a197784b2bc88d96786be2e5bc"
+    static let removalScriptHash = "8948d37e3298e0de5a57beee9556056ccc3f86dd0eed6da7a5c1ff796db65ddd"
     static let catalog = [ModemCatalogApplication(id: "ssclash", name: "SSClash-Go", version: ssclashVersion, summary: "Веб-панель управления прокси. Ядро Mihomo и профиль подключения настраиваются отдельно.", requiredFreeKiB: 64 * 1024, isBundled: false, licenseSummary: "Проприетарная лицензия SSClash: использование на собственных устройствах. Загрузка по кнопке из официального релиза; бинарник в программу не включён.")]
     let engine: ModemEngine
     let assetLoader: (URL) throws -> Data

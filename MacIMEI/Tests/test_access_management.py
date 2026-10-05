@@ -126,7 +126,8 @@ class Services(unittest.TestCase):
         (self.f.p/'data/bin/dashboard-uhttpd').write_bytes(b'httpd')
         (self.f.p/'data/local/tmp/start_dashboard.sh').write_text('dashboard-launcher')
         (self.f.p/'data/local/tmp/stop_open_u60_listener.sh').write_text('stop-listener')
-        self.launcher=self.f.p/'data/local/tmp/start_zte_agent.sh'
+        (self.f.p/'data/zte-imei-studio').mkdir(mode=0o700)
+        self.launcher=self.f.p/'data/zte-imei-studio/start_zte_agent.sh'
         self.launcher.write_text("#!/bin/sh\nexport ZTE_AGENT_PASSWORD='hidden value'\nunset ZTE_AGENT_PIN\ntrap '' HUP\nnohup sh -c '/data/zte-agent 2>&1 | logger -t zte-agent' >/dev/null 2>&1 </dev/null &\n".replace('/data/',str(self.f.p/'data')+'/'))
         source=(ROOT/'Resources/SSHAccounts/access-services.sh').read_text()
         mapping=dict(self.f.mapping);mapping['/tmp/zte-access-']=str(self.f.p/'tmp/zte-access-');mapping['/tmp/zte-imei-app.lock']=str(lock)
@@ -224,6 +225,18 @@ net.write_text(net.read_text()+'0: 00000000:2382 00000000:0000 0A 0 0 0 0 0 700\
         self.assertIn(b'ACCESS_SERVICE dashboard stopped readonly',self.run_service().stdout)
     def test_missing_management_listener_refuses_mutation(self):
         (self.f.p/'proc/net/tcp').write_text('');r=self.run_service('agent');self.assertNotEqual(r.returncode,0);self.assertIn(b'MANAGEMENT_CHANNEL',r.stderr)
+    def test_private_or_legacy_install_transaction_refuses_service_change(self):
+        for relative in ('data/zte-imei-studio/installations/active','data/local/tmp/zte-imei-installations/active'):
+            with self.subTest(relative=relative):
+                marker=self.f.p/relative;marker.parent.mkdir(parents=True,exist_ok=True);marker.write_text(TOKEN)
+                result=self.run_service('agent')
+                self.assertNotEqual(result.returncode,0);self.assertIn(b'OTHER_TRANSACTION',result.stderr)
+                self.assertFalse((self.f.p/'proc/700').exists());marker.unlink()
+
+    def test_unsafe_new_anchor_disables_agent_control(self):
+        (self.f.p/'data/zte-imei-studio').chmod(0o777)
+        self.assertIn(b'ACCESS_SERVICE agent stopped readonly',self.run_service().stdout)
+
     def test_active_account_transaction_refuses_service_change(self):
         self.f.base.mkdir();(self.f.base/'active').write_text(TOKEN)
         r=self.run_service('agent');self.assertNotEqual(r.returncode,0);self.assertIn(b'OTHER_TRANSACTION',r.stderr)

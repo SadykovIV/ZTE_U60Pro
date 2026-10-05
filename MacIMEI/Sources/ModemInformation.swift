@@ -189,7 +189,7 @@ final class ModemInformationManager {
         ("packages.txt", "Установленные пакеты", "opkg list-installed"),
         ("modules.txt", "Модули ядра", "cat /proc/modules /proc/filesystems"),
         ("routing-policy.txt", "Правила маршрутизации", "ip -4 rule; ip -4 route show table all; ip -6 rule; ip -6 route show table all"),
-        ("components.txt", "Хэши компонентов приложения", "for p in /data/zte-agent /data/bin/dropbear /data/local/tmp/start_zte_imei_studio.sh /data/zte-vpn/vpnctl /data/zte-vpn/mihomo /data/zte-imei-ttl/manager.sh /data/zte-launcher/launcher-start.sh; do if test -f \"$p\"; then sha256sum \"$p\"; else printf '%s: absent\\n' \"$p\"; fi; done"),
+        ("components.txt", "Хэши компонентов приложения", "for p in /data/zte-agent /data/zte-imei-studio/bin/dropbear /data/zte-imei-studio/start_zte_imei_studio.sh /data/bin/dropbear /data/local/tmp/start_zte_imei_studio.sh /data/zte-vpn/vpnctl /data/zte-vpn/mihomo /data/zte-imei-ttl/manager.sh /data/zte-launcher/launcher-start.sh; do if test -f \"$p\"; then sha256sum \"$p\"; else printf '%s: absent\\n' \"$p\"; fi; done"),
         ("system.log", "Системный журнал", "if ubus list log 2>/dev/null | grep -qFx log; then logread; else printf 'Служба системного журнала недоступна\\n'; exit 3; fi"),
         ("kernel.log", "Журнал ядра", "dmesg"),
         ("board.json", "Система и плата", "ubus call system board"),

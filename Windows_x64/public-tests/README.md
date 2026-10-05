@@ -22,8 +22,7 @@ dotnet run --project Windows_x64/ui-smoke/UiSmoke.csproj
 
 The backup test uses only `test-only-backup-key-suffix`. Launcher tests check
 old public VPN status-only recognition, refusal of unknown agents before VPN
-writes, exact preserved page order, atomic guards and the masked suffix field's
-request/clear behavior. eSIM tests include 51 allowlisted component codes,
+writes, exact preserved page order, atomic guards and the preparation credential retention between actions and clearing when the target changes. eSIM tests include 51 allowlisted component codes,
 framed RPC, manual input, synthetic QR images and confirmation/secret cleanup.
 
 After publishing with `Windows_x64/build.ps1`:

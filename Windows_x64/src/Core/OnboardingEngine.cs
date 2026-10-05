@@ -31,12 +31,14 @@ internal sealed class OnboardingPending
     public bool DirectAdbRequested { get; set; }
     public string? DirectAdbOutcome { get; set; }
     public bool InstallRequested { get; set; }
+    public bool ForceReinstall { get; set; }
     public string? AdbSerial { get; set; }
     public string? Cid { get; set; }
     public string? Profile { get; set; }
     public string? FirmwareHash { get; set; }
     public string? RouterHash { get; set; }
     public string? BootId { get; set; }
+    public string? RemoteStage { get; set; }
     public string? RemoteJournal { get; set; }
     public bool? NewAgent { get; set; }
 
@@ -115,6 +117,7 @@ public sealed class OnboardingEngine
     private bool _genericAccess;
     internal Func<ModemWebClient>? WebFactory { get; init; }
     internal Func<IRemoteShell>? ExistingSshFactory { get; init; }
+    internal Func<IRemoteShell>? InstalledSshFactory { get; init; }
     internal string? ExistingKeyPath { get; init; }
     internal string? ExistingKnownHostsPath { get; init; }
     internal int ExistingPort { get; init; } = 2222;
@@ -179,7 +182,7 @@ public sealed class OnboardingEngine
     private static string ReportVersion(string value) => new(value.Select(c => char.IsControl(c) ? ' ' : c).ToArray());
 
     public async Task<OnboardingResult> PrepareAsync(string webPassword,
-        string agentPassword, string backupKeySuffix, CancellationToken ct = default)
+        string agentPassword, string backupKeySuffix, CancellationToken ct = default, bool forceReinstall = false)
     {
         if (webPassword.Contains('\0'))
             throw new ArgumentException("Недопустимый пароль Web.", nameof(webPassword));
@@ -193,27 +196,40 @@ public sealed class OnboardingEngine
             throw new InvalidOperationException("Сначала завершите незавершённую операцию с модемом.");
 
         var savedPending = await LoadPendingAsync(ct).ConfigureAwait(false);
-        if(savedPending is null && await ProbeReadOnlySshAsync(ct).ConfigureAwait(false) is SshReadProof existingSsh)
+        forceReinstall = savedPending?.ForceReinstall ?? forceReinstall;
+        if(savedPending is null && !forceReinstall && await ProbeReadOnlySshAsync(ct).ConfigureAwait(false) is SshReadProof existingSsh)
             return new OnboardingResult(existingSsh.Cid,existingSsh.FirmwareHash,null,ReuseKeyPath,ReuseKnownHostsPath,true,"read-only-ssh",AccessOnly:true,Port:ExistingPort);
         var hashes = await VerifyAssetsAsync(ct).ConfigureAwait(false);
         _progress?.Invoke("Проверка Web и уже доступного root shell.");
         using var web = WebFactory?.Invoke() ?? new ModemWebClient(_host);
         WebIdentity? webIdentity = null;
         DeviceIdentity? existing = null;
-        (string Serial, DeviceIdentity Identity)? match;
-        if (string.IsNullOrEmpty(webPassword))
+        (string Serial, DeviceIdentity Identity)? match = null;
+        var restoredUsbResume = false;
+        if (savedPending is { RestoreRequested: true, InstallRequested: false, IdentitySource: "web-matched", WebIdentity: not null })
+        {
+            // A saved restoration can hand off through freshly matched USB without Web credentials.
+            // No host/IP relationship is inferred from the old journal.
+            match = await FindMatchingAdbAsync(savedPending.WebIdentity, ct).ConfigureAwait(false);
+            restoredUsbResume = match is not null;
+            if (!restoredUsbResume && string.IsNullOrEmpty(webPassword))
+                throw new InvalidOperationException("Введите пароль штатного веб-интерфейса.");
+        }
+        if (restoredUsbResume)
+            webIdentity = savedPending!.WebIdentity;
+        else if (string.IsNullOrEmpty(webPassword))
         {
             // Explicit root-USB preparation does not contact Web or manufacture
             // absent vendor identity fields. Each later read repeats USB proof.
             match = await FindMatchingAdbAsync(null, ct).ConfigureAwait(false);
             if (match is null) throw new InvalidOperationException("Для установки без Web нужен единственный root USB ADB. Сначала проверьте устройство.");
-            if (savedPending is null) existing = await ProbeExistingSshAsync(null, match.Value.Identity, agentPassword, ct).ConfigureAwait(false);
+            if (savedPending is null && !forceReinstall) existing = await ProbeExistingSshAsync(null, match.Value.Identity, agentPassword, ct).ConfigureAwait(false);
         }
         else
         {
             await web.LoginAsync(webPassword, ct).ConfigureAwait(false);
             webIdentity = await web.GetIdentityAsync(skipFirmwareCheck: true, ct: ct).ConfigureAwait(false);
-            if (savedPending is null) existing = await ProbeExistingSshAsync(webIdentity, null, agentPassword, ct).ConfigureAwait(false);
+            if (savedPending is null && !forceReinstall) existing = await ProbeExistingSshAsync(webIdentity, null, agentPassword, ct).ConfigureAwait(false);
             match = existing is null ? await FindMatchingAdbAsync(webIdentity, ct).ConfigureAwait(false) : null;
         }
         if (existing is not null && savedPending is null)
@@ -232,7 +248,7 @@ public sealed class OnboardingEngine
         var rootAlreadyAvailable = existing is not null || match is not null;
         var genericAccess = rootAlreadyAvailable && InstallerProfile(webIdentity, existing ?? match!.Value.Identity) == "linux-arm64-access";
         var encrypted = Array.Empty<byte>();
-        if (webIdentity is not null && await web.GetIdentityAsync(skipFirmwareCheck: true, ct: ct).ConfigureAwait(false) != webIdentity)
+        if (!restoredUsbResume && webIdentity is not null && await web.GetIdentityAsync(skipFirmwareCheck: true, ct: ct).ConfigureAwait(false) != webIdentity)
             throw new InvalidDataException("Устройство изменилось во время предварительной проверки.");
         var backupDirectory = Path.Combine(_storage, "SetupBackups", Guid.NewGuid().ToString("D"));
         Directory.CreateDirectory(backupDirectory);
@@ -253,7 +269,7 @@ public sealed class OnboardingEngine
                 Cid = match?.Identity.Cid, BootId = match?.Identity.BootId,
                 FirmwareHash = match?.Identity.FirmwareHash, RouterHash = match?.Identity.RouterHash,
                 Profile = genericAccess ? "linux-arm64-access" : null,
-                BackupDirectory = backupDirectory,
+                BackupDirectory = backupDirectory, ForceReinstall = forceReinstall,
             };
             await SavePendingAsync(pending, ct).ConfigureAwait(false);
         }
@@ -289,6 +305,7 @@ public sealed class OnboardingEngine
         pending.FirmwareHash = identity.FirmwareHash;
         pending.RouterHash = identity.RouterHash;
         pending.BootId = identity.BootId;
+        if (!pending.InstallRequested) pending.Phase = "adb-ready";
         await SavePendingAsync(pending, ct).ConfigureAwait(false);
 
         if (!pending.CanStartInstallation)
@@ -301,13 +318,14 @@ public sealed class OnboardingEngine
         var policy = InstallerPolicy(identity, profile);
         var preflight = await AdbTextAsync(serial,
             "sh -c " + Quote(installer) + " -- " +
-            string.Join(' ', new[] { "--preflight" }.Concat(policy).Select(Quote)),
+            string.Join(' ', InstallerArguments(pending, new[] { "--preflight" }.Concat(policy)).Select(Quote)),
             TimeSpan.FromSeconds(60), ct).ConfigureAwait(false);
         if (preflight != "INSTALL_PREFLIGHT " + profile + " imei_config=unknown")
             throw new InvalidDataException("Установщик не подтвердил предварительную проверку прошивки.");
 
         var publicKey = await CreateKeyAsync(ct).ConfigureAwait(false);
-        var stage = "/data/local/tmp/zte-imei-setup-" + pending.Id;
+        var paths = InstallationPaths(pending);
+        var stage = paths.Stage;
         var owner = string.Join(' ', new[] { pending.Id }.Concat(policy));
         if (await ReadAdbIdentityAsync(serial, webIdentity, ct).ConfigureAwait(false) != identity)
             throw new InvalidDataException("CID изменился перед передачей установщика.");
@@ -331,18 +349,31 @@ public sealed class OnboardingEngine
         }
         finally { try { File.Delete(credentialFile); } catch { } }
 
+        pending.RemoteStage = paths.Stage;
+        pending.RemoteJournal = paths.Journal;
         pending.InstallRequested = true;
         pending.Phase = "install-requested";
         await SavePendingAsync(pending, ct).ConfigureAwait(false);
         await AdbTextAsync(serial, "set -eu; umask 077; set -C; printf '%s\\n' " +
             Quote(owner) + " > " + Quote(stage + "/.install-requested"), TimeSpan.FromSeconds(20), ct)
             .ConfigureAwait(false);
-        var arguments = new[] { stage + "/setup-agent.sh", stage, identity.Cid, hashes["zte-agent"], hashes["dropbear"], Sha(publicKey) }.Concat(policy.Skip(1)).ToArray();
-        var installOutput = await AdbTextAsync(serial, "sh " + string.Join(' ', arguments.Select(Quote)),
-            TimeSpan.FromSeconds(100), ct).ConfigureAwait(false);
+        var arguments = new[] { stage + "/setup-agent.sh" }.Concat(InstallerArguments(pending,
+            new[] { stage, identity.Cid, hashes["zte-agent"], hashes["dropbear"], Sha(publicKey) }.Concat(policy.Skip(1)))).ToArray();
+        string installOutput;
+        try
+        {
+            installOutput = await AdbTextAsync(serial, "sh " + string.Join(' ', arguments.Select(Quote)),
+                TimeSpan.FromSeconds(100), ct).ConfigureAwait(false);
+        }
+        catch (Exception) when (pending.ForceReinstall && !ct.IsCancellationRequested)
+        {
+            if (await ArchiveVerifiedRollbackAsync(pending, serial, identity, webIdentity, ct).ConfigureAwait(false))
+                throw new InvalidOperationException(RollbackVerifiedMessage);
+            throw;
+        }
         await WritePrivateAsync(Path.Combine(pending.BackupDirectory, "installation.log"),
             Encoding.UTF8.GetBytes(installOutput), ct).ConfigureAwait(false);
-        var expectedJournal = "/data/local/tmp/zte-imei-installations/" + pending.Id;
+        var expectedJournal = paths.Journal;
         if (!installOutput.Split('\n').Contains("INSTALL_READY " + expectedJournal))
             throw new InvalidDataException("Установщик не подтвердил готовность.");
         pending.RemoteJournal = expectedJournal;
@@ -350,7 +381,7 @@ public sealed class OnboardingEngine
         pending.Phase = "ready";
         await SavePendingAsync(pending, ct).ConfigureAwait(false);
 
-        var verified = await PinAndVerifySshAsync(serial, identity, webIdentity, agentPassword, ct)
+        var verified = await PinAndVerifySshAsync(pending, serial, identity, webIdentity, agentPassword, ct)
             .ConfigureAwait(false);
         await CommitIfReadyAsync(pending, verified, agentPassword, ct).ConfigureAwait(false);
         await FinishAsync(pending, ct).ConfigureAwait(false);
@@ -811,6 +842,29 @@ public sealed class OnboardingEngine
         return Encoding.UTF8.GetBytes(text);
     }
 
+    internal static (string Stage, string Journal, string DropbearKey) InstallationPaths(OnboardingPending pending)
+    {
+        if (!Guid.TryParseExact(pending.Id, "D", out _)) throw new InvalidDataException("Повреждён журнал незавершённой установки.");
+        var currentStage = "/data/zte-imei-studio/stage-" + pending.Id;
+        var currentJournal = "/data/zte-imei-studio/installations/" + pending.Id;
+        var legacyStage = "/data/local/tmp/zte-imei-setup-" + pending.Id;
+        var legacyJournal = "/data/local/tmp/zte-imei-installations/" + pending.Id;
+        if (!pending.InstallRequested)
+        {
+            if (pending.RemoteStage is not null || pending.RemoteJournal is not null)
+                throw new InvalidDataException("Повреждён журнал незавершённой установки.");
+            return (currentStage, currentJournal, "/data/zte-imei-studio/bin/dropbearkey");
+        }
+        // Old pending files did not contain RemoteStage. Never move/replay an already requested install.
+        var legacy = pending.RemoteStage is null || pending.RemoteStage == legacyStage;
+        var stage = legacy ? legacyStage : currentStage;
+        var journal = legacy ? legacyJournal : currentJournal;
+        if ((pending.RemoteStage is not null && pending.RemoteStage != stage) ||
+            (pending.RemoteJournal is not null && pending.RemoteJournal != journal))
+            throw new InvalidDataException("Повреждён журнал незавершённой установки.");
+        return (stage, journal, legacy ? "/data/bin/dropbearkey" : "/data/zte-imei-studio/bin/dropbearkey");
+    }
+
     private static string StagePreparationCommand(string stage, string owner) => $$"""
         set -eu
         umask 077
@@ -818,10 +872,10 @@ public sealed class OnboardingEngine
         fail() { printf 'INSTALL_ERROR STAGE_%s\n' "$1" >&2; exit 1; }
         safe_dir() { test -d "$1" && test ! -L "$1" && test "$(stat -c %u "$1")" = 0 || fail DIRECTORY; mode=$(stat -c %a "$1"); case "$mode" in ''|*[!0-7]*) fail MODE;; esac; test "$((0$mode & 0022))" = 0 || fail MODE; }
         safe_dir /data
-        for parent in /data/local /data/local/tmp; do
-          if test ! -e "$parent" && test ! -L "$parent"; then mkdir -m 755 "$parent"; fi
-          safe_dir "$parent"
-        done
+        anchor=/data/zte-imei-studio
+        if test ! -e "$anchor" && test ! -L "$anchor"; then mkdir -m 700 "$anchor"; fi
+        safe_dir "$anchor"
+        test "$(stat -c %a "$anchor")" = 700 || fail MODE
         if test ! -e "$stage" && test ! -L "$stage"; then
           mkdir -m 700 "$stage"
           printf '%s\n' "$owner" > "$stage/.owner"
@@ -909,16 +963,52 @@ public sealed class OnboardingEngine
         }
     }
 
+    internal static IEnumerable<string> InstallerArguments(OnboardingPending pending, IEnumerable<string> arguments) =>
+        (pending.ForceReinstall ? new[] { "--reinstall" } : Array.Empty<string>()).Concat(arguments);
+
+    private const string RollbackVerifiedMessage = "Предыдущая принудительная подготовка отменена; исходное состояние подтверждено. Повторите подготовку, чтобы начать новую попытку.";
+
+    private async Task<bool> ArchiveVerifiedRollbackAsync(OnboardingPending pending, string serial,
+        DeviceIdentity identity, WebIdentity? web, CancellationToken ct)
+    {
+        if (!pending.ForceReinstall || !pending.InstallRequested) return false;
+        var paths = InstallationPaths(pending);
+        if (!paths.Journal.StartsWith("/data/zte-imei-studio/installations/", StringComparison.Ordinal)) return false;
+        try
+        {
+            var original = await File.ReadAllBytesAsync(PendingPath, ct).ConfigureAwait(false);
+            if (await ReadAdbIdentityAsync(serial, web, ct).ConfigureAwait(false) != identity) return false;
+            var hashes = await VerifyAssetsAsync(ct).ConfigureAwait(false);
+            var bytes = await File.ReadAllBytesAsync(Path.Combine(_resources,"Onboarding","setup-agent.sh"), ct).ConfigureAwait(false);
+            if (Sha(bytes) != hashes["setup-agent.sh"]) return false;
+            var arguments = new[] { "--verify-rollback", paths.Journal }.Concat(InstallerPolicy(identity, pending.Profile ?? ""));
+            var proof = await AdbTextAsync(serial, "sh -c " + Quote(StrictUtf8.GetString(bytes)) + " -- " +
+                string.Join(' ', arguments.Select(Quote)), TimeSpan.FromSeconds(40), ct).ConfigureAwait(false);
+            if (proof != "INSTALL_ROLLBACK_VERIFIED " + paths.Journal) return false;
+            var current = await File.ReadAllBytesAsync(PendingPath, ct).ConfigureAwait(false);
+            if (!original.AsSpan().SequenceEqual(current)) return false;
+            // Preserve the original host journal and all backups. Only a verified
+            // rollback closes this intent; a new apply requires another user action.
+            await WritePrivateAsync(Path.Combine(pending.BackupDirectory, "rollback-verification.txt"),
+                Encoding.UTF8.GetBytes(proof + "\n"), ct).ConfigureAwait(false);
+            File.Move(PendingPath, Path.Combine(pending.BackupDirectory,"setup-rolled-back-" + pending.Id + ".json"));
+            return true;
+        }
+        catch (Exception) when (!ct.IsCancellationRequested) { return false; }
+    }
+
     private async Task<OnboardingResult> ResumeInstallationAsync(OnboardingPending pending,
         string serial, DeviceIdentity identity, WebIdentity? web, string agentPassword, CancellationToken ct)
     {
-        var journal = "/data/local/tmp/zte-imei-installations/" + pending.Id;
+        var journal = InstallationPaths(pending).Journal;
         var state = await AdbTextAsync(serial, "cat " + Quote(journal + "/state"),
             TimeSpan.FromSeconds(20), ct).ConfigureAwait(false);
+        if (state == "rolled-back" && await ArchiveVerifiedRollbackAsync(pending, serial, identity, web, ct).ConfigureAwait(false))
+            throw new InvalidOperationException(RollbackVerifiedMessage);
         if (state is not ("ready" or "complete"))
             throw new InvalidOperationException("Предыдущая установка прервалась до готовности; сохранён удалённый журнал " + journal);
         if (!File.Exists(KeyPath)) throw new InvalidDataException("Отсутствует ключ незавершённой установки.");
-        var verified = await PinAndVerifySshAsync(serial, identity, web, agentPassword, ct).ConfigureAwait(false);
+        var verified = await PinAndVerifySshAsync(pending, serial, identity, web, agentPassword, ct).ConfigureAwait(false);
         pending.RemoteJournal = journal;
         await CommitIfReadyAsync(pending, verified, agentPassword, ct).ConfigureAwait(false);
         await FinishAsync(pending, ct).ConfigureAwait(false);
@@ -926,13 +1016,13 @@ public sealed class OnboardingEngine
             KeyPath, KnownHostsPath, false, InstallerProfile(web, identity));
     }
 
-    private async Task<DeviceIdentity> PinAndVerifySshAsync(string serial,
+    private async Task<DeviceIdentity> PinAndVerifySshAsync(OnboardingPending pending, string serial,
         DeviceIdentity device, WebIdentity? web, string agentPassword, CancellationToken ct)
     {
         if (await ReadAdbIdentityAsync(serial, web, ct).ConfigureAwait(false) != device)
             throw new InvalidDataException("CID изменился перед чтением SSH host key.");
         var raw = await AdbTextAsync(serial,
-            "/data/bin/dropbearkey -y -f /etc/dropbear/dropbear_ed25519_host_key",
+            Quote(InstallationPaths(pending).DropbearKey) + " -y -f /etc/dropbear/dropbear_ed25519_host_key",
             TimeSpan.FromSeconds(20), ct).ConfigureAwait(false);
         var hostKeys = raw.Split('\n').Select(line => line.Trim()).Where(line =>
             line.StartsWith("ssh-ed25519 ", StringComparison.Ordinal)).ToArray();
@@ -945,23 +1035,20 @@ public sealed class OnboardingEngine
         await WritePrivateAsync(KnownHostsPath,
             Encoding.ASCII.GetBytes("[" + _host + "]:2222 ssh-ed25519 " + fields[1] + "\n"), ct)
             .ConfigureAwait(false);
-        var ssh = new SshTransport(_host, 2222, KeyPath, KnownHostsPath);
+        IRemoteShell ssh = InstalledSshFactory?.Invoke() ?? new SshTransport(_host, 2222, KeyPath, KnownHostsPath);
         var reply = await ssh.RunAsync(web is null ? AccessIdentity.Command : IdentityCommand(), timeout: TimeSpan.FromSeconds(20), ct: ct)
             .ConfigureAwait(false);
         if (!reply.Success || (web is null ? AccessIdentity.Parse(reply.Stdout) : ParseIdentity(reply.Stdout, web, requireInstallerRouter: false)) != device)
             throw new InvalidDataException("SSH подключён к другому устройству после установки.");
         await VerifyAgentReadyAsync(ssh, ct).ConfigureAwait(false);
+        if (InstallerProfile(web,device)=="linux-arm64-access") await VerifyDiscoveryAgentAsync(ssh,ct).ConfigureAwait(false);
+        await AuthenticateAgentAsync(ssh, agentPassword, ct).ConfigureAwait(false);
         if (InstallerProfile(web, device) == "b31")
         {
             var state = await new ImeiEngine(ssh, _storage, _resources, _skipFirmwareCheck)
                 .InspectAsync(ct).ConfigureAwait(false);
             if (state.Identity.Cid != device.Cid || state.Imeis[0] != web!.Imei)
                 throw new InvalidDataException("IMEI в NV и веб-интерфейсе различаются.");
-        }
-        else
-        {
-            if(InstallerProfile(web,device)=="linux-arm64-access")await VerifyDiscoveryAgentAsync(ssh,ct).ConfigureAwait(false);
-            await AuthenticateAgentAsync(ssh, agentPassword, ct).ConfigureAwait(false);
         }
         return device;
     }
@@ -1015,8 +1102,8 @@ public sealed class OnboardingEngine
         string agentPassword, CancellationToken ct)
     {
         if (!pending.InstallRequested) return;
-        var journal = "/data/local/tmp/zte-imei-installations/" + pending.Id;
-        var stage = "/data/local/tmp/zte-imei-setup-" + pending.Id;
+        var paths = InstallationPaths(pending);
+        var journal = paths.Journal;
         var ssh = new SshTransport(_host, 2222, KeyPath, KnownHostsPath);
         if (pending.NewAgent is null)
         {
@@ -1027,9 +1114,7 @@ public sealed class OnboardingEngine
         }
         if (pending.NewAgent == true)
             await AuthenticateAgentAsync(ssh, agentPassword, ct).ConfigureAwait(false);
-        var policy = InstallerPolicy(device, pending.Profile ?? "");
-        var args = new[] { stage + "/setup-agent.sh", "--commit", journal }.Concat(policy).ToArray();
-        var result = await ssh.RunAsync("sh " + string.Join(' ', args.Select(Quote)),
+        var result = await ssh.RunAsync(CommitCommand(pending, device),
             timeout: TimeSpan.FromSeconds(40), ct: ct).ConfigureAwait(false);
         if (!result.Success || !StrictUtf8.GetString(result.Stdout).Contains("INSTALL_COMMITTED " + journal,
                 StringComparison.Ordinal))
@@ -1037,6 +1122,44 @@ public sealed class OnboardingEngine
         pending.RemoteJournal = journal;
         pending.Phase = "complete";
         await SavePendingAsync(pending, ct).ConfigureAwait(false);
+    }
+
+    internal static string CommitCommand(OnboardingPending pending, DeviceIdentity device)
+    {
+        var paths = InstallationPaths(pending);
+        var policy = InstallerPolicy(device, pending.Profile ?? "");
+        var args = new[] { paths.Stage + "/setup-agent.sh", "--commit", paths.Journal }.Concat(policy).ToArray();
+        if (!paths.Stage.StartsWith("/data/local/tmp/zte-imei-setup-", StringComparison.Ordinal))
+            return "sh " + string.Join(' ', args.Select(Quote));
+        var owner = string.Join(' ', new[] { pending.Id }.Concat(policy));
+        var commitArgs = string.Join(' ', new[] { "--commit", paths.Journal }.Concat(policy).Select(Quote));
+        return $$"""
+            set -eu
+            fail() { printf 'INSTALL_ERROR COMMIT_STAGE_UNSAFE\n' >&2; exit 1; }
+            safe_dir() {
+              test -d "$1" && test ! -L "$1" && test "$(stat -c %u "$1")" = 0 || fail
+              mode=$(stat -c %a "$1") || fail
+              case "$mode" in ''|*[!0-7]*) fail;; esac
+              test "$((0$mode & 0022))" = 0 || fail
+            }
+            safe_file() {
+              test -f "$1" && test ! -L "$1" && test "$(stat -c %u "$1")" = 0 && test "$(stat -c %h "$1")" = 1 || fail
+            }
+            for parent in /data /data/local /data/local/tmp; do safe_dir "$parent"; done
+            stage={{Quote(paths.Stage)}}; owner={{Quote(owner)}}
+            safe_dir "$stage"
+            test "$(stat -c %a "$stage")" = 700 || fail
+            for name in .owner .install-requested; do
+              file="$stage/$name"; safe_file "$file"
+              test "$(stat -c %a "$file")" = 600 && test "$(stat -c %s "$file")" = {{Encoding.UTF8.GetByteCount(owner) + 1}} && test "$(cat "$file")" = "$owner" || fail
+            done
+            script="$stage/setup-agent.sh"; safe_file "$script"
+            case "$(stat -c %a "$script")" in 600|700) ;; *) fail;; esac
+            original=$(stat -c %d:%i:%u:%a:%h "$script") || fail
+            exec 9<"$script" || fail
+            test "$(stat -Lc %d:%i:%u:%a:%h /proc/self/fd/9)" = "$original" && test ! -L "$script" && test "$(stat -c %d:%i:%u:%a:%h "$script")" = "$original" || fail
+            sh /proc/self/fd/9 {{commitArgs}}
+            """;
     }
 
     private async Task AuthenticateAgentAsync(IRemoteShell ssh, string password, CancellationToken ct)
@@ -1061,7 +1184,7 @@ public sealed class OnboardingEngine
         try
         {
             var names = new[] { "zte-agent", "dropbear", "setup-agent.sh", "start_zte_imei_studio.sh",
-                "id_ed25519.pub", "start-agent.sh", "zte-timeout", ".owner", ".install-requested" };
+                "id_ed25519.pub", "start-agent.sh", "zte-timeout", "legacy-agent.private.sh", ".owner", ".install-requested" };
             await AdbTextAsync(serial, "rm -f " + string.Join(' ', names.Select(n => Quote(stage + "/" + n))) +
                 "; rmdir " + Quote(stage), TimeSpan.FromSeconds(20), ct).ConfigureAwait(false);
         }
@@ -1085,7 +1208,8 @@ public sealed class OnboardingEngine
             (pending.DirectAdbOutcome is not (null or "requested" or "accepted" or "rejected" or "uncertain")) ||
             (!pending.DirectAdbRequested && pending.DirectAdbOutcome is not null) ||
             (pending.DirectAdbRequested && pending.DirectAdbOutcome is null) ||
-            pending.Phase is not ("prepared" or "restore-requested" or "install-requested" or "ready" or "complete" or "diagnostic-reboot-requested") ||
+            pending.Phase is not ("prepared" or "restore-requested" or "adb-ready" or "install-requested" or "ready" or "complete" or "diagnostic-reboot-requested") ||
+            (pending.Phase == "adb-ready" && (_diagnosticAccess || pending.InstallRequested || pending.Cid is null || pending.AdbSerial is null || pending.Profile is null || pending.FirmwareHash is null || pending.RouterHash is null || pending.BootId is null)) ||
             (pending.RestoreRequested && pending.Phase == "prepared") ||
             (pending.InstallRequested && pending.Phase is "prepared" or "restore-requested") ||
             (!pending.InstallRequested && pending.Phase is "install-requested" or "ready" or "complete") ||
@@ -1093,6 +1217,7 @@ public sealed class OnboardingEngine
                 Path.GetFullPath(Path.Combine(_storage, BackupFolder)) + Path.DirectorySeparatorChar,
                 StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException("Повреждён журнал незавершённой установки.");
+        _ = InstallationPaths(pending);
         return pending;
     }
 

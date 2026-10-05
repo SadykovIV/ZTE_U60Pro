@@ -28,14 +28,14 @@ import AppKit
         !host.isEmpty && !webPassword.isEmpty && !channelStatuses.contains { $0.mode == .web && [.invalidPassword, .rateLimited, .identityMismatch, .trustRejected].contains($0.state) }
     }
     var canPrepareModem: Bool {
-        !busy && !terminalActive && !pendingOperation && !systemRestorePending && !diagnosticADBPending && !adbTogglePending && (webBootstrapRequested || isStockWebAvailable || setupPending || channelStatuses.contains { $0.mode == .adb && $0.state == .available } || firmwareResearchReport?.transport == "adb")
-            && (setupPending || !hasSSHForPreparation)
+        !busy && !terminalActive && !pendingOperation && !systemRestorePending && !diagnosticADBPending && !adbTogglePending && (webBootstrapRequested || isStockWebAvailable || setupPending || (forcePreparation && hasSSHForPreparation) || channelStatuses.contains { $0.mode == .adb && $0.state == .available } || firmwareResearchReport?.transport == "adb")
+            && (setupPending || forcePreparation || !hasSSHForPreparation)
     }
     var canEnableDiagnosticADB: Bool {
         !busy && !terminalActive && !pendingOperation && !systemRestorePending && !setupPending && !adbTogglePending && !hasSSHForPreparation && (isStockWebAvailable || diagnosticADBPending || (!host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !webPassword.isEmpty))
     }
     var preparationUnavailableReason: String? {
-        if hasSSHForPreparation && !setupPending { return "SSH уже доступен: предварительная подготовка не требуется." }
+        if hasSSHForPreparation && !setupPending && !forcePreparation { return "SSH уже доступен: предварительная подготовка не требуется." }
         if canPrepareModem { return nil }
         if channelStatuses.first(where: { $0.mode == .web })?.state == .invalidPassword { return "Неверный пароль штатного Web. Исправьте параметры первоначальной подготовки." }
         if channelStatuses.first(where: { $0.mode == .web })?.state == .rateLimited { return "Штатный Web временно заблокировал вход. Дождитесь окончания блокировки." }
@@ -94,14 +94,36 @@ import AppKit
     }
 
     func connectionPasswordChanged(_ mode: ConnectionMode) {
-        // Password fields are disabled during operations. Clearing secrets after
-        // setup must not invalidate its verified result or an active shell.
+        // Password fields are disabled during operations. Editing a credential
+        // invalidates only its own previous check, never the active SSH session.
         guard !busy, mode == .web || mode == .agent,
               let index = channelStatuses.firstIndex(where: { $0.mode == mode }) else { return }
         channelStatuses[index] = ConnectionChannelStatus(mode: mode, state: .notChecked,
             message: "Пароль изменён. Нажмите «Проверить подключения», чтобы проверить доступ.")
     }
 
+    func clearPreparationCredentials() {
+        webPassword = ""; agentPassword = ""; backupSuffix = ""; forcePreparation = false
+    }
+    func editConnectionHost(_ value: String) {
+        guard !busy, value != host else { return }
+        host = value; clearPreparationCredentials(); invalidateChannelConnection()
+    }
+    func editConnectionPort(_ value: String) {
+        guard !busy, value != port else { return }
+        port = value; clearPreparationCredentials(); invalidateChannelConnection()
+    }
+    func editConnectionKeyPath(_ value: String) {
+        guard !busy, value != keyPath else { return }
+        keyPath = value; clearPreparationCredentials(); invalidateChannelConnection(clearIdentity: false)
+    }
+    func editConnectionKnownHostsPath(_ value: String) {
+        guard !busy, value != knownHostsPath else { return }
+        knownHostsPath = value; clearPreparationCredentials(); invalidateChannelConnection(clearIdentity: false)
+    }
+    var canRefreshModem: Bool {
+        !busy && !terminalActive && permitsSSHOperations && !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !keyPath.isEmpty && !knownHostsPath.isEmpty
+    }
     func setConnectionMode(_ mode: ConnectionMode) {
         guard !busy, mode != connectionMode, mode == .automatic || ConnectionMode.connectionPriority.contains(mode) else { return }
         connectionMode = mode
@@ -132,9 +154,9 @@ import AppKit
     }
     func markConnectionUnavailable(_ reason: String) {
         connectionMonitorTask?.cancel(); connectionMonitorTask = nil
-        if let previous = activeChannel, !reason.isEmpty,
+        if let previous = activeChannel ?? channelStatuses.first(where: { $0.mode == .ssh })?.mode,
            channelStatuses.first(where: { $0.mode == previous })?.state.preventsDowngrade != true {
-            mergeChannelStatuses([ConnectionChannelStatus(mode: previous, state: .unavailable, message: reason)])
+            mergeChannelStatuses([ConnectionChannelStatus(mode: previous, state: .unavailable, message: reason.isEmpty ? "Нет подключения" : reason)])
         }
         channelSession = nil; channelSummary = nil; activeChannel = nil
         connected = false; accessReady = false; connectionReason = reason
@@ -257,6 +279,7 @@ import AppKit
     private func discoverConnections(authenticate: Bool) {
         guard !esimPreview else { return }
         guard !busy, !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        refreshBackups(); refreshSystemBackups()
         let config = connection, root = storage, assets = resources
         let expected = connectedIdentity, expectedWeb = connectedWebIdentity, expectedIMEI = connectedIMEI
 
@@ -289,7 +312,8 @@ import AppKit
     }
 
     func connectPreferredChannel() {
-        guard !busy else { return }
+        guard !busy, !terminalActive else { return }
+        refreshBackups(); refreshSystemBackups()
         let config = connection, root = storage, assets = resources, mode = ConnectionMode.ssh
         let expected = connectedIdentity ?? modemInformation?.identity
         let expectedWeb = connectedWebIdentity ?? channelSummary?.webIdentity
@@ -365,31 +389,50 @@ import AppKit
         refreshConnectedSections(Set(ConnectionOverviewSection.allCases))
     }
     private func refreshConnectedSections(_ sections: Set<ConnectionOverviewSection>) {
-        guard canReadModem else { return }
-        let selected = channelSession, mode = activeChannel ?? .ssh
         let config = connection, root = storage, assets = resources
-        let expected = connectedIdentity, expectedIMEI = connectedIMEI
+        let expected = connectedIdentity, expectedWeb = connectedWebIdentity, expectedIMEI = connectedIMEI
+        refreshConnectedSections(sections, reconnect: {
+            let engine = try ModemEngine(root: root, resources: assets, connection: config) { _, _ in }
+            return try engine.locked { try ConnectionRouter(engine: engine, expectedIdentity: expected,
+                expectedWebIdentity: expectedWeb, expectedIMEI: expectedIMEI).connect(mode: .ssh) }
+        }, collect: { [weak self] session, sections in
+            let engine = try ModemEngine(root: root, resources: assets, connection: config) { _, _ in }
+            return try engine.locked {
+                try ConnectionOverview.collect(engine: engine, session: session, sections: sections) { [weak self] section in
+                    Task { @MainActor [weak self] in self?.append("Обновляю раздел: " + section.title + "…") }
+                }
+            }
+        })
+    }
+    // The state transition is shared by live readers and isolated lifecycle tests.
+    func refreshConnectedSections(_ sections: Set<ConnectionOverviewSection>,
+                                  reconnect: @escaping @Sendable () throws -> ChannelSelection,
+                                  collect: @escaping @Sendable (ReadOnlyChannelSession, Set<ConnectionOverviewSection>) throws -> ConnectionOverviewSnapshot) {
+        guard canRefreshModem else { return }
+        let previousBoot = channelSession?.summary.bootID ?? channelSummary?.bootID
+        refreshBackups(); refreshSystemBackups()
+        connectionMonitorTask?.cancel(); connectionMonitorTask = nil
         busy = true; progress = 0
         operationTask = Task { [weak self] in
             guard let self else { return }
             do {
-                var session = selected
-                if session == nil {
-                    let result = try await Task.detached(priority: .userInitiated) {
-                        let engine = try ModemEngine(root: root, resources: assets, connection: config) { _, _ in }
-                        return try engine.locked { try ConnectionRouter(engine: engine, expectedIdentity: expected, expectedIMEI: expectedIMEI).connect(mode: mode) }
-                    }.value
-                    acceptChannelSelection(result); session = channelSession
+                let result = try await Task.detached(priority: .userInitiated) { try reconnect() }.value
+                if let previousBoot, result.session?.summary.bootID != previousBoot {
+                    clearConnectedData(preserveDisplayDraft: true)
                 }
-                guard let session else { throw IMEIError.message(connectionReason) }
-                try await loadConnectedSections(session, config: config, sections: sections)
+                acceptChannelSelection(result)
+                guard let session = channelSession else { throw IMEIError.message(connectionReason) }
+                let scoped = session.summary.fields["accessProfile"] == "linux-arm64-access" ? sections.intersection([.information]) : sections
+                append(scoped == [.information] ? "Обновляю сведения о модеме…" : connectionLabel + ". Обновляю сведения разделов…", progress: 0.25)
+                let snapshot = try await Task.detached(priority: .userInitiated) { try collect(session, scoped) }.value
+                acceptConnectionOverview(snapshot)
                 if sections == [.information] {
                     append(sectionRefreshErrors[.information] == nil ? "Сведения о модеме обновлены." : "Не удалось обновить сведения о модеме; причина показана в разделе.", progress: 1)
                 } else {
                     append(sectionRefreshErrors.isEmpty ? "Разделы обновлены." : "Разделы обновлены. Для недоступных сведений показаны причины.", progress: 1)
                 }
             } catch { markConnectionUnavailable(error.localizedDescription); append("Подключение потеряно: " + error.localizedDescription) }
-            busy = false; refreshActivity(); operationTask = nil
+            busy = false; refreshBackups(); refreshSystemBackups(); refreshActivity(); operationTask = nil
             startConnectionMonitor()
         }
     }
@@ -479,7 +522,6 @@ import AppKit
     func verifyBackupKey() {
         guard canVerifyBackupKey else { return }
         let config = connection, root = storage, assets = resources, password = webPassword, suffix = backupSuffix
-        webPassword = ""; backupSuffix = ""
         preparationError = ""; busy = true; progress = 0
         append("Проверяю ключ и формат свежего бэкапа без изменения настроек…")
         operationTask = Task { [weak self] in
@@ -508,7 +550,7 @@ import AppKit
         preparationError = ""
         let config = connection, root = storage, assets = resources
         let webSecret = webPassword, agentSecret = agentPassword, suffix = backupSuffix, expected = connectedIdentity
-        backupSuffix = ""
+        let reinstall = forcePreparation
         let expectedIMEI = connectedIMEI ?? channelSummary?.primaryIMEI
         markConnectionUnavailable("")
         busy = true; progress = 0
@@ -521,15 +563,15 @@ import AppKit
                     let installer = try OnboardingEngine(root: root, resources: assets, connection: config, backupSuffix: suffix, update: { [weak self] message, value in
                         Task { @MainActor [weak self] in self?.append(message, progress: value) }
                     })
-                    return try installer.run(webPassword: webSecret, agentPassword: agentSecret, expectedIdentity: expected, expectedIMEI: expectedIMEI)
+                    return try installer.run(webPassword: webSecret, agentPassword: agentSecret, expectedIdentity: expected, expectedIMEI: expectedIMEI, forceReinstall: reinstall)
                 }.value
                 keyPath = result.connection.keyPath; knownHostsPath = result.connection.knownHostsPath; port = result.connection.port
                 try saveJSON(result.connection, storage.appendingPathComponent("connection.json"))
                 connectionMode = .ssh; try saveJSON(connectionMode, storage.appendingPathComponent("connection-mode.json"))
                 connectedIdentity = result.identity; connectedWebIdentity = nil
                 if let state = result.state { connectedIMEI = state.imeis[0] }
-                backupSuffix = result.suffix; webPassword = ""; agentPassword = ""
                 prepared = true
+                forcePreparation = false
                 append("Подготовка завершена. Подключаюсь по SSH и обновляю все разделы…", progress: 1)
             } catch { preparationError = error.localizedDescription; append("Подготовка: " + error.localizedDescription) }
             firmwareResearchReport = try? FirmwareResearchArchive.latest(root: storage)

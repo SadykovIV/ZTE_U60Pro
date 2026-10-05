@@ -41,7 +41,12 @@ public sealed class DiagnosticPrivacy
         { lock (gate) suppressDetails = true; }
     }
 
-    public string Clean(string value)
+    public string Clean(string value) => Clean(value, applicationVersion: false);
+
+    // Use only for schema-defined application version fields, never arbitrary diagnostic text.
+    public string CleanApplicationVersion(string value) => Clean(value, applicationVersion: true);
+
+    private string Clean(string value, bool applicationVersion)
     {
         lock (gate)
         {
@@ -57,6 +62,8 @@ public sealed class DiagnosticPrivacy
                     var escaped = System.Text.Json.JsonSerializer.Serialize(secret)[1..^1];
                     if (escaped != secret) value = value.Replace(escaped, "[REDACTED]", StringComparison.Ordinal);
                 }
+                if (applicationVersion && Regex.IsMatch(value, @"\A[0-9]{1,5}\.[0-9]{1,5}\.[0-9]{1,5}(?:\.[0-9]{1,5})?\z", RegexOptions.None, TimeSpan.FromSeconds(1)))
+                    return value;
                 value = Regex.Replace(value, @"-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?(?:-----END [^-]*PRIVATE KEY-----|$)", "[PRIVATE KEY REDACTED]", RegexOptions.None, TimeSpan.FromSeconds(1));
                 // Discard a whole credential-bearing line: quoted JSON/shell escapes and
                 // Cookie lists must not leak a suffix. No raw transport output is collected.

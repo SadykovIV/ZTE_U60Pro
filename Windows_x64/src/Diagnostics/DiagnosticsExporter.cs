@@ -114,7 +114,7 @@ public static class DiagnosticsExporter
         var report = new
         {
             schema = 1, createdAt = exportedAt, application = "ZTE IMEI Studio Windows x64",
-            applicationVersion = privacy.Clean(system.ApplicationVersion),
+            applicationVersion = privacy.CleanApplicationVersion(system.ApplicationVersion),
             connectionMode = privacy.Clean(system.ConnectionMode ?? ""), model = privacy.Clean(system.Model ?? ""), firmware = privacy.Clean(system.Firmware ?? ""),
             operations = current.Select(x => new { x.Timestamp, x.Level, operation = x.Message.StartsWith("eSIM[", StringComparison.Ordinal) ? x.Message : x.Message.Split(':', 2)[0] }).ToArray(),
             note = "Сохранённые сведения приложения. Свежий сбор с модема не выполнялся; пароли, ключи, профили, IMEI и CID не включаются."
@@ -153,13 +153,13 @@ public static class DiagnosticsExporter
                     catch (RegexMatchTimeoutException) { throw new InvalidDataException("Cached research redaction exceeded its limit."); }
                     return string.Join('\n', value.Split('\n').Select(line => { ct.ThrowIfCancellationRequested(); return privacy.Clean(line); }));
                 }
-                var payload = ResearchReportFiles.BuildExportFiles(cached, CleanResearch, ct);
+                var payload = ResearchReportFiles.BuildExportFiles(cached, CleanResearch, ct, privacy.CleanApplicationVersion);
                 foreach (var item in payload) files.Add("firmware-research/" + item.Key, item.Value);
                 cachedResearchSource = new { status = "included", path = "FirmwareResearch/latest.json",
                     sourceLastWriteAt = new DateTimeOffset(modified, TimeSpan.Zero), sourceBytes = bytes.Length,
                     sourceSha256 = Convert.ToHexStringLower(SHA256.HashData(bytes)),
                     collectionStartedAt = cached.StartedAt, collectionCompletedAt = cached.CompletedAt,
-                    applicationVersion = privacy.Clean(cached.ApplicationVersion), specificationRevision = cached.SpecificationRevision,
+                    applicationVersion = privacy.CleanApplicationVersion(cached.ApplicationVersion), specificationRevision = cached.SpecificationRevision,
                     specificationSha256 = cached.SpecificationSHA256, relationToCurrentConnection = "not-assessed" };
             }
         }

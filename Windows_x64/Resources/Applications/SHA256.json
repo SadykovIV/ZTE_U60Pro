@@ -1,6 +1,7 @@
 {
-  "ssclash-service.sh": "7c8586a6a743b180b118bad214e9ca48f6bff8231ca6676d719f7a181198f7b8",
-  "ssclash-remove.sh": "7497bace3fea997bd9b079efe8bb8caa722a53a197784b2bc88d96786be2e5bc",
+  "README.md": "aa7a3008194b519c3a4d028cb5e6b1f3bb276304935388998b9ef51ff73382dd",
   "SSClash-LICENSE.txt": "55a96cb2e7946cae33a32cc8c6d85120e880cc6b76864009707c447620b95a8e",
-  "SSClash-THIRD_PARTY_NOTICES.md": "ffe682781e211647f77c38e6d793af52adbb880dc166c0354b3bce85a3ac2d38"
+  "SSClash-THIRD_PARTY_NOTICES.md": "ffe682781e211647f77c38e6d793af52adbb880dc166c0354b3bce85a3ac2d38",
+  "ssclash-remove.sh": "8948d37e3298e0de5a57beee9556056ccc3f86dd0eed6da7a5c1ff796db65ddd",
+  "ssclash-service.sh": "7c8586a6a743b180b118bad214e9ca48f6bff8231ca6676d719f7a181198f7b8"
 }

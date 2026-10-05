@@ -74,4 +74,23 @@ class Installation(unittest.TestCase):
         active.parent.mkdir();active.write_text('other')
         self.assertNotEqual(self.install().returncode,0)
         self.assertEqual(self.agent.read_bytes(),b'previous-agent')
+    def test_private_startup_supports_update_and_restore(self):
+        legacy=self.root/'data/local/tmp/start_zte_agent.sh'
+        legacy.unlink()
+        startup=self.root/'data/zte-imei-studio/start_zte_agent.sh'
+        startup.parent.mkdir(mode=0o700)
+        startup.write_text('#!/bin/sh\ntrue\n');startup.chmod(0o700)
+        original=startup.read_bytes()
+        r=self.install();self.assertEqual(r.returncode,0,r.stdout+r.stderr)
+        r=self.run_action('restore');self.assertEqual(r.returncode,0,r.stdout+r.stderr)
+        self.assertEqual(startup.read_bytes(),original)
+        self.assertEqual(self.agent.read_bytes(),b'previous-agent')
+    def test_invalid_private_startup_does_not_fall_back_to_legacy(self):
+        startup=self.root/'data/zte-imei-studio/start_zte_agent.sh'
+        startup.parent.mkdir(mode=0o700)
+        startup.symlink_to(self.root/'data/local/tmp/start_zte_agent.sh')
+        r=self.install();self.assertNotEqual(r.returncode,0)
+        self.assertIn('AGENT_ERROR PREPARE_FIRST',r.stderr)
+        self.assertEqual(self.agent.read_bytes(),b'previous-agent')
+        self.assertFalse((self.base/'pending').exists())
 if __name__=='__main__':unittest.main()

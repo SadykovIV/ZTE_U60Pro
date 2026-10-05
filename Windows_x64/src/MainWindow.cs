@@ -73,8 +73,12 @@ public sealed partial class MainWindow : Window
     private readonly List<Button> _actionButtons = [];
     private Button? _refreshButton;
     private Button? _preparationButton;
+    private CheckBox? _forcePreparationCheckBox;
     private readonly Dictionary<string, string> _form = new(StringComparer.Ordinal);
     private readonly Dictionary<string, TextBox> _secretFields = new(StringComparer.Ordinal);
+    // Preparation credentials belong to this window and selected target only. Never persist them.
+    private readonly Dictionary<string, string> _preparationSecrets = new(StringComparer.Ordinal);
+    private static bool IsPreparationSecret(string key) => key is "web_password" or "agent_password" or "backup_key_suffix";
     private StackPanel? _metricRows;
     private StackPanel? _previewRows;
     private TextBlock? _metricCount;
@@ -166,7 +170,7 @@ public sealed partial class MainWindow : Window
             Child = new TextBlock { Text = "WINDOWS · X64", Foreground = Secondary, FontSize = 11, FontWeight = FontWeight.SemiBold, LetterSpacing = 1 },
             CornerRadius = new CornerRadius(20), BorderBrush = Elevated, BorderThickness = new Thickness(1), Padding = new Thickness(15, 9),
         });
-        var refresh = ActionButton("↻", async () => await RefreshAsync(), false);
+        var refresh = ActionButton("↻", async () => await RefreshAsync(reconnectConfigured: true), false);
         refresh.Name = "RefreshPage";
         ToolTip.SetTip(refresh, Localization.Translate("Обновить"));
         refresh.Margin = new Thickness(0);
@@ -287,9 +291,10 @@ public sealed partial class MainWindow : Window
         _metricRows = null;
         _previewRows = null;
         _metricCount = null;
-        ClearSecrets(discardFields: true);
+        ClearSecrets(discardFields: true, preservePreparation: true);
         _actionButtons.Clear();
         _preparationButton = null;
+        _forcePreparationCheckBox = null;
         _researchCollectButton = null;
         _diagnosticAccessButton = null;
         _refreshAdbButton = null;
@@ -357,10 +362,25 @@ public sealed partial class MainWindow : Window
                     panel.Children.Add(FileField("Файл known_hosts", "known_hosts_path", "Использовать локальный known_hosts"));
                     panel.Children.Add(Actions(("Подключиться", ModemOperation.Connect, ["host", "username", "key_path", "known_hosts_path"])));
                     BuildConnectionMethods(panel);
+                    var force = new CheckBox
+                    {
+                        Name = "ForcePreparation", IsChecked = Get("force_reinstall") == "true",
+                        Content = Localization.Translate("Принудительная подготовка: переустановить агент и SSH"),
+                        Foreground = Foreground, IsEnabled = CanChangePreparationMode(),
+                    };
+                    _forcePreparationCheckBox = force;
+                    force.IsCheckedChanged += (_, _) =>
+                    {
+                        if (!ReferenceEquals(_forcePreparationCheckBox, force)) return;
+                        _form["force_reinstall"] = force.IsChecked == true ? "true" : "false";
+                        if (_preparationButton is not null) _preparationButton.IsEnabled = CanPrepare();
+                    };
+                    panel.Children.Add(force);
+                    panel.Children.Add(Muted("Сначала сохраняется резервная копия. Агент получит введённый пароль; временные файлы удаляются после проверки. Незавершённая операция продолжается в сохранённом режиме."));
                     var preparation = new WrapPanel { Orientation = Orientation.Horizontal };
                     _preparationButton = ActionButton("Выполнить предварительную подготовку модема", async () =>
-                        await ExecuteAsync(ModemOperation.PrepareSsh, ["host", "username", "web_password", "agent_password", "backup_key_suffix", "skip_firmware_check", "key_path", "known_hosts_path"]), true);
-                    _preparationButton.IsEnabled = !_busy && _terminal?.IsConnected != true && !_terminalOpening && _snapshot?.AdbActivationPending != true && (_snapshot?.PreparationPending == true || !(_snapshot?.IsConnected == true && _snapshot.ConnectionMode == "SSH"));
+                        await ExecuteAsync(ModemOperation.PrepareSsh, ["host", "username", "web_password", "agent_password", "backup_key_suffix", "skip_firmware_check", "key_path", "known_hosts_path", "force_reinstall"]), true);
+                    _preparationButton.IsEnabled = CanPrepare();
                     preparation.Children.Add(_preparationButton);
                     preparation.Children.Add(OperationInfoButton(OperationHelpContent.Preparation));
                     panel.Children.Add(preparation);
@@ -1375,7 +1395,7 @@ public sealed partial class MainWindow : Window
         stack.Children.Add(new TextBlock { Text = Localization.Translate(label), Foreground = Secondary, FontSize = 12 });
         var input = new TextBox
         {
-            Text = secret ? "" : Get(key),
+            Text = secret ? _preparationSecrets.GetValueOrDefault(key, "") : Get(key),
             Watermark = Localization.Translate(watermark),
             Background = Elevated,
             Foreground = Foreground,
@@ -1394,10 +1414,15 @@ public sealed partial class MainWindow : Window
         if (secret)
         {
             _secretFields[key] = input;
-            if (key is "web_password" or "backup_key_suffix") input.TextChanged += (_, _) =>
+            var previousText = input.Text ?? "";
+            if (IsPreparationSecret(key)) input.TextChanged += (_, _) =>
             {
-                if (_secretFields.TryGetValue(key,out var current) && ReferenceEquals(current,input) && !string.IsNullOrEmpty(input.Text))
-                    InvalidateBackupKeyCheck();
+                if (!_secretFields.TryGetValue(key, out var current) || !ReferenceEquals(current, input)) return;
+                var value = input.Text ?? "";
+                if (value == previousText) return;
+                previousText = value;
+                if (value.Length == 0) _preparationSecrets.Remove(key); else _preparationSecrets[key] = value;
+                if (key is "web_password" or "backup_key_suffix") InvalidateBackupKeyCheck();
                 UpdateDiagnosticAvailability();
             };
         }
@@ -1405,7 +1430,11 @@ public sealed partial class MainWindow : Window
         {
             var changed = Get(key) != (input.Text ?? "");
             _form[key] = input.Text ?? "";
-            if (key is "host" or "key_path" or "known_hosts_path") UpdateDiagnosticConnectionStatus();
+            if (key is "host" or "key_path" or "known_hosts_path")
+            {
+                if (changed) ClearSecrets();
+                UpdateDiagnosticConnectionStatus();
+            }
             if (key == "host") { if(changed) InvalidateBackupKeyCheck(); UpdateDiagnosticAvailability(); }
         };
         stack.Children.Add(input);
@@ -1424,8 +1453,13 @@ public sealed partial class MainWindow : Window
         };
         input.TextChanged += (_, _) =>
         {
+            var changed = Get(key) != (input.Text ?? "");
             _form[key] = input.Text ?? "";
-            if (key is "key_path" or "known_hosts_path") UpdateDiagnosticConnectionStatus();
+            if (key is "key_path" or "known_hosts_path")
+            {
+                if (changed) ClearSecrets();
+                UpdateDiagnosticConnectionStatus();
+            }
         };
         row.Children.Add(input);
         var browse = ActionButton("▱", async () =>
@@ -1450,7 +1484,7 @@ public sealed partial class MainWindow : Window
 
     private string Get(string key) => _secretFields.TryGetValue(key, out var secret)
         ? secret.Text ?? ""
-        : _form.GetValueOrDefault(key, "").Trim();
+        : IsPreparationSecret(key) ? _preparationSecrets.GetValueOrDefault(key, "") : _form.GetValueOrDefault(key, "").Trim();
 
     private WrapPanel Actions(params (string Label, ModemOperation Operation, string[]? Parameters)[] actions)
     {
@@ -1648,7 +1682,7 @@ public sealed partial class MainWindow : Window
             SetStatus("Перед включением ADB отключите интерактивный терминал.", true);
             return;
         }
-        var preserveSecrets = operation == ModemOperation.DiscoverConnections;
+        var refreshSnapshot = operation != ModemOperation.DiscoverConnections;
         SetBusy(true);
         SetStatus("Выполняется операция на модеме…");
         var preparationStarted = DateTimeOffset.Now;
@@ -1673,9 +1707,15 @@ public sealed partial class MainWindow : Window
         try
         {
             var result = await _service.RunAsync(new OperationRequest(operation, parameters), _lifetime.Token);
+            AdoptPreparedConnection(operation, parameters);
+            if (operation == ModemOperation.PrepareSsh && result.Success)
+            {
+                _form["force_reinstall"] = "false";
+                if (_forcePreparationCheckBox is not null) _forcePreparationCheckBox.IsChecked = false;
+            }
             preparationActive = false;
             preparationTimer.Stop();
-            if (!preserveSecrets) ClearSecrets();
+            ClearSecrets(preservePreparation: true);
             SetStatus(result.Message, !result.Success);
             RecordDiagnosticResult(operation, result, parameters);
             if (result.Values is { } values)
@@ -1685,7 +1725,7 @@ public sealed partial class MainWindow : Window
             }
             if (!string.IsNullOrWhiteSpace(result.Details))
                 await ShowMessageAsync(result.Success ? "Результат" : "Ошибка", result.Details);
-            if ((result.Success && !preserveSecrets) || operation is ModemOperation.EnableDiagnosticAdb or ModemOperation.RefreshAdbState or ModemOperation.SetAdbEnabled or ModemOperation.Connect)
+            if (refreshSnapshot)
             {
                 await ReloadSnapshotAsync();
                 if (_page == 2 || (_page == 6 && _sections[6] == 1)) await RefreshBackupsAsync();
@@ -1693,23 +1733,57 @@ public sealed partial class MainWindow : Window
                 if (_page == 6 && _sections[6] == 2) await RefreshLogsAsync();
             }
         }
-        catch (OperationCanceledException) { SetStatus("Операция отменена.", true); }
-        catch (Exception error) { SetStatus(error.Message, true); await ShowMessageAsync("Ошибка", error.Message); }
-        finally { preparationActive = false; preparationTimer.Stop(); if (!preserveSecrets) ClearSecrets(); SetBusy(false); }
+        catch (OperationCanceledException) { AdoptPreparedConnection(operation, parameters); await ReloadFailedOperationSnapshotAsync(refreshSnapshot); SetStatus("Операция отменена.", true); }
+        catch (Exception error) { AdoptPreparedConnection(operation, parameters); await ReloadFailedOperationSnapshotAsync(refreshSnapshot); SetStatus(error.Message, true); await ShowMessageAsync("Ошибка", error.Message); }
+        finally { preparationActive = false; preparationTimer.Stop(); ClearSecrets(preservePreparation: true); SetBusy(false); }
     }
 
-    private async Task RefreshAsync()
+    private void AdoptPreparedConnection(ModemOperation operation, IReadOnlyDictionary<string, string>? requested)
+    {
+        if (operation != ModemOperation.PrepareSsh || requested is null) return;
+        // Preparation may establish SSH before a later step fails. Use its saved
+        // connection metadata only while the user's original selection is unchanged.
+        if (new[] { "host", "username", "key_path", "known_hosts_path" }.Any(key =>
+            !requested.TryGetValue(key, out var value) || Get(key) != value)) return;
+        var saved = _service.GetConnectionSettings();
+        if (saved.Host != requested["host"] || saved.KeyPath.Length == 0 || saved.KnownHostsPath.Length == 0) return;
+        _form["port"] = saved.Port.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        _form["username"] = saved.Username;
+        _form["key_path"] = saved.KeyPath;
+        _form["known_hosts_path"] = saved.KnownHostsPath;
+    }
+
+    private async Task ReloadFailedOperationSnapshotAsync(bool refreshSnapshot)
+    {
+        if (!refreshSnapshot || _lifetime.IsCancellationRequested) return;
+        try { await ReloadSnapshotAsync(); }
+        catch { /* Preserve the original failure; no operation is retried. */ }
+    }
+
+    private async Task RefreshAsync(bool reconnectConfigured = false)
     {
         if (_busy) return;
         SetBusy(true);
         try
         {
             string? refreshError = null;
-            if (_snapshot?.IsConnected == true && _snapshot.ConnectionMode == "SSH")
+            var settings = _service.GetConnectionSettings();
+            var selectedConnectionChanged = Get("host") != settings.Host || Get("key_path") != settings.KeyPath || Get("known_hosts_path") != settings.KnownHostsPath;
+            var connectedSsh = _snapshot?.IsConnected == true && _snapshot.ConnectionMode == "SSH";
+            if (reconnectConfigured && (!connectedSsh || selectedConnectionChanged) && Get("key_path").Length > 0 && Get("known_hosts_path").Length > 0)
+            {
+                // An explicit refresh can retry selected SSH access; it never replays preparation.
+                var connected = await _service.RunAsync(new OperationRequest(ModemOperation.Connect,
+                    new[] { "host", "username", "key_path", "known_hosts_path" }.ToDictionary(key => key, Get)), _lifetime.Token);
+                if (!connected.Success) refreshError = connected.Message;
+            }
+            else if (connectedSsh && !selectedConnectionChanged)
             {
                 var refreshed = await _service.RunAsync(new OperationRequest(ModemOperation.RefreshDevice), _lifetime.Token);
                 if (!refreshed.Success) refreshError = refreshed.Message;
             }
+            else if (connectedSsh && selectedConnectionChanged)
+                refreshError = "Для этого действия сначала подключитесь к модему по SSH.";
             await ReloadSnapshotAsync();
             await LoadPageDataAsync();
             SetStatus(refreshError ?? _snapshot?.Status ?? "Состояние обновлено.", refreshError is not null);
@@ -1722,6 +1796,8 @@ public sealed partial class MainWindow : Window
     {
         var prior = _snapshot;
         _snapshot = await _service.GetDeviceSnapshotAsync(_lifetime.Token);
+        if (prior?.IsConnected == true && _snapshot.IsConnected &&
+            (prior.IpAddress != _snapshot.IpAddress || prior.Serial != _snapshot.Serial)) ClearSecrets();
         if (!_snapshot.IsConnected || _snapshot.Serial != prior?.Serial || _snapshot.IpAddress != prior?.IpAddress || _snapshot.ConnectionMode != prior?.ConnectionMode) { _esimAuthorized = false; _esimSnapshot = null; _esimSelected = null; }
         if (_snapshot.Serial != prior?.Serial || _snapshot.IpAddress != prior?.IpAddress) _launcherPagesDirty = false;
         if (!_launcherPagesDirty && _snapshot.LauncherPages is { } pages)
@@ -1791,23 +1867,45 @@ public sealed partial class MainWindow : Window
         catch (Exception error) { SetStatus(error.Message, true); }
     }
 
+    private bool CanPrepare() => !_busy && _terminal?.IsConnected != true && !_terminalOpening &&
+        _snapshot?.AdbActivationPending != true && (_snapshot?.PreparationPending == true || Get("force_reinstall") == "true" ||
+        !(_snapshot?.IsConnected == true && _snapshot.ConnectionMode == "SSH"));
+
+    private bool CanChangePreparationMode() => !_busy && _terminal?.IsConnected != true && !_terminalOpening &&
+        _snapshot?.PreparationPending != true && _snapshot?.AdbActivationPending != true;
+
     private void SetBusy(bool busy)
     {
         _busy = busy;
         foreach (var button in _actionButtons) button.IsEnabled = !busy;
         if (_preparationButton is not null)
-            _preparationButton.IsEnabled = !busy && _terminal?.IsConnected != true && !_terminalOpening && _snapshot?.AdbActivationPending != true && (_snapshot?.PreparationPending == true || !(_snapshot?.IsConnected == true && _snapshot.ConnectionMode == "SSH"));
+            _preparationButton.IsEnabled = CanPrepare();
+        if (_forcePreparationCheckBox is not null) _forcePreparationCheckBox.IsEnabled = CanChangePreparationMode();
         if (!busy && _page == 5 && _sections[5] == 2 && !_terminalAutoAttempted)
             _ = LoadPageDataAsync();
         UpdateDiagnosticAvailability();
         UpdateEsimAvailability();
     }
 
-    private void ClearSecrets(bool discardFields = false)
+    private void ClearSecrets(bool discardFields = false, bool preservePreparation = false)
     {
         ClearEsimSecrets();
-        foreach (var input in _secretFields.Values) input.Text = "";
+        if (!preservePreparation)
+        {
+            _preparationSecrets.Clear(); InvalidateBackupKeyCheck();
+            _form["force_reinstall"] = "false";
+            if (_forcePreparationCheckBox is not null) _forcePreparationCheckBox.IsChecked = false;
+        }
+        else foreach (var field in _secretFields.Where(field => IsPreparationSecret(field.Key)))
+        {
+            var value = field.Value.Text ?? "";
+            if (value.Length == 0) _preparationSecrets.Remove(field.Key); else _preparationSecrets[field.Key] = value;
+        }
+        var fields = _secretFields.ToArray();
+        // Detach old controls before clearing them, so their events cannot erase retained input.
         if (discardFields) _secretFields.Clear();
+        foreach (var field in fields)
+            if (discardFields || !preservePreparation || !IsPreparationSecret(field.Key)) field.Value.Text = "";
     }
 
     private void SetStatus(string message, bool error = false)
@@ -1866,7 +1964,7 @@ public sealed partial class MainWindow : Window
 
     private async Task ShutdownAsync()
     {
-        ClearEsimSecrets();
+        ClearSecrets(discardFields: true);
         VerifiedCatalogStore.Shared.Changed -= CatalogChanged;
         _lifetime.Cancel();
         try { await CloseTerminalAsync(); }

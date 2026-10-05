@@ -160,6 +160,7 @@ private final class MockHost: HostCommandRunner {
     var failPushAt: Int?, pushCount = 0, preflightError = false
     var installerCalls = 0, stage = "", remoteJournal = "", uploads = [String:Data]()
     var onInstall: (() -> Void)?
+    var rollbackVerified = false, rollbackReply: String?, remoteState: String?
     var lastDeviceList = "", usbSerialOverride: String?
     private func quoted(_ text: String) throws -> [String] {
         let text = text.components(separatedBy: "); zte_code=").first ?? text
@@ -201,12 +202,15 @@ private final class MockHost: HostCommandRunner {
                 let info = String(data:try JSONSerialization.data(withJSONObject:object,options:.sortedKeys),encoding:.utf8)!
                 let cid = identityCIDSequence.isEmpty ? identityCID : identityCIDSequence.removeFirst()
                 value = (identityHashesValid ? identityFirmware : String(repeating:"0",count:64)) + "  /firmware/image/modem.b16\n" + identityRouter + "  /usr/bin/diag-router\n" + cid + "\n" + (command.contains(AccessIdentity.command) ? "01234567-89ab-4cde-8f01-23456789abcd\n" : "") + (command.contains("ubus call") ? info : "")
+            } else if command.hasPrefix("(sh -c ") && command.contains("'--verify-rollback'") {
+                value = rollbackReply ?? (rollbackVerified ? "INSTALL_ROLLBACK_VERIFIED " + remoteJournal : "INSTALL_ERROR ROLLBACK_UNVERIFIED")
+                shellCode = rollbackVerified ? "0" : "1"
             } else if command.hasPrefix("(sh -c ") && command.contains("'--preflight'") {
                 value = preflightError ? "INSTALL_ERROR PREFLIGHT_TOOL" : "INSTALL_PREFLIGHT " + (command.contains("'linux-arm64-access'") ? "linux-arm64-access" : command.contains("'b02-experimental'") ? "b02-experimental" : "b31") + " imei_config=unknown"
                 if preflightError { shellCode = "1" }
             } else if fullInstaller {
                 if command.contains("printf 'INSTALL_STAGE_READY") {
-                    stage=try quoted(command)[0];try check(stage.hasPrefix("/data/local/tmp/zte-imei-setup-"),"Owned staging path");value="INSTALL_STAGE_READY"
+                    stage=try quoted(command)[0];try check(stage.hasPrefix("/data/zte-imei-studio/stage-"),"Owned staging path");value="INSTALL_STAGE_READY"
                 } else if command.hasPrefix("(set -eu; test -d ") {
                     let paths = try quoted(command), source = paths[paths.count - 2], destination = paths.last!
                     try check(source.hasPrefix(stage + "/incoming-") && destination.hasPrefix(stage + "/"), "Atomic stage promotion")
@@ -217,19 +221,20 @@ private final class MockHost: HostCommandRunner {
                     let path=try quoted(command)[0];guard let data=uploads[path] else {throw TestFailure.check("Hash check without upload")}
                     value=digest(data)+"  "+path
                 } else if command.hasPrefix("(sh '") && command.contains("/setup-agent.sh'") {
-                    let args=try quoted(command)
+                    var args=try quoted(command)
+                    if args.count > 1 && args[1] == "--reinstall" { args.remove(at: 1) }
                     try check(args.count >= 6 && args[0] == stage+"/setup-agent.sh" && args[1] == stage && args[2] == testCID,"Exact installer invocation and CID")
                     for name in ["zte-agent","dropbear","setup-agent.sh","start_zte_imei_studio.sh","id_ed25519.pub","start-agent.sh"] {try check(uploads[stage+"/"+name] != nil,"Missing staged asset")}
                     try check(args[3] == digest(uploads[stage+"/zte-agent"]!) && args[4] == digest(uploads[stage+"/dropbear"]!) && args[5] == digest(uploads[stage+"/id_ed25519.pub"]!),"Installer hashes")
                     try check([9, 10].contains(args.count) && args[7] == identityFirmware && args[8] == identityRouter, "Bound installer policy hashes")
                     try check(!command.contains(testPassword),"Password absent from installer argv")
-                    installerCalls += 1;installed=true;remoteJournal="/data/local/tmp/zte-imei-installations/"+String(stage.split(separator:"/").last!.dropFirst("zte-imei-setup-".count));onInstall?()
+                    installerCalls += 1;installed=true;remoteJournal="/data/zte-imei-studio/installations/"+String(stage.split(separator:"/").last!.dropFirst("stage-".count));onInstall?()
                     value="INSTALL_AGENT new\nINSTALL_READY "+remoteJournal
                     if loseInstallAcknowledgement {value="INSTALL_INCOMPLETE "+remoteJournal;shellCode="1";loseInstallAcknowledgement=false}
-                } else if command.hasPrefix("(/data/bin/dropbearkey -y ") {
+                } else if (command.hasPrefix("('/data/zte-imei-studio/bin/dropbearkey' -y ") || command.hasPrefix("('/data/bin/dropbearkey' -y ")) {
                     let key=Data([0,0,0,11])+Data("ssh-ed25519".utf8)+Data([0,0,0,32])+Data(repeating:0x33,count:32)
                     value="Public key portion is:\nssh-ed25519 "+key.base64EncodedString()+" synthetic"
-                } else if command.hasPrefix("(cat '") && command.contains("/state'") {value=installed ? "ready" : "pending"}
+                } else if command.hasPrefix("(cat '") && command.contains("/state'") {value=remoteState ?? (installed ? "ready" : "pending")}
                 else if command.hasPrefix("(rm -f ") {value=""}
                 else {throw TestFailure.check("Unexpected full installer shell: "+command)}
             }
@@ -965,6 +970,69 @@ private struct Fixture {
             host.deviceList = "List of devices attached\n192.0.2.5:5555 device transport_id:1\n"; host.calls = []
             try check(try adb.devices(usbOnly: true).isEmpty && host.calls == [["devices", "-l"]], "Network endpoint entered USB fallback")
         }
+        run("Forced preparation bypasses working SSH and installs once with explicit flag") {
+            let f=try Fixture();defer {f.remove()}
+            f.host.identityMode=true;f.host.fullInstaller=true;f.host.deviceList="List of devices attached\nABC device usb:1\n";f.ssh.ready=true
+            f.host.onInstall={ [weak host=f.host,weak ssh=f.ssh] in ssh?.installedJournal=host?.remoteJournal ?? "" }
+            let newPassword="synthetic-forced-new-password"
+            f.ssh.expectedAgentPassword = newPassword
+            _ = try f.engine.run(webPassword:"",agentPassword:newPassword,forceReinstall:true)
+            let commands=f.host.calls.map{$0.joined(separator:" ")}
+            try check(f.host.installerCalls==1 && f.ssh.authenticationCalls==1 && f.ssh.commitCalls==1,"Forced preparation reused SSH instead of verified reinstall")
+            try check(commands.contains{$0.contains("'--reinstall' '--preflight'")} && commands.contains{$0.contains("/setup-agent.sh' '--reinstall'")},"Force flag absent from preflight/apply")
+            let startup=String(decoding:f.host.uploads[f.host.stage+"/start-agent.sh"]!,as:UTF8.self)
+            try check(startup.contains(newPassword) && !commands.contains{$0.contains(newPassword)},"Forced password missing from private startup or exposed in argv")
+            try check(!f.ssh.calls.contains{$0.contains("--reinstall")} && f.web.requests.isEmpty && f.web.restoreCount==0,"Force widened commit or called Web on ready USB")
+        }
+        run("Saved preparation mode wins over a changed checkbox before dispatch") {
+            for initial in [false,true] {
+                let f=try Fixture();defer {f.remove()}
+                f.host.identityMode=true;f.host.fullInstaller=true;f.host.deviceList="List of devices attached\nABC device usb:1\n";f.host.failPushAt=2
+                f.host.onInstall={ [weak host=f.host,weak ssh=f.ssh] in ssh?.ready=true;ssh?.installedJournal=host?.remoteJournal ?? "" }
+                try rejects("interrupted upload") { _ = try f.engine.run(webPassword:"",agentPassword:testPassword,forceReinstall:initial) }
+                let first=try readJSON(AccessSetupJournal.self,f.engine.pending)
+                try check(first.forceReinstall==initial && !first.installRequested,"Mode was not persisted before staging")
+                f.host.failPushAt=nil;f.host.calls=[]
+                _ = try f.engine.run(webPassword:"",agentPassword:testPassword,forceReinstall:!initial)
+                let apply=f.host.calls.map{$0.joined(separator:" ")}.first{$0.contains("(sh '") && $0.contains("/setup-agent.sh'")} ?? ""
+                try check(apply.contains("'--reinstall'")==initial && f.host.installerCalls==1,"Changed checkbox changed pending mode")
+            }
+        }
+        run("Forced lost acknowledgement retains intent and resumes without replay") {
+            let f=try Fixture();defer {f.remove()}
+            f.host.identityMode=true;f.host.fullInstaller=true;f.host.deviceList="List of devices attached\nABC device usb:1\n";f.host.loseInstallAcknowledgement=true
+            var recordedBeforeDispatch=false
+            f.host.onInstall={ [weak host=f.host,weak ssh=f.ssh] in
+                recordedBeforeDispatch=(try? readJSON(AccessSetupJournal.self,f.engine.pending)).map{$0.installRequested && $0.forceReinstall==true} ?? false
+                ssh?.ready=true;ssh?.installedJournal=host?.remoteJournal ?? ""
+            }
+            try rejects { _ = try f.engine.run(webPassword:"",agentPassword:testPassword,forceReinstall:true) }
+            try check(recordedBeforeDispatch && FileManager.default.fileExists(atPath:f.engine.pending.path),"Lost acknowledgement discarded forced intent")
+            f.host.shellCode="0"
+            _ = try f.engine.run(webPassword:"",agentPassword:testPassword,forceReinstall:false)
+            try check(f.host.installerCalls==1 && f.web.restoreCount==0 && f.ssh.commitCalls==1,"Forced resume replayed apply or restore")
+        }
+        run("Only exact verified forced rollback archives pending and permits explicit retry") {
+            for valid in [false,true] {
+                let f=try Fixture();defer {f.remove()}
+                f.host.identityMode=true;f.host.fullInstaller=true;f.host.deviceList="List of devices attached\nABC device usb:1\n";f.host.loseInstallAcknowledgement=true
+                f.host.rollbackVerified=true
+                if !valid { f.host.rollbackReply="INSTALL_ROLLBACK_VERIFIED /foreign" }
+                try rejects { _ = try f.engine.run(webPassword:"",agentPassword:testPassword,forceReinstall:true) }
+                try check(FileManager.default.fileExists(atPath:f.engine.pending.path) == !valid,"Unverified rollback released pending intent")
+                try check(f.host.installerCalls==1 && f.web.restoreCount==0,"Rollback handler replayed mutation")
+                if valid {
+                    let dirs=try FileManager.default.contentsOfDirectory(at:f.root.appendingPathComponent("SetupBackups"),includingPropertiesForKeys:nil)
+                    let archived=try readJSON(AccessSetupJournal.self,dirs[0].appendingPathComponent("setup-rolled-back.json"))
+                    try check(archived.installRequested && archived.forceReinstall==true,"Rollback original journal lost")
+                    try check(FileManager.default.fileExists(atPath:dirs[0].appendingPathComponent("rollback-verification.txt").path),"Rollback proof not retained")
+                } else {
+                    f.host.remoteState="rolled-back";f.host.shellCode="0"
+                    try rejects { _ = try f.engine.run(webPassword:"",agentPassword:testPassword,forceReinstall:false) }
+                    try check(f.host.installerCalls==1 && FileManager.default.fileExists(atPath:f.engine.pending.path),"Bare rolled-back state released intent or replayed")
+                }
+            }
+        }
         run("Existing SSH agent fast path does not upload restore or install") {
             let f=try Fixture();defer {f.remove()};f.ssh.ready=true
             let result=try f.engine.run(password:testPassword)
@@ -1052,6 +1120,82 @@ private struct Fixture {
             let result = try f.engine.run(password:testPassword)
             try check(result.state == nil && !f.ssh.calls.contains { $0.contains("--snapshot") }, "Access must not invoke NV")
             try check(f.web.uploadedData == nil && f.web.restoreCount == 0 && f.host.calls.allSatisfy { $0 == ["devices", "-l"] || $0 == ["-d", "get-serialno"] },"Read validation error stays an error")
+        }
+        run("Installer path resolver preserves requested legacy layout and rejects mismatched paths") {
+            let id=UUID().uuidString.lowercased()
+            let oldStage="/data/local/tmp/zte-imei-setup-"+id, oldJournal="/data/local/tmp/zte-imei-installations/"+id
+            let newStage="/data/zte-imei-studio/stage-"+id, newJournal="/data/zte-imei-studio/installations/"+id
+            let old=try SetupRemotePaths(id:id,installRequested:true,stage:nil,journal:nil)
+            try check(old.stage==oldStage && old.journal==oldJournal && old.dropbearKey=="/data/bin/dropbearkey","Legacy dispatched operation moved to new layout")
+            let next=try SetupRemotePaths(id:id,installRequested:false,stage:oldStage,journal:oldJournal)
+            try check(next.stage==newStage && next.journal==newJournal,"Undispatched operation kept unsafe stock parents")
+            let root=URL(fileURLWithPath:"/fixture")
+            var prepared=AccessSetupJournal(id:id,cid:testCID,bootID:"01234567-89ab-4cde-8f01-23456789abcd",firmwareHash:ModemEngine.firmwareHash,routerHash:ModemEngine.routerHash,installerProfile:"b31",directory:"/fixture/SetupBackups/"+id,adbSerial:"ABC")
+            prepared.remoteStage=oldStage; prepared.remoteJournal=oldJournal
+            try prepared.validate(root:root)
+            let resumed=try SetupRemotePaths(id:id,installRequested:true,stage:newStage,journal:newJournal)
+            try check(resumed.stage==newStage && resumed.journal==newJournal && resumed.dropbearKey=="/data/zte-imei-studio/bin/dropbearkey","New operation lost saved paths")
+            try rejects { _ = try SetupRemotePaths(id:id,installRequested:true,stage:oldStage,journal:newJournal) }
+            try rejects { _ = try SetupRemotePaths(id:id,installRequested:false,stage:"/data/other",journal:nil) }
+            try rejects { _ = try SetupRemotePaths(id:id,installRequested:true,stage:newStage,journal:newJournal+"/../other") }
+            try rejects { _ = try SetupRemotePaths(id:"../other",installRequested:true,stage:nil,journal:nil) }
+        }
+        run("Legacy requested installation commits its saved installer without upload or replay") {
+            let f=try Fixture(); defer {f.remove()}
+            let id=UUID().uuidString.lowercased(), directory=f.root.appendingPathComponent("SetupBackups/"+UUID().uuidString.lowercased())
+            try secureDirectory(directory)
+            var journal=SetupJournal(id:id,identity:try WebIdentity(deviceObject()),phase:"install-requested",directory:directory.path)
+            journal.installRequested=true; journal.restoreRequested=true; journal.cid=testCID
+            journal.installerProfile="b31"; journal.firmwareHash=ModemEngine.firmwareHash; journal.routerHash=ModemEngine.routerHash
+            try saveJSON(journal,f.engine.pending)
+            f.ssh.ready=true; f.ssh.installedJournal="/data/local/tmp/zte-imei-installations/"+id
+            _ = try f.engine.run(webPassword:testPassword,agentPassword:testPassword,forceReinstall:true)
+            try check(f.ssh.commitCalls==1 && f.ssh.calls.contains { $0.contains("stage='/data/local/tmp/zte-imei-setup-"+id+"'") && $0.contains("sh /proc/self/fd/9 '--commit'") },"Resume did not use original staged installer through verified descriptor")
+            try check(f.host.pushCount==0 && f.host.installerCalls==0 && f.web.restoreCount==0,"Legacy resume replayed installation or restore")
+            try check(!f.ssh.calls.contains{$0.contains("--reinstall")},"Checkbox changed old pending commit mode")
+        }
+        run("Ready USB resumes saved restore without any Web password or request") {
+            let f=try Fixture(); defer {f.remove()}
+            let id=UUID().uuidString.lowercased(), directory=f.root.appendingPathComponent("SetupBackups/"+UUID().uuidString.lowercased())
+            try secureDirectory(directory)
+            var journal=SetupJournal(id:id,identity:try WebIdentity(deviceObject()),phase:"restore-requested",directory:directory.path)
+            journal.restoreRequested=true; journal.cid=testCID
+            try saveJSON(journal,f.engine.pending)
+            f.host.fullInstaller=true; f.host.identityMode=true; f.host.deviceList="List of devices attached\nABC device usb:1\n"
+            f.host.onInstall={ [weak host=f.host,weak ssh=f.ssh] in ssh?.ready=true;ssh?.installedJournal=host?.remoteJournal ?? "" }
+            _ = try f.engine.run(webPassword:"",agentPassword:testPassword)
+            try check(f.web.requests.isEmpty && f.web.restoreCount==0 && f.web.uploadedData==nil,"Ready USB resume used Web or replayed restore")
+            try check(f.host.installerCalls==1 && f.ssh.commitCalls==1 && f.host.stage.hasPrefix("/data/zte-imei-studio/stage-"),"Ready USB did not complete guarded private access install")
+            let history=try readJSON(SetupJournal.self,directory.appendingPathComponent("bootstrap-result.json"))
+            try check(history.restoreRequested && !history.installRequested,"Bootstrap history lost restore intent")
+        }
+        run("Saved restore without matching ready USB keeps intent and never falls through to Web") {
+            for mismatch in [false,true] {
+                let f=try Fixture(); defer {f.remove()}
+                let id=UUID().uuidString.lowercased(),directory=f.root.appendingPathComponent("SetupBackups/"+UUID().uuidString.lowercased())
+                try secureDirectory(directory)
+                var journal=SetupJournal(id:id,identity:try WebIdentity(deviceObject()),phase:"restore-requested",directory:directory.path)
+                journal.restoreRequested=true; journal.cid=testCID; try saveJSON(journal,f.engine.pending)
+                let before=try Data(contentsOf:f.engine.pending)
+                f.host.identityMode=true
+                if mismatch { f.host.deviceList="List of devices attached\nABC device usb:1\n";f.host.identityCID=String(repeating:"a",count:32) }
+                try rejects { _ = try f.engine.run(webPassword:"",agentPassword:testPassword) }
+                try check(f.web.requests.isEmpty && f.host.installerCalls==0 && f.host.pushCount==0,"Unconfirmed USB resume used Web or staged writes")
+                try check(try Data(contentsOf:f.engine.pending)==before,"Unconfirmed USB resume changed restore intent")
+            }
+        }
+        run("Requested restore with no installer continues in private anchor without restoring again") {
+            let f=try Fixture(); defer {f.remove()}
+            let id=UUID().uuidString.lowercased(), directory=f.root.appendingPathComponent("SetupBackups/"+UUID().uuidString.lowercased())
+            try secureDirectory(directory)
+            var journal=SetupJournal(id:id,identity:try WebIdentity(deviceObject()),phase:"restore-requested",directory:directory.path)
+            journal.restoreRequested=true
+            try saveJSON(journal,f.engine.pending)
+            f.host.fullInstaller=true; f.host.identityMode=true; f.host.deviceList="List of devices attached\nABC device\n"
+            f.host.onInstall={ [weak host=f.host,weak ssh=f.ssh] in ssh?.ready=true;ssh?.installedJournal=host?.remoteJournal ?? "" }
+            _ = try f.engine.run(password:testPassword)
+            try check(f.web.restoreCount==0 && f.web.uploadedData==nil && f.host.installerCalls==1,"Resumed restore replayed Web mutation")
+            try check(f.host.stage.hasPrefix("/data/zte-imei-studio/stage-") && f.host.remoteJournal.hasPrefix("/data/zte-imei-studio/installations/"),"Resumed restore used legacy stock parents")
         }
         run("Lost installer acknowledgement resumes ready journal without restore or installer replay") {
             let f=try Fixture();defer {f.remove()}

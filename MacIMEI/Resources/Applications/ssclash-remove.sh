@@ -32,7 +32,7 @@ base_guards() {
     safe_file "$BASE/.zte-imei-owner"
     [ "$(cat "$BASE/.zte-imei-owner")" = zte-imei-apps-v1 ] || fail 'Unknown application directory'
     [ ! -e /tmp/fota_install_processing ] || fail 'Firmware update is in progress'
-    [ ! -e /data/local/tmp/zte-imei-installations/active ] || fail 'Another installation is pending'
+    [ ! -e /data/zte-imei-studio/installations/active ] && [ ! -L /data/zte-imei-studio/installations/active ] && [ ! -e /data/local/tmp/zte-imei-installations/active ] || fail 'Another installation is pending'
     [ ! -e /data/local/tmp/open-u60-transactions/active ] || fail 'Another modem transaction is pending'
 }
 installation_guards() {

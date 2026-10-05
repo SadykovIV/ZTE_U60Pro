@@ -41,7 +41,7 @@ try
         Check(!AgentPackage.SupportedUpgradeHashes.Contains(new string('f', 64)));
         return Task.CompletedTask;
     });
-    foreach (var helper in new[] { previousHelper, "f620dab27f951c7de2de77a89376975b51c79f57f8a8a24cec95392c9c61eea4", "3142fb503e64ddba79d523be3c87f0344d6efa78673e30a4b740714d8e9389ca" })
+    foreach (var helper in new[] { "7a8b84c3502e711c6b66c943f883a984dd9ed82da41455fc083ed0cc7d44b6fb", previousHelper, "f620dab27f951c7de2de77a89376975b51c79f57f8a8a24cec95392c9c61eea4", "3142fb503e64ddba79d523be3c87f0344d6efa78673e30a4b740714d8e9389ca" })
         await Test("Pinned historical controller status-only " + helper[..8], async () =>
         {
             var shell = new Shell { Helper = helper, Agent = previousAgent };
@@ -52,6 +52,12 @@ try
             await Rejected(() => Service(shell).SetVpnEnabledAsync(true));
             Check(shell.Requests.All(x => x == "status") && shell.Uploads == 0);
         });
+    if (args.Contains("--historical-status-only"))
+    {
+        Console.WriteLine($"Historical VPN status: {passed} passed, {failed} failed; synthetic transports only");
+        if (failed != 0) Environment.ExitCode = 1;
+        return;
+    }
     await Test("Unknown controller never executes", async () =>
     {
         var shell = new Shell { Helper = new string('f', 64) };

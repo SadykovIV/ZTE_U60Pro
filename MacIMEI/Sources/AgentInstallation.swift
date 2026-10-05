@@ -73,7 +73,7 @@ struct AgentInstallationStatus: Sendable {
 }
 final class AgentInstallationManager {
     let engine: ModemEngine
-    static let scriptHash = "d12154677e50567a311ca1d9f7d4f4019565e2e6f41cf7dc75d10d47fc8ef3a1"
+    static let scriptHash = "b25db236bb426a4d3f36ca4672decec478a69843d6fe9fcf550a2e5a7fe336b9"
     init(engine: ModemEngine) { self.engine = engine }
     private func staged<T>(cleanupAllowed: () -> Bool = { true }, _ work: (String, Identity, String, String) throws -> T) throws -> T {
         try require(engine.lockFD >= 0, "Установка агента требует блокировки приложения")

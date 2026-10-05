@@ -145,7 +145,7 @@ final class DeviceBackups {
     static let partitionBytes: [String: Int64] = ["modemst1.bin": 4_194_304, "modemst2.bin": 4_194_304, "fsg.bin": 4_194_304, "persist.bin": 8_388_608]
     static let partitionSources = ["modemst1.bin": "/dev/mmcblk0p8", "modemst2.bin": "/dev/mmcblk0p9", "fsg.bin": "/dev/mmcblk0p10", "persist.bin": "/dev/mmcblk0p56"]
     // Updated from the reviewed read-only producer resource.
-    static let readerHash = "59009e4c32eb52f67c6f318974e3410bc7b5b7561003647b1984496e5de8c778"
+    static let readerHash = "c3dfd64e0b7bc59c9aafc3074bfaafb0fdc5d2728e5a80ebe10daa4f7b1fdfac"
     let engine: ModemEngine
     let streamer: BackupStreamTransport
     let spaceAvailable: (URL) throws -> Int64

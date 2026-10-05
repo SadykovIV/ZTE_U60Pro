@@ -145,6 +145,15 @@ private final class Fixture {
             try rejects { _ = try f.manager.request(["action": "configure_wifi"]) }
             try check(try JSONSerialization.data(withJSONObject: f.remote.payload, options: .sortedKeys) == before, "Legacy helper mutation reached the fixture")
         }
+        try test("Published build 42 controller remains readable, mutations require current") {
+            let f = try Fixture()
+            f.remote.installedHelperHash = "7a8b84c3502e711c6b66c943f883a984dd9ed82da41455fc083ed0cc7d44b6fb"
+            let inspection = try f.manager.inspect()
+            try check(inspection.status.installed && !inspection.helperReady, "Published controller status blocked or falsely current")
+            try rejects { _ = try f.manager.request(["action": "configure_wifi", "ssid": "must-not-change"]) }
+            try check(f.remote.payload["desired_ssid"] as? String == "ZTE-VPN", "Legacy controller allowed mutation")
+        }
+
         try test("Unknown helper remains rejected even for status") {
             let f = try Fixture(); f.remote.installedHelperHash = String(repeating: "0", count: 64)
             try rejects { _ = try f.manager.request(["action": "status"]) }

@@ -36,11 +36,12 @@ private func snapshot() -> ConnectionOverviewSnapshot {
 
 @main struct ConnectionAppModelTests {
     @MainActor static func main() async throws {
-        var count = 0
+        var count = 0, failed = 0
         func check(_ condition: @autoclosure () -> Bool, _ message: String) throws {
             guard condition() else { throw IMEIError.message(message) }
         }
-        func test(_ name: String, _ body: () throws -> Void) throws { try body(); count += 1; print("PASS " + name) }
+        func test(_ name: String, _ body: () throws -> Void) throws { do { try body(); count += 1; print("PASS " + name) } catch { failed += 1; print("FAIL " + name + ": " + String(describing: error)) } }
+        func testAsync(_ name: String, _ body: () async throws -> Void) async throws { do { try await body(); count += 1; print("PASS " + name) } catch { failed += 1; print("FAIL " + name + ": " + String(describing: error)) } }
         let initial = AppModel(), isolatedStorage = initial.storage
         try check(isolatedStorage.path.contains("/MacIMEI/.build/connection-model-") && isolatedStorage.lastPathComponent == "state", "Test storage isolation not established")
         func model() throws -> AppModel {
@@ -59,6 +60,93 @@ private func snapshot() -> ConnectionOverviewSnapshot {
             m.busy=true;try check(!m.canVerifyBackupKey,"Key check concurrent with operation")
             m.busy=false;m.terminalActive=true;try check(!m.canVerifyBackupKey,"Key check concurrent with terminal")
             m.terminalActive=false;m.host=" ";try check(!m.canVerifyBackupKey,"Empty host permits key check")
+        }
+        try await testAsync("Read-only failure retains form credentials and permits the next preparation action") {
+            let m = try model()
+            m.host = "not-an-ipv4-host"
+            m.webPassword = "retained-web-canary"; m.agentPassword = "retained-agent-canary"; m.backupSuffix = "retained-backup-canary"
+            m.verifyBackupKey()
+            let task = m.operationTask
+            try check(task != nil, "Read-only wrapper did not start")
+            await task?.value
+            try check(!m.busy && m.operationTask == nil && !m.preparationError.isEmpty, "Failed check left operation active")
+            try check(m.webPassword == "retained-web-canary" && m.agentPassword == "retained-agent-canary" && m.backupSuffix == "retained-backup-canary", "Read-only check consumed form credentials")
+            try check(m.canPrepareModem && m.canVerifyBackupKey, "Next user action requires app restart or credential re-entry")
+            m.forcePreparation = true
+            m.preparePreferredSSH(); await m.operationTask?.value
+            try check(!m.busy && m.operationTask == nil && m.forcePreparation && m.webPassword == "retained-web-canary" && m.backupSuffix == "retained-backup-canary", "Failed preparation preflight consumed credentials/force intent or retained busy")
+            m.setup(); await m.operationTask?.value
+            try check(!m.busy && m.operationTask == nil && m.webPassword == "retained-web-canary" && m.agentPassword == "retained-agent-canary" && m.backupSuffix == "retained-backup-canary", "Legacy preparation wrapper consumed credentials")
+            if let enumerator = FileManager.default.enumerator(at: m.storage, includingPropertiesForKeys: [.isRegularFileKey]) {
+                for case let file as URL in enumerator {
+                    guard (try? file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
+                    let bytes = try Data(contentsOf: file)
+                    for secret in ["retained-web-canary", "retained-agent-canary", "retained-backup-canary"] {
+                        try check(bytes.range(of: Data(secret.utf8)) == nil, "Form credential persisted to local file")
+                    }
+                }
+            }
+        }
+        try test("Preparation credentials stay only in the active target context") {
+            let m = try model()
+            @MainActor func fill() { m.webPassword="context-web-canary"; m.agentPassword="context-agent-canary"; m.backupSuffix="context-suffix-canary" }
+            @MainActor func cleared() -> Bool { m.webPassword.isEmpty && m.agentPassword.isEmpty && m.backupSuffix.isEmpty }
+            fill(); m.editConnectionHost(m.host); m.editConnectionPort(m.port)
+            m.editConnectionKeyPath(m.keyPath); m.editConnectionKnownHostsPath(m.knownHostsPath)
+            try check(!cleared() && m.webPassword == "context-web-canary", "Unchanged context consumed credentials")
+            m.busy=true; let originalHost=m.host; m.editConnectionHost("192.0.2.11")
+            try check(m.host == originalHost && !cleared(), "Busy operation changed target or credentials")
+            m.busy=false; m.editConnectionHost("192.0.2.11"); try check(cleared(), "Host change retained credentials")
+            fill(); m.editConnectionPort("2202"); try check(cleared(), "Port change retained credentials")
+            fill(); m.editConnectionKeyPath("/fixture/other-key"); try check(cleared(), "Key change retained credentials")
+            fill(); m.editConnectionKnownHostsPath("/fixture/other-hosts"); try check(cleared(), "Trust-file change retained credentials")
+            fill(); m.clearPreparationCredentials(); try check(cleared(), "Window-close cleanup retained credentials")
+        }
+        try await testAsync("Same-boot scoped refresh preserves unrelated state and pending recovery") {
+            let m = try model(); m.acceptChannelSelection(selection(.ssh)); m.acceptConnectionOverview(snapshot())
+            let pending=Data("{\"fixture\":\"pending mutation must not replay\"}".utf8)
+            try FileManager.default.createDirectory(at:m.storage,withIntermediateDirectories:true)
+            let path=m.storage.appendingPathComponent("setup-pending.json"); try pending.write(to:path)
+            let result=selection(.ssh)
+            m.refreshConnectedSections([.information],reconnect:{result},collect:{_,sections in ConnectionOverviewSnapshot(summary:summary,limitedToADB:false,sections:sections)})
+            await m.operationTask?.value
+            try check(m.connected && m.vpnInspection != nil && m.displayInspection != nil,"Same-boot refresh discarded unrelated component state")
+            let preserved=try Data(contentsOf:path)
+            try check(preserved == pending && m.setupPending,"Read-only refresh changed pending recovery")
+            m.refreshConnectedSections([.information],reconnect:{throw IMEIError.message("fixture unavailable")},collect:{_,_ in throw IMEIError.message("Unexpected read")})
+            await m.operationTask?.value
+            try check(m.connectionMonitorTask == nil && m.setupPending && !m.connected,"Failed refresh retained monitor or lost pending state")
+            let afterFailure=try Data(contentsOf:path)
+            try check(afterFailure == pending,"Failed refresh changed pending recovery")
+        }
+        try test("Lost SSH status cannot block preparation until an application restart") {
+            let m = try model(); m.webPassword = "fixture-web"; m.acceptChannelSelection(selection(.ssh))
+            m.markConnectionUnavailable("")
+            m.markConnectionUnavailable("fixture connection refused")
+            try check(!m.connected && !m.hasSSHForPreparation && m.canPrepareModem, "Disconnected SSH retained available status and blocked preparation")
+        }
+        try await testAsync("Explicit refresh replaces stale boot session and remains recoverable after a failed read") {
+            let m = try model(); m.acceptChannelSelection(selection(.ssh)); m.acceptConnectionOverview(snapshot())
+            let changedBoot="3a2fb1c5-1bbf-4d3b-92a8-3daaf5510601"
+            let freshSummary=ConnectionDeviceSummary(identity:identity,bootID:changedBoot,imei:imei,fields:["firmware":"fixture"])
+            let proof=DiagnosticDeviceProof(identity:identity,routerHash:ModemEngine.routerHash,bootID:changedBoot,webIdentity:nil)
+            let diagnostic=DiagnosticSession(transport:"ssh",reason:"fresh fixture",proof:proof,readIdentity:{proof},execute:{_,_ in throw IMEIError.message("Unexpected modem command")})
+            let fresh=ReadOnlyChannelSession(mode:.ssh,summary:freshSummary,diagnosticSession:diagnostic,readSummary:{freshSummary})
+            let result=ChannelSelection(requestedMode:.ssh,actualMode:.ssh,statuses:[ConnectionChannelStatus(mode:.ssh,state:.available,message:"fresh",summary:freshSummary)],session:fresh,reason:"fresh")
+            m.refreshConnectedSections([.information],reconnect:{result},collect:{session,sections in
+                guard session === fresh else { throw IMEIError.message("Stale boot session reused") }
+                return ConnectionOverviewSnapshot(summary:freshSummary,limitedToADB:false,sections:sections)
+            })
+            await m.operationTask?.value
+            try check(m.connected && m.channelSession === fresh && !m.busy && m.operationTask == nil,"Explicit refresh did not rebind the same device after reboot")
+            try check(m.vpnInspection == nil && m.displayInspection == nil && m.esimSnapshot == nil,"Previous-boot component states remained authoritative")
+            m.refreshConnectedSections([.information],reconnect:{throw IMEIError.message("fixture SSH refusal")},collect:{_,_ in throw IMEIError.message("Read after failed reconnect")})
+            await m.operationTask?.value
+            try check(!m.connected && !m.canManage && !m.busy && m.operationTask == nil && !m.connectionReason.isEmpty,"Failed refresh kept compatible/busy state")
+            m.refreshConnectedSections([.information],reconnect:{result},collect:{_,sections in ConnectionOverviewSnapshot(summary:freshSummary,limitedToADB:false,sections:sections)})
+            await m.operationTask?.value
+            try check(m.connected && m.channelSession === fresh && !m.busy,"Retry required restarting the application")
+            m.connectionMonitorTask?.cancel()
         }
         try test("SSH acceptance enables connected sidebar and management after busy ends") {
             let m = try model(); m.busy = true; m.acceptChannelSelection(selection(.ssh))
@@ -115,6 +203,17 @@ private func snapshot() -> ConnectionOverviewSnapshot {
                 m.setupPending = true
                 try check(m.canPrepareModem && m.preparationUnavailableReason == nil, "Known HTTP failure hides interrupted setup recovery")
             }
+        }
+        try test("Explicit force enables preparation on working SSH without bypassing operation guards") {
+            let m=try model();m.acceptChannelSelection(selection(.ssh));m.forcePreparation=true
+            try check(m.canPrepareModem && m.preparationUnavailableReason == nil,"Explicit force cannot prepare working SSH")
+            m.busy=true;try check(!m.canPrepareModem,"Force bypasses busy");m.busy=false
+            m.terminalActive=true;try check(!m.canPrepareModem,"Force bypasses terminal");m.terminalActive=false
+            m.pendingOperation=true;try check(!m.canPrepareModem,"Force bypasses IMEI pending");m.pendingOperation=false
+            m.systemRestorePending=true;try check(!m.canPrepareModem,"Force bypasses restore pending");m.systemRestorePending=false
+            m.adbTogglePending=true;try check(!m.canPrepareModem,"Force bypasses ADB pending");m.adbTogglePending=false
+            m.forcePreparation=false;try check(!m.canPrepareModem,"Ordinary preparation no longer reuses SSH")
+            m.forcePreparation=true;m.editConnectionHost("192.0.2.12");try check(!m.forcePreparation,"Force intent leaked to changed target")
         }
         try test("Existing SSH disables new preparation even with firmware override") {
             let m = try model()
@@ -482,6 +581,6 @@ private func snapshot() -> ConnectionOverviewSnapshot {
             m.busy = true; try check(!m.canReadEsim, "Card read escaped active operation serialization"); m.busy = false
             m.terminalActive = true; try check(!m.canReadEsim, "Card read escaped an active manual terminal")
         }
-        print("PASS ConnectionAppModelTests \(count) groups")
+        print("ConnectionAppModelTests \(count) passed, \(failed) failed"); if failed > 0 { exit(1) }
     }
 }

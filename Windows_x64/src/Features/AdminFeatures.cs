@@ -14,7 +14,7 @@ public sealed record ScreenLocalizationStatus(string State, string Language, int
 
 public sealed partial class DeviceFeatureService
 {
-    private const string AgentManagerHash = "d12154677e50567a311ca1d9f7d4f4019565e2e6f41cf7dc75d10d47fc8ef3a1";
+    private const string AgentManagerHash = "b25db236bb426a4d3f36ca4672decec478a69843d6fe9fcf550a2e5a7fe336b9";
     private const string ScreenRoot = "/data/zte-imei-screen-ru";
     private const string ScreenManagerHash = "810aae3c07c8019f2d0657f2bad6f1ee38f1dea5f1081210ab144478dd87c7b8";
     private static readonly HashSet<string> ScreenLegacyManagerHashes = ["6aed6654afb7a4fde7792a5f6034aa41e15b0fd77d794ed04d3a12c111c95fd2", "586a7727fb24a5701990c7cd82889887220c1c5566261c53ca21f3bb12549bfa"];

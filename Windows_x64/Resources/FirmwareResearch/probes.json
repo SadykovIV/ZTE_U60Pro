@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "revision": 8,
+  "revision": 9,
   "profiles": [
     {
       "id": "b31",
@@ -122,7 +122,7 @@
         "en": "Preparation directories: permissions and parents"
       },
       "category": "filesystem",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n # Fixed absolute probe paths only. Verify every existing ancestor before\n # treating a missing intermediate directory as proof of absence below it.\n case \"$1\" in /*) ;; *) printf not-assessed; return;; esac\n test -d / && test -r / && test -x / || { printf not-assessed; return; }\n rest=${1#/}; checked=; depth=0\n while test -n \"$rest\"; do\n  part=${rest%%/*}; case \"$rest\" in */*) rest=${rest#*/};; *) rest=;; esac\n  case \"$part\" in ''|.|..) printf not-assessed; return;; esac\n  depth=$((depth+1)); test \"$depth\" -le 32 || { printf not-assessed; return; }\n  checked=\"$checked/$part\"\n  test ! -L \"$checked\" || { printf not-assessed; return; }\n  if test ! -e \"$checked\"; then printf missing; return; fi\n  if test -n \"$rest\"; then\n   test -d \"$checked\" && test -r \"$checked\" && test -x \"$checked\" || { printf not-assessed; return; }\n  else printf present; return; fi\n done\n printf present\n}\nneed stat\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  if metadata=$(stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\" 2>/dev/null); then printf 'PATH %s %s\\n' \"$1\" \"$metadata\"\n  else printf 'PATH %s not-assessed\\n' \"$1\"; fi\n else printf 'PATH %s %s\\n' \"$1\" \"$(path_state \"$1\")\"; fi\n}\npresent() { case \"$(path_state \"$2\")\" in present) fact \"$1\" 1;; missing) fact \"$1\" 0;; *) fact \"$1\" not-assessed;; esac; }\n\nsafe_dir() {\n test -d \"$1\" && test ! -L \"$1\" || return 1\n owner=$(stat -c %u \"$1\") || return 1; mode=$(stat -c %a \"$1\") || return 1\n test \"$owner\" = 0 || return 1\n case \"$mode\" in ''|*[!0-7]*) return 1;; esac\n test \"$((0$mode & 022))\" = 0\n}\ntmp_stage_parent_safe() {\n test -d \"$1\" && test ! -L \"$1\" || return 1\n owner=$(stat -c %u \"$1\") || return 1; mode=$(stat -c %a \"$1\") || return 1\n test \"$owner\" = 0 || return 1\n case \"$mode\" in ''|*[!0-7]*) return 1;; esac\n test -w \"$1\" || return 1\n # A root-owned sticky shared /tmp supports a fresh private 0700 stage.\n test \"$((0$mode & 022))\" = 0 || test \"$((0$mode & 01000))\" != 0\n}\nfor path in / /data /data/local /data/local/tmp /data/bin /data/dropbear /etc /etc/dropbear /tmp /var/run /etc/config /etc/init.d /etc/rc.d /etc/hotplug.d /etc/hotplug.d/iface; do meta \"$path\"; done\nfor name in data etc tmp; do if safe_dir \"/$name\"; then fact \"${name}_safe\" 1; else fact \"${name}_safe\" 0; fi; done\nparents_safe=1\nfor path in /data/local /data/local/tmp /data/bin /data/dropbear /etc/dropbear /data/local/tmp/zte-imei-installations; do\n case \"$(path_state \"$path\")\" in present) if ! safe_dir \"$path\"; then parents_safe=0; fi;; missing) :;; *) test \"$parents_safe\" = 0 || parents_safe=not-assessed;; esac\ndone\nfact setup_parents_safe \"$parents_safe\"\nfor name in data etc; do if test -d \"/$name\" && test -w \"/$name\"; then fact \"${name}_writable\" 1; else fact \"${name}_writable\" 0; fi; done\nif test -d /var/run && test -w /var/run; then fact runtime_writable 1; else fact runtime_writable 0; fi\nif test -d /etc/config && test -r /etc/config; then fact config_readable 1; else fact config_readable 0; fi\npresent local_tmp_exists /data/local/tmp\nif tmp_stage_parent_safe /tmp; then fact tmp_private_stage_parent 1; else fact tmp_private_stage_parent 0; fi\ndashboard_safe=1\nfor path in /data/zte-dashboard-runtime /data/zte-dashboard-runtime/dashboards /data/zte-dashboard-runtime/installer; do\n meta \"$path\"\n if test -e \"$path\" || test -L \"$path\"; then\n  if test -d \"$path\" && test ! -L \"$path\" && test \"$(stat -c '%u:%a' \"$path\")\" = 0:700; then :; else dashboard_safe=0; fi\n elif test \"$(path_state \"$path\")\" != missing; then test \"$dashboard_safe\" = 0 || dashboard_safe=not-assessed\n fi\ndone\nfact dashboard_runtime_safe \"$dashboard_safe\"\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n # Fixed absolute probe paths only. Verify every existing ancestor before\n # treating a missing intermediate directory as proof of absence below it.\n case \"$1\" in /*) ;; *) printf not-assessed; return;; esac\n test -d / && test -r / && test -x / || { printf not-assessed; return; }\n rest=${1#/}; checked=; depth=0\n while test -n \"$rest\"; do\n  part=${rest%%/*}; case \"$rest\" in */*) rest=${rest#*/};; *) rest=;; esac\n  case \"$part\" in ''|.|..) printf not-assessed; return;; esac\n  depth=$((depth+1)); test \"$depth\" -le 32 || { printf not-assessed; return; }\n  checked=\"$checked/$part\"\n  test ! -L \"$checked\" || { printf not-assessed; return; }\n  if test ! -e \"$checked\"; then printf missing; return; fi\n  if test -n \"$rest\"; then\n   test -d \"$checked\" && test -r \"$checked\" && test -x \"$checked\" || { printf not-assessed; return; }\n  else printf present; return; fi\n done\n printf present\n}\nneed stat\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  if metadata=$(stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\" 2>/dev/null); then printf 'PATH %s %s\\n' \"$1\" \"$metadata\"\n  else printf 'PATH %s not-assessed\\n' \"$1\"; fi\n else printf 'PATH %s %s\\n' \"$1\" \"$(path_state \"$1\")\"; fi\n}\npresent() { case \"$(path_state \"$2\")\" in present) fact \"$1\" 1;; missing) fact \"$1\" 0;; *) fact \"$1\" not-assessed;; esac; }\n\nsafe_dir() {\n test -d \"$1\" && test ! -L \"$1\" || return 1\n owner=$(stat -c %u \"$1\") || return 1; mode=$(stat -c %a \"$1\") || return 1\n test \"$owner\" = 0 || return 1\n case \"$mode\" in ''|*[!0-7]*) return 1;; esac\n test \"$((0$mode & 022))\" = 0\n}\ntmp_stage_parent_safe() {\n test -d \"$1\" && test ! -L \"$1\" || return 1\n owner=$(stat -c %u \"$1\") || return 1; mode=$(stat -c %a \"$1\") || return 1\n test \"$owner\" = 0 || return 1\n case \"$mode\" in ''|*[!0-7]*) return 1;; esac\n test -w \"$1\" || return 1\n # A root-owned sticky shared /tmp supports a fresh private 0700 stage.\n test \"$((0$mode & 022))\" = 0 || test \"$((0$mode & 01000))\" != 0\n}\nfor path in / /data /data/local /data/local/tmp /data/bin /data/dropbear /etc /etc/dropbear /tmp /var/run /etc/config /etc/init.d /etc/rc.d /etc/hotplug.d /etc/hotplug.d/iface; do meta \"$path\"; done\nfor name in data etc tmp; do if safe_dir \"/$name\"; then fact \"${name}_safe\" 1; else fact \"${name}_safe\" 0; fi; done\nanchor_safe=1\nfor path in /data/zte-imei-studio /data/zte-imei-studio/bin /data/zte-imei-studio/installations; do\n meta \"$path\"\n if test -e \"$path\" || test -L \"$path\"; then\n  if test -d \"$path\" && test ! -L \"$path\" && test \"$(stat -c '%u:%a' \"$path\")\" = 0:700; then :; else anchor_safe=0; fi\n elif test \"$(path_state \"$path\")\" != missing; then test \"$anchor_safe\" = 0 || anchor_safe=not-assessed\n fi\ndone\ncase \"$(path_state /etc/dropbear)\" in present) if ! safe_dir /etc/dropbear; then anchor_safe=0; fi;; missing) :;; *) test \"$anchor_safe\" = 0 || anchor_safe=not-assessed;; esac\nfact setup_anchor_safe \"$anchor_safe\"\nfor name in data etc; do if test -d \"/$name\" && test -w \"/$name\"; then fact \"${name}_writable\" 1; else fact \"${name}_writable\" 0; fi; done\nif test -d /var/run && test -w /var/run; then fact runtime_writable 1; else fact runtime_writable 0; fi\nif test -d /etc/config && test -r /etc/config; then fact config_readable 1; else fact config_readable 0; fi\npresent local_tmp_exists /data/local/tmp\nif tmp_stage_parent_safe /tmp; then fact tmp_private_stage_parent 1; else fact tmp_private_stage_parent 0; fi\ndashboard_safe=1\nfor path in /data/zte-dashboard-runtime /data/zte-dashboard-runtime/dashboards /data/zte-dashboard-runtime/installer; do\n meta \"$path\"\n if test -e \"$path\" || test -L \"$path\"; then\n  if test -d \"$path\" && test ! -L \"$path\" && test \"$(stat -c '%u:%a' \"$path\")\" = 0:700; then :; else dashboard_safe=0; fi\n elif test \"$(path_state \"$path\")\" != missing; then test \"$dashboard_safe\" = 0 || dashboard_safe=not-assessed\n fi\ndone\nfact dashboard_runtime_safe \"$dashboard_safe\"\n",
       "timeoutSeconds": 12,
       "maxBytes": 32768
     },
@@ -133,7 +133,7 @@
         "en": "Mounts: read-only, noexec, nosuid, ZTEDATA"
       },
       "category": "filesystem",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\n# Capture is private, bounded to 128 KiB, and requires the producer's exit proof.\n# Never export cap_output directly: callers select only fixed public fields/counts.\ncap() {\n cap_output=\n command -v head >/dev/null 2>&1 && command -v tr >/dev/null 2>&1 || return 1\n cap_output=$({ \"$@\" 2>/dev/null; cap_code=$?; printf '\\nFR_CAPTURE_EXIT=%s\\n' \"$cap_code\"; } | head -c 131073 | tr '\\000' '?'; printf '.')\n cap_output=${cap_output%.}\n test \"${#cap_output}\" -lt 131073 || { cap_output=; return 1; }\n case \"$cap_output\" in *'\nFR_CAPTURE_EXIT=0\n') cap_output=${cap_output%'\nFR_CAPTURE_EXIT=0\n'}; return 0;; *) cap_output=; return 1;; esac\n}\nif ! command -v awk >/dev/null 2>&1 || ! test -r /proc/self/mountinfo || ! cap cat /proc/self/mountinfo; then fact mount_inventory not-assessed; exit 0; fi\n# Do not print raw sources, root paths, or arbitrary mount/superblock options.\nprintf '%s\\n' \"$cap_output\" | awk 'END{print \"FR_FACT mount_count=\" NR}'\nfor item in root:/ overlay:/overlay dashboard_runtime:/data/zte-dashboard-runtime data:/data etc:/etc setup_tmp:/data/local/tmp data_bin:/data/bin data_dropbear:/data/dropbear etc_dropbear:/etc/dropbear ztedata:/usr/zte_web tmp:/tmp; do\n name=${item%%:*}; path=${item#*:}\n printf '%s\\n' \"$cap_output\" | awk -v path=\"$path\" -v name=\"$name\" '$5==\"/\" || $5==path || index(path,$5\"/\")==1 {n=length($5); if(n>best){best=n;count=0;opts=$6;type=\"missing\";for(i=7;i<=NF;i++)if($i==\"-\")type=$(i+1)};if(n==best)count++} END {known=(count==1); rw=known && opts ~ /(^|,)rw(,|$)/; executable=known && opts !~ /(^|,)noexec(,|$)/; print \"FR_FACT \" name \"_mount_known=\" (known?1:\"not-assessed\"); print \"FR_FACT \" name \"_rw=\" (known?(rw?1:0):\"not-assessed\"); print \"FR_FACT \" name \"_exec=\" (known?(executable?1:0):\"not-assessed\"); print \"FR_FACT \" name \"_suid=\" (known?(opts !~ /(^|,)nosuid(,|$)/?1:0):\"not-assessed\"); print \"FR_FACT \" name \"_install_mount=\" (known?(rw && executable && (type==\"ext4\"||type==\"overlay\")?1:0):\"not-assessed\"); print \"FR_FACT \" name \"_fs=\" (known && type ~ /^[A-Za-z0-9_.-]+$/?type:\"not-assessed\")}'\ndone\nfact mount_inventory known\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\n# Capture is private, bounded to 128 KiB, and requires the producer's exit proof.\n# Never export cap_output directly: callers select only fixed public fields/counts.\ncap() {\n cap_output=\n command -v head >/dev/null 2>&1 && command -v tr >/dev/null 2>&1 || return 1\n cap_output=$({ \"$@\" 2>/dev/null; cap_code=$?; printf '\\nFR_CAPTURE_EXIT=%s\\n' \"$cap_code\"; } | head -c 131073 | tr '\\000' '?'; printf '.')\n cap_output=${cap_output%.}\n test \"${#cap_output}\" -lt 131073 || { cap_output=; return 1; }\n case \"$cap_output\" in *'\nFR_CAPTURE_EXIT=0\n') cap_output=${cap_output%'\nFR_CAPTURE_EXIT=0\n'}; return 0;; *) cap_output=; return 1;; esac\n}\nif ! command -v awk >/dev/null 2>&1 || ! test -r /proc/self/mountinfo || ! cap cat /proc/self/mountinfo; then fact mount_inventory not-assessed; exit 0; fi\n# Do not print raw sources, root paths, or arbitrary mount/superblock options.\nprintf '%s\\n' \"$cap_output\" | awk 'END{print \"FR_FACT mount_count=\" NR}'\nfor item in root:/ overlay:/overlay dashboard_runtime:/data/zte-dashboard-runtime data:/data etc:/etc setup_anchor:/data/zte-imei-studio setup_tmp:/data/local/tmp data_bin:/data/bin data_dropbear:/data/dropbear etc_dropbear:/etc/dropbear ztedata:/usr/zte_web tmp:/tmp; do\n name=${item%%:*}; path=${item#*:}\n printf '%s\\n' \"$cap_output\" | awk -v path=\"$path\" -v name=\"$name\" '$5==\"/\" || $5==path || index(path,$5\"/\")==1 {n=length($5); if(n>best){best=n;count=0;opts=$6;type=\"missing\";for(i=7;i<=NF;i++)if($i==\"-\")type=$(i+1)};if(n==best)count++} END {known=(count==1); rw=known && opts ~ /(^|,)rw(,|$)/; executable=known && opts !~ /(^|,)noexec(,|$)/; print \"FR_FACT \" name \"_mount_known=\" (known?1:\"not-assessed\"); print \"FR_FACT \" name \"_rw=\" (known?(rw?1:0):\"not-assessed\"); print \"FR_FACT \" name \"_exec=\" (known?(executable?1:0):\"not-assessed\"); print \"FR_FACT \" name \"_suid=\" (known?(opts !~ /(^|,)nosuid(,|$)/?1:0):\"not-assessed\"); print \"FR_FACT \" name \"_install_mount=\" (known?(rw && executable && (type==\"ext4\"||type==\"overlay\")?1:0):\"not-assessed\"); print \"FR_FACT \" name \"_write_mount=\" (known?(rw && (type==\"ext4\"||type==\"overlay\")?1:0):\"not-assessed\"); print \"FR_FACT \" name \"_fs=\" (known && type ~ /^[A-Za-z0-9_.-]+$/?type:\"not-assessed\")}'\ndone\nfact mount_inventory known\n",
       "timeoutSeconds": 12,
       "maxBytes": 65536
     },
@@ -320,7 +320,7 @@
         "en": "Agent: metadata, hash and dependencies"
       },
       "category": "access",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nneed stat\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  if metadata=$(stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\" 2>/dev/null); then printf 'PATH %s %s\\n' \"$1\" \"$metadata\"\n  else printf 'PATH %s not-assessed\\n' \"$1\"; fi\n else printf 'PATH %s %s\\n' \"$1\" \"$(path_state \"$1\")\"; fi\n}\npresent() { case \"$(path_state \"$2\")\" in present) fact \"$1\" 1;; missing) fact \"$1\" 0;; *) fact \"$1\" not-assessed;; esac; }\nhasher=not-assessed\nif command -v sha256sum >/dev/null 2>&1; then hasher=sha256sum\nelif command -v busybox >/dev/null 2>&1 && busybox sha256sum </dev/null >/dev/null 2>&1; then hasher=busybox-sha256sum; fi\nhash_fact() {\n hash_key=$1; hash_path=$2\n if test -L \"$hash_path\" || test ! -r \"$hash_path\" || test ! -f \"$hash_path\"; then state=$(path_state \"$hash_path\"); test \"$state\" != present || state=not-assessed; fact \"$hash_key\" \"$state\"; return; fi\n if test \"$hasher\" = not-assessed; then fact \"$hash_key\" not-assessed; return; fi\n if test \"$hasher\" = sha256sum; then if hash_result=$(sha256sum \"$hash_path\" 2>/dev/null); then hash_code=0; else hash_code=$?; fi\n else if hash_result=$(busybox sha256sum \"$hash_path\" 2>/dev/null); then hash_code=0; else hash_code=$?; fi; fi\n hash_result=${hash_result%% *}\n case \"$hash_result\" in ''|*[!0-9a-f]*) fact \"$hash_key\" not-assessed;; *)\n  if test \"$hash_code\" = 0 && test \"${#hash_result}\" = 64; then fact \"$hash_key\" \"$hash_result\"; else fact \"$hash_key\" not-assessed; fi;; esac\n}\n\nfor path in /data/zte-agent /data/local/tmp/start_zte_agent.sh /data/local/tmp/start_zte_imei_studio.sh /usr/bin/curl /var/run; do meta \"$path\"; done\nhash_fact agent_sha256 /data/zte-agent\nif test -f /usr/bin/curl && test ! -L /usr/bin/curl && test -x /usr/bin/curl; then fact curl_regular_executable 1; else fact curl_regular_executable 0; fi\nif test -x /data/zte-agent; then fact agent_installed 1; else fact agent_installed 0; fi\nif test -f /data/zte-agent && test ! -L /data/zte-agent && test -x /data/zte-agent && test \"$(stat -c %u /data/zte-agent)\" = 0 && test -f /data/local/tmp/start_zte_agent.sh && test ! -L /data/local/tmp/start_zte_agent.sh && test \"$(stat -c %u /data/local/tmp/start_zte_agent.sh)\" = 0 && sh -n /data/local/tmp/start_zte_agent.sh >/dev/null 2>&1; then fact agent_update_layout 1; else fact agent_update_layout 0; fi\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nneed stat\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  if metadata=$(stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\" 2>/dev/null); then printf 'PATH %s %s\\n' \"$1\" \"$metadata\"\n  else printf 'PATH %s not-assessed\\n' \"$1\"; fi\n else printf 'PATH %s %s\\n' \"$1\" \"$(path_state \"$1\")\"; fi\n}\npresent() { case \"$(path_state \"$2\")\" in present) fact \"$1\" 1;; missing) fact \"$1\" 0;; *) fact \"$1\" not-assessed;; esac; }\nhasher=not-assessed\nif command -v sha256sum >/dev/null 2>&1; then hasher=sha256sum\nelif command -v busybox >/dev/null 2>&1 && busybox sha256sum </dev/null >/dev/null 2>&1; then hasher=busybox-sha256sum; fi\nhash_fact() {\n hash_key=$1; hash_path=$2\n if test -L \"$hash_path\" || test ! -r \"$hash_path\" || test ! -f \"$hash_path\"; then state=$(path_state \"$hash_path\"); test \"$state\" != present || state=not-assessed; fact \"$hash_key\" \"$state\"; return; fi\n if test \"$hasher\" = not-assessed; then fact \"$hash_key\" not-assessed; return; fi\n if test \"$hasher\" = sha256sum; then if hash_result=$(sha256sum \"$hash_path\" 2>/dev/null); then hash_code=0; else hash_code=$?; fi\n else if hash_result=$(busybox sha256sum \"$hash_path\" 2>/dev/null); then hash_code=0; else hash_code=$?; fi; fi\n hash_result=${hash_result%% *}\n case \"$hash_result\" in ''|*[!0-9a-f]*) fact \"$hash_key\" not-assessed;; *)\n  if test \"$hash_code\" = 0 && test \"${#hash_result}\" = 64; then fact \"$hash_key\" \"$hash_result\"; else fact \"$hash_key\" not-assessed; fi;; esac\n}\n\nfor path in /data/zte-imei-studio/start_zte_agent.sh /data/zte-imei-studio/start_zte_imei_studio.sh /data/zte-agent /data/local/tmp/start_zte_agent.sh /data/local/tmp/start_zte_imei_studio.sh /usr/bin/curl /var/run; do meta \"$path\"; done\nhash_fact agent_sha256 /data/zte-agent\nif test -f /usr/bin/curl && test ! -L /usr/bin/curl && test -x /usr/bin/curl; then fact curl_regular_executable 1; else fact curl_regular_executable 0; fi\nif test -x /data/zte-agent; then fact agent_installed 1; else fact agent_installed 0; fi\nstartup=/data/zte-imei-studio/start_zte_agent.sh\nif test ! -e \"$startup\" && test ! -L \"$startup\"; then startup=/data/local/tmp/start_zte_agent.sh; fi\nif test -f /data/zte-agent && test ! -L /data/zte-agent && test -x /data/zte-agent && test \"$(stat -c %u /data/zte-agent)\" = 0 && test -f \"$startup\" && test ! -L \"$startup\" && test \"$(stat -c %u \"$startup\")\" = 0 && sh -n \"$startup\" >/dev/null 2>&1; then fact agent_update_layout 1; else fact agent_update_layout 0; fi\n",
       "timeoutSeconds": 12,
       "maxBytes": 32768
     },
@@ -331,7 +331,7 @@
         "en": "SSH: directory metadata without key contents"
       },
       "category": "access",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nneed stat sh\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  if metadata=$(stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\" 2>/dev/null); then printf 'PATH %s %s\\n' \"$1\" \"$metadata\"\n  else printf 'PATH %s not-assessed\\n' \"$1\"; fi\n else printf 'PATH %s %s\\n' \"$1\" \"$(path_state \"$1\")\"; fi\n}\npresent() { case \"$(path_state \"$2\")\" in present) fact \"$1\" 1;; missing) fact \"$1\" 0;; *) fact \"$1\" not-assessed;; esac; }\n\nfor path in /data/bin/dropbear /data/dropbear /etc/dropbear /etc/ssh /data/local/tmp/start_dropbear.sh /etc/rc.local /data/zte-imei-admin /etc/zte-imei-admin; do meta \"$path\"; done\nif test -x /data/bin/dropbear; then fact management_dropbear_present 1; else fact management_dropbear_present 0; fi\nif test -f /etc/rc.local && test ! -L /etc/rc.local && test -w /etc/rc.local; then fact rc_local_writable 1; else fact rc_local_writable 0; fi\nif test -f /etc/rc.local && test -r /etc/rc.local; then if sh -n /etc/rc.local 2>/dev/null; then fact rc_local_syntax 1; else fact rc_local_syntax 0; printf 'FR_ERROR invalid_rc_local_syntax\\n' >&2; exit 1; fi; else fact rc_local_syntax 0; fi\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nneed stat sh\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  if metadata=$(stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\" 2>/dev/null); then printf 'PATH %s %s\\n' \"$1\" \"$metadata\"\n  else printf 'PATH %s not-assessed\\n' \"$1\"; fi\n else printf 'PATH %s %s\\n' \"$1\" \"$(path_state \"$1\")\"; fi\n}\npresent() { case \"$(path_state \"$2\")\" in present) fact \"$1\" 1;; missing) fact \"$1\" 0;; *) fact \"$1\" not-assessed;; esac; }\n\nfor path in /data/zte-imei-studio/bin/dropbear /data/bin/dropbear /data/dropbear /etc/dropbear /etc/ssh /data/local/tmp/start_dropbear.sh /etc/rc.local /data/zte-imei-admin /etc/zte-imei-admin; do meta \"$path\"; done\nif test -x /data/zte-imei-studio/bin/dropbear || test -x /data/bin/dropbear; then fact management_dropbear_present 1; else fact management_dropbear_present 0; fi\nif test -f /etc/rc.local && test ! -L /etc/rc.local && test -w /etc/rc.local; then fact rc_local_writable 1; else fact rc_local_writable 0; fi\nif test -f /etc/rc.local && test -r /etc/rc.local; then if sh -n /etc/rc.local 2>/dev/null; then fact rc_local_syntax 1; else fact rc_local_syntax 0; printf 'FR_ERROR invalid_rc_local_syntax\\n' >&2; exit 1; fi; else fact rc_local_syntax 0; fi\n",
       "timeoutSeconds": 12,
       "maxBytes": 32768
     },
@@ -386,7 +386,7 @@
         "en": "Pending operations and firmware update markers"
       },
       "category": "safety",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n # Fixed absolute probe paths only. Verify every existing ancestor before\n # treating a missing intermediate directory as proof of absence below it.\n case \"$1\" in /*) ;; *) printf not-assessed; return;; esac\n test -d / && test -r / && test -x / || { printf not-assessed; return; }\n rest=${1#/}; checked=; depth=0\n while test -n \"$rest\"; do\n  part=${rest%%/*}; case \"$rest\" in */*) rest=${rest#*/};; *) rest=;; esac\n  case \"$part\" in ''|.|..) printf not-assessed; return;; esac\n  depth=$((depth+1)); test \"$depth\" -le 32 || { printf not-assessed; return; }\n  checked=\"$checked/$part\"\n  test ! -L \"$checked\" || { printf not-assessed; return; }\n  if test ! -e \"$checked\"; then printf missing; return; fi\n  if test -n \"$rest\"; then\n   test -d \"$checked\" && test -r \"$checked\" && test -x \"$checked\" || { printf not-assessed; return; }\n  else printf present; return; fi\n done\n printf present\n}\nneed stat\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  if metadata=$(stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\" 2>/dev/null); then printf 'PATH %s %s\\n' \"$1\" \"$metadata\"\n  else printf 'PATH %s not-assessed\\n' \"$1\"; fi\n else printf 'PATH %s %s\\n' \"$1\" \"$(path_state \"$1\")\"; fi\n}\npresent() { case \"$(path_state \"$2\")\" in present) fact \"$1\" 1;; missing) fact \"$1\" 0;; *) fact \"$1\" not-assessed;; esac; }\n\nclear=1\nfor path in /data/zte-dashboard-runtime/installer/lock /data/local/tmp/zte-imei-installations/active /data/local/tmp/zte-imei-installations/lock /data/local/tmp/open-u60-transactions/active /tmp/fota_install_processing /tmp/zte-imei-app.lock /tmp/zte-system-backup-helper.lock /data/zte-vpn/transaction /data/zte-vpn/controller-upgrade /data/zte-launcher-update /data/zte-imei-admin/active /data/zte-imei-screen-ru/.transaction /data/zte-imei-ttl/.transaction; do\n case \"$(path_state \"$path\")\" in present) clear=0; meta \"$path\";; missing) :;; *) test \"$clear\" = 0 || clear=not-assessed;; esac\ndone\nfact no_pending_operations \"$clear\"\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n # Fixed absolute probe paths only. Verify every existing ancestor before\n # treating a missing intermediate directory as proof of absence below it.\n case \"$1\" in /*) ;; *) printf not-assessed; return;; esac\n test -d / && test -r / && test -x / || { printf not-assessed; return; }\n rest=${1#/}; checked=; depth=0\n while test -n \"$rest\"; do\n  part=${rest%%/*}; case \"$rest\" in */*) rest=${rest#*/};; *) rest=;; esac\n  case \"$part\" in ''|.|..) printf not-assessed; return;; esac\n  depth=$((depth+1)); test \"$depth\" -le 32 || { printf not-assessed; return; }\n  checked=\"$checked/$part\"\n  test ! -L \"$checked\" || { printf not-assessed; return; }\n  if test ! -e \"$checked\"; then printf missing; return; fi\n  if test -n \"$rest\"; then\n   test -d \"$checked\" && test -r \"$checked\" && test -x \"$checked\" || { printf not-assessed; return; }\n  else printf present; return; fi\n done\n printf present\n}\nneed stat\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  if metadata=$(stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\" 2>/dev/null); then printf 'PATH %s %s\\n' \"$1\" \"$metadata\"\n  else printf 'PATH %s not-assessed\\n' \"$1\"; fi\n else printf 'PATH %s %s\\n' \"$1\" \"$(path_state \"$1\")\"; fi\n}\npresent() { case \"$(path_state \"$2\")\" in present) fact \"$1\" 1;; missing) fact \"$1\" 0;; *) fact \"$1\" not-assessed;; esac; }\n\nclear=1\nfor path in /data/zte-imei-studio/installations/active /data/zte-imei-studio/installations/lock /data/zte-dashboard-runtime/installer/lock /data/local/tmp/zte-imei-installations/active /data/local/tmp/zte-imei-installations/lock /data/local/tmp/open-u60-transactions/active /tmp/fota_install_processing /tmp/zte-imei-app.lock /tmp/zte-system-backup-helper.lock /data/zte-vpn/transaction /data/zte-vpn/controller-upgrade /data/zte-launcher-update /data/zte-imei-admin/active /data/zte-imei-screen-ru/.transaction /data/zte-imei-ttl/.transaction; do\n case \"$(path_state \"$path\")\" in present) clear=0; meta \"$path\";; missing) :;; *) test \"$clear\" = 0 || clear=not-assessed;; esac\ndone\nfact no_pending_operations \"$clear\"\n",
       "timeoutSeconds": 12,
       "maxBytes": 32768
     },
@@ -579,11 +579,11 @@
         },
         {
           "probe": "permissions",
-          "fact": "setup_parents_safe",
+          "fact": "setup_anchor_safe",
           "equals": "1",
           "label": {
-            "ru": "Безопасные существующие родители /data/local/tmp",
-            "en": "Safe existing /data/local/tmp parents"
+            "ru": "Приватный каталог установки /data/zte-imei-studio",
+            "en": "Private installation directory /data/zte-imei-studio"
           }
         },
         {
@@ -660,38 +660,20 @@
         },
         {
           "probe": "mounts",
-          "fact": "setup_tmp_install_mount",
+          "fact": "setup_anchor_install_mount",
           "equals": "1",
           "label": {
-            "ru": "Монтирование /data/local/tmp поддерживает установку",
-            "en": "Installation mount supports /data/local/tmp"
+            "ru": "Монтирование приватного каталога поддерживает установку и запуск",
+            "en": "Private installation mount permits installation and execution"
           }
         },
         {
           "probe": "mounts",
-          "fact": "data_bin_install_mount",
+          "fact": "etc_dropbear_write_mount",
           "equals": "1",
           "label": {
-            "ru": "Монтирование /data/bin поддерживает установку",
-            "en": "Installation mount supports /data/bin"
-          }
-        },
-        {
-          "probe": "mounts",
-          "fact": "data_dropbear_install_mount",
-          "equals": "1",
-          "label": {
-            "ru": "Монтирование /data/dropbear поддерживает установку",
-            "en": "Installation mount supports /data/dropbear"
-          }
-        },
-        {
-          "probe": "mounts",
-          "fact": "etc_dropbear_install_mount",
-          "equals": "1",
-          "label": {
-            "ru": "Монтирование /etc/dropbear поддерживает установку",
-            "en": "Installation mount supports /etc/dropbear"
+            "ru": "Монтирование /etc/dropbear допускает сохранение ключей",
+            "en": "Mount permits saving keys under /etc/dropbear"
           }
         },
         {
@@ -1016,11 +998,11 @@
         },
         {
           "probe": "permissions",
-          "fact": "setup_parents_safe",
+          "fact": "setup_anchor_safe",
           "equals": "1",
           "label": {
-            "ru": "Безопасные существующие родители /data/local/tmp",
-            "en": "Safe existing /data/local/tmp parents"
+            "ru": "Приватный каталог установки /data/zte-imei-studio",
+            "en": "Private installation directory /data/zte-imei-studio"
           }
         },
         {
@@ -1097,38 +1079,20 @@
         },
         {
           "probe": "mounts",
-          "fact": "setup_tmp_install_mount",
+          "fact": "setup_anchor_install_mount",
           "equals": "1",
           "label": {
-            "ru": "Монтирование /data/local/tmp поддерживает установку",
-            "en": "Installation mount supports /data/local/tmp"
+            "ru": "Монтирование приватного каталога поддерживает установку и запуск",
+            "en": "Private installation mount permits installation and execution"
           }
         },
         {
           "probe": "mounts",
-          "fact": "data_bin_install_mount",
+          "fact": "etc_dropbear_write_mount",
           "equals": "1",
           "label": {
-            "ru": "Монтирование /data/bin поддерживает установку",
-            "en": "Installation mount supports /data/bin"
-          }
-        },
-        {
-          "probe": "mounts",
-          "fact": "data_dropbear_install_mount",
-          "equals": "1",
-          "label": {
-            "ru": "Монтирование /data/dropbear поддерживает установку",
-            "en": "Installation mount supports /data/dropbear"
-          }
-        },
-        {
-          "probe": "mounts",
-          "fact": "etc_dropbear_install_mount",
-          "equals": "1",
-          "label": {
-            "ru": "Монтирование /etc/dropbear поддерживает установку",
-            "en": "Installation mount supports /etc/dropbear"
+            "ru": "Монтирование /etc/dropbear допускает сохранение ключей",
+            "en": "Mount permits saving keys under /etc/dropbear"
           }
         },
         {
@@ -1821,11 +1785,11 @@
         },
         {
           "probe": "permissions",
-          "fact": "setup_parents_safe",
+          "fact": "setup_anchor_safe",
           "equals": "1",
           "label": {
-            "ru": "Безопасные существующие родители /data/local/tmp",
-            "en": "Safe existing /data/local/tmp parents"
+            "ru": "Приватный каталог установки /data/zte-imei-studio",
+            "en": "Private installation directory /data/zte-imei-studio"
           }
         },
         {
@@ -1902,38 +1866,20 @@
         },
         {
           "probe": "mounts",
-          "fact": "setup_tmp_install_mount",
+          "fact": "setup_anchor_install_mount",
           "equals": "1",
           "label": {
-            "ru": "Монтирование /data/local/tmp поддерживает установку",
-            "en": "Installation mount supports /data/local/tmp"
+            "ru": "Монтирование приватного каталога поддерживает установку и запуск",
+            "en": "Private installation mount permits installation and execution"
           }
         },
         {
           "probe": "mounts",
-          "fact": "data_bin_install_mount",
+          "fact": "etc_dropbear_write_mount",
           "equals": "1",
           "label": {
-            "ru": "Монтирование /data/bin поддерживает установку",
-            "en": "Installation mount supports /data/bin"
-          }
-        },
-        {
-          "probe": "mounts",
-          "fact": "data_dropbear_install_mount",
-          "equals": "1",
-          "label": {
-            "ru": "Монтирование /data/dropbear поддерживает установку",
-            "en": "Installation mount supports /data/dropbear"
-          }
-        },
-        {
-          "probe": "mounts",
-          "fact": "etc_dropbear_install_mount",
-          "equals": "1",
-          "label": {
-            "ru": "Монтирование /etc/dropbear поддерживает установку",
-            "en": "Installation mount supports /etc/dropbear"
+            "ru": "Монтирование /etc/dropbear допускает сохранение ключей",
+            "en": "Mount permits saving keys under /etc/dropbear"
           }
         },
         {

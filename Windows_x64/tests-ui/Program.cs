@@ -87,7 +87,7 @@ await session.Dispatch(()=> {
   Check(adbState.StyleKey==typeof(CheckBox),language+" ADB intent checkbox preserves standard checkbox indicator theme");
   Check(adbState.IsChecked is null&&!adbState.IsEnabled,language+" unknown ADB is neither off nor mutable");
   Set(window,"_terminal",new FakeTerminal());Render(window);
-  Check(!((Dictionary<string,string>)Get(window,"_form")!).ContainsKey("backup_key_suffix") && ((Dictionary<string,TextBox>)Get(window,"_secretFields")!)["backup_key_suffix"].Text=="",language+" backup suffix clears when the page is rebuilt");
+  Check(!((Dictionary<string,string>)Get(window,"_form")!).ContainsKey("backup_key_suffix") && ((Dictionary<string,TextBox>)Get(window,"_secretFields")!)["backup_key_suffix"].Text=="synthetic-ui-backup-suffix",language+" backup suffix stays in the same active form");
   Check(!window.GetLogicalDescendants().OfType<CheckBox>().Single(c=>c.Name=="AdbEnabled").IsEnabled,language+" active interactive terminal blocks ADB checkbox");
   Set(window,"_terminal",null);
   Set(window,"_snapshot",new DeviceSnapshot(true,"Подключено по SSH",ConnectionMode:"SSH",PreparationPending:true));Render(window);
@@ -168,7 +168,7 @@ await session.Dispatch(()=> {
   Check(checkModem.Events.Count==0&&!((DeviceSnapshot)Get(checkWindow,"_snapshot")!).IsConnected,language+" key success creates no research/preparation/connection readiness");
   var checkStatus=checkWindow.GetLogicalDescendants().OfType<TextBlock>().Single(t=>t.Name=="BackupKeyCheckStatus").Text!;
   Check(checkStatus.Contains("FLY_CN_MU5250V1.0.0B13")&&checkStatus.Contains("BD_FLYMODEMMU5250V1.0.0B28")&&checkStatus.Contains(language=="en"?"does not authorize":"не разрешает"),language+" separate result shows observed versions and write boundary");
-  Check(((Dictionary<string,TextBox>)Get(checkWindow,"_secretFields")!).Values.All(t=>string.IsNullOrEmpty(t.Text)),language+" read-only key check clears all password inputs");
+  Check(((Dictionary<string,TextBox>)Get(checkWindow,"_secretFields")!)["web_password"].Text=="synthetic-password",language+" key check retains the password for the next explicit action in the active form");
   var help=Localization.Translate(OperationHelpContent.Preparation.Sections.Single(s=>s.Title=="Проверка ключа без подготовки доступа").Body);
   Check(help.Contains(language=="en"?"regardless of the firmware name":"независимо от имени прошивки")&& (language!="en"||!help.Any(c=>c is >= '\u0400' and <= '\u04ff')),language+" key-check help explains firmware-neutral candidate without restoring");
   var secretsAfter=(Dictionary<string,TextBox>)Get(checkWindow,"_secretFields")!;
@@ -178,6 +178,77 @@ await session.Dispatch(()=> {
   Check(checkWindow.GetLogicalDescendants().OfType<TextBlock>().Single(t=>t.Name=="BackupKeyCheckStatus").Text==Localization.Translate("Не удалось подтвердить ключ или формат архива бэкапа."),language+" failed check replaces previous success with neutral key/format error");
   Check(checkModem.Requests.All(r=>r.Operation==ModemOperation.VerifyBackupKey),language+" backup check never triggers ADB or install operations");
   checkWindow.Close();Pump();
+ }
+ Localization.SetLanguage("ru",persist:false);
+ var lifecycle=new FakeModem{AllowPreparation=true,AllowBackupCheck=true,AllowRefresh=true};
+ var active=new MainWindow(lifecycle,persistPreferences:false);active.Show();Pump();
+ Check(lifecycle.Requests.Count==0,"startup refresh never reconnects or replays preparation");
+ var activeSecrets=(Dictionary<string,TextBox>)Get(active,"_secretFields")!;
+ foreach(var key in new[]{"web_password","agent_password","backup_key_suffix"})activeSecrets[key].Text="synthetic-"+key;
+ Pump();NamedClick(active,"VerifyBackupKey");
+ NamedClick(active,"Section0-1");NamedClick(active,"CollectFirmwareResearch");NamedClick(active,"Section0-0");
+ Check(((Dictionary<string,TextBox>)Get(active,"_secretFields")!).All(x=>x.Value.Text=="synthetic-"+x.Key),"read-only key check and diagnostics navigation retain target preparation credentials");
+ FindButton(active,"↻").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();
+ Check(lifecycle.Requests.Count==1,"refresh without configured SSH does not invent a transport or replay writes");
+ FindButton(active,"Выполнить предварительную подготовку модема").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();
+ var preparation=lifecycle.Requests.Last();
+ Check(preparation.Operation==ModemOperation.PrepareSsh&&new[]{"web_password","agent_password","backup_key_suffix"}.All(key=>preparation.Parameters![key]=="synthetic-"+key),"key-check to preparation passes all original RAM input through the production handler");
+ Check(((DeviceSnapshot)Get(active,"_snapshot")!).PreparationPending&&!((DeviceSnapshot)Get(active,"_snapshot")!).IsConnected,"failed preparation immediately reloads real pending state without claiming SSH ready");
+ Check(!((bool)Get(active,"_busy")!)&&FindButton(active,"Выполнить предварительную подготовку модема").IsEnabled,"failed preparation releases UI busy state and exposes explicit resume");
+ FindButton(active,"Выполнить предварительную подготовку модема").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();
+ Check(lifecycle.Requests.Count(r=>r.Operation==ModemOperation.PrepareSsh)==2&&lifecycle.Requests.Last().Parameters!["web_password"]=="synthetic-web_password","explicit preparation retry retains password without an automatic replay");
+ var activeForm=(Dictionary<string,string>)Get(active,"_form")!;activeForm["key_path"]="synthetic-key-path";activeForm["known_hosts_path"]="synthetic-known-hosts-path";
+ FindButton(active,"↻").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();
+ Check(lifecycle.Requests.Last().Operation==ModemOperation.Connect&&!lifecycle.Requests.Last().Parameters!.Keys.Any(k=>k.Contains("password")||k.Contains("suffix"))&&!((DeviceSnapshot)Get(active,"_snapshot")!).IsConnected,"explicit refresh retries only configured SSH and preserves a failed connection result");
+ lifecycle.ConnectSuccess=true;FindButton(active,"↻").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();
+ Check(((DeviceSnapshot)Get(active,"_snapshot")!).IsConnected&&lifecycle.Requests.Count(r=>r.Operation==ModemOperation.PrepareSsh)==2,"later explicit refresh recovers SSH without restarting or repeating preparation");
+ FindButton(active,"↻").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();
+ Check(lifecycle.Requests.Last().Operation==ModemOperation.RefreshDevice,"connected refresh reads device information through existing SSH");
+ Check(!new[]{"web_password","agent_password","backup_key_suffix"}.Any(activeForm.ContainsKey),"preparation credentials never enter persisted form metadata");
+ var changedHost=active.GetLogicalDescendants().OfType<TextBox>().Single(t=>t.Watermark=="192.168.0.1");changedHost.Text="192.0.2.99";Pump();
+ Check(((Dictionary<string,string>)Get(active,"_preparationSecrets")!).Count==0&&((Dictionary<string,TextBox>)Get(active,"_secretFields")!).Values.All(x=>x.Text==""),"changing the selected host clears all preparation secrets");
+ FindButton(active,"↻").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();
+ Check(lifecycle.Requests.Last().Operation==ModemOperation.Connect&&lifecycle.Requests.Last().Parameters!["host"]=="192.0.2.99","explicit refresh uses changed selected SSH endpoint instead of stale connected transport");
+ ((Dictionary<string,TextBox>)Get(active,"_secretFields")!)["web_password"].Text="synthetic-close-secret";Pump();active.Close();Pump();
+ Check(((Dictionary<string,string>)Get(active,"_preparationSecrets")!).Count==0&&((Dictionary<string,TextBox>)Get(active,"_secretFields")!).Count==0,"closing the window clears target credentials and password controls");
+ var throwing=new FakeModem{AllowPreparation=true,ThrowPrepare=true};var throwWindow=new MainWindow(throwing,persistPreferences:false);throwWindow.Show();Pump();
+ ((Dictionary<string,TextBox>)Get(throwWindow,"_secretFields")!)["web_password"].Text="synthetic-exception-password";Pump();
+ FindButton(throwWindow,"Выполнить предварительную подготовку модема").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();
+ Check(((DeviceSnapshot)Get(throwWindow,"_snapshot")!).PreparationPending&&throwing.Requests.Count==1,"thrown preparation failure also reloads pending before displaying its error, without retry");
+ throwWindow.OwnedWindows.Single().Close();Pump();
+ Check(!(bool)Get(throwWindow,"_busy")!&&((Dictionary<string,TextBox>)Get(throwWindow,"_secretFields")!)["web_password"].Text=="synthetic-exception-password","exception dismissal releases busy state while retaining explicit-retry input");
+ throwWindow.Close();Pump();
+ foreach(var editDuringPrepare in new[]{false,true})
+ {
+  var generated=new ConnectionSettingsSnapshot("192.168.0.1",2222,"root","synthetic-generated-key","synthetic-generated-hosts");
+  var preparedModem=new FakeModem{AllowPreparation=true,AllowRefresh=true,PreparedSettings=generated};
+  var preparedWindow=new MainWindow(preparedModem,persistPreferences:false);preparedWindow.Show();Pump();
+  var preparedForm=(Dictionary<string,string>)Get(preparedWindow,"_form")!;
+  if(editDuringPrepare)preparedModem.OnPrepare=()=>preparedForm["key_path"]="synthetic-new-user-selection";
+  FindButton(preparedWindow,"Выполнить предварительную подготовку модема").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();
+  Check(editDuringPrepare?preparedForm["key_path"]=="synthetic-new-user-selection":preparedForm["key_path"]==generated.KeyPath&&preparedForm["known_hosts_path"]==generated.KnownHostsPath&&preparedForm["port"]=="2222",editDuringPrepare?"preparation completion preserves connection edits made during the operation":"preparation outcome adopts generated connection metadata even when a later step failed");
+  if(!editDuringPrepare){FindButton(preparedWindow,"↻").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();Check(preparedModem.Requests.Last().Operation==ModemOperation.RefreshDevice,"refresh after preparation uses the confirmed SSH connection rather than obsolete form keys");}
+  preparedWindow.Close();Pump();
+ }
+ foreach(var language in new[]{"ru","en"})
+ {
+  Localization.SetLanguage(language,persist:false);
+  var forced=new FakeModem{AllowPreparation=true,Snapshot=new(true,"Synthetic SSH",ConnectionMode:"SSH",IpAddress:"192.168.0.1")};
+  var forcedWindow=new MainWindow(forced,persistPreferences:false);forcedWindow.Show();Pump();
+  var forceBox=forcedWindow.GetLogicalDescendants().OfType<CheckBox>().SingleOrDefault(b=>b.Name=="ForcePreparation");
+  Check(forceBox is not null&&forceBox.IsChecked==false&&forceBox.IsEnabled&&forceBox.Content?.ToString()==Localization.Translate("Принудительная подготовка: переустановить агент и SSH"),language+" explicit force option is available but defaults off on connected SSH");
+  Check(!FindButton(forcedWindow,"Выполнить предварительную подготовку модема").IsEnabled,language+" normal preparation does not reinstall an existing SSH connection");
+  Toggle(forceBox!);
+  Check(FindButton(forcedWindow,"Выполнить предварительную подготовку модема").IsEnabled,language+" explicit force enables preparation despite existing SSH");
+  ((Dictionary<string,TextBox>)Get(forcedWindow,"_secretFields")!)["agent_password"].Text="synthetic-new-agent-password";Pump();
+  FindButton(forcedWindow,"Выполнить предварительную подготовку модема").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();
+  Check(forced.Requests.Last().Operation==ModemOperation.PrepareSsh&&forced.Requests.Last().Parameters!["force_reinstall"]=="true"&&forced.Requests.Last().Parameters!["agent_password"]=="synthetic-new-agent-password",language+" force handler passes deliberate intent with the current RAM password");
+  Check(!forcedWindow.GetLogicalDescendants().OfType<CheckBox>().Single(b=>b.Name=="ForcePreparation").IsEnabled,language+" pending preparation freezes the original mode instead of reconfiguring it");
+  Check(forcedWindow.GetLogicalDescendants().OfType<CheckBox>().Single(b=>b.Name=="ForcePreparation").IsChecked==true&&((Dictionary<string,TextBox>)Get(forcedWindow,"_secretFields")!)["agent_password"].Text=="synthetic-new-agent-password",language+" failed force keeps the selected intent and password in RAM");
+  forced.PrepareSuccess=true;
+  FindButton(forcedWindow,"Выполнить предварительную подготовку модема").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();
+  Check(forcedWindow.GetLogicalDescendants().OfType<CheckBox>().Single(b=>b.Name=="ForcePreparation").IsChecked==false&&!FindButton(forcedWindow,"Выполнить предварительную подготовку модема").IsEnabled,language+" completed force clears deliberate mode and cannot silently repeat on existing SSH");
+  forcedWindow.Close();Pump();
  }
  Localization.SetLanguage("ru",persist:false);
  var discovery=new FakeModem {AllowPreparation=true};var first=new MainWindow(discovery,persistPreferences:false);first.Show();Pump();
@@ -220,6 +291,8 @@ await session.Dispatch(()=> {
  typeof(MainWindow).GetMethod("RecordDiagnosticResult",BindingFlags.NonPublic|BindingFlags.Instance)!.Invoke(panel,[ModemOperation.DiscoverConnections,new OperationResult(true,"Synthetic late response"),diagnostics.Requests[0].Parameters]);
  Check(((TextBlock)Get(panel,"_diagnosticConnectionStatus")!).Text=="Состояние не проверено","late result for old diagnostic context stays unverified");
  keyInput.Text="synthetic-key";Pump();
+ Check(((Dictionary<string,TextBox>)Get(panel,"_secretFields")!).Values.All(v=>v.Text==""),"SSH target key change clears preparation credentials");
+ diagnosticSecrets["web_password"].Text="synthetic-web";diagnosticSecrets["backup_key_suffix"].Text="synthetic-suffix";Pump();
  var bootstrapBox=panel.GetLogicalDescendants().OfType<CheckBox>().Single(c=>c.Name=="AdbEnabled");
  Check(bootstrapBox.IsEnabled&&bootstrapBox.IsChecked is null,"valid disconnected bootstrap remains unknown and allows only explicit ON");
  var beforeBootstrap=diagnostics.Requests.Count;
@@ -228,14 +301,14 @@ await session.Dispatch(()=> {
  Toggle(bootstrapBox);
  Check(diagnostics.Requests.Count==beforeBootstrap+1,"first click from unknown dispatches exactly one bootstrap ON");
  Check(diagnostics.Requests.Last().Operation==ModemOperation.EnableDiagnosticAdb&&diagnostics.Requests.Last().Parameters!["backup_key_suffix"]=="synthetic-suffix"&&!diagnostics.Requests.Last().Parameters!.ContainsKey("agent_password"),"ADB action passes Web/suffix only with no agent-password dependency");
- Check(((Dictionary<string,TextBox>)Get(panel,"_secretFields")!).Values.All(v=>v.Text==""),"diagnostic activation clears all secret inputs");
- Render(panel);
+ Check(((Dictionary<string,TextBox>)Get(panel,"_secretFields")!)["web_password"].Text=="synthetic-web","failed diagnostic activation retains preparation input for explicit retry");
+ ((Dictionary<string,TextBox>)Get(panel,"_secretFields")!)["web_password"].Text="";Pump();Render(panel);
  Check(!panel.GetLogicalDescendants().OfType<CheckBox>().Single(c=>c.Name=="AdbEnabled").IsEnabled,"missing bootstrap password blocks disconnected enable");
  var freshSecrets=(Dictionary<string,TextBox>)Get(panel,"_secretFields")!;
  freshSecrets["web_password"].Text="synthetic-web";
  var hostInput=panel.GetLogicalDescendants().OfType<TextBox>().Single(t=>t.Watermark=="192.168.0.1");hostInput.Text="bad-host";Pump();
  Check(!panel.GetLogicalDescendants().OfType<CheckBox>().Single(c=>c.Name=="AdbEnabled").IsEnabled,"invalid host blocks bootstrap checkbox");
- hostInput.Text="192.0.2.2";freshSecrets["web_password"].Text="bad\0password";Pump();
+ hostInput.Text="192.0.2.2";Pump();freshSecrets["web_password"].Text="bad\0password";Pump();
  Check(!panel.GetLogicalDescendants().OfType<CheckBox>().Single(c=>c.Name=="AdbEnabled").IsEnabled,"invalid password blocks bootstrap checkbox");
  freshSecrets["web_password"].Text="synthetic-web";
  typeof(MainWindow).GetMethod("SetBusy",BindingFlags.NonPublic|BindingFlags.Instance)!.Invoke(panel,[true]);
@@ -260,7 +333,7 @@ await session.Dispatch(()=> {
  checkbox=panel.GetLogicalDescendants().OfType<CheckBox>().Single(c=>c.Name=="AdbEnabled");checkbox.IsChecked=true;Pump();
  Check(diagnostics.Requests.Last().Operation==ModemOperation.SetAdbEnabled&&diagnostics.Requests.Last().Parameters!["enabled"]=="true","explicit checkbox dispatches one typed ADB intent");
  checkbox=panel.GetLogicalDescendants().OfType<CheckBox>().Single(c=>c.Name=="AdbEnabled");
- Check(!checkbox.IsEnabled&&checkbox.IsChecked is null,"unconfirmed mutation refresh cannot retain ADB authority");
+ Check(checkbox.IsChecked is null&&!((DeviceSnapshot)Get(panel,"_snapshot")!).IsConnected,"unconfirmed mutation refresh cannot retain a known ADB or SSH state");
  Set(panel,"_snapshot",new DeviceSnapshot(true,"Synthetic SSH",ConnectionMode:"SSH",AdbEnabled:true,AdbControlSupported:true));Render(panel);
  checkbox=panel.GetLogicalDescendants().OfType<CheckBox>().Single(c=>c.Name=="AdbEnabled");checkbox.IsChecked=false;Pump();
  Check(diagnostics.Requests.Last().Operation==ModemOperation.SetAdbEnabled&&diagnostics.Requests.Last().Parameters!["enabled"]=="false","explicit off checkbox sends false only after known SSH state");
@@ -300,10 +373,10 @@ internal sealed class FakeTerminal:ITerminalSession {
  public ValueTask DisposeAsync()=>ValueTask.CompletedTask;
 }
 internal sealed class FakeModem:IModemService {
- public ConnectionSettingsSnapshot Settings=new(); public ConnectionSettingsSnapshot GetConnectionSettings()=>Settings;
- public int Operations{get;private set;} public bool AllowPreparation,AllowDiagnostics,AllowBackupCheck,BackupCheckSuccess=true;public List<string> Events=[];public List<OperationRequest> Requests=[];public IReadOnlyDictionary<string,string>? ResearchParameters;
- public Task<DeviceSnapshot> GetDeviceSnapshotAsync(CancellationToken ct=default)=>Task.FromResult(new DeviceSnapshot(false,"Нет подключения"));
- public Task<OperationResult> RunAsync(OperationRequest request,CancellationToken ct=default){Operations++;Requests.Add(request);if(AllowBackupCheck&&request.Operation==ModemOperation.VerifyBackupKey)return Task.FromResult(new OperationResult(BackupCheckSuccess,BackupCheckSuccess?"Ключ и формат бэкапа подтверждены. Это не разрешает восстановление или установку компонентов.":"Не удалось подтвердить ключ или формат архива бэкапа.",Values:BackupCheckSuccess?new Dictionary<string,string>{{"backup_firmware","FLY_CN_MU5250V1.0.0B13"},{"backup_inner","BD_FLYMODEMMU5250V1.0.0B28"},{"backup_entries","1"},{"backup_sha256",new string('a',64)}}:null));if(AllowDiagnostics&&request.Operation is ModemOperation.DiscoverConnections or ModemOperation.EnableDiagnosticAdb or ModemOperation.RefreshAccess or ModemOperation.ExportDiagnostics or ModemOperation.SetAdbEnabled or ModemOperation.RefreshAdbState or ModemOperation.Connect)return Task.FromResult(new OperationResult(false,"Synthetic diagnostic response; no device."));if(AllowPreparation&&request.Operation==ModemOperation.PrepareSsh){Events.Add("prepare");return Task.FromResult(new OperationResult(false,"Synthetic preflight refused; no writes."));}throw new Exception("Unexpected modem operation");}
+ public ConnectionSettingsSnapshot? PreparedSettings;public Action? OnPrepare;public ConnectionSettingsSnapshot Settings=new(); public ConnectionSettingsSnapshot GetConnectionSettings()=>Settings;
+ public int Operations{get;private set;} public bool AllowPreparation,AllowDiagnostics,AllowBackupCheck,BackupCheckSuccess=true,AllowRefresh,ConnectSuccess,ThrowPrepare,PrepareSuccess;public DeviceSnapshot Snapshot=new(false,"Нет подключения");public List<string> Events=[];public List<OperationRequest> Requests=[];public IReadOnlyDictionary<string,string>? ResearchParameters;
+ public Task<DeviceSnapshot> GetDeviceSnapshotAsync(CancellationToken ct=default)=>Task.FromResult(Snapshot);
+ public Task<OperationResult> RunAsync(OperationRequest request,CancellationToken ct=default){Operations++;Requests.Add(request);if(AllowRefresh&&request.Operation is ModemOperation.Connect or ModemOperation.RefreshDevice){if(request.Operation==ModemOperation.Connect&&ConnectSuccess){Snapshot=Snapshot with{IsConnected=true,ConnectionMode="SSH",Status="Synthetic SSH ready"};Settings=Settings with{Host=request.Parameters!["host"],KeyPath=request.Parameters["key_path"],KnownHostsPath=request.Parameters["known_hosts_path"]};}return Task.FromResult(new OperationResult(request.Operation==ModemOperation.RefreshDevice||ConnectSuccess,ConnectSuccess?"Synthetic SSH ready":"Закреплённый SSH host key не найден."));}if(AllowBackupCheck&&request.Operation==ModemOperation.VerifyBackupKey)return Task.FromResult(new OperationResult(BackupCheckSuccess,BackupCheckSuccess?"Ключ и формат бэкапа подтверждены. Это не разрешает восстановление или установку компонентов.":"Не удалось подтвердить ключ или формат архива бэкапа.",Values:BackupCheckSuccess?new Dictionary<string,string>{{"backup_firmware","FLY_CN_MU5250V1.0.0B13"},{"backup_inner","BD_FLYMODEMMU5250V1.0.0B28"},{"backup_entries","1"},{"backup_sha256",new string('a',64)}}:null));if(AllowDiagnostics&&request.Operation is ModemOperation.DiscoverConnections or ModemOperation.EnableDiagnosticAdb or ModemOperation.RefreshAccess or ModemOperation.ExportDiagnostics or ModemOperation.SetAdbEnabled or ModemOperation.RefreshAdbState or ModemOperation.Connect)return Task.FromResult(new OperationResult(false,"Synthetic diagnostic response; no device."));if(AllowPreparation&&request.Operation==ModemOperation.PrepareSsh){Events.Add("prepare");Snapshot=Snapshot with{PreparationPending=!PrepareSuccess};if(PreparedSettings is{} ready){Settings=ready;Snapshot=Snapshot with{IsConnected=true,ConnectionMode="SSH",IpAddress=ready.Host};}OnPrepare?.Invoke();if(ThrowPrepare)throw new IOException("Synthetic preparation interruption");return Task.FromResult(new OperationResult(PrepareSuccess,PrepareSuccess?"Synthetic preparation complete":"Synthetic preflight refused; no writes."));}throw new Exception("Unexpected modem operation");}
  public Task<ResearchReport> CollectFirmwareResearchAsync(IReadOnlyDictionary<string,string> parameters,IProgress<ResearchProgress>? progress,CancellationToken ct=default){if(!AllowPreparation&&!AllowDiagnostics)throw new Exception("Unexpected research");ResearchParameters=parameters;Events.Add("research");return Task.FromResult(new ResearchReport(1,"fixture",DateTimeOffset.UtcNow,DateTimeOffset.UtcNow,"partial","ADB",null,"test",7,[],[],[],BindingStrength:"transport-only"));}
  public Task<ResearchReport> CollectPreparationResearchAsync(IReadOnlyDictionary<string,string> parameters,IProgress<ResearchProgress>? progress,CancellationToken ct=default){ResearchParameters=parameters;Events.Add("bootstrap-research");return Task.FromResult(new ResearchReport(1,"fixture",DateTimeOffset.UtcNow,DateTimeOffset.UtcNow,"partial","ADB",null,"test",7,[],[],[],BindingStrength:"transport-only"));}
  public Task<IReadOnlyList<BackupInfo>> ListBackupsAsync(CancellationToken ct=default)=>Task.FromResult<IReadOnlyList<BackupInfo>>([]);

@@ -20,7 +20,7 @@ internal static class DiagnosticAdbTests
         {
             var storage=Path.Combine(root,(index++).ToString());Directory.CreateDirectory(storage);
             var wire=new Wire(identity??B31,original) { Ready=ready };
-            var adb=new AdbTransport((args,_,_)=>
+            var adb=new AdbTransport((args,stream,_,_)=>
             {
                 if(args.SequenceEqual(new[]{"devices","-l"}))
                 {
@@ -28,17 +28,19 @@ internal static class DiagnosticAdbTests
                     if(wire.InventoryFailure)throw new IOException("synthetic inventory failure");
                     return Task.FromResult(Reply(wire.Ready?"ZTE device usb:1-2\n":"List of devices attached\n"));
                 }
-                if(args.Count==4 && args[0]=="-s" && args[2]=="shell" && args[3].Contains("test \"$(id -u)\" = 0"))
+                var command=stream?.OriginalCommand??args[^1];
+                if(wire.StopAtPreflight && args.Count==4 && args[0]=="-s" && args[2]=="shell" && command.Contains("--preflight"))throw new ReachedInstallerBoundary();
+                if(args.Count==4 && args[0]=="-s" && args[2]=="shell" && command.Contains("test \"$(id -u)\" = 0"))
                 {
                     wire.ShellCount++;
-                    var marker=Regex.Match(args[3],"__ZTE_RESULT_[A-F0-9]{32}__").Value;
+                    var marker=stream?.Result??Regex.Match(command,"__ZTE_RESULT_[A-F0-9]{32}__").Value;
                     var boot=wire.ChangeBoot && wire.ShellCount>1?"20000000-0000-0000-0000-000000000002":Boot;
-                    var proof=ImeiEngine.FirmwareHash+"  /firmware/image/modem.b16\n"+(wire.StopAfterAdb?ImeiEngine.RouterHash:new string('e',64))+"  /usr/bin/diag-router\n"+Cid+"\n"+boot+"\n"+JsonSerializer.Serialize(new {imei=wire.Identity.Imei,integrate_version=wire.Identity.Firmware,wa_inner_version=wire.Identity.Inner});
-                    return Task.FromResult(Reply(proof+"\n"+marker+"0\n"));
+                    var proof=ImeiEngine.FirmwareHash+"  /firmware/image/modem.b16\n"+(wire.StopAfterAdb?ImeiEngine.RouterHash:new string('e',64))+"  /usr/bin/diag-router\n"+wire.DeviceCid+"\n"+boot+"\n"+JsonSerializer.Serialize(new {imei=wire.Identity.Imei,integrate_version=wire.Identity.Firmware,wa_inner_version=wire.Identity.Inner});
+                    return Task.FromResult(Reply((stream is null?"":"\n"+stream.Ready+"\n\n"+stream.Begin+"\n")+proof+"\n"+marker+"0\n"));
                 }
                 throw new Exception("Diagnostic path attempted a non-identity ADB command: "+string.Join(' ',args));
-            });
-            return (new OnboardingEngine("192.168.0.1",storage,resources,adb,skip,progress: message => { if(wire.StopAfterAdb && message.StartsWith("USB ADB подтверждён:",StringComparison.Ordinal)) throw new ReachedInstallerBoundary(); }) {WebFactory=()=>new ModemWebClient("192.168.0.1",wire)},storage,wire);
+            },Path.GetFullPath("Windows_x64/Resources/Onboarding/adb-stream.sh"));
+            return (new OnboardingEngine("192.168.0.1",storage,resources,adb,skip,progress: message => { if(wire.StopAfterAdb && !wire.StopAtPreflight && message.StartsWith("USB ADB подтверждён:",StringComparison.Ordinal)) throw new ReachedInstallerBoundary(); }) {WebFactory=()=>new ModemWebClient("192.168.0.1",wire)},storage,wire);
         }
         async Task Pending(string storage,bool reboot=false,string? firmware=null)
         {
@@ -59,6 +61,18 @@ internal static class DiagnosticAdbTests
             Check(!Directory.Exists(Path.Combine(automatic.Storage,"SSH")),"Automatic backup path fixture stops before SSH key or installer writes");
             var journalText=File.ReadAllText(Path.Combine(automatic.Storage,"setup-pending.json"));
             Check(!journalText.Contains(builtin,StringComparison.Ordinal) && !journalText.Contains("suffix",StringComparison.OrdinalIgnoreCase),"Resolved suffix is not persisted in the preparation journal");
+            automatic.Web.FailEveryRequest=true;automatic.Web.StopAtPreflight=true;
+            var callsBeforeResume=automatic.Web.Requests;
+            try { await automatic.Engine.PrepareAsync("","synthetic-agent-password",""); throw new Exception("Expected fixture boundary"); }
+            catch(ReachedInstallerBoundary) { }
+            Check(automatic.Web.Requests==callsBeforeResume,"Saved restored identity binds ready USB resume without a Web password or HTTP calls");
+            var restoredPending=JsonSerializer.Deserialize<OnboardingPending>(File.ReadAllBytes(Path.Combine(automatic.Storage,"setup-pending.json")))!;
+            Check(automatic.Web.Uploads==1&&automatic.Web.Restores==1&&restoredPending.RestoreRequested&&!restoredPending.InstallRequested&&restoredPending.Phase=="adb-ready"&&OnboardingEngine.InstallationPaths(restoredPending).Stage.StartsWith("/data/zte-imei-studio/stage-",StringComparison.Ordinal),"Retry after restore selects private layout without replaying upload or restore");
+            automatic.Web.DeviceCid=new string('b',32);
+            await Reject(()=>automatic.Engine.PrepareAsync("","synthetic-agent-password",""),"Saved restoration refuses a changed USB CID before preflight");
+            automatic.Web.DeviceCid=Cid;automatic.Web.Ready=false;
+            await Reject(()=>automatic.Engine.PrepareAsync("","synthetic-agent-password",""),"Missing ready USB requires explicit Web credentials to resume");
+            Check(automatic.Web.Requests==callsBeforeResume&&automatic.Web.Uploads==1&&automatic.Web.Restores==1,"Rejected restored resumes neither contact Web nor replay writes");
             foreach(var invalidOverride in new[]{"wrong-synthetic-suffix"," ",new string('x',129),"invalid\0suffix"})
             {
                 var wrong=Setup(false);wrong.Web.Backup=knownBackup;
@@ -186,8 +200,9 @@ internal static class DiagnosticAdbTests
     private sealed class Wire(WebIdentity identity,byte[] original):IWebTransport
     {
         public WebIdentity Identity=identity;
+        public string DeviceCid=Cid;
         public byte[] Backup=original;
-        public bool Ready,ChangeBoot,InventoryFailure,FailEveryRequest,Advertise,LoseRebootAcknowledgement,CancelReboot,StopAfterAdb,UnknownIntrospection;
+        public bool Ready,ChangeBoot,InventoryFailure,FailEveryRequest,Advertise,LoseRebootAcknowledgement,CancelReboot,StopAfterAdb,StopAtPreflight,UnknownIntrospection;
         public Action<byte[]>? VerifyUpload;
         public int Requests,InventoryCount,ShellCount,Backups,Reboots,Restores,Uploads,DebugRequests;
         public int Mutations=>Backups+Reboots+Restores+Uploads+DebugRequests;

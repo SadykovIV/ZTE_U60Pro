@@ -8,7 +8,7 @@ extension ContentView {
                 Text(L10n.text("Система и устройство")).font(.system(size: 18, weight: .semibold))
                 Spacer()
                 Button(action: model.refreshModemInformation) { Label(L10n.text("Обновить сведения"), systemImage: "arrow.clockwise") }
-                    .buttonStyle(StudioButtonStyle()).disabled(!model.canCollectDiagnostics)
+                    .buttonStyle(StudioButtonStyle()).disabled(!model.canRefreshModem)
             }
             if let info = model.modemInformation {
                 informationRow("Модель", info.model)
@@ -71,7 +71,7 @@ extension ContentView {
                 Text(L10n.text("Память и накопители")).font(.system(size: 18, weight: .semibold))
                 Spacer()
                 Button(action: model.refreshModemInformation) { Label(L10n.text("Обновить"), systemImage: "arrow.clockwise") }
-                    .buttonStyle(StudioButtonStyle()).disabled(!model.canCollectDiagnostics)
+                    .buttonStyle(StudioButtonStyle()).disabled(!model.canRefreshModem)
             }
             if let info = model.modemInformation {
                 StudioCard {

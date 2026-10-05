@@ -5,7 +5,7 @@ import Foundation
 enum BundledAgent {
     static let version = "2.9.0-esim.4"
     static let sha256 = "9def1ae625eeee2d3357c5583b441c3a910ef546513d10c80355536b3b5146e7"
-    static let dashboardInstallerSHA256 = "d4eaed4a5268a763773532d9bc6561b8a508e1de7ace8e08a47ac165e269ea2e"
+    static let dashboardInstallerSHA256 = "1211dee5b854d73079934d871959e0ef72c23d3272824c01639bfdd8353f901c"
     // Exact released hashes verified against release records and the update path.
     // Keep this host check independent of shell source formatting.
     static let supportedUpgradeHashes: Set<String> = [sha256,

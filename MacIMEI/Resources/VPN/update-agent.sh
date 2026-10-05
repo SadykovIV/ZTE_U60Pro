@@ -8,7 +8,7 @@ case "$action" in preflight|install) ;; *) exit 64;; esac
 agent_sha=9def1ae625eeee2d3357c5583b441c3a910ef546513d10c80355536b3b5146e7
 dashboard_sha=6cf9b305908e8780a8d9690fa8ae92010ff26c5a312d478a4ff144e7d046533f
 web_sha=76f021c43a02eab5bb634b01461370fcb8bfb270b1f14e348e5b57acb43b1d12
-dashboard_installer_sha=d4eaed4a5268a763773532d9bc6561b8a508e1de7ace8e08a47ac165e269ea2e
+dashboard_installer_sha=1211dee5b854d73079934d871959e0ef72c23d3272824c01639bfdd8353f901c
 hash() { sha256sum "$1" | awk '{print $1}'; }
 [ -d "$stage" ] && [ ! -L "$stage" ] && [ "$(stat -c '%u:%a' "$stage")" = 0:700 ] || exit 1
 [ -f "$stage/dashboard-install.sh" ] && [ ! -L "$stage/dashboard-install.sh" ] || exit 1

@@ -67,7 +67,7 @@ hash() { sha256sum "$1" | awk '{print $1}'; }
 
     def test_user_archive_excludes_recursive_and_runtime_data_without_following_symlinks(self):
         data = self.fixture / 'data'
-        for directory in ['local/tmp', 'cache', 'log', 'logs', 'open-u60-agent-backups', 'zte-imei-ttl/backup', 'documents']:
+        for directory in ['local/tmp', 'zte-imei-studio/installations', 'zte-imei-studio/stage-fixture', 'cache', 'log', 'logs', 'open-u60-agent-backups', 'zte-imei-ttl/backup', 'documents']:
             path = data / directory
             path.mkdir(parents=True, exist_ok=True)
             (path / 'file').write_text('content')
@@ -78,7 +78,7 @@ hash() { sha256sum "$1" | awk '{print $1}'; }
             names = archive.getnames()
             self.assertIn('data/documents/file', names)
             self.assertTrue(archive.getmember('data/documents/reference').issym())
-            for excluded in ['data/local/tmp', 'data/cache', 'data/log', 'data/logs', 'data/open-u60-agent-backups', 'data/zte-imei-ttl/backup']:
+            for excluded in ['data/local/tmp', 'data/zte-imei-studio/installations', 'data/zte-imei-studio/stage-fixture', 'data/cache', 'data/log', 'data/logs', 'data/open-u60-agent-backups', 'data/zte-imei-ttl/backup']:
                 self.assertFalse(any(name == excluded or name.startswith(excluded + '/') for name in names), excluded)
 
     def test_user_archive_uses_busybox_compatible_exclusion_file(self):
@@ -97,7 +97,7 @@ hash() { sha256sum "$1" | awk '{print $1}'; }
         for name in ['etc/config/network', 'etc/rc.local', 'etc/zte-imei-admin/doas.conf',
                      'etc/init.d/zte_imei_ssclash', 'etc/init.d/zte_imei_screen_ru',
                      'data/zte-imei-apps/ssclash/.ssclash/config.json',
-                     'data/local/tmp/start_zte_agent.sh', 'data/zte-vpn/profiles/test.json', 'data/zte-vpn/config.json', 'data/zte-vpn/mihomo', 'data/unrelated/private.txt']:
+                     'data/local/tmp/start_zte_agent.sh', 'data/zte-imei-studio/start_zte_agent.sh', 'data/zte-imei-studio/start_zte_imei_studio.sh', 'data/zte-imei-studio/bin/dropbear', 'data/zte-vpn/profiles/test.json', 'data/zte-vpn/config.json', 'data/zte-vpn/mihomo', 'data/unrelated/private.txt']:
             path = self.fixture / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text('fixture')
@@ -109,7 +109,7 @@ hash() { sha256sum "$1" | awk '{print $1}'; }
         with tarfile.open(fileobj=io.BytesIO(result.stdout), mode='r:') as archive:
             for name in ['etc/config/network', 'etc/rc.local', 'etc/zte-imei-admin/doas.conf',
                          'etc/init.d/zte_imei_ssclash', 'etc/init.d/zte_imei_screen_ru',
-                         'data/zte-imei-apps/ssclash/.ssclash/config.json', 'data/local/tmp/start_zte_agent.sh', 'data/zte-vpn/profiles/test.json', 'data/zte-vpn/config.json']:
+                         'data/zte-imei-apps/ssclash/.ssclash/config.json', 'data/local/tmp/start_zte_agent.sh', 'data/zte-imei-studio/start_zte_agent.sh', 'data/zte-imei-studio/start_zte_imei_studio.sh', 'data/zte-imei-studio/bin/dropbear', 'data/zte-vpn/profiles/test.json', 'data/zte-vpn/config.json']:
                 self.assertIn(name, archive.getnames())
             self.assertTrue(archive.getmember('etc/rc.d/S95zte_imei_ssclash').issym())
             self.assertNotIn('data/unrelated/private.txt', archive.getnames())

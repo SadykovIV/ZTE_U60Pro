@@ -23,7 +23,7 @@ public sealed partial class WindowsModemService
                 ExistingSshFactory = _ssh is not null && host == _host && key == KeyPath && knownHosts == KnownHostsPath
                     ? () => _sshRead ?? _ssh : null,
             };
-        var setup = await onboarding.PrepareAsync(webPassword,agentPassword,backupKeySuffix,ct);
+        var setup = await onboarding.PrepareAsync(webPassword,agentPassword,backupKeySuffix,ct,forceReinstall: Param(parameters,"force_reinstall") == "true");
         _host = host;
         _port = setup.Port;
         _keyPath = setup.KeyPath;
@@ -209,7 +209,7 @@ public sealed partial class WindowsModemService
                 try
                 {
                     var command = "set -eu; test \"$(cat " + owner + ")\" = " + VerifiedHash.ShellQuote(token) +
-                        "; for p in /data/local/tmp/zte-imei-installations/active /data/local/tmp/open-u60-transactions/active /tmp/fota_install_processing /data/zte-vpn/transaction; do test ! -e \"$p\" && test ! -L \"$p\"; done; " +
+                        "; for p in /data/zte-imei-studio/installations/active /data/local/tmp/zte-imei-installations/active /data/local/tmp/open-u60-transactions/active /tmp/fota_install_processing /data/zte-vpn/transaction; do test ! -e \"$p\" && test ! -L \"$p\"; done; " +
                         "ubus call zwrt_mc.device.manager device_reboot '{\"moduleName\":\"web\"}'";
                     var response = await _ssh.RunAsync(command,timeout:TimeSpan.FromSeconds(15),ct:ct);
                     if (!response.Success) throw new IOException("Модем не подтвердил команду перезагрузки. Перед повтором проверьте его состояние.");

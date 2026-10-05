@@ -8,6 +8,12 @@ private final class Probe: RemoteTransport {
         calls.append(command)
         if partial { throw CommandFailure(message: "timeout", partial: CommandResult(status: -1, stdout: Data("before timeout\npassword=TOP-SECRET\n".utf8), stderr: Data("link lost".utf8))) }
         if fail { throw IMEIError.message("unreachable") }
+        if command == SSHReadProof.command {
+            identities += 1
+            let firmware = unknown ? String(repeating: "a", count: 64) : ModemEngine.firmwareHash
+            let boot = reboot && identities > 1 ? "3a2fb1c5-1bbf-4d3b-92a8-3daaf5510601" : "2a2fb1c5-1bbf-4d3b-92a8-3daaf5510601"
+            return CommandResult(status: 0, stdout: Data(("ZTE_SSH_READ_V1\n0\nLinux\naarch64\n0123456789abcdef0123456789abcdef\n" + boot + "\n" + firmware + "\n" + ModemEngine.routerHash + "\n").utf8), stderr: Data())
+        }
         if command.hasPrefix("sha256sum /firmware") || command == DiagnosticTransportSelector.identityCommand {
             identities += 1
             return CommandResult(status: 0, stdout: Data(((unknown ? String(repeating: "a", count: 64) : ModemEngine.firmwareHash) + " /firmware/image/modem.b16\n" + ModemEngine.routerHash + " /usr/bin/diag-router\n0123456789abcdef0123456789abcdef\n" + (reboot && identities > 1 ? "3a2fb1c5-1bbf-4d3b-92a8-3daaf5510601" : "2a2fb1c5-1bbf-4d3b-92a8-3daaf5510601") + "\n").utf8), stderr: Data())

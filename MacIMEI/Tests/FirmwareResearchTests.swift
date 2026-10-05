@@ -167,7 +167,7 @@ private final class FakeRunner: ResearchProcessRunning {
         try check(unsupported.allSatisfy { $0.state == "blocked" }, "A known firmware profile excluded by current operation is a confirmed blocker")
         let bundledResources = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("Resources")
         let bundled = try ResearchSpecification.load(bundledResources)
-        try check(bundled.probes.count == 46 && bundled.features.count == 19 && bundled.revision == 8 && bundled.observations?.count == 45, "Bundled reviewed specification")
+        try check(bundled.probes.count == 46 && bundled.features.count == 19 && bundled.revision == 9 && bundled.observations?.count == 45, "Bundled reviewed specification")
         var values = [String: [String: String]]()
         for feature in bundled.features { for requirement in feature.requirements { values[requirement.probe, default: [:]][requirement.fact] = requirement.equals } }
         values["boot-protection"]?["restore_readiness"] = "not-assessed"
@@ -180,8 +180,8 @@ private final class FakeRunner: ResearchProcessRunning {
         let failedIdentity = ResearchProbeResult(id:"identity", title:title, category:"identity", command:"", outcome:"failed", exitCode:1, stdout:"", stderr:"", durationSeconds:0, facts:identityProbe.facts)
         try check(FirmwareResearchCollector.profile(bundled, results:[failedIdentity,hashProbe]) == nil, "Failed probes do not silently become trusted after the no-LF fix")
         try check(bundled.features.filter { ["config-backup","user-data-backup","modem-backup","full-backup","full-restore"].contains($0.id) }.allSatisfy { feature in feature.requirements.contains { $0.fact == "tmp_private_stage_parent" } && !feature.requirements.contains { $0.fact == "tmp_safe" } }, "Backup assessment accepts a sticky private-stage parent independently of installer parents")
-        try check(bundled.features.filter { ["preparation","ssh"].contains($0.id) }.allSatisfy { feature in feature.requirements.contains { $0.fact == "setup_parents_safe" } }, "Installer parent gates remain strict")
-        try check(bundled.features.first { $0.id == "agent" }!.requirements.contains { $0.fact == "dashboard_runtime_safe" } && !bundled.features.first { $0.id == "agent" }!.requirements.contains { $0.fact == "setup_parents_safe" }, "Private dashboard update must not inherit old startup parent blocker")
+        try check(bundled.features.filter { ["preparation","ssh"].contains($0.id) }.allSatisfy { feature in feature.requirements.contains {  $0.fact == "setup_anchor_safe" } }, "Installer uses the protected private anchor")
+        try check(bundled.features.first { $0.id == "agent" }!.requirements.contains { $0.fact == "dashboard_runtime_safe" } && !bundled.features.first { $0.id == "agent" }!.requirements.contains {  $0.fact == "setup_anchor_safe" }, "Private dashboard update must not inherit old startup parent blocker")
         let assessment = FirmwareResearchCollector.assess(bundled, results: prerequisites, profile: "b31")
         try check(assessment.first(where: { $0.id == "full-restore" })?.state == "unknown", "Deliberately unassessed restoration readiness must stay unknown")
         try check(assessment.first(where: { $0.id == "physical-euicc" })?.state == "unknown" && assessment.first(where: { $0.id == "native-esim" })?.state == "unknown", "Metadata cannot prove physical or native card management")

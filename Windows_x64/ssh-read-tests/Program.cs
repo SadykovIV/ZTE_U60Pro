@@ -51,12 +51,34 @@ foreach(var uid in new[]{"0","1000"})
     }
     finally{Directory.Delete(storage,true);}
 }
+{
+    var storage=Path.Combine(Path.GetTempPath(),"zte-ssh-retry-"+Guid.NewGuid());
+    try
+    {
+        Keys(storage);
+        var remote=new Remote("0"){FailNext=true};
+        var service=new WindowsModemService(storage,Path.GetFullPath("Windows_x64/Resources")){SshFactory=()=>remote};
+        var request=new OperationRequest(ModemOperation.Connect,new Dictionary<string,string>{{"host","192.0.2.1"}});
+        Need(!(await service.RunAsync(request)).Success&&!(await service.GetDeviceSnapshotAsync()).IsConnected,"Failed connection left stale readiness");
+        Need((await service.RunAsync(request)).Success&&(await service.GetDeviceSnapshotAsync()).IsConnected,"Same service could not retry SSH without restart");
+        remote.FailNext=true;
+        Need(!(await service.RunAsync(new(ModemOperation.RefreshDevice))).Success,"Synthetic read failure was hidden");
+        Need((await service.RunAsync(new(ModemOperation.RefreshDevice))).Success,"Read failure retained service busy lock");
+        File.WriteAllText(Path.Combine(storage,"setup-pending.json"),"{}");
+        Need((await service.GetDeviceSnapshotAsync()).PreparationPending,"New pending setup did not appear without restart");
+        File.Delete(Path.Combine(storage,"setup-pending.json"));
+        Need(!(await service.GetDeviceSnapshotAsync()).PreparationPending&&remote.Writes==0,"Resolved pending setup remained latched or retry wrote to device");
+        Console.WriteLine("PASS same service retries failed SSH and reads live pending state without writes");passed++;
+    }
+    finally{Directory.Delete(storage,true);}
+}
 Console.WriteLine($"RESULT {passed} service groups passed; no device");
 sealed class Remote(string uid):IRemoteShell
 {
-    public List<string> Commands=[];public int Writes;public bool ChangeBoot;private int reads;
+    public List<string> Commands=[];public int Writes;public bool ChangeBoot,FailNext;private int reads;
     public Task<RemoteResult> RunAsync(string command,byte[]? stdin=null,TimeSpan? timeout=null,CancellationToken ct=default)
     {
+        if(FailNext){FailNext=false;throw new IOException("Synthetic SSH unavailable");}
         Commands.Add(command);if(stdin is not null||timeout is null||timeout>TimeSpan.FromSeconds(30))throw new Exception("Unexpected input/unbounded call");
         if(command==SshReadProof.Command){reads++;var boot=ChangeBoot&&reads>1?"22222222-2222-2222-2222-222222222222":"11111111-1111-1111-1111-111111111111";return Task.FromResult(new RemoteResult(0,Encoding.UTF8.GetBytes("ZTE_SSH_READ_V1\n"+uid+"\nLinux\narmv7l\n?\n"+boot+"\n?\nabsent\n"),[]));}
         if(command=="ubus call system board")return Task.FromResult(new RemoteResult(127,[],[]));

@@ -81,8 +81,8 @@ service_info() {
            plain "$launch" && test "$(hash "$launch")" = 2f4c2b45dd6142fcc5b6b7aeaf5c0fc5923ba647f4cb3b95fe45e6b1f665c301 &&
            plain /data/local/tmp/stop_open_u60_listener.sh && test "$(hash /data/local/tmp/stop_open_u60_listener.sh)" = 82474a9f2ee061d105041986efb904c2cb0ee43353a7be94cd2ad18f450d9d08 && dashboard_root; then controlled=1; fi;;
       agent)
-        port=2382; exe=/data/zte-agent; launch=/data/local/tmp/start_zte_agent.sh
-        if safe_dir /data && plain "$exe" && test "$(hash "$exe")" = b5c27d398e85db8a87d454d729cb36f22e54a2d832fb1117b27aa055e5032537 && agent_launcher_valid "$launch"; then controlled=1; fi;;
+        port=2382; exe=/data/zte-agent; launch=/data/zte-imei-studio/start_zte_agent.sh
+        if safe_dir /data && safe_dir /data/zte-imei-studio && plain "$exe" && test "$(hash "$exe")" = b5c27d398e85db8a87d454d729cb36f22e54a2d832fb1117b27aa055e5032537 && agent_launcher_valid "$launch"; then controlled=1; fi;;
       managementSSH) port=08AE;;
       userSSH)
         port=08AF; exe=/data/zte-imei-admin/bin/dropbear; launch=/data/zte-imei-admin/start-ssh-users.sh
@@ -143,7 +143,7 @@ safe_dir "$stage" && test "$(stat -c %a "$stage")" = 700 || fail STAGE_MODE
 safe_dir /tmp/zte-imei-app.lock && plain /tmp/zte-imei-app.lock/owner && test "$(cat /tmp/zte-imei-app.lock/owner)" = "$lock_token" || fail GLOBAL_LOCK
 # The calling SSH transport must remain on the protected application endpoint.
 port_open 08AE || fail MANAGEMENT_CHANNEL
-for pending in /data/zte-imei-admin/active /data/local/tmp/zte-imei-installations/active /data/local/tmp/open-u60-transactions/active /tmp/fota_install_processing; do test ! -e "$pending" && test ! -L "$pending" || fail OTHER_TRANSACTION; done
+for pending in /data/zte-imei-admin/active /data/zte-imei-studio/installations/active /data/local/tmp/zte-imei-installations/active /data/local/tmp/open-u60-transactions/active /tmp/fota_install_processing; do test ! -e "$pending" && test ! -L "$pending" || fail OTHER_TRANSACTION; done
 service_info "$chosen" && test "$controlled" = 1 && owned_pids || fail UNVERIFIED_SERVICE
 was_running=0; test -z "$pids" || was_running=1
 # Copy the validated launcher into the private stage and validate the copy too.

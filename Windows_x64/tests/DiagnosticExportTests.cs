@@ -25,6 +25,11 @@ internal static class DiagnosticExportTests
         privacy.Remember([secret,suffix,"a\"b\\c"]);
         var original = "Preparing SSH: detail remains useful\n" + secret + "\n" + suffix + "\n{\"password\":\"a\\\"b\\\\c\"}\nLPA:1$example.com$synthetic-matching-id\nAuthorization: Bearer synthetic-token\nCookie: first=value; second=synthetic-cookie\n-----BEGIN OPENSSH PRIVATE KEY-----\nsynthetic-key-body\n-----END OPENSSH PRIVATE KEY-----\nvless://synthetic-profile@host\nconfirmation_code: synthetic-confirmation\n";
         var cleaned = privacy.Clean(original);
+        Check(privacy.Clean("version text 1.24.5.0 address 192.0.2.7").Contains("[IP REDACTED]") && !privacy.CleanApplicationVersion("1.24.5.0\nprivate 192.0.2.7").Contains("192.0.2.7"),"version exception cannot affect arbitrary text or injected multiline metadata");
+        var versionPrivacy=new DiagnosticPrivacy();versionPrivacy.Remember(["1.24.5.0"]);
+        Check(!versionPrivacy.CleanApplicationVersion("1.24.5.0").Contains("1.24.5.0"),"known private values remain redacted even in a version field");
+        var versionFiles=ReadZip(DiagnosticsExporter.Export(root,Path.Combine(root,"version.zip"),new(null,null,null,"1.24.5.0"),[],privacy).Path);
+        using(var version=JsonDocument.Parse(versionFiles["report.json"]))Check(version.RootElement.GetProperty("applicationVersion").GetString()=="1.24.5.0","structured application version is preserved rather than redacted as an IP");
         Check(cleaned.Contains("detail remains useful") && new[]{secret,suffix,"synthetic-matching-id","synthetic-token","synthetic-cookie","synthetic-key-body","synthetic-profile","synthetic-confirmation","a\\\"b"}.All(x=>!cleaned.Contains(x)), "secret, escaped credentials, LPA, confirmation, key and profile redaction");
         Check(!privacy.Clean("Download failed for https://user:URL_PRIVATE_CANARY@example.com/private-subscription and https://example.com/OPAQUE_SUBSCRIPTION_CANARY").Contains("CANARY"),"URL credentials and opaque subscription paths are hidden even without known inputs");
         DiagnosticsExporter.Append(root,new(DateTimeOffset.UtcNow,"info",original),privacy);
@@ -102,7 +107,7 @@ internal static class DiagnosticExportTests
         var cachedPath=Path.Combine(combinedRoot,"FirmwareResearch","latest.json");
         var cachedTime=new DateTimeOffset(2026,9,1,1,2,3,TimeSpan.Zero);
         var factualHash=new string('a',64);
-        var cachedReport=new ResearchReport(1,"cached-synthetic-report",cachedTime,cachedTime.AddMinutes(1),"complete","SSH",null,"1.23.old",7,
+        var cachedReport=new ResearchReport(1,"cached-synthetic-report",cachedTime,cachedTime.AddMinutes(1),"complete","SSH",null,"1.24.5.0",7,
             [new("identity",new("Система","System"),"platform","uname -s","success",0,"Linux\npassword="+secret+"\nLPA:1$example.com$CACHE_ACTIVATION_PRIVATE\nFR_FACT firmware_sha256="+factualHash,"",12,cachedTime,false,new Dictionary<string,string>{{"firmware_sha256",factualHash},{"os","Linux"},{"detail",secret},{"activation_code","UNKNOWN_CACHED_ACTIVATION_PRIVATE"},{"token_hash",new string('b',64)},{"activation_code_sha256",new string('c',64)},{"password_sha256",new string('d',64)},{"secret_hash",new string('e',64)}})],[],[],factualHash);
         ResearchReportFiles.Save(cachedReport,cachedPath);
         DiagnosticsExporter.Append(combinedRoot,new(eventTime,"info","Combined program action"),privacy);
@@ -111,12 +116,14 @@ internal static class DiagnosticExportTests
         Check(combinedFiles.ContainsKey("firmware-research/report.json") && combinedFiles.ContainsKey("firmware-research/probes/identity.txt") && Encoding.UTF8.GetString(combinedFiles["application-journal.jsonl"]).Contains("Combined program action"),"one offline ZIP includes program actions and cached modem probes");
         var combinedText=string.Join('\n',combinedFiles.Values.Select(Encoding.UTF8.GetString));
         Check(!combinedText.Contains(secret) && !combinedText.Contains("CACHE_ACTIVATION_PRIVATE") && !combinedText.Contains("UNKNOWN_CACHED_ACTIVATION_PRIVATE") && !combinedText.Contains("PEM_CACHED_PRIVATE_BODY") && !combinedText.Contains("PEM_TRUNCATED_PRIVATE_BODY") && !new[]{'b','c','d','e'}.Any(ch=>combinedText.Contains(new string(ch,64))),"cached probe transcripts and facts are redacted again on common export");
+        using(var cachedVersion=JsonDocument.Parse(combinedFiles["firmware-research/report.json"]))
+            Check(cachedVersion.RootElement.GetProperty("applicationVersion").GetString()=="1.24.5.0","cached structured application version is preserved inside the research report");
         using(var cachedJson=JsonDocument.Parse(combinedFiles["firmware-research/report.json"]))
             Check(cachedJson.RootElement.GetProperty("probes")[0].GetProperty("facts").GetProperty("firmware_sha256").GetString()==factualHash && cachedJson.RootElement.GetProperty("specificationSHA256").GetString()==factualHash,"factual SHA256 values remain exact after redaction");
         using(var manifest=JsonDocument.Parse(combinedFiles["manifest.json"]))
         {
             var origin=manifest.RootElement.GetProperty("sources").GetProperty("firmwareResearch");
-            Check(origin.GetProperty("collectionStartedAt").GetDateTimeOffset()==cachedTime && origin.GetProperty("applicationVersion").GetString()=="1.23.old" && origin.GetProperty("relationToCurrentConnection").GetString()=="not-assessed" && origin.GetProperty("sourceSha256").GetString()==Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(cachedPath))),"cached report timestamps/version/source hash remain separate from current settings");
+            Check(origin.GetProperty("collectionStartedAt").GetDateTimeOffset()==cachedTime && origin.GetProperty("applicationVersion").GetString()=="1.24.5.0" && origin.GetProperty("relationToCurrentConnection").GetString()=="not-assessed" && origin.GetProperty("sourceSha256").GetString()==Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(cachedPath))),"cached report timestamps/version/source hash remain separate from current settings");
             Check(manifest.RootElement.GetProperty("files").EnumerateArray().All(e=>e.GetProperty("sha256").GetString()==Convert.ToHexStringLower(SHA256.HashData(combinedFiles[e.GetProperty("path").GetString()!]))),"merged ZIP hashes cover research files and original application files");
             Check(combinedFiles.Values.Sum(x=>(long)x.Length)<=32*1024*1024,"combined payload respects the total byte limit");
         }
