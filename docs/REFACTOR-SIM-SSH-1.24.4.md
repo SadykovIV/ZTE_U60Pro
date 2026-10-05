@@ -60,4 +60,3 @@ Windows UI тестировался на macOS. Эти границы не за�
 | macOS | Windows UI |
 | --- | --- |
 | ![Обычная SIM в macOS](images/1.24.4-build43/macos-ordinary-sim-ru.png) | ![Обычная SIM в Windows UI](images/1.24.4-build43/windows-ordinary-sim-ru.png) |
-
