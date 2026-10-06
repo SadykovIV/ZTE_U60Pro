@@ -30,15 +30,15 @@
 
 ## eSIM: исходники и пересборка
 
-`eSIM-sources.tar.gz` поставляется внутри `Resources/Esim`, отдельного архива агента и `Third-party-sources-1.23.3.tar.gz`. Он содержит полный lpac/libeuicc/cJSON, upstream stdio patch, локальные агент/bridge/launcher/web-компоненты, лицензии и рецепты. Исходники также доступны в Git. [Описание изменений и сборки](third_party/ESIM-SOURCES.md). `PROVENANCE.json` фиксирует upstream commit, SHA-256 компонентов и архива; версия lpac явно закреплена как `v2.3.0-stdio-backports`.
+`eSIM-sources.tar.gz` поставляется внутри `Resources/Esim`, отдельного архива агента и `Third-party-sources-1.24.9.tar.gz`. Он содержит полный lpac/libeuicc/cJSON, upstream stdio patch, локальные агент/bridge/launcher/web-компоненты, лицензии и рецепты. Исходники также доступны в Git. [Описание изменений и сборки](third_party/ESIM-SOURCES.md). `PROVENANCE.json` фиксирует upstream commit, SHA-256 компонентов и архива; версия lpac явно закреплена как `v2.3.0-stdio-backports`.
 
 ## Исходники распространяемых компонентов
 
 Mihomo поставляется без изменения официального ELF; его SHA-256:
 `1b315bc038d05f84ee86d232f3c3d2b020b5044e9b971bb8fe215b6e6a2148f3`.
 Соответствующий архив исходников указанного commit включён в
-**Third-party-sources-1.23.3.tar.gz → mihomo-v1.19.31-source.tar.gz**,
-который доступен рядом с программой на [странице релиза](https://github.com/SadykovIV/ZTE_U60Pro/releases/tag/v1.23.3).
+**Third-party-sources-1.24.9.tar.gz → mihomo-v1.19.31-source.tar.gz**,
+который доступен рядом с программой на [странице релиза](https://github.com/SadykovIV/ZTE_U60Pro/releases/tag/v1.24.9).
 Он также доступен [на сервере upstream](https://codeload.github.com/MetaCubeX/mihomo/tar.gz/ab405bad5beeeac8b003bb01f60f134f6df54471).
 Архив содержит go.mod/go.sum, исходники и Makefile upstream; зависимости и
 инструменты их сборки определены этим проектом. Лицензия GPL относится к

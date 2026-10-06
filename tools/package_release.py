@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Package verified public builds. Does not publish or connect to a device."""
 from pathlib import Path
+import argparse
 import gzip
 import hashlib
 import json
@@ -9,12 +10,19 @@ import shutil
 import tarfile
 
 ROOT = Path(__file__).resolve().parents[1]
-OUT = ROOT / 'release'
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--output-dir', type=Path, default=ROOT / 'release')
+parser.add_argument('--previous-release', required=True)
+parser.add_argument('--build-source-commit', required=True)
+args = parser.parse_args()
+if re.fullmatch(r'v\d+\.\d+\.\d+', args.previous_release) is None or re.fullmatch(r'[0-9a-f]{40}', args.build_source_commit) is None:
+    raise SystemExit('Invalid previous release or build source commit')
+OUT = args.output_dir
 RES = ROOT / 'MacIMEI/Resources'
 VERSION = re.search(r'<Version>([^<]+)</Version>', (ROOT / 'Windows_x64/src/ZteImeiStudio.Windows.csproj').read_text()).group(1)
 AGENT_VERSION = re.search(r'static let version = "([^"]+)"', (ROOT / 'MacIMEI/Sources/BundledAgent.swift').read_text()).group(1)
 RELEASE_URL = f'https://github.com/SadykovIV/ZTE_U60Pro/releases/download/v{VERSION}/'
-OUT.mkdir(exist_ok=True)
+OUT.mkdir(parents=True, exist_ok=True)
 
 
 def sha(path):
@@ -51,6 +59,16 @@ def copy_artifact(source, name):
 # Refuse inconsistent or private inputs before creating any release output.
 if any(OUT.iterdir()):
     raise SystemExit('Release output must be empty; preserve previous artifacts in a separate directory')
+source_root = ROOT / '.cache/public-sources'
+for path in [source_root / 'SOURCES.json', source_root / 'SHA256SUMS',
+             ROOT / '.cache/mihomo-v1.19.31-source.tar.gz', ROOT / '.cache/opendoas-6.8.2.tar.xz']:
+    if not path.is_file():
+        raise SystemExit('Missing corresponding-source input: ' + path.name)
+for line in (source_root / 'SHA256SUMS').read_text().splitlines():
+    expected, name = line.split('  ', 1)
+    relative = Path(name)
+    if relative.is_absolute() or '..' in relative.parts or sha(source_root / relative) != expected:
+        raise SystemExit('Invalid corresponding-source input: ' + name)
 agent_hash = sha(RES / 'Onboarding/zte-agent')
 for app in ['MacIMEI', 'Windows_x64']:
     resources = ROOT / app / 'Resources'
@@ -79,7 +97,7 @@ artifacts.append(copy_artifact(ROOT / f'Windows_x64/dist/ZTE-U60Pro-Manager-{VER
 agent = copy_artifact(RES / 'Onboarding/zte-agent', f'zte-agent-{AGENT_VERSION}-aarch64-linux-musl')
 agent.chmod(0o755)
 artifacts.append(agent)
-entries = {'zte-agent': agent, 'README.md': ROOT / 'docs/AGENT.md',
+entries = {'zte-agent': agent, 'README.md': ROOT / 'docs/AGENT-PACKAGE.md',
            'LICENSE': ROOT / 'ModemAgent/LICENSE', 'THIRD_PARTY_NOTICES.md': ROOT / 'THIRD_PARTY_NOTICES.md', 'LICENSE-SCOPE.md': ROOT / 'LICENSE-SCOPE.md'}
 for folder, prefix in [(RES / 'AgentDashboard', 'dashboard'), (RES / 'Esim', 'esim'), (RES / 'AgentDashboardInstall', 'dashboard-install'), (RES / 'AgentInstallation', 'agent-install'), (ROOT / 'licenses', 'licenses')]:
     for path in folder.rglob('*'):
@@ -157,9 +175,14 @@ artifacts.append(source_archive)
 artifacts.append(copy_artifact(ROOT / 'MacIMEI/dist/build-manifest.json', 'macOS-build-manifest.json'))
 artifacts.append(copy_artifact(ROOT / f'Windows_x64/dist/windows-{VERSION}-build-manifest.json', 'Windows-build-manifest.json'))
 release_manifest = OUT / 'release-manifest.json'
-release_manifest.write_text(json.dumps({'version': VERSION, 'previousRelease': 'v1.23.3', 'agentVersion': AGENT_VERSION,
+release_manifest.write_text(json.dumps({'version': VERSION, 'previousRelease': args.previous_release, 'agentVersion': AGENT_VERSION,
+                                      'buildSourceCommit': args.build_source_commit,
+                                      'testedDevice': {'model': 'ZTE U60 Pro / MU5250', 'firmware': 'CN_ZTE_MU5250V1.0.0B31',
+                                                       'innerVersion': 'BD_CNMU5250V1.0.0B31'},
+                                      'windowsNativeRuntimeVerified': False, 'b28HardwareVerified': False,
                                       'vpnctlVersion': '1.3.0', 'esim': {'card': 'physical removable eUICC',
-                                      'testedCard': '9eSIM V0', 'testedFirmware': 'CN_ZTE_MU5250V1.0.0B31',
+                                      'historicallyTestedCard': '9eSIM V0', 'testedFirmware': 'CN_ZTE_MU5250V1.0.0B31',
+                                      'profileMutationsHardwareTestedInThisRelease': False,
                                       'builtInZteSupported': False, 'qmiEs10LicenseStatus': 'unspecified'},
                                       'artifacts': {path.name: {'bytes': path.stat().st_size, 'sha256': sha(path)}
                                                     for path in sorted(artifacts)}}, indent=2) + '\n')

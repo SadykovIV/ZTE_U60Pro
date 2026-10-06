@@ -29,13 +29,13 @@ python3 tools/build.py
 разрешённые обычные файлы. Манифест — `tools/dependencies.json`. Это ADB, OpenSSH, Dropbear, OpenDoas, uhttpd, официальный Mihomo,
 диагностические пакеты, изолированный opkg и публичные модемные помощники.
 SSClash в нём нет. Лицензии входят в комплект, соответствующие исходники
-опубликованы отдельно в `Third-party-sources-1.23.3.tar.gz`. Каталоги кэша и сборки
+опубликованы отдельно в `Third-party-sources-1.24.9.tar.gz`. Каталоги кэша и сборки
 исключены из Git.
 
 `build.py` последовательно собирает runtime eSIM (lpac/bridge), расширение экрана, VPN-контроллер, агент eSIM,
 веб-панель, C-помощники и `zte-timeout`, обновляет зависимые SHA-256 и собирает `.app`/ZIP.
 Пути домашнего каталога в Rust и Swift переназначаются перед компиляцией.
-Результат: `MacIMEI/dist/ZTE-U60Pro-Manager-1.23.3-arm64.zip` и `build-manifest.json`.
+Результат: `MacIMEI/dist/ZTE-U60Pro-Manager-1.24.9-arm64.zip` и `build-manifest.json`.
 Rust-рецепт использует offline-сборку после `cargo fetch --locked`; для первой сборки нужен доступ к закреплённым crates. Сборка подписывается ad-hoc; сертификат разработчика и нотарификация не требуются.
 
 Проверка ABI расширения на исходном UI необязательна для повторной сборки:
@@ -53,7 +53,7 @@ python tools/fetch_dependencies.py
 .\Windows_x64\build.cmd
 ```
 
-Результат — `Windows_x64/dist/ZTE-U60Pro-Manager-1.23.3-Windows-x64-portable.zip`.
+Результат — `Windows_x64/dist/ZTE-U60Pro-Manager-1.24.9-Windows-x64-portable.zip`.
 Готовому приложению SDK, Python и отдельно установленная .NET не нужны.
 Не удаляйте `Resources` рядом с EXE. Для USB ADB может понадобиться драйвер ZTE.
 EXE не подписан сертификатом. Версии NuGet закреплены lock-файлами.
@@ -110,12 +110,22 @@ python3 tools/audit_public.py
 
 ## Упаковка релиза
 
-`python3 tools/package_release.py` создаёт отдельный ELF, архив агента с панелью,
+`tools/package_release.py` создаёт отдельный ELF, архив агента с панелью,
 ZIP приложения, архив сборочных зависимостей и SHA256SUMS в `release/`.
 Для упаковки нужны обе готовые сборки. Скрипт создаёт версионные файлы для
 macOS/Windows, агент текущей версии, архивы Build-dependencies и
 Third-party-sources, манифесты и `SHA256SUMS`. Версии приложения и агента
 берутся из текущих исходников.
+
+Для готовых сборок 1.24.9:
+
+```sh
+python3 tools/package_release.py --output-dir release/1.24.9 --previous-release v1.23.3 --build-source-commit ef11fea4cfc684bb05756a41be5444c1914a77f5
+```
+
+`build-source-commit` — исходники, из которых собраны приложения. Он сохраняется
+в манифесте отдельно от последующего коммита документации и упаковки. Каталог
+вывода должен быть пустым; предыдущие артефакты не перезаписываются.
 
 Исходные архивы `mihomo-v1.19.31-source.tar.gz` и `opendoas-6.8.2.tar.xz`
 должны находиться в `.cache`, eSIM-sources.tar.gz и его сведения относятся к eSIM; остальные соответствующие исходники и рецепты —
