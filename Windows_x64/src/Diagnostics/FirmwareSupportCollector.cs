@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using ZteImeiStudio.Transport;
 using ZteImeiStudio.Windows.Core;
+using ZteImeiStudio.Windows.Research;
 
 namespace ZteImeiStudio.Windows.Diagnostics;
 
@@ -13,10 +14,10 @@ internal sealed record FirmwareSupportFile(string Id, string State, long? Bytes,
 internal sealed record FirmwareSupportInspection(IReadOnlyDictionary<string,string> Facts, FirmwareSupportFile[] Files);
 internal sealed record FirmwareSupportResult(string Path, bool Complete, int CapturedFiles);
 
-/// A fixed read-only protocol. No remote path, command, environment or body is copied into the report.
+/// Fixed file paths and read-only research commands; raw environment and HTTP bodies are never exported.
 internal static class FirmwareSupportCollector
 {
-    internal const string ExpectedHelperSha256 = "0b041b33cdd3879d8245375c9126eb4a9b8d2e60038bae6c6041da79406dbbc6";
+    internal const string ExpectedHelperSha256 = "85cc338700611787a53228bb28ab461b8924c903c31eebddd9333edad1d56c00";
     internal sealed record Input(string Id, string RemotePath, string ArchivePath, long Limit, bool Required);
     internal static readonly Input[] Inputs = [
         new("ui", "/usr/bin/zte_topsw_devui", "files/zte_topsw_devui", 256L*1024*1024, true),
@@ -27,6 +28,9 @@ internal static class FirmwareSupportCollector
         new("original_english", "/data/zte-imei-screen-ru/backup/English.ini", "originals/English.ini", 16L*1024*1024, false),
         new("original_chinese", "/data/zte-imei-screen-ru/backup/Chinese.ini", "originals/Chinese.ini", 16L*1024*1024, false),
         new("original_init", "/data/zte-imei-screen-ru/backup/zte_topsw_devui.init", "originals/zte_topsw_devui.init", 4L*1024*1024, false),
+        new("font_zhengyuan", "/usr/ui/fonts/ZTEZhengYuan.ttf", "fonts/ZTEZhengYuan.ttf", 16L*1024*1024, false),
+        new("font_roboto", "/usr/ui/fonts/Roboto.ttf", "fonts/Roboto.ttf", 16L*1024*1024, false),
+        new("font_oswald", "/usr/ui/fonts/Zoswald-Medium-24.ttf", "fonts/Zoswald-Medium-24.ttf", 16L*1024*1024, false),
     ];
     private static readonly HashSet<string> FactKeys = ["uid","os","architecture","firmware","inner","openwrt_version","target","agent_present","agent_sha256","agent_running_count","agent_mode","agent_mapped_matches_disk","http_health_status","http_capabilities_status","http_dashboard_status","ui_mounts"];
     private static readonly HashSet<string> FileStates = ["present","missing","not_assessed","symlink","not_regular","unreadable","empty"];
@@ -124,8 +128,23 @@ internal static class FirmwareSupportCollector
     private static async Task<string> FileSha(string path,CancellationToken ct)
     { using var stream=File.OpenRead(path);return Convert.ToHexStringLower(await SHA256.HashDataAsync(stream,ct)); }
 
+    private static void ValidateResearch(ResearchReport report,SshReadProof before)
+    {
+        Require(report.Channel=="SSH" && report.Outcome is "complete" or "partial" or "time_limit");
+        var attempt=report.Probes.SingleOrDefault(p=>p.Id=="ssh-attempt");
+        Require(attempt is {Status:"success",ExitCode:0,Truncated:false,LocalExitCode:null or 0});
+        var fingerprint=report.Probes.SingleOrDefault(p=>p.Id=="fingerprint");
+        foreach(var (key,value) in new[]{("cid_sha256",before.Cid),("boot_sha256",before.BootId)})
+            if(value is not null)Require(fingerprint is {Status:"success",ExitCode:0,Truncated:false,LocalExitCode:null or 0} && fingerprint.Facts.GetValueOrDefault(key)==FirmwareResearchEngine.HashSavedCid(value));
+        var identity=report.Probes.SingleOrDefault(p=>p.Id=="identity");
+        foreach(var (key,value) in new[]{("uid",before.Uid),("operating_system",before.System),("architecture",before.Architecture)})
+            if(value is not null && identity is {Status:"success",ExitCode:0,Truncated:false,LocalExitCode:null or 0} && identity.Facts.TryGetValue(key,out var observed) && observed is not ("not-assessed" or "missing" or "unknown"))
+                Require(observed==value);
+    }
+
     internal static async Task<FirmwareSupportResult> CollectAsync(IRemoteShell shell,SshReadProof selected,StreamFile stream,
-        byte[] helper,string host,string destination,string workingDirectory,IReadOnlyDictionary<string,byte[]> activity,string version,CancellationToken ct,Action? verifySelection = null)
+        byte[] helper,string host,string destination,string workingDirectory,IReadOnlyDictionary<string,byte[]> activity,string version,CancellationToken ct,Action? verifySelection = null,
+        Func<SshReadProof,CancellationToken,Task<ResearchReport>>? collectResearch=null,DiagnosticPrivacy? privacy=null)
     {
         Require(System.Net.IPAddress.TryParse(host,out var ip)&&ip.AddressFamily==System.Net.Sockets.AddressFamily.InterNetwork);
         Require(Path.IsPathFullyQualified(destination)&&!File.Exists(destination)&&!Directory.Exists(destination));
@@ -152,6 +171,10 @@ internal static class FirmwareSupportCollector
                     new FileInfo(path).Length==item.Bytes&&await FileSha(path,token)==item.Sha256);
                 captures.Add(item.Id,path);
             }
+            verifySelection?.Invoke();
+            var research=collectResearch is null?null:await collectResearch(before,token);
+            if(research is not null)ValidateResearch(research,before);
+            token.ThrowIfCancellationRequested();verifySelection?.Invoke();
             var last=Parse(await shell.RunAsync(inspect,helper,TimeSpan.FromSeconds(45),token));
             var lastTime=DateTimeOffset.UtcNow;
             Require(first.Files.SequenceEqual(last.Files));
@@ -159,7 +182,8 @@ internal static class FirmwareSupportCollector
                 Require(first.Facts[key] == last.Facts[key]);
             // Runtime facts may change while collecting; both observations retain their timestamps.
             var after=await SshReadProof.ReadSessionAsync(shell,token);before.Verify(after);selected.Verify(after);
-            var complete=Inputs.Where(x=>x.Required).All(x=>captures.ContainsKey(x.Id));
+            var filesComplete=Inputs.Where(x=>x.Required).All(x=>captures.ContainsKey(x.Id));
+            var complete=filesComplete && research?.Outcome=="complete";
             var entries=new SortedDictionary<string,(string? Path,byte[]? Data)>(StringComparer.Ordinal);
             foreach(var input in Inputs.Where(x=>captures.ContainsKey(x.Id)))entries.Add(input.ArchivePath,(captures[input.Id],null));
             foreach(var item in activity)
@@ -167,13 +191,20 @@ internal static class FirmwareSupportCollector
                 Require(item.Key is "application-journal.jsonl" or "current-session.jsonl" or "operation-traces.jsonl");
                 Require(item.Value.Length<=8*1024*1024);entries.Add("activity/"+item.Key,(null,item.Value));
             }
-            entries.Add("README.txt",(null,Utf8.GetBytes("Firmware adaptation evidence; read-only SSH collection.\nFiles under files/ and originals/ are unchanged bytes, not redacted text.\nOnly the fixed screen program, language files and screen init script are collected. Agent startup, passwords, keys, device identifiers, user configuration, NV and SIM/eSIM profiles are excluded.\nactivity/ contains sanitized application activity; it may include earlier actions and is not a same-device proof. No cached firmware survey is copied.\nHTTP 401 means authentication is required, not an agent failure. Runtime mode may restrict features despite a running process.\nobservedFactsStable refers only to available quick SSH identity observations. identityStable is true only with both CID and boot continuity; partial or transport-only binding cannot establish full device identity. Runtime facts retain separate before/after observations and may differ.\nAn incomplete report is evidence only, not compatibility or write authorization.\n")));
+            if(research is not null)
+            {
+                privacy??=new DiagnosticPrivacy();
+                foreach(var item in ResearchReportFiles.BuildExportFiles(research,value=>ResearchReportFiles.CleanExportText(value,privacy.Clean,token),token,privacy.CleanApplicationVersion))
+                    entries.Add("research/"+item.Key,(null,item.Value));
+            }
+            entries.Add("README.txt",(null,Utf8.GetBytes("Firmware adaptation evidence; read-only SSH collection.\nFiles under files/ and originals/ are unchanged bytes, not redacted text.\nRaw files are limited to the current screen program, language files, screen init script, optional screen fonts and verified originals from our localization backup. Agent startup, passwords, keys, raw device identifiers, user configuration, NV and SIM/eSIM profiles are excluded.\nactivity/ contains sanitized application activity; it may include earlier actions and is not a same-device proof. research/ contains a fresh full read-only firmware survey from the same captured SSH selection, inside the before/after inspection window. No cached firmware survey is copied.\nHTTP 401 means authentication is required, not an agent failure. Runtime mode may restrict features despite a running process.\nobservedFactsStable refers only to available quick SSH identity observations. identityStable is true only with both CID and boot continuity; partial or transport-only binding cannot establish full device identity. Runtime facts retain separate before/after observations and may differ.\nThe survey covers access/agent, firmware APIs, IMEI prerequisites, TTL, VPN, screen/launcher, backups, packages and eSIM prerequisites; it performs no NV, APDU or functional write tests. Missing optional fonts do not make collection incomplete. Missing required files or a partial survey do. An incomplete report is evidence only, not compatibility or write authorization.\n")));
             var payloads=new List<object>();
             foreach(var (name,entry) in entries)payloads.Add(new { path=name,bytes=entry.Data?.LongLength??new FileInfo(entry.Path!).Length,sha256=entry.Data is {} data?Sha(data):await FileSha(entry.Path!,token) });
             var binding=before.Cid is not null&&before.BootId is not null?"full":before.Cid is not null||before.BootId is not null?"partial":"transport-only";
             entries.Add("manifest.json",(null,JsonSerializer.SerializeToUtf8Bytes(new {
-                schemaVersion=1,outcome=complete?"complete":"incomplete",complete,applicationVersion=version,createdAt=DateTimeOffset.UtcNow,
-                readOnly=true,channel="SSH",bindingStrength=binding,observedFactsStable=true,identityStable=binding=="full",helperSha256=Sha(helper),
+                schemaVersion=1,outcome=complete?"complete":"incomplete",complete,filesComplete,applicationVersion=version,createdAt=DateTimeOffset.UtcNow,
+                research=research is null?null:new { fresh=true,outcome=research.Outcome,complete=research.Outcome=="complete",specificationRevision=research.SpecificationRevision,specificationSha256=research.SpecificationSHA256,probeResultCount=research.Probes.Length,observationCount=research.Observations?.Length??0,startedAt=research.StartedAt,completedAt=research.CompletedAt,bindingStrength=research.BindingStrength,identityVerified=before.Cid is not null&&before.BootId is not null },
+                readOnly=true,writeAuthorization="none",channel="SSH",bindingStrength=binding,observedFactsStable=true,identityStable=binding=="full",helperSha256=Sha(helper),
                 firstObservedAt=firstTime,lastObservedAt=lastTime,factsBefore=first.Facts,factsAfter=last.Facts,files=Inputs.Select(x=>new {id=x.Id,path=x.RemotePath,archivePath=x.ArchivePath,required=x.Required,observation=first.Files.Single(f=>f.Id==x.Id),captureStatus=captures.ContainsKey(x.Id)?"verified":first.Files.Single(f=>f.Id==x.Id).Bytes>x.Limit?"over_limit":"unavailable"}),payloads,
             },Json)));
             var directory=Path.GetDirectoryName(destination)!;PrivateDirectory(directory);

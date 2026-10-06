@@ -111,7 +111,7 @@ public sealed partial class MainWindow
     private void BuildDiagnostics()
     {
         BuildFirmwareResearch();
-        AddCard("Данные для адаптации прошивки", "Текущие файлы экранного интерфейса и безопасные сведения об агенте для проверки совместимости.", panel =>
+        AddCard("Данные для адаптации прошивки", "Свежее исследование функций программы, текущие файлы экрана и доступные шрифты в одном ZIP.", panel =>
         {
             var row = new WrapPanel();
             _firmwareAdaptationButton = ActionButton("Собрать данные для адаптации прошивки", CollectFirmwareAdaptationAsync, false);

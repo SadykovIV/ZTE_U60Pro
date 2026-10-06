@@ -27,11 +27,12 @@ struct FirmwareSupportResult: Sendable {
 /// Explicit, read-only export. It never loads an NV helper, agent credentials,
 /// firmware allowlist, remote lock, or a fallback transport.
 final class FirmwareSupportCollector {
-    static let helperSHA256 = "0b041b33cdd3879d8245375c9126eb4a9b8d2e60038bae6c6041da79406dbbc6"
+    static let helperSHA256 = "85cc338700611787a53228bb28ab461b8924c903c31eebddd9333edad1d56c00"
     static let requiredIDs = ["ui", "english", "chinese", "init"]
-    static let allIDs = requiredIDs + ["original_ui", "original_english", "original_chinese", "original_init"]
+    static let allIDs = requiredIDs + ["original_ui", "original_english", "original_chinese", "original_init", "font_zhengyuan", "font_roboto", "font_oswald"]
     static let sources = ["ui": "/usr/bin/zte_topsw_devui", "english": "/usr/ui/language/English.ini", "chinese": "/usr/ui/language/Chinese.ini", "init": "/etc/init.d/zte_topsw_devui",
-        "original_ui": "/data/zte-imei-screen-ru/backup/zte_topsw_devui", "original_english": "/data/zte-imei-screen-ru/backup/English.ini", "original_chinese": "/data/zte-imei-screen-ru/backup/Chinese.ini", "original_init": "/data/zte-imei-screen-ru/backup/zte_topsw_devui.init"]
+        "original_ui": "/data/zte-imei-screen-ru/backup/zte_topsw_devui", "original_english": "/data/zte-imei-screen-ru/backup/English.ini", "original_chinese": "/data/zte-imei-screen-ru/backup/Chinese.ini", "original_init": "/data/zte-imei-screen-ru/backup/zte_topsw_devui.init",
+        "font_zhengyuan": "/usr/ui/fonts/ZTEZhengYuan.ttf", "font_roboto": "/usr/ui/fonts/Roboto.ttf", "font_oswald": "/usr/ui/fonts/Zoswald-Medium-24.ttf"]
     static let factKeys: Set<String> = ["uid", "os", "architecture", "firmware", "inner", "openwrt_version", "target", "agent_present", "agent_sha256", "agent_running_count", "agent_mode", "agent_mapped_matches_disk", "http_health_status", "http_capabilities_status", "http_dashboard_status", "ui_mounts"]
     static let metadataLimit = 65_536
     static let totalLimit: Int64 = 600 * 1024 * 1024
@@ -39,6 +40,7 @@ final class FirmwareSupportCollector {
         switch id.replacingOccurrences(of: "original_", with: "") {
         case "ui": return 256 * 1024 * 1024
         case "english", "chinese": return 16 * 1024 * 1024
+        case "font_zhengyuan", "font_roboto", "font_oswald": return 16 * 1024 * 1024
         case "init": return 4 * 1024 * 1024
         default: return 0
         }
@@ -50,10 +52,12 @@ final class FirmwareSupportCollector {
     let secrets: [String]
     let selectionIsCurrent: @Sendable () -> Bool
     let update: @Sendable (String, Double) -> Void
+    let researchSurvey: ((ResearchCancellation) throws -> FirmwareResearchReport)?
 
     init(root: URL, resources: URL, connection: Connection, session: ReadOnlyChannelSession,
          remote: RemoteTransport? = nil, streamer: BackupStreamTransport? = nil, secrets: [String] = [],
          selectionIsCurrent: @escaping @Sendable () -> Bool = { true },
+         researchSurvey: ((ResearchCancellation) throws -> FirmwareResearchReport)? = nil,
          update: @escaping @Sendable (String, Double) -> Void = { _, _ in }) throws {
         try require(session.mode == .ssh && session.diagnosticSession?.transport == "ssh" &&
                     session.sshEndpoint == ConnectionRouter.sshEndpoint(connection), "Для сбора данных требуется выбранное SSH-подключение")
@@ -61,6 +65,7 @@ final class FirmwareSupportCollector {
         self.root = root; self.resources = resources; self.connection = connection; self.selectedProof = proof
         self.remote = remote ?? SSHTransport(connection); self.streamer = streamer ?? SSHBackupStreamTransport(connection)
         self.secrets = secrets; self.selectionIsCurrent = selectionIsCurrent; self.update = update
+        self.researchSurvey = researchSurvey
     }
 
     static func parseSnapshot(_ data: Data) throws -> FirmwareSupportSnapshot {
@@ -174,7 +179,25 @@ final class FirmwareSupportCollector {
             entries.append(["path": "files/" + item.id, "sha256": local.sha256, "bytes": String(local.bytes)])
         }
         try checkCancelled()
-        update("Проверяю неизменность файлов и SSH-сеанса…", 0.8)
+        try require(selectionIsCurrent(), "Настройки подключения изменились. Подключитесь к выбранному модему заново.")
+        update("Исследую зависимости функций программы…", 0.75)
+        let researchToken = ResearchCancellation(external: cancelled)
+        let research: FirmwareResearchReport
+        if let researchSurvey { research = try researchSurvey(researchToken) }
+        else {
+            let specification = try ResearchSpecification.load(resources)
+            let collector = FirmwareResearchCollector(specification: specification, connection: connection, mode: .ssh,
+                resources: resources, cancellation: researchToken, expectedCID: beforeProof.cid, secrets: secrets, timeLimit: nil)
+            research = collector.collect(context: ["appVersion": DiagnosticsContext.version, "platform": "macos",
+                "purpose": "firmware-adaptation", "probeSpecificationSHA256": ResearchSpecification.expectedSHA256,
+                "writePermissionGrantedByResearch": "false"]) { [update] partial, progress in
+                    update("Исследую зависимости функций программы…", 0.75 + 0.15 * progress)
+                }
+        }
+        try checkCancelled()
+        try Self.verifyResearch(research, proof: beforeProof)
+        let researchPayloads = try FirmwareResearchArchive.textPayloads(research, secrets: secrets)
+        update("Проверяю неизменность файлов и SSH-сеанса…", 0.92)
         let after = try inspect(script), afterProof = try quickProof()
         try beforeProof.verify(afterProof)
         try selectedQuick.verify(afterProof)
@@ -184,11 +207,17 @@ final class FirmwareSupportCollector {
         }
         let omissions = before.files.filter { $0.status != "present" || ($0.bytes ?? Int64.max) > Self.limit($0.id) }
         let missing = omissions.filter { Self.requiredIDs.contains($0.id) }
-        let complete = missing.isEmpty
+        let complete = missing.isEmpty && research.outcome == "complete"
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         func add(_ data: Data, _ name: String) throws {
+            total += Int64(data.count)
+            try require(total <= Self.totalLimit, "Данные для адаптации превышают допустимый размер")
             try savePrivate(data, folder.appendingPathComponent(name))
             entries.append(["path": name, "sha256": digest(data), "bytes": String(data.count)])
+        }
+        for payload in researchPayloads {
+            try secureDirectory(folder.appendingPathComponent("research/" + payload.path).deletingLastPathComponent())
+            try add(payload.data, "research/" + payload.path)
         }
         var elf = [String: [String: String]]()
         for id in ["ui", "original_ui"] where present.contains(where: { $0.id == id }) {
@@ -199,6 +228,10 @@ final class FirmwareSupportCollector {
         let metadata: [String: Any] = ["schema": 1, "applicationVersion": DiagnosticsContext.version, "applicationBuild": DiagnosticsContext.build,
             "startedAt": started, "finishedAt": ISO8601DateFormatter().string(from: Date()), "complete": complete, "writeAuthorization": "none", "elf": elf,
             "transport": "ssh", "helperSHA256": Self.helperSHA256, "sources": Self.sources, "bindingStrength": binding,
+            "research": ["outcome": research.outcome, "specificationRevision": research.specificationRevision,
+                         "specificationSHA256": research.application["probeSpecificationSHA256"] ?? "not-assessed",
+                         "probeCount": research.probes.count, "fresh": true, "continuityVerified": true,
+                         "report": "research/report.json"],
             "continuity": ["selectedSSH": true, "observedFactsStable": true, "identityStable": binding == "full", "cidCompared": beforeProof.cid != nil, "bootCompared": beforeProof.bootID != nil,
                            "filesCompared": true, "firmwareCompared": before.facts["firmware"] != "not_assessed" && before.facts["inner"] != "not_assessed"],
             "before": try JSONSerialization.jsonObject(with: encoder.encode(before)),
@@ -214,7 +247,12 @@ final class FirmwareSupportCollector {
         File bytes are unchanged. Original_* files are included only when a
         verified localization backup is available. Current files may be mounted
         localized copies; consult ui_mounts and original_* before patch analysis.
-        Only fixed screen files, projected safe metadata and sanitized activity
+        research/ contains a fresh technical survey of application dependencies:
+        SSH, agent, display, Launcher, VPN/Wi-Fi, TTL, SIM/eSIM, applications,
+        storage and backups. Partial probes and missing facts remain explicit.
+        Available ZTEZhengYuan, Roboto and Zoswald TTF fonts are also included
+        for glyph and layout analysis. Their absence is listed as an omission.
+        Fixed screen files, projected metadata and sanitized activity
         events are included. No agent startup/password, configuration, NV, SIM
         profiles or complete firmware image is collected. No device changes.
         SSH continuity compares available observations; unavailable CID or boot
@@ -237,6 +275,18 @@ final class FirmwareSupportCollector {
         let hash = try DeviceBackups.hashFile(zip, cancelled: cancelled)
         try Self.publish(zip, to: destination, expected: hash, cancelled: cancelled, selectionIsCurrent: selectionIsCurrent)
         return FirmwareSupportResult(url: destination, complete: complete, fileCount: present.count, omissions: missing.count, sha256: hash.sha256)
+    }
+
+    static func verifyResearch(_ report: FirmwareResearchReport, proof: SSHReadProof) throws {
+        let message = "Исследование не подтвердило выбранный SSH-сеанс; архив не сохранён"
+        try require(report.transport == "ssh" && report.continuityVerified == true &&
+                    ["complete", "partial"].contains(report.outcome) && report.authorization == "none", message)
+        for (key, value) in [("uid", proof.uid), ("architecture", proof.architecture)] {
+            if let value { try require(report.binding[key] == value, message) }
+        }
+        for (key, value) in [("cid", proof.cid), ("boot", proof.bootID)] {
+            if let value { try require(report.binding[key] == digest(Data((value + "\n").utf8)), message) }
+        }
     }
 
     static func elfMetadata(_ data: Data) -> [String: String] {

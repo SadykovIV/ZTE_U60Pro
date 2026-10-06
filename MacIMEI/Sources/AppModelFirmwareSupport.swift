@@ -39,7 +39,7 @@ import UniformTypeIdentifiers
                     }.value
                 } onCancel: { cancellation.cancel() }
                 firmwareSupportExportURL = result.url
-                firmwareSupportExportSummary = result.complete ? "Данные для адаптации сохранены. Все обязательные файлы проверены." : "Неполный набор данных сохранён. Недоступные обязательные файлы перечислены в metadata.json."
+                firmwareSupportExportSummary = result.complete ? "Данные для адаптации сохранены. Файлы и свежий технический отчёт проверены." : "Сохранён неполный архив. Причины и недостающие данные указаны в metadata.json и research/REPORT.md."
                 append(firmwareSupportExportSummary, progress: 1)
                 try? ActivityJournal(root: root).record(operationID: sessionID, category: "firmware-support", title: "Сбор данных для адаптации прошивки", result: result.complete ? "completed" : "incomplete", details: ["archiveSHA256": result.sha256, "files": String(result.fileCount), "missingRequired": String(result.omissions)])
                 NSWorkspace.shared.activateFileViewerSelecting([result.url])

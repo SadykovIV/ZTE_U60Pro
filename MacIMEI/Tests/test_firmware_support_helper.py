@@ -31,6 +31,11 @@ OPTIONAL = {
     "original_chinese": "/data/zte-imei-screen-ru/backup/Chinese.ini",
     "original_init": "/data/zte-imei-screen-ru/backup/zte_topsw_devui.init",
 }
+FONTS = {
+    "font_zhengyuan": "/usr/ui/fonts/ZTEZhengYuan.ttf",
+    "font_roboto": "/usr/ui/fonts/Roboto.ttf",
+    "font_oswald": "/usr/ui/fonts/Zoswald-Medium-24.ttf",
+}
 FACTS = set("uid os architecture firmware inner openwrt_version target agent_present agent_sha256 agent_running_count agent_mode agent_mapped_matches_disk http_health_status http_capabilities_status http_dashboard_status ui_mounts".split())
 CANARY = "PRIVATE_PASSWORD_CANARY_NEVER_EXPORT"
 SHIM = r'''#!__PYTHON__
@@ -136,7 +141,7 @@ class Fixture:
             else:
                 assert len(parts) == 8 and parts[0] == "FILE" and parts[1] not in files
                 files[parts[1]] = parts[2:]
-        assert set(facts) == FACTS and set(files) == REQUIRED.keys() | OPTIONAL.keys()
+        assert set(facts) == FACTS and set(files) == REQUIRED.keys() | OPTIONAL.keys() | FONTS.keys()
         assert result.stderr == b""
         return facts, files
 
@@ -153,7 +158,7 @@ class Fixture:
         (self.path(f"/proc/{pid}") / "exe").symlink_to(self.path("/data/zte-agent"))
 
     def stream(self, name="ui", size=None, digest=None):
-        data = self.path((REQUIRED | OPTIONAL)[name]).read_bytes()
+        data = self.path((REQUIRED | OPTIONAL | FONTS)[name]).read_bytes()
         return self.run("file", name, str(len(data) if size is None else size), digest or hashlib.sha256(data).hexdigest())
 
 
@@ -172,6 +177,29 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(facts["firmware"], "FLY_CN_MU5250V1.0.0B13")
         self.assertEqual(facts["inner"], "BD_FLYMODEMMU5250V1.0.0B28")
         self.assertEqual(facts["openwrt_version"], "23.05.4")
+
+    def test_optional_font_bytes_and_receipt(self):
+        for name, path in FONTS.items():
+            with self.subTest(font=name):
+                data = b"\x00\x01\x00\x00font\r\n\xff"
+                self.fx.put(path, data)
+                self.assertEqual(self.fx.inspect()[1][name][0], "present")
+                result = self.fx.stream(name)
+                self.assertEqual(result.returncode, 0)
+                self.assertEqual(result.stdout, data)
+                self.assertIn(hashlib.sha256(data).hexdigest().encode(), result.stderr)
+
+    def test_missing_font_is_explicit(self):
+        self.fx.path("/usr/ui/fonts").mkdir()
+        self.assertTrue(all(self.fx.inspect()[1][name][0] == "missing" for name in FONTS))
+
+    def test_font_symlink_does_not_capture_private_target(self):
+        path = self.fx.put(FONTS["font_roboto"], b"font"); path.unlink()
+        path.symlink_to(self.fx.put("/data/private-font-target", CANARY.encode()))
+        self.assertEqual(self.fx.inspect()[1]["font_roboto"][0], "symlink")
+        result = self.fx.run("file", "font_roboto", str(len(CANARY)), hashlib.sha256(CANARY.encode()).hexdigest())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn(CANARY.encode(), result.stdout + result.stderr)
 
     def test_byte_preservation_nul_crlf_binary(self):
         result = self.fx.stream()

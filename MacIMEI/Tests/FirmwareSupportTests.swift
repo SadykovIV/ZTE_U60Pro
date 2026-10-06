@@ -9,6 +9,20 @@ private func rejects(_ body: () throws -> Void) throws {
 private let sampleCID = String(repeating: "a", count: 32)
 private let sampleBoot = "11111111-1111-4111-8111-111111111111"
 private let proof = SSHReadProof(uid: "1000", system: "Linux", architecture: "aarch64", cid: sampleCID, bootID: sampleBoot)
+private func researchReport(_ selected: SSHReadProof = proof, outcome: String = "complete") -> FirmwareResearchReport {
+    var result = FirmwareResearchReport(startedAt: "2026-10-06T19:00:00Z", specificationRevision: 10,
+        application: ["purpose": "firmware-adaptation", "probeSpecificationSHA256": ResearchSpecification.expectedSHA256])
+    result.finishedAt = "2026-10-06T19:00:01Z"; result.transport = "ssh"; result.outcome = outcome
+    result.authorization = "none"; result.continuityVerified = true
+    if let uid = selected.uid { result.binding["uid"] = uid }
+    if let arch = selected.architecture { result.binding["architecture"] = arch }
+    if let cid = selected.cid { result.binding["cid"] = digest(Data((cid + "\n").utf8)) }
+    if let boot = selected.bootID { result.binding["boot"] = digest(Data((boot + "\n").utf8)) }
+    result.bindingStrength = FirmwareResearchCollector.bindingStrength(result.binding)
+    result.probes = [.init(id: "fixture-api", title: .init(ru: "API", en: "API"), category: "access", command: "read-only fixture",
+        outcome: "success", exitCode: 0, stdout: "FR_FACT api_schema=known\n", stderr: "", durationSeconds: 0.1, facts: ["api_schema": "known"], localExitCode: 0, remoteExitCode: 0)]
+    return result
+}
 private func proofData(_ value: SSHReadProof) -> Data {
     Data((["ZTE_SSH_READ_V1", value.uid ?? "?", value.system ?? "?", value.architecture ?? "?", value.cid ?? "?", value.bootID ?? "?", "?", "?"].joined(separator: "\n") + "\n").utf8)
 }
@@ -69,6 +83,7 @@ private final class Wire: RemoteTransport, BackupStreamTransport {
 }
 private final class Fixture {
     let root: URL, output: URL, resources: URL, wire = Wire(), connection: Connection
+    var survey: ((ResearchCancellation) throws -> FirmwareResearchReport)?
     init() throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent("zte-support-tests-" + UUID().uuidString.lowercased())
         try secureDirectory(root)
@@ -82,7 +97,8 @@ private final class Fixture {
         let diagnostic = DiagnosticSession(reason: "test", proof: selected, readIdentity: { selected }, execute: { _, _ in throw Failure.assertion("no session executor calls") })
         let session = ReadOnlyChannelSession(mode: mode, summary: ConnectionDeviceSummary(), diagnosticSession: diagnostic,
             sshEndpoint: endpoint ?? ConnectionRouter.sshEndpoint(connection), readSummary: { ConnectionDeviceSummary() })
-        return try FirmwareSupportCollector(root: root, resources: resources, connection: connection, session: session, remote: wire, streamer: wire, secrets: ["KNOWN_PASSWORD_CANARY"], selectionIsCurrent: selectionIsCurrent)
+        return try FirmwareSupportCollector(root: root, resources: resources, connection: connection, session: session, remote: wire, streamer: wire, secrets: ["KNOWN_PASSWORD_CANARY"], selectionIsCurrent: selectionIsCurrent,
+            researchSurvey: survey ?? { _ in researchReport(selected) })
     }
     func payload(_ relative: String) throws -> Data {
         let reply = try HostProcessRunner().run(URL(fileURLWithPath: "/usr/bin/unzip"), ["-p", output.path, "ZTE-Firmware-Support/" + relative], timeout: 20)
@@ -188,7 +204,7 @@ private final class Fixture {
         test("a changed UI selection refuses final rename and preserves prior archive") {
             let f = try Fixture(); try savePrivate(Data("previous archive".utf8), f.output)
             try rejects { _ = try f.collector(selectionIsCurrent: { false }).collect(to: f.output) }
-            try check(f.wire.streamCount == 4 && f.wire.quickCount == 2 && (try Data(contentsOf: f.output)) == Data("previous archive".utf8), "stale context published")
+            try check(f.wire.streamCount == 4 && f.wire.quickCount == 1 && (try Data(contentsOf: f.output)) == Data("previous archive".utf8), "stale context published")
         }
         test("wrong selected transport or endpoint never dispatches") {
             let f = try Fixture()
@@ -209,6 +225,67 @@ private final class Fixture {
             let result = String(decoding: FirmwareSupportCollector.activityPayload(root: f.root, secrets: ["KNOWN_PASSWORD_CANARY"]), as: UTF8.self)
             for canary in ["KNOWN_PASSWORD_CANARY", "private.example", "SHORT", "PRIVATE_ARGV", "PRIVATE_ENV", "PRIVATE_PASSWORD"] { try check(!result.contains(canary), "privacy leak") }
             try check(result.contains("timestamp") && result.contains("failed"), "events missing")
+        }
+        test("fresh research runs within the same capture and every payload is hashed") {
+            let f = try Fixture(); var calls = 0
+            try secureDirectory(f.root.appendingPathComponent("FirmwareResearch"))
+            try savePrivate(Data("STALE_CACHED_REPORT".utf8), f.root.appendingPathComponent("FirmwareResearch/latest.json"))
+            let report = researchReport()
+            f.survey = { _ in
+                calls += 1; try check(f.wire.inspectCount == 1 && f.wire.quickCount == 1 && f.wire.streamCount == 4, "survey outside capture proof")
+                return report
+            }
+            let result = try f.collector().collect(to: f.output)
+            try check(result.complete && calls == 1, "fresh research missing")
+            let archived = try JSONDecoder().decode(FirmwareResearchReport.self, from: f.payload("research/report.json"))
+            try check(archived.id == report.id && archived.probes.first?.facts["api_schema"] == "known", "cached or altered report")
+            let manifest = try JSONSerialization.jsonObject(with: f.payload("manifest.json")) as! [String: Any]
+            for entry in manifest["files"] as! [[String: String]] {
+                let data = try f.payload(entry["path"]!)
+                try check(digest(data) == entry["sha256"] && String(data.count) == entry["bytes"], "unverified archive member")
+            }
+        }
+        test("partial research stays available and marks the combined archive incomplete") {
+            let f = try Fixture(); f.survey = { _ in researchReport(outcome: "partial") }
+            let result = try f.collector().collect(to: f.output)
+            try check(!result.complete && result.fileCount == 4, "partial survey reported complete")
+            let metadata = try JSONSerialization.jsonObject(with: f.payload("metadata.json")) as! [String: Any]
+            try check((metadata["research"] as? [String: Any])?["outcome"] as? String == "partial", "partial reason absent")
+        }
+        test("a different research device, boot, transport or failed continuity cannot publish") {
+            for kind in 0..<5 {
+                let f = try Fixture(); var report = researchReport()
+                switch kind {
+                case 0: report.binding["cid"] = String(repeating: "b", count: 64)
+                case 1: report.binding["boot"] = String(repeating: "c", count: 64)
+                case 2: report.transport = "adb"
+                case 3: report.continuityVerified = false
+                default: report.outcome = "cancelled"
+                }
+                f.survey = { _ in report }
+                try rejects { _ = try f.collector().collect(to: f.output) }; try f.noArchive()
+            }
+        }
+        test("optional font bytes are preserved with independent omissions") {
+            let f = try Fixture(); let data = Data([0, 1, 0, 0, 255, 13, 10])
+            for id in ["font_zhengyuan", "font_roboto", "font_oswald"] { f.wire.files[id] = data }
+            let result = try f.collector().collect(to: f.output)
+            try check(result.complete && result.fileCount == 7, "fonts blocked capture")
+            try check(try f.payload("files/font_zhengyuan") == data, "font altered")
+        }
+        test("known secrets and activation data are stripped from attached research") {
+            let f = try Fixture(); var report = researchReport()
+            report.warnings = ["KNOWN_PASSWORD_CANARY", "password=PRIVATE_RESEARCH_PASSWORD", "LPA:1$private.example$PRIVATE_ACTIVATION"]
+            f.survey = { _ in report }; _ = try f.collector().collect(to: f.output)
+            for name in ["research/report.json", "research/REPORT.md"] {
+                let text = String(decoding: try f.payload(name), as: UTF8.self)
+                for privateValue in ["KNOWN_PASSWORD_CANARY", "PRIVATE_RESEARCH_PASSWORD", "PRIVATE_ACTIVATION"] { try check(!text.contains(privateValue), "research secret leak") }
+            }
+        }
+        test("external cancellation reaches the research token and prevents publication") {
+            let f = try Fixture(), outer = ResearchCancellation()
+            f.survey = { token in outer.cancel(); try check(token.cancelled, "cancellation not propagated"); return researchReport() }
+            try rejects { _ = try f.collector().collect(to: f.output, cancelled: { outer.cancelled }) }; try f.noArchive()
         }
         print("FirmwareSupportTests: \(passed) passed, \(failed) failed")
         if failed > 0 { exit(1) }

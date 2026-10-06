@@ -10,7 +10,7 @@ struct ResearchObservation: Codable, Sendable { let id: String; let title: Resea
 struct ResearchObservationResult: Codable, Sendable, Identifiable { let id: String; let title: ResearchText; let probe: String; let fact: String; let state: String; let value: String?; var sourceStatus: String? = nil; var sourceExitCode: Int32? = nil; var reason: String? = nil }
 struct ResearchSpecification: Codable, Sendable {
     // Updated only when the reviewed, bundled command allowlist changes.
-    static let expectedSHA256 = "9fa14a7aaabbde7c93ed3a8d63356395f2d0c540e88b7661cb532989b8152580"
+    static let expectedSHA256 = "e26ce1071e2d5707ca435991cd0be4b6e5197ff9cdf63321502fbb74f4d314d3"
     let schemaVersion: Int; let revision: Int; let profiles: [ResearchProfile]; let probes: [ResearchProbe]; let features: [ResearchFeature]
     var observations: [ResearchObservation]? = nil
     static func load(_ resources: URL) throws -> Self {
@@ -41,8 +41,10 @@ struct ResearchSpecification: Codable, Sendable {
 
 final class ResearchCancellation: @unchecked Sendable {
     private let lock = NSLock(); private var requested = false
+    private let external: @Sendable () -> Bool
+    init(external: @escaping @Sendable () -> Bool = { false }) { self.external = external }
     func cancel() { lock.lock(); requested = true; lock.unlock() }
-    var cancelled: Bool { lock.lock(); defer { lock.unlock() }; return requested }
+    var cancelled: Bool { lock.lock(); let local = requested; lock.unlock(); return local || external() }
 }
 struct ResearchCommandResult: Sendable {
     var status: Int32; var stdout: Data; var stderr: Data; var outcome: String; var duration: Double
@@ -121,6 +123,7 @@ struct FirmwareResearchReport: Codable, Sendable {
     var specificationRevision: Int; var transport = "none"; var outcome = "collecting"; var profile: String?
     var bindingStrength: String? = nil
     var authorization: String? = nil
+    var continuityVerified: Bool? = nil
     var observations: [ResearchObservationResult]? = nil
     var bootstrapCommand = FirmwareResearchCollector.bootstrap
     var binding: [String: String] = [:]; var attempts: [ResearchConnectionAttempt] = []; var warnings: [String] = []
@@ -162,9 +165,11 @@ final class FirmwareResearchCollector {
     """
     let specification: ResearchSpecification; let connection: Connection; let mode: ConnectionMode; let resources: URL
     let cancellation: ResearchCancellation; let runner: ResearchProcessRunning; let expectedCID: String?
+    let timeLimit: TimeInterval?
     var redactor: ResearchRedactor
-    init(specification: ResearchSpecification, connection: Connection, mode: ConnectionMode, resources: URL, cancellation: ResearchCancellation, expectedCID: String?, secrets: [String], runner: ResearchProcessRunning = ResearchBoundedRunner()) {
+    init(specification: ResearchSpecification, connection: Connection, mode: ConnectionMode, resources: URL, cancellation: ResearchCancellation, expectedCID: String?, secrets: [String], runner: ResearchProcessRunning = ResearchBoundedRunner(), timeLimit: TimeInterval? = 8 * 60) {
         self.specification = specification; self.connection = connection; self.mode = mode; self.resources = resources; self.cancellation = cancellation; self.expectedCID = expectedCID; self.redactor = ResearchRedactor(secrets: secrets + [expectedCID ?? ""]); self.runner = runner
+        self.timeLimit = timeLimit
     }
     private var sshArguments: [String] {
         ["-F", "/dev/null", "-T", "-p", connection.port, "-i", connection.keyPath,
@@ -237,7 +242,7 @@ final class FirmwareResearchCollector {
         var report = FirmwareResearchReport(startedAt: ISO8601DateFormatter().string(from: Date()), specificationRevision: specification.revision, application: context.mapValues(redactor.clean))
         var transport = "", serial = "", original = [String: String](), total = 0
         var continuityLost = false
-        let deadline = Date().addingTimeInterval(8 * 60)
+        let deadline = timeLimit.map { Date().addingTimeInterval($0) } ?? Date.distantFuture
         // sysfs/proc identity files include a newline; retain only their digest.
         let expectedCIDHash = expectedCID.map { digest(Data(($0 + "\n").utf8)) }
         func attempt(_ channel: String, _ outcome: String, _ message: String) { report.attempts.append(.init(transport: channel, outcome: outcome, detail: redactor.clean(message))) }
@@ -310,12 +315,14 @@ final class FirmwareResearchCollector {
                 if value.outcome == "cancelled" { report.outcome = "cancelled"; break }
             }
             if report.outcome == "collecting" { report.outcome = report.probes.allSatisfy { $0.outcome == "success" } ? "complete" : "partial" }
+            report.continuityVerified = !continuityLost && !cancellation.cancelled
         } catch { report.outcome = cancellation.cancelled ? "cancelled" : "partial"; report.warnings.append(redactor.clean(error.localizedDescription)); if report.transport == "none" { attempt("selection", report.outcome, error.localizedDescription) } }
         let collected = Set(report.probes.map(\.id))
         for probe in specification.probes where !collected.contains(probe.id) {
             report.probes.append(.init(id: probe.id, title: probe.title, category: probe.category, command: probe.command, outcome: "skipped", exitCode: nil, stdout: "", stderr: "Not collected; see connection attempts and report warnings.", durationSeconds: 0, facts: [:]))
         }
         report.authorization = "none"
+        report.continuityVerified = report.continuityVerified ?? false
         report.bindingStrength = report.bindingStrength ?? "transport-only"
         report.observations = Self.observe(specification, results: report.probes, continuityLost: continuityLost)
         report.profile = Self.profile(specification, results: report.probes)
@@ -387,14 +394,14 @@ enum FirmwareResearchArchive {
     }
     /// Shared offline payloads for both the standalone report and the common support ZIP.
     /// Never enumerates the cache or copies arbitrary saved files.
-    static func textPayloads(_ original: FirmwareResearchReport) throws -> [(path: String, data: Data)] {
+    static func textPayloads(_ original: FirmwareResearchReport, secrets: [String] = []) throws -> [(path: String, data: Data)] {
         try require(original.schemaVersion == 1 && UUID(uuidString: original.id) != nil && original.probes.count <= 64 && original.features.count <= 100 && (original.observations?.count ?? 0) <= 4096, "Invalid research export dataset")
         try require(original.probes.allSatisfy { $0.id.range(of: #"^[a-z0-9][a-z0-9-]{0,63}$"#, options: .regularExpression) != nil }, "Unsafe research probe filename")
         try require(Set(original.probes.map(\.id)).count == original.probes.count, "Duplicate research export probe")
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         let originalData = try encoder.encode(original)
         try require(originalData.count <= 32 * 1024 * 1024, "Research export dataset exceeds the size limit")
-        let redactor = ResearchRedactor(secrets: [])
+        let redactor = ResearchRedactor(secrets: secrets)
         // Export-only policy: activation and SM-DP data can be short or look like
         // an ordinary SHA256. Redact by field name before considering its value.
         let credentialName = #"(?i)(activation|confirmation|matching[_ -]?id|sm[-_ ]?dp)"#

@@ -18,7 +18,7 @@ public sealed record ResearchObservation(string Id,ResearchText Title,string Pro
 public sealed record ResearchObservationResult(string Id,ResearchText Title,string Probe,string Fact,string Status,string? Value,string SourceStatus,int? ExitCode);
 public sealed record ResearchSpec(int SchemaVersion,int Revision,ResearchProfile[] Profiles,ResearchProbe[] Probes,ResearchFeature[] Features,ResearchObservation[]? Observations=null)
 {
-    public const string ExpectedSpecificationSha256="9fa14a7aaabbde7c93ed3a8d63356395f2d0c540e88b7661cb532989b8152580";
+    public const string ExpectedSpecificationSha256="e26ce1071e2d5707ca435991cd0be4b6e5197ff9cdf63321502fbb74f4d314d3";
     public string? Sha256 { get; private set; }
     public static readonly JsonSerializerOptions Json=new() { PropertyNameCaseInsensitive=true,PropertyNamingPolicy=JsonNamingPolicy.CamelCase,WriteIndented=true };
     public static ResearchSpec Load(string path)
@@ -79,10 +79,10 @@ public sealed class FirmwareResearchEngine(ResearchSpec spec,IResearchTransportF
     private bool _requiresSingleUsb=true;
     private static readonly IReadOnlyDictionary<string,string> NoFacts=new Dictionary<string,string>();
     private ResearchProbe Fingerprint=>spec.Probes.Single(p=>p.Id=="fingerprint");
-    public async Task<ResearchReport> CollectAsync(string mode,string? boundCidHash,IProgress<ResearchProgress>? progress,CancellationToken ct)
+    public async Task<ResearchReport> CollectAsync(string mode,string? boundCidHash,IProgress<ResearchProgress>? progress,CancellationToken ct,string? boundBootHash=null,bool enforceTimeLimit=true)
     {
         spec.Validate(); var started=DateTimeOffset.UtcNow;
-        using var deadline=CancellationTokenSource.CreateLinkedTokenSource(ct); deadline.CancelAfter(TimeSpan.FromMinutes(8));
+        using var deadline=CancellationTokenSource.CreateLinkedTokenSource(ct); if(enforceTimeLimit)deadline.CancelAfter(TimeSpan.FromMinutes(8));
         var callerToken=ct; ct=deadline.Token; var strength="transport-only";
         try
         {
@@ -93,7 +93,7 @@ public sealed class FirmwareResearchEngine(ResearchSpec spec,IResearchTransportF
                 var binding=Binding(initial);
                 strength=binding.Count==2?"full":binding.Count==1?"partial":"transport-only";
                 if(binding.Count!=2) { _outcome="partial"; AddIssue("identity-unavailable","Incomplete device binding: read-only observations continue; operation prerequisites cannot be authorized.","skipped"); }
-                if(boundCidHash is not null && binding.GetValueOrDefault("cid_sha256")!=boundCidHash) { _outcome="device_changed";AddIssue("saved-identity-mismatch","USB device does not match the explicitly bound modem CID."); }
+                if(boundCidHash is not null && binding.GetValueOrDefault("cid_sha256")!=boundCidHash || boundBootHash is not null && binding.GetValueOrDefault("boot_sha256")!=boundBootHash) { _outcome="device_changed";AddIssue("saved-identity-mismatch","Device does not match the explicitly bound CID and boot observations."); }
                 else
                 {
                     foreach(var probe in spec.Probes.Where(p=>p.Id!="fingerprint"))
@@ -326,6 +326,13 @@ public static class ResearchReportFiles
     }
     // Common and standalone exports share one bounded payload and path policy.
     // The optional cleaner operates on text fields, never serialized JSON or SHA256 facts.
+    public static string CleanExportText(string value,Func<string,string> clean,CancellationToken ct=default)
+    {
+        ct.ThrowIfCancellationRequested();
+        try { value=Regex.Replace(value,@"-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?(?:-----END [^-]*PRIVATE KEY-----|$)","[PRIVATE KEY REDACTED]",RegexOptions.None,TimeSpan.FromSeconds(1)); }
+        catch(RegexMatchTimeoutException) { throw new InvalidDataException("Research redaction exceeded its limit."); }
+        return string.Join('\n',value.Split('\n').Select(line=>{ct.ThrowIfCancellationRequested();return clean(line);}));
+    }
     public static IReadOnlyDictionary<string,byte[]> BuildExportFiles(ResearchReport report,Func<string,string>? clean=null,CancellationToken ct=default,Func<string,string>? cleanApplicationVersion=null)
     {
         ct.ThrowIfCancellationRequested();

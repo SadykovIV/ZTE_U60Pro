@@ -22,6 +22,9 @@ path_for() {
       english) file=/usr/ui/language/English.ini;;
       chinese) file=/usr/ui/language/Chinese.ini;;
       init) file=/etc/init.d/zte_topsw_devui;;
+      font_zhengyuan) file=/usr/ui/fonts/ZTEZhengYuan.ttf;;
+      font_roboto) file=/usr/ui/fonts/Roboto.ttf;;
+      font_oswald) file=/usr/ui/fonts/Zoswald-Medium-24.ttf;;
       original_ui) originals_allowed || return 1; file=/data/zte-imei-screen-ru/backup/zte_topsw_devui;;
       original_english) originals_allowed || return 1; file=/data/zte-imei-screen-ru/backup/English.ini;;
       original_chinese) originals_allowed || return 1; file=/data/zte-imei-screen-ru/backup/Chinese.ini;;
@@ -122,7 +125,7 @@ inspect)
     fact http_dashboard_status "$(http_status dashboard)"
     mounts=$(awk '$5=="/usr/ui/language/English.ini" || $5=="/usr/ui/language/Chinese.ini" || $5=="/usr/bin/zte_topsw_devui" {n++} END {print n+0}' /proc/self/mountinfo 2>/dev/null || printf not_assessed)
     fact ui_mounts "$mounts"
-    for id in ui english chinese init original_ui original_english original_chinese original_init; do file_row "$id"; done
+    for id in ui english chinese init original_ui original_english original_chinese original_init font_zhengyuan font_roboto font_oswald; do file_row "$id"; done
     printf 'FIRMWARE_SUPPORT_END\n'
     ;;
 file)

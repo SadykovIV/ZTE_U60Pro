@@ -58,7 +58,7 @@ else: print('type=directory mode='+m+' uid='+u+' gid=0 bytes=0 links=1')
             p=self.root/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_text('synthetic')
             self.assertEqual(self.probe('pending-operations').get('no_pending_operations'),'0');p.unlink()
     def test_preparation_features_use_only_actual_new_install_paths(self):
-        s=json.loads(SPEC.read_text());self.assertEqual(s['revision'],9)
+        s=json.loads(SPEC.read_text());self.assertEqual(s['revision'],10)
         for feature in s['features']:
             if feature['id'] not in ['generic-access','preparation','ssh']:continue
             facts={x['fact'] for x in feature['requirements']}

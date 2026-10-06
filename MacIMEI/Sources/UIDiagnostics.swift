@@ -17,7 +17,7 @@ extension ContentView {
                 OperationInfoButton(topic: .firmwareSupport)
                 Spacer()
             }
-            Text(L10n.text("Экранный интерфейс и языковые файлы, безопасные сведения о системе и агенте, журнал программы. Сбор через SSH без изменения модема."))
+            Text(L10n.text("Свежий отчёт по SSH, агенту, экрану, Launcher, VPN/Wi-Fi, TTL, SIM/eSIM, приложениям и резервным копиям; файлы экрана, языки и доступные шрифты. Один ZIP для адаптации функций программы."))
                 .font(.system(size: 12)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
             Button(L10n.text("Собрать данные для адаптации прошивки")) { model.collectFirmwareSupport() }
                 .buttonStyle(StudioButtonStyle(prominent: true)).disabled(!model.canCollectFirmwareSupport)

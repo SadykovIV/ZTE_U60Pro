@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "revision": 9,
+  "revision": 10,
   "profiles": [
     {
       "id": "b31",
@@ -519,6 +519,105 @@
       },
       "category": "discovery",
       "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nif test -r /proc/self/status;then\n while IFS= read -r line;do case \"$line\" in NoNewPrivs:*|Seccomp:*)set -- $line;case \"${2:-}\" in 0|1|2)case \"$1\" in NoNewPrivs:)fact security_no_new_privs \"$2\";;Seccomp:)fact security_seccomp \"$2\";;esac;;esac;;esac;done < /proc/self/status\nelse fact security_no_new_privs not-assessed;fact security_seccomp not-assessed;fi\nfor item in apparmor:/sys/module/apparmor selinux:/sys/fs/selinux proc_namespaces:/proc/self/ns;do name=${item%%:*};path=${item#*:};fact \"security_$name\" \"$(path_state \"$path\")\";done\nfor field in ptrace_scope dmesg_restrict kptr_restrict;do case \"$field\" in ptrace_scope)path=/proc/sys/kernel/yama/ptrace_scope;;*)path=/proc/sys/kernel/$field;;esac\n if test -r \"$path\";then v=;IFS= read -r v < \"$path\"||:;case \"$v\" in 0|1|2|3)fact \"security_$field\" \"$v\";;*)fact \"security_$field\" not-assessed;;esac;else fact \"security_$field\" not-assessed;fi\ndone\n",
+      "timeoutSeconds": 12,
+      "maxBytes": 32768
+    },
+    {
+      "id": "component-rpc-schemas",
+      "title": {
+        "ru": "Схемы RPC компонентов без вызова методов",
+        "en": "Component RPC schemas without invoking methods"
+      },
+      "category": "capabilities",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() (\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n)\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\n# Capture is private, bounded to 128 KiB, and requires the producer's exit proof.\n# Never export cap_output directly: callers select only fixed public fields/counts.\ncap() {\n cap_output=\n command -v head >/dev/null 2>&1 && command -v tr >/dev/null 2>&1 || return 1\n cap_output=$({ \"$@\" 2>/dev/null; cap_code=$?; printf '\\nFR_CAPTURE_EXIT=%s\\n' \"$cap_code\"; } | head -c 131073 | tr '\\000' '?'; printf '.')\n cap_output=${cap_output%.}\n test \"${#cap_output}\" -lt 131073 || { cap_output=; return 1; }\n case \"$cap_output\" in *'\nFR_CAPTURE_EXIT=0\n') cap_output=${cap_output%'\nFR_CAPTURE_EXIT=0\n'}; return 0;; *) cap_output=; return 1;; esac\n}\n\nstate() {\n s_path=$1; s_parent=${s_path%/*}\n while test -n \"$s_parent\"; do\n  if test -L \"$s_parent\" || test ! -d \"$s_parent\" || test ! -r \"$s_parent\" || test ! -x \"$s_parent\"; then printf not-assessed; return; fi\n  test \"$s_parent\" != / || break\n  s_parent=${s_parent%/*}; test -n \"$s_parent\" || s_parent=/\n done\n if test -L \"$s_path\"; then printf symlink\n elif test -e \"$s_path\"; then printf present\n else printf missing; fi\n}\none() {\n case \"$cap_output\" in *'\n') cap_output=${cap_output%'\n'};; esac\n case \"$cap_output\" in *'\n'*) return 1;; esac\n}\nvalid_hash() { case \"$1\" in ''|*[!0-9a-f]*) return 1;; esac; test \"${#1}\" = 64; }\nplain() { test \"$(state \"$1\")\" = present && test -f \"$1\" && test -r \"$1\"; }\nhash_file() {\n h_key=$1; h_path=$2; h_state=$(state \"$h_path\")\n if test \"$h_state\" != present; then fact \"$h_key\" \"$h_state\"; return; fi\n if ! plain \"$h_path\" || ! command -v stat >/dev/null 2>&1 || ! command -v sha256sum >/dev/null 2>&1; then fact \"$h_key\" not-assessed; return; fi\n h_size=$(stat -c %s \"$h_path\" 2>/dev/null) || h_size=invalid\n case \"$h_size\" in ''|*[!0-9]*) fact \"$h_key\" not-assessed; return;; esac\n if test \"$h_size\" -gt 67108864 || ! cap sha256sum \"$h_path\"; then fact \"$h_key\" not-assessed; return; fi\n h_value=${cap_output%% *}\n case \"$h_value\" in ''|*[!0-9a-f]*) h_value=not-assessed;; *) test \"${#h_value}\" = 64 || h_value=not-assessed;; esac\n fact \"$h_key\" \"$h_value\"\n}\nbool_match() {\n b_key=$1; b_path=$2; b_expected=$3\n if plain \"$b_path\" && cap cat \"$b_path\" && one; then\n  if test \"$cap_output\" = \"$b_expected\"; then fact \"$b_key\" 1; else fact \"$b_key\" 0; fi\n else fact \"$b_key\" not-assessed; fi\n}\n\nneed awk ubus\n# Exact application methods only. Unknown method/argument names and values are never printed.\nfor pair in 'zwrt_wlan:report,reload' 'zwrt_router.api:router_get_dns_para,router_set_wan_dns,router_set_lan_para' 'zwrt_apn_object:get_apn_mode,set_apn_mode,get_manu_apn_list,add_manu_apn,delete_manu_apn,enable_manu_apn_id' 'zwrt_bsp.usb:list,set' 'zwrt_bsp.charger:list,set' 'zwrt_bsp.battery:list' 'zwrt_bsp.thermal:get_cpu_temp' 'network.interface.zte_wan:status' 'network.interface.zte_wan6:status' 'zte_nwinfo_api:nwinfo_get_netinfo,nwinfo_lock_nr_cell,nwinfo_lock_lte_cell,nwinfo_reset_band_cell_setting,nwinfo_set_nrbandlock,nwinfo_set_gwl_bandlock,nwinfo_rest_band_rat,nwinfo_set_netselect' 'zwrt_zte_mdm.api:get_imei,get_imei2,get_sim_info,zte_get_current_slot_info,zwrt_zte_mdm_activate_sim,zwrt_mdm_change_provision_session' 'service:list,set' 'network:reload' 'zwrt_web:device_info' 'zwrt_data:get_wwandst,get_wwandst_clearday,set_wwandst_clearday'; do\n object=${pair%%:*}; methods=${pair#*:}\n key=$(printf '%s' \"$object\" | tr '.' '_')\n if cap ubus -t 2 -v list \"$object\"; then\n  printf '%s\\n' \"$cap_output\" | awk -v obj=\"$object\" -v methods=\"$methods\" -v key=\"$key\" '\n   BEGIN{split(methods,m,\",\");for(i in m)allowed[m[i]]=1;split(\"active_flag active_slot apn apn_mode arfcn auth_type autostart band battery_capacity battery_health battery_low_power battery_mode battery_online battery_temperature battery_time_to_empty battery_time_to_full battery_using_hw_fg_chip channel charge_status charger_connect charger_type cid clear_date_record clearday command data day_rx_bytes day_rx_drop_packets day_rx_error_packets day_rx_packets day_time day_tx_bytes day_tx_drop_packets day_tx_error_packets day_tx_packets dhcp direct_power_supply_mode dns1 dns2 dns_mode enable enabled gw_band_mask id ignore index instances ip_type ipaddr ipv6_prefer_dns_manual ipv6_standby_dns_manual is_gw_band is_lte_band leasetime lock_lte_earfcn lock_lte_pci lock_nr_cell_band lock_nr_earfcn lock_nr_pci lte_band_mask mode month_home_rx_bytes month_home_tx_bytes month_internal_rx_bytes month_internal_tx_bytes month_international_rx_bytes month_international_tx_bytes month_rx_bytes month_rx_drop_packets month_rx_error_packets month_rx_packets month_time month_tx_bytes month_tx_drop_packets month_tx_error_packets month_tx_packets name net_select netmask network_type nr5g_band nr5g_type other password pci pdpType pppAuthMode prefer_dns_manual primary_dns profileId profilename rat real_his_cur_index real_his_index%d real_max_rx_speed real_max_tx_speed real_rx_bytes real_rx_drop_packets real_rx_error_packets real_rx_packets real_rx_speed real_time real_tx_bytes real_tx_drop_packets real_tx_error_packets real_tx_packets real_tx_speed respawn roamingPdpType script secondary_dns ship_mode sim_card_id sim_id slot slot_id source_module standby_dns_manual state subid total_rx_bytes total_rx_drop_packets total_rx_error_packets total_rx_packets total_time total_tx_bytes total_tx_drop_packets total_tx_error_packets total_tx_packets triggers type ui_charger_type username validate value verbose wanapn zte_end zte_start\",a,\" \");for(i in a)args[a[i]]=1}\n   $1==sprintf(\"%c%s%c\",39,obj,39)&&$2~/^@[0-9a-fA-F]+$/&&NF==2{header++;next}\n   /^[ \\t]*\"[A-Za-z0-9_]+\"[ \\t]*:/ {\n    line=$0;sub(/^[ \\t]*\"/,\"\",line);method=line;sub(/\".*$/,\"\",method);if(!(method in allowed))next;\n    if(seen[method]++){bad=1;next};count++; printf \"RPC_METHOD %s.%s\\n\",obj,method;\n    sub(/^[^\"]*\"[ \\t]*:[ \\t]*/,\"\",line);sub(/[ \\t]*,[ \\t]*$/,\"\",line);\n    if(line!~/^\\{.*\\}[ \\t]*$/ || length(line)>4096){bad=1;next}\n    sub(/^\\{[ \\t]*/,\"\",line);sub(/[ \\t]*\\}[ \\t]*$/,\"\",line);if(line==\"\")next;\n    n=split(line,p,\",\");for(j=1;j<=n;j++){\n     v=p[j];if(v~/^[ \\t]*\"\\(unknown\\)\"[ \\t]*$/){unnamed++;bad=1;continue};if(v!~/^[ \\t]*\"[A-Za-z0-9_%]+\"[ \\t]*:[ \\t]*\"(String|Integer|Boolean|Array|Table|Double|Int8|Int16|Int32|Int64|Unspecific|\\(unknown\\))\"[ \\t]*$/){bad=1;continue}\n     sub(/^[ \\t]*\"/,\"\",v);arg=v;sub(/\".*$/,\"\",arg);sub(/^[^\"]*\"[ \\t]*:[ \\t]*\"/,\"\",v);sub(/\"[ \\t]*$/,\"\",v);\n     if(v==\"(unknown)\"){v=\"unknown\";unknown_types++;bad=1}\n     if(arg in args)printf \"RPC_ARGUMENT %s.%s FIELD<%s> TYPE<%s>\\n\",obj,method,arg,v;else omitted++;\n    }\n   }\n   END{printf \"FR_FACT rpc_%s_methods=%d\\n\",key,count;printf \"FR_FACT rpc_%s_schema=%s\\n\",key,(bad||header!=1)?\"not-assessed\":\"known\";printf \"FR_FACT rpc_%s_unlisted_arguments=%d\\n\",key,omitted;printf \"FR_FACT rpc_%s_unknown_types=%d\\n\",key,unknown_types;printf \"FR_FACT rpc_%s_unnamed_arguments=%d\\n\",key,unnamed}\n  '\n else fact \"rpc_${key}_schema\" not-assessed; fi\ndone\nfact rpc_component_methods_invoked 0\n",
+      "timeoutSeconds": 40,
+      "maxBytes": 32768
+    },
+    {
+      "id": "agent-runtime-mode",
+      "title": {
+        "ru": "Режим и процессы агента; HTTP-коды",
+        "en": "Agent process mode and HTTP status codes"
+      },
+      "category": "access",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() (\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n)\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\n# Capture is private, bounded to 128 KiB, and requires the producer's exit proof.\n# Never export cap_output directly: callers select only fixed public fields/counts.\ncap() {\n cap_output=\n command -v head >/dev/null 2>&1 && command -v tr >/dev/null 2>&1 || return 1\n cap_output=$({ \"$@\" 2>/dev/null; cap_code=$?; printf '\\nFR_CAPTURE_EXIT=%s\\n' \"$cap_code\"; } | head -c 131073 | tr '\\000' '?'; printf '.')\n cap_output=${cap_output%.}\n test \"${#cap_output}\" -lt 131073 || { cap_output=; return 1; }\n case \"$cap_output\" in *'\nFR_CAPTURE_EXIT=0\n') cap_output=${cap_output%'\nFR_CAPTURE_EXIT=0\n'}; return 0;; *) cap_output=; return 1;; esac\n}\n\nstate() {\n s_path=$1; s_parent=${s_path%/*}\n while test -n \"$s_parent\"; do\n  if test -L \"$s_parent\" || test ! -d \"$s_parent\" || test ! -r \"$s_parent\" || test ! -x \"$s_parent\"; then printf not-assessed; return; fi\n  test \"$s_parent\" != / || break\n  s_parent=${s_parent%/*}; test -n \"$s_parent\" || s_parent=/\n done\n if test -L \"$s_path\"; then printf symlink\n elif test -e \"$s_path\"; then printf present\n else printf missing; fi\n}\none() {\n case \"$cap_output\" in *'\n') cap_output=${cap_output%'\n'};; esac\n case \"$cap_output\" in *'\n'*) return 1;; esac\n}\nvalid_hash() { case \"$1\" in ''|*[!0-9a-f]*) return 1;; esac; test \"${#1}\" = 64; }\nplain() { test \"$(state \"$1\")\" = present && test -f \"$1\" && test -r \"$1\"; }\nhash_file() {\n h_key=$1; h_path=$2; h_state=$(state \"$h_path\")\n if test \"$h_state\" != present; then fact \"$h_key\" \"$h_state\"; return; fi\n if ! plain \"$h_path\" || ! command -v stat >/dev/null 2>&1 || ! command -v sha256sum >/dev/null 2>&1; then fact \"$h_key\" not-assessed; return; fi\n h_size=$(stat -c %s \"$h_path\" 2>/dev/null) || h_size=invalid\n case \"$h_size\" in ''|*[!0-9]*) fact \"$h_key\" not-assessed; return;; esac\n if test \"$h_size\" -gt 67108864 || ! cap sha256sum \"$h_path\"; then fact \"$h_key\" not-assessed; return; fi\n h_value=${cap_output%% *}\n case \"$h_value\" in ''|*[!0-9a-f]*) h_value=not-assessed;; *) test \"${#h_value}\" = 64 || h_value=not-assessed;; esac\n fact \"$h_key\" \"$h_value\"\n}\nbool_match() {\n b_key=$1; b_path=$2; b_expected=$3\n if plain \"$b_path\" && cap cat \"$b_path\" && one; then\n  if test \"$cap_output\" = \"$b_expected\"; then fact \"$b_key\" 1; else fact \"$b_key\" 0; fi\n else fact \"$b_key\" not-assessed; fi\n}\n\nneed awk tr readlink pidof\ncount=0; mode=not-assessed; match=not-assessed\nif cap pidof zte-agent; then\n pids=$cap_output\n for pid in $pids; do\n  case \"$pid\" in ''|*[!0-9]*) continue;; esac\n  exe=$(readlink \"/proc/$pid/exe\" 2>/dev/null) || continue\n  test \"$exe\" = /data/zte-agent || continue\n  count=$((count+1))\n  if test \"$count\" != 1; then mode=ambiguous; match=not-assessed; continue; fi\n  if cap sha256sum /data/zte-agent; then disk=${cap_output%% *}; else disk=; fi\n  if valid_hash \"$disk\" && cap sha256sum \"/proc/$pid/exe\"; then\n   mapped=${cap_output%% *}; if valid_hash \"$mapped\"; then if test \"$disk\" = \"$mapped\"; then match=1; else match=0; fi; fi\n  fi\n  # Select one enum inside the pipeline. No command line, raw environment or credential leaves it.\n  if test -r \"/proc/$pid/environ\" && cap tr '\\000' '\\n' < \"/proc/$pid/environ\"; then\n   selected=$(printf '%s' \"$cap_output\" | awk 'index($0,\"ZTE_AGENT_MODE=\")==1 {n++;v=substr($0,16)} END{if(n==0)print \"default\";else if(n!=1)print \"ambiguous\";else if(v==\"normal\"||v==\"discovery\")print v;else print \"unknown\"}')\n   case \"$selected\" in normal|discovery|default|ambiguous|unknown) mode=$selected;; esac\n  fi\n done\n fact agent_owned_process_count \"$count\"\nelse\n # pidof exit 1 normally means no process, but an unavailable/erroring tool is not proof of absence.\n fact agent_owned_process_count not-assessed\nfi\nfact agent_runtime_mode \"$mode\"; fact agent_runtime_mapped_matches \"$match\"\n# Loopback endpoint only. A selected-LAN-only bind may legitimately return 000.\nfor endpoint in health capabilities; do\n value=not-assessed\n if command -v curl >/dev/null 2>&1 && cap curl -q --noproxy '*' --silent --output /dev/null --write-out '%{http_code}' --connect-timeout 1 --max-time 3 \"http://127.0.0.1:9090/api/$endpoint\"; then\n  case \"$cap_output\" in [0-9][0-9][0-9]) value=$cap_output;; esac\n fi\n fact \"agent_loopback_${endpoint}_http\" \"$value\"\ndone\nfact agent_auth_attempted 0\n",
+      "timeoutSeconds": 15,
+      "maxBytes": 32768
+    },
+    {
+      "id": "wifi-runtime-shape",
+      "title": {
+        "ru": "Guest Wi-Fi: состояние и таймеры без личных данных",
+        "en": "Guest Wi-Fi state and timers without personal data"
+      },
+      "category": "network",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() (\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n)\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\n# Capture is private, bounded to 128 KiB, and requires the producer's exit proof.\n# Never export cap_output directly: callers select only fixed public fields/counts.\ncap() {\n cap_output=\n command -v head >/dev/null 2>&1 && command -v tr >/dev/null 2>&1 || return 1\n cap_output=$({ \"$@\" 2>/dev/null; cap_code=$?; printf '\\nFR_CAPTURE_EXIT=%s\\n' \"$cap_code\"; } | head -c 131073 | tr '\\000' '?'; printf '.')\n cap_output=${cap_output%.}\n test \"${#cap_output}\" -lt 131073 || { cap_output=; return 1; }\n case \"$cap_output\" in *'\nFR_CAPTURE_EXIT=0\n') cap_output=${cap_output%'\nFR_CAPTURE_EXIT=0\n'}; return 0;; *) cap_output=; return 1;; esac\n}\n\nstate() {\n s_path=$1; s_parent=${s_path%/*}\n while test -n \"$s_parent\"; do\n  if test -L \"$s_parent\" || test ! -d \"$s_parent\" || test ! -r \"$s_parent\" || test ! -x \"$s_parent\"; then printf not-assessed; return; fi\n  test \"$s_parent\" != / || break\n  s_parent=${s_parent%/*}; test -n \"$s_parent\" || s_parent=/\n done\n if test -L \"$s_path\"; then printf symlink\n elif test -e \"$s_path\"; then printf present\n else printf missing; fi\n}\none() {\n case \"$cap_output\" in *'\n') cap_output=${cap_output%'\n'};; esac\n case \"$cap_output\" in *'\n'*) return 1;; esac\n}\nvalid_hash() { case \"$1\" in ''|*[!0-9a-f]*) return 1;; esac; test \"${#1}\" = 64; }\nplain() { test \"$(state \"$1\")\" = present && test -f \"$1\" && test -r \"$1\"; }\nhash_file() {\n h_key=$1; h_path=$2; h_state=$(state \"$h_path\")\n if test \"$h_state\" != present; then fact \"$h_key\" \"$h_state\"; return; fi\n if ! plain \"$h_path\" || ! command -v stat >/dev/null 2>&1 || ! command -v sha256sum >/dev/null 2>&1; then fact \"$h_key\" not-assessed; return; fi\n h_size=$(stat -c %s \"$h_path\" 2>/dev/null) || h_size=invalid\n case \"$h_size\" in ''|*[!0-9]*) fact \"$h_key\" not-assessed; return;; esac\n if test \"$h_size\" -gt 67108864 || ! cap sha256sum \"$h_path\"; then fact \"$h_key\" not-assessed; return; fi\n h_value=${cap_output%% *}\n case \"$h_value\" in ''|*[!0-9a-f]*) h_value=not-assessed;; *) test \"${#h_value}\" = 64 || h_value=not-assessed;; esac\n fact \"$h_key\" \"$h_value\"\n}\nbool_match() {\n b_key=$1; b_path=$2; b_expected=$3\n if plain \"$b_path\" && cap cat \"$b_path\" && one; then\n  if test \"$cap_output\" = \"$b_expected\"; then fact \"$b_key\" 1; else fact \"$b_key\" 0; fi\n else fact \"$b_key\" not-assessed; fi\n}\n\nneed awk uci\nscalar() {\n s_key=$1; s_uci=$2; s_kind=$3; value=not-assessed\n if cap uci -q get \"$s_uci\" && one; then\n  case \"$s_kind:$cap_output\" in bool:0|bool:1|wps:0|wps:1|wps:2) value=$cap_output;;\n   binding:lan|binding:vpn|binding:br-lan|binding:br-vpn|binding:wifi0|binding:wifi1|binding:wlan0|binding:wlan1|binding:wlan2|binding:wlan3) value=$cap_output;;\n   binding:*) value=other;;\n   number:*) case \"$cap_output\" in ''|*[!0-9]*) :;; *) test \"${#cap_output}\" -le 9 && value=$cap_output;; esac;;\n  esac\n fi\n fact \"$s_key\" \"$value\"\n}\nfor section in main_2g main_5g guest_2g guest_5g; do\n scalar \"wifi_${section}_disabled\" \"wireless.$section.disabled\" bool\n scalar \"wifi_${section}_device\" \"wireless.$section.device\" binding\n scalar \"wifi_${section}_network\" \"wireless.$section.network\" binding\ndone\nfor section in guest_2g guest_5g; do\n scalar \"wifi_${section}_bridge\" \"wireless.$section.bridge\" binding\n scalar \"wifi_${section}_isolate\" \"wireless.$section.isolate\" bool\n scalar \"wifi_${section}_wps_state\" \"wireless.$section.wps_state\" wps\n for timer in guest_active_time guest_remaining; do scalar \"wifi_${section}_$timer\" \"wireless.$section.$timer\" number; done\ndone\nfor pair in old_enable:wireless.zte_mbb.wifi_onoff new_enable:zte_mbb.wifi.wifi_onoff old_wifi6:wireless.zte_mbb.wifi6_switch new_wifi6:zte_mbb.wifi.wifi6_switch mesh:wireless.zte_mbb.mesh_onoff; do scalar \"wifi_${pair%%:*}\" \"${pair#*:}\" bool; done\nfact wifi_hostapd_control \"$(state /data/vendor/wifi/hostapd)\"\nfor interface in wlan1 wlan3; do\n value=not-assessed\n if command -v hostapd_cli >/dev/null 2>&1 && cap hostapd_cli -p /data/vendor/wifi/hostapd -i \"$interface\" status; then\n  selected=$(printf '%s\\n' \"$cap_output\" | awk -F= '$1==\"state\"{n++;v=$2}END{if(n==1 && v~/^(UNINITIALIZED|DISABLED|COUNTRY_UPDATE|ACS|HT_SCAN|DFS|ENABLED)$/)print v;else print \"not-assessed\"}')\n  value=$selected\n fi\n fact \"wifi_${interface}_hostapd_state\" \"$value\"\ndone\n",
+      "timeoutSeconds": 20,
+      "maxBytes": 32768
+    },
+    {
+      "id": "vpn-installation-state",
+      "title": {
+        "ru": "VPN: файлы, служба и незавершённые изменения",
+        "en": "VPN files, service and pending state"
+      },
+      "category": "network",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() (\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n)\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\n# Capture is private, bounded to 128 KiB, and requires the producer's exit proof.\n# Never export cap_output directly: callers select only fixed public fields/counts.\ncap() {\n cap_output=\n command -v head >/dev/null 2>&1 && command -v tr >/dev/null 2>&1 || return 1\n cap_output=$({ \"$@\" 2>/dev/null; cap_code=$?; printf '\\nFR_CAPTURE_EXIT=%s\\n' \"$cap_code\"; } | head -c 131073 | tr '\\000' '?'; printf '.')\n cap_output=${cap_output%.}\n test \"${#cap_output}\" -lt 131073 || { cap_output=; return 1; }\n case \"$cap_output\" in *'\nFR_CAPTURE_EXIT=0\n') cap_output=${cap_output%'\nFR_CAPTURE_EXIT=0\n'}; return 0;; *) cap_output=; return 1;; esac\n}\n\nstate() {\n s_path=$1; s_parent=${s_path%/*}\n while test -n \"$s_parent\"; do\n  if test -L \"$s_parent\" || test ! -d \"$s_parent\" || test ! -r \"$s_parent\" || test ! -x \"$s_parent\"; then printf not-assessed; return; fi\n  test \"$s_parent\" != / || break\n  s_parent=${s_parent%/*}; test -n \"$s_parent\" || s_parent=/\n done\n if test -L \"$s_path\"; then printf symlink\n elif test -e \"$s_path\"; then printf present\n else printf missing; fi\n}\none() {\n case \"$cap_output\" in *'\n') cap_output=${cap_output%'\n'};; esac\n case \"$cap_output\" in *'\n'*) return 1;; esac\n}\nvalid_hash() { case \"$1\" in ''|*[!0-9a-f]*) return 1;; esac; test \"${#1}\" = 64; }\nplain() { test \"$(state \"$1\")\" = present && test -f \"$1\" && test -r \"$1\"; }\nhash_file() {\n h_key=$1; h_path=$2; h_state=$(state \"$h_path\")\n if test \"$h_state\" != present; then fact \"$h_key\" \"$h_state\"; return; fi\n if ! plain \"$h_path\" || ! command -v stat >/dev/null 2>&1 || ! command -v sha256sum >/dev/null 2>&1; then fact \"$h_key\" not-assessed; return; fi\n h_size=$(stat -c %s \"$h_path\" 2>/dev/null) || h_size=invalid\n case \"$h_size\" in ''|*[!0-9]*) fact \"$h_key\" not-assessed; return;; esac\n if test \"$h_size\" -gt 67108864 || ! cap sha256sum \"$h_path\"; then fact \"$h_key\" not-assessed; return; fi\n h_value=${cap_output%% *}\n case \"$h_value\" in ''|*[!0-9a-f]*) h_value=not-assessed;; *) test \"${#h_value}\" = 64 || h_value=not-assessed;; esac\n fact \"$h_key\" \"$h_value\"\n}\nbool_match() {\n b_key=$1; b_path=$2; b_expected=$3\n if plain \"$b_path\" && cap cat \"$b_path\" && one; then\n  if test \"$cap_output\" = \"$b_expected\"; then fact \"$b_key\" 1; else fact \"$b_key\" 0; fi\n else fact \"$b_key\" not-assessed; fi\n}\n\nneed awk\nbool_match vpn_owner_matches /data/zte-vpn/owner zte-vpn-v1\nfor pair in configured:configured wifi_settings_pending:wifi-settings.pending transaction:transaction transaction_preparing:transaction.preparing transaction_done:transaction.done controller_upgrade:controller-upgrade; do\n fact \"vpn_${pair%%:*}\" \"$(state \"/data/zte-vpn/${pair#*:}\")\"\ndone\nfor file in vpnctl mihomo manager.sh configure.lua firewall.sh service.sh; do\n key=$(printf '%s' \"$file\" | tr '.-' '__'); hash_file \"vpn_${key}_sha256\" \"/data/zte-vpn/$file\"\ndone\nhash_file vpn_network_init_sha256 /etc/init.d/network\nhash_file vpn_backup_network_init_sha256 /data/zte-vpn/backup/network.init\nfact vpn_backup_manifest \"$(state /data/zte-vpn/backup/SHA256SUMS)\"\nservice=$(state /etc/init.d/zte_vpn); match=not-assessed\nif test \"$service\" = missing; then match=missing\nelif plain /etc/init.d/zte_vpn && plain /data/zte-vpn/service.sh && command -v cmp >/dev/null 2>&1; then\n if cmp -s /etc/init.d/zte_vpn /data/zte-vpn/service.sh; then match=1; else code=$?; test \"$code\" != 1 || match=0; fi\nfi\nfact vpn_service_matches \"$match\"\nmatch=not-assessed\nif plain /data/zte-vpn/network-init && cap cat /data/zte-vpn/network-init && one; then\n expected=$cap_output\n case \"$expected\" in ''|*[!0-9a-f]*) :;; *)\n  if test \"${#expected}\" = 64 && cap sha256sum /etc/init.d/network; then current=${cap_output%% *}; if test \"$current\" = \"$expected\"; then match=1; else match=0; fi; fi;; esac\nfi\nfact vpn_network_matches_saved \"$match\"\nfact vpn_config_executed 0\n",
+      "timeoutSeconds": 20,
+      "maxBytes": 32768
+    },
+    {
+      "id": "vpn-kernel-routing",
+      "title": {
+        "ru": "VPN: зависимости ядра и занятость служебной маршрутизации",
+        "en": "VPN kernel dependencies and reserved routing occupancy"
+      },
+      "category": "kernel",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() (\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n)\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\n# Capture is private, bounded to 128 KiB, and requires the producer's exit proof.\n# Never export cap_output directly: callers select only fixed public fields/counts.\ncap() {\n cap_output=\n command -v head >/dev/null 2>&1 && command -v tr >/dev/null 2>&1 || return 1\n cap_output=$({ \"$@\" 2>/dev/null; cap_code=$?; printf '\\nFR_CAPTURE_EXIT=%s\\n' \"$cap_code\"; } | head -c 131073 | tr '\\000' '?'; printf '.')\n cap_output=${cap_output%.}\n test \"${#cap_output}\" -lt 131073 || { cap_output=; return 1; }\n case \"$cap_output\" in *'\nFR_CAPTURE_EXIT=0\n') cap_output=${cap_output%'\nFR_CAPTURE_EXIT=0\n'}; return 0;; *) cap_output=; return 1;; esac\n}\n\nstate() {\n s_path=$1; s_parent=${s_path%/*}\n while test -n \"$s_parent\"; do\n  if test -L \"$s_parent\" || test ! -d \"$s_parent\" || test ! -r \"$s_parent\" || test ! -x \"$s_parent\"; then printf not-assessed; return; fi\n  test \"$s_parent\" != / || break\n  s_parent=${s_parent%/*}; test -n \"$s_parent\" || s_parent=/\n done\n if test -L \"$s_path\"; then printf symlink\n elif test -e \"$s_path\"; then printf present\n else printf missing; fi\n}\none() {\n case \"$cap_output\" in *'\n') cap_output=${cap_output%'\n'};; esac\n case \"$cap_output\" in *'\n'*) return 1;; esac\n}\nvalid_hash() { case \"$1\" in ''|*[!0-9a-f]*) return 1;; esac; test \"${#1}\" = 64; }\nplain() { test \"$(state \"$1\")\" = present && test -f \"$1\" && test -r \"$1\"; }\nhash_file() {\n h_key=$1; h_path=$2; h_state=$(state \"$h_path\")\n if test \"$h_state\" != present; then fact \"$h_key\" \"$h_state\"; return; fi\n if ! plain \"$h_path\" || ! command -v stat >/dev/null 2>&1 || ! command -v sha256sum >/dev/null 2>&1; then fact \"$h_key\" not-assessed; return; fi\n h_size=$(stat -c %s \"$h_path\" 2>/dev/null) || h_size=invalid\n case \"$h_size\" in ''|*[!0-9]*) fact \"$h_key\" not-assessed; return;; esac\n if test \"$h_size\" -gt 67108864 || ! cap sha256sum \"$h_path\"; then fact \"$h_key\" not-assessed; return; fi\n h_value=${cap_output%% *}\n case \"$h_value\" in ''|*[!0-9a-f]*) h_value=not-assessed;; *) test \"${#h_value}\" = 64 || h_value=not-assessed;; esac\n fact \"$h_key\" \"$h_value\"\n}\nbool_match() {\n b_key=$1; b_path=$2; b_expected=$3\n if plain \"$b_path\" && cap cat \"$b_path\" && one; then\n  if test \"$cap_output\" = \"$b_expected\"; then fact \"$b_key\" 1; else fact \"$b_key\" 0; fi\n else fact \"$b_key\" not-assessed; fi\n}\n\nneed awk\nfor tool in hostapd_cli jsonfilter seq cmp nft iptables ip6tables ebtables dnsmasq ip flock; do\n if command -v \"$tool\" >/dev/null 2>&1; then fact \"vpn_tool_$tool\" 1; else fact \"vpn_tool_$tool\" 0; fi\ndone\nif cap cat /proc/modules; then\n modules=$cap_output\n for module in tun nf_tables nf_conntrack nf_nat br_netfilter bridge iptable_mangle iptable_nat xt_TTL xt_MARK xt_REDIRECT; do\n  if printf '%s\\n' \"$modules\" | awk -v m=\"$module\" '$1==m{f=1}END{exit !f}'; then fact \"vpn_loaded_$module\" 1; else fact \"vpn_loaded_$module\" 0; fi\n done\nelse fact vpn_loaded_modules not-assessed; fi\nfor interface in br-vpn zvpn-tun; do\n if test -d \"/sys/class/net/$interface\"; then fact \"vpn_interface_$interface\" 1\n elif test -r /sys/class/net && test -x /sys/class/net; then fact \"vpn_interface_$interface\" 0\n else fact \"vpn_interface_$interface\" not-assessed; fi\ndone\nfor interface in wlan1 wlan3; do\n value=not-assessed\n if command -v readlink >/dev/null 2>&1 && test -L \"/sys/class/net/$interface/master\"; then\n  if master=$(readlink \"/sys/class/net/$interface/master\" 2>/dev/null); then\n   case \"${master##*/}\" in br-vpn) value=vpn;; br-lan) value=lan;; *) value=other;; esac\n  fi\n fi\n fact \"vpn_${interface}_master\" \"$value\"\ndone\nif cap ip -4 route show table 19090; then\n value=$(printf '%s\\n' \"$cap_output\" | awk 'NF{n++}END{print n+0}'); fact vpn_table19090_rows \"$value\"\nelse fact vpn_table19090_rows not-assessed; fi\nif cap ip -4 rule show; then\n value=$(printf '%s\\n' \"$cap_output\" | awk '$1==\"19000:\"{n++}END{print n+0}'); fact vpn_priority19000_rows \"$value\"\nelse fact vpn_priority19000_rows not-assessed; fi\nif cap ip -4 route show; then\n value=$(printf '%s\\n' \"$cap_output\" | awk '$1~/^192\\.168\\.50\\./{n++}END{print n+0}'); fact vpn_reserved_subnet_rows \"$value\"\nelse fact vpn_reserved_subnet_rows not-assessed; fi\n# Loaded=0 may mean a built-in module. Occupied routes do not prove a conflict with our own configuration.\nfact vpn_rule_changes_performed 0\n",
+      "timeoutSeconds": 15,
+      "maxBytes": 32768
+    },
+    {
+      "id": "launcher-runtime-state",
+      "title": {
+        "ru": "Экран: служба, загруженное расширение и готовность",
+        "en": "Screen service, mapped extension and readiness"
+      },
+      "category": "display",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() (\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n)\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\n# Capture is private, bounded to 128 KiB, and requires the producer's exit proof.\n# Never export cap_output directly: callers select only fixed public fields/counts.\ncap() {\n cap_output=\n command -v head >/dev/null 2>&1 && command -v tr >/dev/null 2>&1 || return 1\n cap_output=$({ \"$@\" 2>/dev/null; cap_code=$?; printf '\\nFR_CAPTURE_EXIT=%s\\n' \"$cap_code\"; } | head -c 131073 | tr '\\000' '?'; printf '.')\n cap_output=${cap_output%.}\n test \"${#cap_output}\" -lt 131073 || { cap_output=; return 1; }\n case \"$cap_output\" in *'\nFR_CAPTURE_EXIT=0\n') cap_output=${cap_output%'\nFR_CAPTURE_EXIT=0\n'}; return 0;; *) cap_output=; return 1;; esac\n}\n\nstate() {\n s_path=$1; s_parent=${s_path%/*}\n while test -n \"$s_parent\"; do\n  if test -L \"$s_parent\" || test ! -d \"$s_parent\" || test ! -r \"$s_parent\" || test ! -x \"$s_parent\"; then printf not-assessed; return; fi\n  test \"$s_parent\" != / || break\n  s_parent=${s_parent%/*}; test -n \"$s_parent\" || s_parent=/\n done\n if test -L \"$s_path\"; then printf symlink\n elif test -e \"$s_path\"; then printf present\n else printf missing; fi\n}\none() {\n case \"$cap_output\" in *'\n') cap_output=${cap_output%'\n'};; esac\n case \"$cap_output\" in *'\n'*) return 1;; esac\n}\nvalid_hash() { case \"$1\" in ''|*[!0-9a-f]*) return 1;; esac; test \"${#1}\" = 64; }\nplain() { test \"$(state \"$1\")\" = present && test -f \"$1\" && test -r \"$1\"; }\nhash_file() {\n h_key=$1; h_path=$2; h_state=$(state \"$h_path\")\n if test \"$h_state\" != present; then fact \"$h_key\" \"$h_state\"; return; fi\n if ! plain \"$h_path\" || ! command -v stat >/dev/null 2>&1 || ! command -v sha256sum >/dev/null 2>&1; then fact \"$h_key\" not-assessed; return; fi\n h_size=$(stat -c %s \"$h_path\" 2>/dev/null) || h_size=invalid\n case \"$h_size\" in ''|*[!0-9]*) fact \"$h_key\" not-assessed; return;; esac\n if test \"$h_size\" -gt 67108864 || ! cap sha256sum \"$h_path\"; then fact \"$h_key\" not-assessed; return; fi\n h_value=${cap_output%% *}\n case \"$h_value\" in ''|*[!0-9a-f]*) h_value=not-assessed;; *) test \"${#h_value}\" = 64 || h_value=not-assessed;; esac\n fact \"$h_key\" \"$h_value\"\n}\nbool_match() {\n b_key=$1; b_path=$2; b_expected=$3\n if plain \"$b_path\" && cap cat \"$b_path\" && one; then\n  if test \"$cap_output\" = \"$b_expected\"; then fact \"$b_key\" 1; else fact \"$b_key\" 0; fi\n else fact \"$b_key\" not-assessed; fi\n}\n\nneed awk\nbool_match launcher_owner_matches /data/zte-launcher/owner zte-native-launcher-v1\nhash_file launcher_library_sha256 /data/zte-launcher/launcher.so\nhash_file launcher_installed_service_sha256 /etc/init.d/zte_launcher\nfor pair in enabled:enabled failed:failed transaction:transaction; do fact \"launcher_${pair%%:*}\" \"$(state \"/data/zte-launcher/${pair#*:}\")\"; done\nreason=not-assessed\nif plain /data/zte-launcher/failed && cap cat /data/zte-launcher/failed && one; then\n case \"$cap_output\" in START_FAILED|REPEATED_UI_RESTART|NO_PAGES|NO_EXTENSION) reason=$cap_output;; *) reason=unknown;; esac\nfi\nfact launcher_failure_reason \"$reason\"\nservice=not-assessed\nif test \"$(state /etc/init.d/zte_launcher)\" = missing; then service=missing\nelif plain /etc/init.d/zte_launcher && plain /data/zte-launcher/launcher-service.sh && command -v cmp >/dev/null 2>&1; then\n if cmp -s /etc/init.d/zte_launcher /data/zte-launcher/launcher-service.sh; then service=match; else code=$?; test \"$code\" != 1 || service=other; fi\nfi\nfact launcher_service_state \"$service\"\npid=; mapped=not-assessed; ready=not-assessed; owned=not-assessed\nif command -v jsonfilter >/dev/null 2>&1 && cap ubus -t 3 call service list '{\"name\":\"zte_topsw_devui\"}'; then\n response=$cap_output\n if cap jsonfilter -s \"$response\" -e '@.zte_topsw_devui.instances.instance1.pid' && one; then\n  case \"$cap_output\" in ''|0|*[!0-9]*) :;; *) pid=$cap_output;; esac\n fi\nfi\nif test -n \"$pid\" && command -v readlink >/dev/null 2>&1; then\n if exe=$(readlink \"/proc/$pid/exe\" 2>/dev/null); then\n  if test \"$exe\" = /usr/bin/zte_topsw_devui; then\n   owned=1\n   if cap cat \"/proc/$pid/maps\"; then\n    if printf '%s\\n' \"$cap_output\" | awk '$NF==\"/data/zte-launcher/launcher.so\"{f=1}END{exit !f}'; then mapped=1; else mapped=0; fi\n   fi\n   if plain /tmp/zte-launcher/ready && cap cat /tmp/zte-launcher/ready && one; then if test \"$cap_output\" = \"$pid\"; then ready=1; else ready=0; fi; fi\n  else owned=0; fi\n fi\nfi\nfact launcher_service_owned_exe \"$owned\"; fact launcher_extension_mapped \"$mapped\"; fact launcher_ready_matches \"$ready\"\nfor path in /tmp/zte-imei-app.lock /tmp/zte-imei-screen-ru.lock /tmp/zte-vpn-screen /tmp/zte-launcher-trial/supervisor; do\n case \"$path\" in */zte-imei-app.lock) key=common_lock;; */zte-imei-screen-ru.lock) key=language_lock;; */zte-vpn-screen) key=vpn_screen;; *) key=trial;; esac\n fact \"launcher_$key\" \"$(state \"$path\")\"\ndone\n\n# Files written by backend.c contain fixed metadata, never a protocol response/profile.\nfor item in status error last-change; do\n path=/tmp/zte-launcher/vpn-$item\n key=$(printf '%s' \"$item\" | tr '-' '_')\n if plain \"$path\" && cap cat \"$path\"; then\n  printf '%s' \"$cap_output\" | awk -v prefix=\"launcher_vpn_$key\" '\n   BEGIN{split(\"VPN_ACTIVE_PROFILE_DELETE VPN_AUDIT_FAILED VPN_BRIDGE_NOT_READY VPN_BUSY VPN_CONFIGURATION_PENDING VPN_CONFLICTING_OPTION VPN_CORE_INTEGRITY VPN_CORE_NOT_READY VPN_DEVICE_CHANGED VPN_DUPLICATE_OPTION VPN_FILE_UNAVAILABLE VPN_GUEST_IN_USE VPN_INTEGRITY VPN_INVALID_EXTRA VPN_INVALID_KEY VPN_INVALID_NAME VPN_INVALID_PATH VPN_INVALID_PORT VPN_INVALID_PROFILE_ID VPN_INVALID_REQUEST VPN_INVALID_SERVER VPN_INVALID_STATE VPN_INVALID_URI VPN_INVALID_UUID VPN_INVALID_WIFI_PASSWORD VPN_INVALID_WIFI_SETTINGS VPN_INVALID_WIFI_SSID VPN_IPA_ENABLED VPN_LAUNCHER_NOT_INSTALLED VPN_LAUNCHER_NOT_READY VPN_LAUNCHER_PAGE_CONFIG_INVALID VPN_LAUNCHER_PAGE_NOT_INSTALLED VPN_MESH_CONFLICT VPN_NETWORK_INIT_CHANGED VPN_NOT_INSTALLED VPN_NO_ACTIVE_PROFILE VPN_OPERATION_FAILED VPN_OPERATION_TIMEOUT VPN_OTHER_PROXY VPN_OTHER_TRANSACTION VPN_PENDING_CHANGES VPN_PROFILE_EXISTS VPN_PROFILE_LIMIT VPN_PROFILE_TOO_LARGE VPN_ROOT_REQUIRED VPN_ROUTE_CONFLICT VPN_SUBNET_CONFLICT VPN_UNSAFE_FILE VPN_UNSUPPORTED_ENCRYPTION VPN_UNSUPPORTED_FIRMWARE VPN_UNSUPPORTED_OPTION VPN_UNSUPPORTED_SECURITY VPN_UNSUPPORTED_TRANSPORT VPN_VALIDATION_FAILED VPN_VLESS_ONLY VPN_WIFI_CONFIGURATION_CHANGED VPN_WIFI_NOT_CONFIGURED VPN_WIFI_NOT_READY VPN_WIFI_SETTINGS_ENABLED VPN_WIFI_SETTINGS_PENDING VPN_WRITE_FAILED none\",known,\" \");for(i in known)codes[known[i]]=1;split(\"operation ok code status_valid exit proof_valid timed_out cleanup_complete read_errno write_errno wait_errno\",names,\" \");for(i in names)allowed[names[i]]=1}\n   {if(NR!=1||NF!=11)bad=1;for(i=1;i<=NF;i++){if(split($i,a,\"=\")!=2||!(a[1] in allowed)||seen[a[1]]++)bad=1;else values[a[1]]=a[2]}}\n   END{\n    for(k in allowed){v=values[k];if(!(k in seen))bad=1;\n     if(k==\"operation\"){if(v!=\"status\"&&v!=\"change\")bad=1}\n     else if(k==\"code\"){if(!(v in codes))values[k]=\"unknown\"}\n     else if(k==\"exit\"){if(v!=\"-1\"&&(v!~/^[0-9]+$/||length(v)>3||v+0>255))bad=1}\n     else if(k~/errno$/){if(v!~/^[0-9]+$/||length(v)>5)bad=1}\n     else if(v!=\"0\"&&v!=\"1\")bad=1;\n    }\n    if(bad){printf \"FR_FACT %s_metadata=not-assessed\\n\",prefix;exit}\n    printf \"FR_FACT %s_metadata=known\\n\",prefix;\n    for(i=1;i<=11;i++){k=names[i];printf \"FR_FACT %s_%s=%s\\n\",prefix,k,values[k]}\n   }'\n else fact \"launcher_vpn_${key}_metadata\" not-assessed; fi\ndone\n\n# A marker existing is not proof that its operation or process is alive. Never acquire or clear it here.\n",
+      "timeoutSeconds": 15,
+      "maxBytes": 32768
+    },
+    {
+      "id": "ttl-apn-state",
+      "title": {
+        "ru": "TTL и APN: только режим и структура",
+        "en": "TTL and APN mode and structure only"
+      },
+      "category": "network",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() (\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n)\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\n# Capture is private, bounded to 128 KiB, and requires the producer's exit proof.\n# Never export cap_output directly: callers select only fixed public fields/counts.\ncap() {\n cap_output=\n command -v head >/dev/null 2>&1 && command -v tr >/dev/null 2>&1 || return 1\n cap_output=$({ \"$@\" 2>/dev/null; cap_code=$?; printf '\\nFR_CAPTURE_EXIT=%s\\n' \"$cap_code\"; } | head -c 131073 | tr '\\000' '?'; printf '.')\n cap_output=${cap_output%.}\n test \"${#cap_output}\" -lt 131073 || { cap_output=; return 1; }\n case \"$cap_output\" in *'\nFR_CAPTURE_EXIT=0\n') cap_output=${cap_output%'\nFR_CAPTURE_EXIT=0\n'}; return 0;; *) cap_output=; return 1;; esac\n}\n\nstate() {\n s_path=$1; s_parent=${s_path%/*}\n while test -n \"$s_parent\"; do\n  if test -L \"$s_parent\" || test ! -d \"$s_parent\" || test ! -r \"$s_parent\" || test ! -x \"$s_parent\"; then printf not-assessed; return; fi\n  test \"$s_parent\" != / || break\n  s_parent=${s_parent%/*}; test -n \"$s_parent\" || s_parent=/\n done\n if test -L \"$s_path\"; then printf symlink\n elif test -e \"$s_path\"; then printf present\n else printf missing; fi\n}\none() {\n case \"$cap_output\" in *'\n') cap_output=${cap_output%'\n'};; esac\n case \"$cap_output\" in *'\n'*) return 1;; esac\n}\nvalid_hash() { case \"$1\" in ''|*[!0-9a-f]*) return 1;; esac; test \"${#1}\" = 64; }\nplain() { test \"$(state \"$1\")\" = present && test -f \"$1\" && test -r \"$1\"; }\nhash_file() {\n h_key=$1; h_path=$2; h_state=$(state \"$h_path\")\n if test \"$h_state\" != present; then fact \"$h_key\" \"$h_state\"; return; fi\n if ! plain \"$h_path\" || ! command -v stat >/dev/null 2>&1 || ! command -v sha256sum >/dev/null 2>&1; then fact \"$h_key\" not-assessed; return; fi\n h_size=$(stat -c %s \"$h_path\" 2>/dev/null) || h_size=invalid\n case \"$h_size\" in ''|*[!0-9]*) fact \"$h_key\" not-assessed; return;; esac\n if test \"$h_size\" -gt 67108864 || ! cap sha256sum \"$h_path\"; then fact \"$h_key\" not-assessed; return; fi\n h_value=${cap_output%% *}\n case \"$h_value\" in ''|*[!0-9a-f]*) h_value=not-assessed;; *) test \"${#h_value}\" = 64 || h_value=not-assessed;; esac\n fact \"$h_key\" \"$h_value\"\n}\nbool_match() {\n b_key=$1; b_path=$2; b_expected=$3\n if plain \"$b_path\" && cap cat \"$b_path\" && one; then\n  if test \"$cap_output\" = \"$b_expected\"; then fact \"$b_key\" 1; else fact \"$b_key\" 0; fi\n else fact \"$b_key\" not-assessed; fi\n}\n\nneed awk\nbool_match ttl_owner_matches /data/zte-imei-ttl/owner zte-imei-ttl-v1\nhash_file ttl_manager_sha256 /data/zte-imei-ttl/manager.sh\nhash_file ttl_hotplug_sha256 /etc/hotplug.d/iface/99-zte-imei-ttl\nfact ttl_pending \"$(state /data/zte-imei-ttl/.pending)\"\nvalid=not-assessed\nif plain /data/zte-imei-ttl/settings && cap cat /data/zte-imei-ttl/settings; then\n if printf '%s' \"$cap_output\" | awk -F= 'NR==1&&$1==\"outbound\"{a=1}NR==2&&$1==\"inbound_inc\"{b=1}{if(NF!=2 || ($2!=\"off\"&&($2!~/^[1-9][0-9]*$/||$2+0>255)))bad=1}END{exit !(NR==2&&a&&b&&!bad)}'; then\n  valid=1\n  printf '%s' \"$cap_output\" | awk -F= '{printf \"FR_FACT ttl_saved_%s=%s\\n\",$1,$2}'\n else valid=0; fi\nfi\nfact ttl_settings_valid \"$valid\"\nmode=not-assessed\nif command -v jsonfilter >/dev/null 2>&1 && cap ubus -t 3 call zwrt_apn_object get_apn_mode '{}'; then\n response=$cap_output\n if cap jsonfilter -s \"$response\" -e '@.apn_mode' && one; then case \"$cap_output\" in 0|1) mode=$cap_output;; esac; fi\nfi\nfact apn_mode \"$mode\"\nfact apn_profile_list_read 0\n",
+      "timeoutSeconds": 12,
+      "maxBytes": 32768
+    },
+    {
+      "id": "esim-passive-dependencies",
+      "title": {
+        "ru": "SIM/eSIM: пассивные зависимости без обращения к карте",
+        "en": "SIM/eSIM passive dependencies without card access"
+      },
+      "category": "capabilities",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() (\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n)\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\n# Capture is private, bounded to 128 KiB, and requires the producer's exit proof.\n# Never export cap_output directly: callers select only fixed public fields/counts.\ncap() {\n cap_output=\n command -v head >/dev/null 2>&1 && command -v tr >/dev/null 2>&1 || return 1\n cap_output=$({ \"$@\" 2>/dev/null; cap_code=$?; printf '\\nFR_CAPTURE_EXIT=%s\\n' \"$cap_code\"; } | head -c 131073 | tr '\\000' '?'; printf '.')\n cap_output=${cap_output%.}\n test \"${#cap_output}\" -lt 131073 || { cap_output=; return 1; }\n case \"$cap_output\" in *'\nFR_CAPTURE_EXIT=0\n') cap_output=${cap_output%'\nFR_CAPTURE_EXIT=0\n'}; return 0;; *) cap_output=; return 1;; esac\n}\n\nstate() {\n s_path=$1; s_parent=${s_path%/*}\n while test -n \"$s_parent\"; do\n  if test -L \"$s_parent\" || test ! -d \"$s_parent\" || test ! -r \"$s_parent\" || test ! -x \"$s_parent\"; then printf not-assessed; return; fi\n  test \"$s_parent\" != / || break\n  s_parent=${s_parent%/*}; test -n \"$s_parent\" || s_parent=/\n done\n if test -L \"$s_path\"; then printf symlink\n elif test -e \"$s_path\"; then printf present\n else printf missing; fi\n}\none() {\n case \"$cap_output\" in *'\n') cap_output=${cap_output%'\n'};; esac\n case \"$cap_output\" in *'\n'*) return 1;; esac\n}\nvalid_hash() { case \"$1\" in ''|*[!0-9a-f]*) return 1;; esac; test \"${#1}\" = 64; }\nplain() { test \"$(state \"$1\")\" = present && test -f \"$1\" && test -r \"$1\"; }\nhash_file() {\n h_key=$1; h_path=$2; h_state=$(state \"$h_path\")\n if test \"$h_state\" != present; then fact \"$h_key\" \"$h_state\"; return; fi\n if ! plain \"$h_path\" || ! command -v stat >/dev/null 2>&1 || ! command -v sha256sum >/dev/null 2>&1; then fact \"$h_key\" not-assessed; return; fi\n h_size=$(stat -c %s \"$h_path\" 2>/dev/null) || h_size=invalid\n case \"$h_size\" in ''|*[!0-9]*) fact \"$h_key\" not-assessed; return;; esac\n if test \"$h_size\" -gt 67108864 || ! cap sha256sum \"$h_path\"; then fact \"$h_key\" not-assessed; return; fi\n h_value=${cap_output%% *}\n case \"$h_value\" in ''|*[!0-9a-f]*) h_value=not-assessed;; *) test \"${#h_value}\" = 64 || h_value=not-assessed;; esac\n fact \"$h_key\" \"$h_value\"\n}\nbool_match() {\n b_key=$1; b_path=$2; b_expected=$3\n if plain \"$b_path\" && cap cat \"$b_path\" && one; then\n  if test \"$cap_output\" = \"$b_expected\"; then fact \"$b_key\" 1; else fact \"$b_key\" 0; fi\n else fact \"$b_key\" not-assessed; fi\n}\n\nneed awk\nfor pair in qrtr_sysmodule:/sys/module/qrtr qrtr_mhi_sysmodule:/sys/module/qrtr_mhi qrtr_smd_sysmodule:/sys/module/qrtr_smd qrtr_proc:/proc/net/qrtr diag_device:/dev/diag card_flock:/tmp/zte-euicc-card.lock system_tls_roots:/etc/ssl/certs/ca-certificates.crt; do\n fact \"esim_${pair%%:*}\" \"$(state \"${pair#*:}\")\"\ndone\nif command -v stat >/dev/null 2>&1 && plain /tmp/zte-euicc-card.lock; then\n for pair in uid:%u mode:%a links:%h bytes:%s; do\n  value=$(stat -c \"${pair#*:}\" /tmp/zte-euicc-card.lock 2>/dev/null) || value=not-assessed\n  case \"$value\" in ''|*[!0-9]*) value=not-assessed;; esac\n  fact \"esim_card_flock_${pair%%:*}\" \"$value\"\n done\nfi\nfor tool in curl openssl; do if command -v \"$tool\" >/dev/null 2>&1; then fact \"esim_tool_$tool\" 1; else fact \"esim_tool_$tool\" 0; fi; done\nfact esim_qrtr_endpoint_query not-performed\nfact esim_selected_physical_route not-assessed\nfact esim_physical_card_kind unknown\nfact esim_builtin_card_kind unknown\nfact esim_card_lock_held not-assessed\nfact esim_apdu_performed 0\nfact esim_slot_or_power_changed 0\n",
+      "timeoutSeconds": 10,
+      "maxBytes": 32768
+    },
+    {
+      "id": "component-install-dependencies",
+      "title": {
+        "ru": "Зависимости установки и постоянного запуска компонентов",
+        "en": "Component installation and startup dependencies"
+      },
+      "category": "filesystem",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() (\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n)\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\n# Capture is private, bounded to 128 KiB, and requires the producer's exit proof.\n# Never export cap_output directly: callers select only fixed public fields/counts.\ncap() {\n cap_output=\n command -v head >/dev/null 2>&1 && command -v tr >/dev/null 2>&1 || return 1\n cap_output=$({ \"$@\" 2>/dev/null; cap_code=$?; printf '\\nFR_CAPTURE_EXIT=%s\\n' \"$cap_code\"; } | head -c 131073 | tr '\\000' '?'; printf '.')\n cap_output=${cap_output%.}\n test \"${#cap_output}\" -lt 131073 || { cap_output=; return 1; }\n case \"$cap_output\" in *'\nFR_CAPTURE_EXIT=0\n') cap_output=${cap_output%'\nFR_CAPTURE_EXIT=0\n'}; return 0;; *) cap_output=; return 1;; esac\n}\n\nstate() {\n s_path=$1; s_parent=${s_path%/*}\n while test -n \"$s_parent\"; do\n  if test -L \"$s_parent\" || test ! -d \"$s_parent\" || test ! -r \"$s_parent\" || test ! -x \"$s_parent\"; then printf not-assessed; return; fi\n  test \"$s_parent\" != / || break\n  s_parent=${s_parent%/*}; test -n \"$s_parent\" || s_parent=/\n done\n if test -L \"$s_path\"; then printf symlink\n elif test -e \"$s_path\"; then printf present\n else printf missing; fi\n}\none() {\n case \"$cap_output\" in *'\n') cap_output=${cap_output%'\n'};; esac\n case \"$cap_output\" in *'\n'*) return 1;; esac\n}\nvalid_hash() { case \"$1\" in ''|*[!0-9a-f]*) return 1;; esac; test \"${#1}\" = 64; }\nplain() { test \"$(state \"$1\")\" = present && test -f \"$1\" && test -r \"$1\"; }\nhash_file() {\n h_key=$1; h_path=$2; h_state=$(state \"$h_path\")\n if test \"$h_state\" != present; then fact \"$h_key\" \"$h_state\"; return; fi\n if ! plain \"$h_path\" || ! command -v stat >/dev/null 2>&1 || ! command -v sha256sum >/dev/null 2>&1; then fact \"$h_key\" not-assessed; return; fi\n h_size=$(stat -c %s \"$h_path\" 2>/dev/null) || h_size=invalid\n case \"$h_size\" in ''|*[!0-9]*) fact \"$h_key\" not-assessed; return;; esac\n if test \"$h_size\" -gt 67108864 || ! cap sha256sum \"$h_path\"; then fact \"$h_key\" not-assessed; return; fi\n h_value=${cap_output%% *}\n case \"$h_value\" in ''|*[!0-9a-f]*) h_value=not-assessed;; *) test \"${#h_value}\" = 64 || h_value=not-assessed;; esac\n fact \"$h_key\" \"$h_value\"\n}\nbool_match() {\n b_key=$1; b_path=$2; b_expected=$3\n if plain \"$b_path\" && cap cat \"$b_path\" && one; then\n  if test \"$cap_output\" = \"$b_expected\"; then fact \"$b_key\" 1; else fact \"$b_key\" 0; fi\n else fact \"$b_key\" not-assessed; fi\n}\n\nneed stat awk\nfor tool in cmp cp mv mkdir rmdir ln readlink sha256sum tar gzip base64 od timeout nohup sort jsonfilter ubus; do\n if command -v \"$tool\" >/dev/null 2>&1; then fact \"component_tool_$tool\" 1; else fact \"component_tool_$tool\" 0; fi\ndone\nfor pair in anchor:/data/zte-imei-studio private_bin:/data/zte-imei-studio/bin installations:/data/zte-imei-studio/installations vpn:/data/zte-vpn launcher:/data/zte-launcher dashboard:/data/zte-dashboard-runtime agent_installer:/data/zte-agent-installer initd:/etc/init.d rc_local:/etc/rc.local; do\n key=${pair%%:*}; path=${pair#*:}; current=$(state \"$path\");fact \"component_${key}_path\" \"$current\"\n if test \"$current\" = present; then\n  for field in uid mode links; do\n   case \"$field\" in uid) format=%u;;mode) format=%a;;links) format=%h;;esac\n   value=$(stat -c \"$format\" \"$path\" 2>/dev/null) || value=not-assessed\n   case \"$value\" in ''|*[!0-9]*) value=not-assessed;; esac\n   fact \"component_${key}_$field\" \"$value\"\n  done\n fi\ndone\nfor pair in ui_service:/etc/init.d/zte_topsw_devui vpn_service:/etc/init.d/zte_vpn launcher_service:/etc/init.d/zte_launcher; do\n fact \"component_${pair%%:*}_path\" \"$(state \"${pair#*:}\")\"\ndone\nfact component_startup_contents_read 0\nfact component_install_attempted 0\n",
       "timeoutSeconds": 12,
       "maxBytes": 32768
     }
@@ -4599,6 +4698,195 @@
       },
       "probe": "startup-structure",
       "fact": "startup_procd_rc_local"
+    },
+    {
+      "id": "component-rpc-schemas-rpc-component-methods-invoked",
+      "title": {
+        "ru": "Вызов методов при чтении схем",
+        "en": "Method calls during schema inspection"
+      },
+      "probe": "component-rpc-schemas",
+      "fact": "rpc_component_methods_invoked"
+    },
+    {
+      "id": "agent-runtime-mode-agent-runtime-mode",
+      "title": {
+        "ru": "Наблюдаемый режим агента",
+        "en": "Observed agent mode"
+      },
+      "probe": "agent-runtime-mode",
+      "fact": "agent_runtime_mode"
+    },
+    {
+      "id": "agent-runtime-mode-agent-owned-process-count",
+      "title": {
+        "ru": "Процессы установленного агента",
+        "en": "Installed agent processes"
+      },
+      "probe": "agent-runtime-mode",
+      "fact": "agent_owned_process_count"
+    },
+    {
+      "id": "agent-runtime-mode-agent-runtime-mapped-matches",
+      "title": {
+        "ru": "Процесс агента совпадает с файлом",
+        "en": "Agent process matches disk"
+      },
+      "probe": "agent-runtime-mode",
+      "fact": "agent_runtime_mapped_matches"
+    },
+    {
+      "id": "agent-runtime-mode-agent-loopback-health-http",
+      "title": {
+        "ru": "HTTP health на loopback",
+        "en": "Loopback health HTTP status"
+      },
+      "probe": "agent-runtime-mode",
+      "fact": "agent_loopback_health_http"
+    },
+    {
+      "id": "agent-runtime-mode-agent-loopback-capabilities-http",
+      "title": {
+        "ru": "HTTP capabilities на loopback",
+        "en": "Loopback capabilities HTTP status"
+      },
+      "probe": "agent-runtime-mode",
+      "fact": "agent_loopback_capabilities_http"
+    },
+    {
+      "id": "wifi-runtime-shape-wifi-guest-2g-guest-active-time",
+      "title": {
+        "ru": "Таймер гостевой сети 2.4 ГГц",
+        "en": "2.4 GHz guest timer"
+      },
+      "probe": "wifi-runtime-shape",
+      "fact": "wifi_guest_2g_guest_active_time"
+    },
+    {
+      "id": "wifi-runtime-shape-wifi-guest-5g-guest-active-time",
+      "title": {
+        "ru": "Таймер гостевой сети 5 ГГц",
+        "en": "5 GHz guest timer"
+      },
+      "probe": "wifi-runtime-shape",
+      "fact": "wifi_guest_5g_guest_active_time"
+    },
+    {
+      "id": "wifi-runtime-shape-wifi-wlan1-hostapd-state",
+      "title": {
+        "ru": "Состояние hostapd wlan1",
+        "en": "wlan1 hostapd state"
+      },
+      "probe": "wifi-runtime-shape",
+      "fact": "wifi_wlan1_hostapd_state"
+    },
+    {
+      "id": "wifi-runtime-shape-wifi-wlan3-hostapd-state",
+      "title": {
+        "ru": "Состояние hostapd wlan3",
+        "en": "wlan3 hostapd state"
+      },
+      "probe": "wifi-runtime-shape",
+      "fact": "wifi_wlan3_hostapd_state"
+    },
+    {
+      "id": "vpn-installation-state-vpn-service-matches",
+      "title": {
+        "ru": "Служба VPN совпадает с установленной",
+        "en": "VPN service matches installed copy"
+      },
+      "probe": "vpn-installation-state",
+      "fact": "vpn_service_matches"
+    },
+    {
+      "id": "vpn-installation-state-vpn-network-matches-saved",
+      "title": {
+        "ru": "Сетевой init совпадает с сохранённым хэшем",
+        "en": "Network init matches saved hash"
+      },
+      "probe": "vpn-installation-state",
+      "fact": "vpn_network_matches_saved"
+    },
+    {
+      "id": "vpn-kernel-routing-vpn-table19090-rows",
+      "title": {
+        "ru": "Число маршрутов в таблице VPN",
+        "en": "VPN routing table row count"
+      },
+      "probe": "vpn-kernel-routing",
+      "fact": "vpn_table19090_rows"
+    },
+    {
+      "id": "launcher-runtime-state-launcher-service-state",
+      "title": {
+        "ru": "Состояние службы дополнительных страниц",
+        "en": "Extra pages service state"
+      },
+      "probe": "launcher-runtime-state",
+      "fact": "launcher_service_state"
+    },
+    {
+      "id": "launcher-runtime-state-launcher-ready-matches",
+      "title": {
+        "ru": "Готовность страниц для текущего процесса",
+        "en": "Pages readiness for current process"
+      },
+      "probe": "launcher-runtime-state",
+      "fact": "launcher_ready_matches"
+    },
+    {
+      "id": "launcher-runtime-state-launcher-failure-reason",
+      "title": {
+        "ru": "Фиксированная причина ошибки страниц",
+        "en": "Fixed extra pages failure reason"
+      },
+      "probe": "launcher-runtime-state",
+      "fact": "launcher_failure_reason"
+    },
+    {
+      "id": "ttl-apn-state-ttl-settings-valid",
+      "title": {
+        "ru": "Формат сохранённых настроек TTL",
+        "en": "Saved TTL settings format"
+      },
+      "probe": "ttl-apn-state",
+      "fact": "ttl_settings_valid"
+    },
+    {
+      "id": "ttl-apn-state-apn-mode",
+      "title": {
+        "ru": "Режим APN без профилей",
+        "en": "APN mode without profiles"
+      },
+      "probe": "ttl-apn-state",
+      "fact": "apn_mode"
+    },
+    {
+      "id": "esim-passive-dependencies-esim-physical-card-kind",
+      "title": {
+        "ru": "Тип физической карты без APDU неизвестен",
+        "en": "Physical card type is unknown without APDU"
+      },
+      "probe": "esim-passive-dependencies",
+      "fact": "esim_physical_card_kind"
+    },
+    {
+      "id": "esim-passive-dependencies-esim-builtin-card-kind",
+      "title": {
+        "ru": "Тип встроенной карты не проверен",
+        "en": "Built-in card type not assessed"
+      },
+      "probe": "esim-passive-dependencies",
+      "fact": "esim_builtin_card_kind"
+    },
+    {
+      "id": "component-install-dependencies-component-startup-contents-read",
+      "title": {
+        "ru": "Чтение содержимого startup компонентов",
+        "en": "Reading component startup contents"
+      },
+      "probe": "component-install-dependencies",
+      "fact": "component_startup_contents_read"
     }
   ]
 }

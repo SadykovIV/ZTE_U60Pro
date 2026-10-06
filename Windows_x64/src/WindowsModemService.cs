@@ -156,7 +156,7 @@ public sealed partial class WindowsModemService : IModemService
                 case ModemOperation.CollectFirmwareAdaptation:
                 {
                     var capture = await CollectFirmwareAdaptationAsync(p, cancellationToken);
-                    var message = (capture.Complete ? "Данные для адаптации прошивки проверены: " : "Сбор для адаптации прошивки неполный; недоступные файлы указаны в manifest.json: ") + capture.Path;
+                    var message = (capture.Complete ? "Данные для адаптации прошивки проверены: " : "Сбор для адаптации прошивки неполный; сведения о файлах и проверках указаны в manifest.json: ") + capture.Path;
                     diagnosticOutcome = capture.Complete ? "completed" : "failed";
                     Log(capture.Complete ? "ok" : "warning", "CollectFirmwareAdaptation: " + (capture.Complete ? "complete" : "incomplete"));
                     return new OperationResult(capture.Complete, message, Values: new Dictionary<string,string> { ["capture_outcome"] = capture.Complete ? "complete" : "incomplete", ["capture_path"] = capture.Path });

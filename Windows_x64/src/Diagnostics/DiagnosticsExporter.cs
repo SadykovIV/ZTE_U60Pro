@@ -147,14 +147,7 @@ public static class DiagnosticsExporter
                     ?? throw new InvalidDataException("Invalid cached research.");
                 // Per-line cleaning preserves bounded multi-line probe output while
                 // applying the same secret policy as the application journal.
-                string CleanResearch(string value)
-                {
-                    // PEM bodies must be removed before splitting into lines,
-                    // including a block truncated before its closing delimiter.
-                    try { value = Regex.Replace(value, @"-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?(?:-----END [^-]*PRIVATE KEY-----|$)", "[PRIVATE KEY REDACTED]", RegexOptions.None, TimeSpan.FromSeconds(1)); }
-                    catch (RegexMatchTimeoutException) { throw new InvalidDataException("Cached research redaction exceeded its limit."); }
-                    return string.Join('\n', value.Split('\n').Select(line => { ct.ThrowIfCancellationRequested(); return privacy.Clean(line); }));
-                }
+                string CleanResearch(string value)=>ResearchReportFiles.CleanExportText(value,privacy.Clean,ct);
                 var payload = ResearchReportFiles.BuildExportFiles(cached, CleanResearch, ct, privacy.CleanApplicationVersion);
                 foreach (var item in payload) files.Add("firmware-research/" + item.Key, item.Value);
                 cachedResearchSource = new { status = "included", path = "FirmwareResearch/latest.json",
