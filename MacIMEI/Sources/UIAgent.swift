@@ -8,7 +8,7 @@ extension ContentView {
                 HStack {
                     Text(L10n.text("Агент на модеме")).font(.system(size: 18, weight: .semibold))
                     Spacer()
-                    Button(L10n.text("Проверить агент")) { model.refreshAgent() }.buttonStyle(StudioButtonStyle()).disabled(!model.canManage)
+                    Button(L10n.text("Проверить агент")) { model.refreshAgent() }.buttonStyle(StudioButtonStyle()).disabled(!model.canReadModem)
                 }
                 informationRow("Поставляемый агент", BundledAgent.version + " · eSIM")
                 if let state = model.agentInstallationStatus {
@@ -16,7 +16,9 @@ extension ContentView {
                     informationRow("Файл", BundledAgent.description(for: state.hash))
                     informationRow("SHA256", state.hash)
                     informationRow("Сценарий запуска", state.startupReady ? "Сценарий запуска доступен" : "Требуется автоматическая подготовка")
-                    if state.recoveryPending { StudioNote(symbol: "arrow.uturn.backward", text: "Есть незавершённая замена. Сначала восстановите предыдущий агент.") }
+                    if state.warningCode == "OWNER" {
+                        StudioNote(symbol: "exclamationmark.triangle", text: L10n.text("Файл и процесс агента проверены, но история установки не подтверждена. Сохранённые данные оставлены без изменений; установка требует восстановления.", "The agent file and process were checked, but installation history could not be verified. Saved data was preserved; installation requires recovery."))
+                    } else if state.recoveryPending { StudioNote(symbol: "arrow.uturn.backward", text: "Есть незавершённая замена. Сначала восстановите предыдущий агент.") }
                 }
                 Button(L10n.text("Установить / обновить агент и веб-панель")) { model.installAgent(custom: false) }
                     .buttonStyle(StudioButtonStyle(prominent: true)).disabled(!model.canManage || model.agentInstallationStatus?.recoveryPending == true)

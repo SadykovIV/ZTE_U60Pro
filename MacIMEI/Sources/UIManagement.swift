@@ -35,8 +35,8 @@ extension ContentView {
                 if let firmware = summary.firmware { informationRow("Прошивка", firmware) }
                 if let imei = summary.primaryIMEI { informationRow("IMEI устройства", imei) }
                 if let version = summary.agentVersion { informationRow("Версия агента", version) }
-                if let identity = summary.identity { informationRow("CID накопителя", identity.cid) }
-                ForEach(summary.fields.keys.filter { $0 != "firmware" && $0 != "routerSHA256" }.sorted(), id: \.self) { key in
+                if let cid = summary.observedCID { informationRow("CID накопителя", cid) }
+                ForEach(summary.fields.keys.filter { !["firmware", "routerSHA256", "cid", "sshReadOnly", "accessProfile"].contains($0) }.sorted(), id: \.self) { key in
                     informationRow(channelFieldTitle(key), summary.fields[key] ?? "—")
                 }
                 Text(L10n.text(model.connectionCapabilityText)).font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
@@ -47,7 +47,7 @@ extension ContentView {
         }
     }
     func channelFieldTitle(_ key: String) -> String {
-        ["firmware": "Прошивка", "innerVersion": "Внутренняя версия", "hostname": "Имя устройства",
+        ["uid": "UID", "system": "Система", "firmware": "Прошивка", "innerVersion": "Внутренняя версия", "hostname": "Имя устройства",
          "kernel": "Ядро Linux", "uptimeSeconds": "Время работы, секунд", "loadAverage": "Нагрузка",
          "memoryTotalKiB": "RAM всего, КиБ", "memoryAvailableKiB": "RAM доступно, КиБ",
          "batteryPercent": "Аккумулятор, %", "detailsUnavailable": "Дополнительные сведения", "batteryState": "Состояние аккумулятора", "architecture": "Архитектура", "model": "Модель"][key] ?? key

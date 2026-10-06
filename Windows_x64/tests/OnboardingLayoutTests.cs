@@ -15,6 +15,9 @@ internal static class OnboardingLayoutTests
         var id="11111111-1111-1111-1111-111111111111";
         var stage="/data/zte-imei-studio/stage-"+id;
         var journal="/data/zte-imei-studio/installations/"+id;
+        Check(OnboardingEngine.CredentialOrigin("INSTALL_AGENT new\n")==true&&OnboardingEngine.CredentialOrigin("INSTALL_AGENT preserved\n")==false,"only exact installer credential receipts identify new or preserved startup");
+        foreach(var output in new[]{"", "INSTALL_AGENT unknown\n", "INSTALL_AGENT new\nINSTALL_AGENT preserved\n", "INSTALL_AGENT preserved extra\n"})
+            Check(OnboardingEngine.CredentialOrigin(output) is null,"missing or contradictory credential receipt still requires authentication");
         var command=(string)typeof(OnboardingEngine).GetMethod("StagePreparationCommand",BindingFlags.NonPublic|BindingFlags.Static)!.Invoke(null,[stage,"synthetic-owner"])!;
         Check(!command.Contains("/data/local")&&!command.Contains("/data/bin")&&command.Contains("anchor=/data/zte-imei-studio"),"new stage uses private anchor without modifying stock777 parents");
         Check(command.Contains("safe_dir /data")&&command.Contains("mkdir -m 700 \"$anchor\"")&&command.Contains("stat -c %a \"$anchor\")\" = 700")&&!command.Contains("chmod"),"private anchor is checked as root700 and existing parent permissions are never rewritten");
@@ -90,6 +93,43 @@ internal static class OnboardingLayoutTests
                 return Task.FromResult(new RemoteResult(0,Encoding.UTF8.GetBytes(body+"\n"+marker+"0\n"),[]));
             });
             var engine=new OnboardingEngine("192.0.2.1",authStorage,"unused",adb){InstalledSshFactory=()=>remote};
+            var genericDevice=device with {FirmwareHash=new string('b',64)};
+            var genericProof=genericDevice.FirmwareHash+"  /firmware/image/modem.b16\n"+genericDevice.RouterHash+"  /usr/bin/diag-router\n"+genericDevice.Cid+"\n"+genericDevice.BootId;
+            var genericAdb=new AdbTransport((args,_,_)=>
+            {
+                if(args[0]=="devices")return Task.FromResult(new RemoteResult(0,"synthetic-usb device usb:1\n"u8.ToArray(),[]));
+                if(args[0]=="-d")return Task.FromResult(new RemoteResult(0,"synthetic-usb\n"u8.ToArray(),[]));
+                if(args[0]!="-s"||args[2]!="shell")throw new Exception("Unexpected mutating ADB operation");
+                var cmd=args[^1];var marker=Regex.Match(cmd,"__ZTE_RESULT_[A-F0-9]{32}__").Value;
+                var body=cmd.Contains("dropbearkey'")?"ssh-ed25519 "+Convert.ToBase64String(blob):cmd.Contains("observed_hash()")?genericProof:throw new Exception("Unexpected ADB operation");
+                return Task.FromResult(new RemoteResult(0,Encoding.UTF8.GetBytes(body+"\n"+marker+"0\n"),[]));
+            });
+            var preserved=new RejectedAuth(genericProof);
+            var preservedEngine=new OnboardingEngine("192.0.2.1",authStorage,"unused",genericAdb){InstalledSshFactory=()=>preserved};
+            pending.NewAgent=false;pending.Profile="linux-arm64-access";
+            try
+            {
+                await (Task<DeviceIdentity>)typeof(OnboardingEngine).GetMethod("PinAndVerifySshAsync",BindingFlags.NonPublic|BindingFlags.Instance)!.Invoke(preservedEngine,[pending,"synthetic-usb",genericDevice,null,"synthetic-new-unused-password",CancellationToken.None])!;
+                Check(false,"ordinary preparation does not bypass an incorrect supplied agent password");
+            }
+            catch(InvalidDataException){Check(preserved.AuthCalls==1&&preserved.Writes==0,"ordinary preparation requires the supplied password even for preserved startup");}
+            foreach(var force in new[]{false,true})
+            {
+                pending.NewAgent=force?false:true;pending.ForceReinstall=force;
+                try{await (Task<DeviceIdentity>)typeof(OnboardingEngine).GetMethod("PinAndVerifySshAsync",BindingFlags.NonPublic|BindingFlags.Instance)!.Invoke(preservedEngine,[pending,"synthetic-usb",genericDevice,null,"synthetic-wrong-password",CancellationToken.None])!;Check(false,"new or forced agent requires supplied password");}
+                catch(InvalidDataException){Check(preserved.AuthCalls== (force?3:2)&&preserved.Writes==0,"new or forced agent still requires authentication, force="+force);}
+            }
+            pending.ForceReinstall=false;
+            pending.Profile="b31";
+            pending.NewAgent=false;pending.Phase="ready";pending.BackupDirectory=Path.Combine(authStorage,"SetupBackups",id);
+            Directory.CreateDirectory(pending.BackupDirectory);
+            try
+            {
+                await (Task<OnboardingResult>)typeof(OnboardingEngine).GetMethod("ResumeInstallationAsync",BindingFlags.NonPublic|BindingFlags.Instance)!.Invoke(engine,[pending,"synthetic-usb",device,web,"synthetic-new-unused-password",CancellationToken.None])!;
+                Check(false,"ordinary B31 ready resume requires the supplied password");
+            }
+            catch(InvalidDataException){Check(remote.AuthCalls==1&&remote.Writes==0&&remote.Commits==0&&pending.Phase=="ready","ordinary B31 ready resume refuses incorrect password without NV or install replay");}
+            pending.Phase="install-requested";
             pending.NewAgent=null;
             try
             {
@@ -98,7 +138,7 @@ internal static class OnboardingLayoutTests
             }
             catch(InvalidDataException)
             {
-                Check(remote.AuthCalls==1&&remote.Writes==0&&pending.Phase=="install-requested"&&pending.NewAgent is null,"B31 resume refuses wrong agent password before commit even when NewAgent is unknown");
+                Check(remote.AuthCalls==2&&remote.Writes==0&&pending.Phase=="install-requested"&&pending.NewAgent is null,"B31 resume refuses wrong agent password before commit even when NewAgent is unknown");
             }
         }
         finally{Directory.Delete(authStorage,true);}
@@ -138,11 +178,13 @@ internal static class OnboardingLayoutTests
     }
     private sealed class RejectedAuth(string proof):IRemoteShell
     {
-        public int AuthCalls,Writes;
+        public int AuthCalls,Writes,Commits;
         public Task<RemoteResult> RunAsync(string command,byte[]? stdin=null,TimeSpan? timeout=null,CancellationToken ct=default)
         {
             if(command.Contains("observed_hash()"))return Task.FromResult(new RemoteResult(0,Encoding.UTF8.GetBytes(proof),[]));
             if(command.Contains("AGENT_ACCESS_PROOF"))return Task.FromResult(new RemoteResult(0,Encoding.UTF8.GetBytes("AGENT_ACCESS_PROOF "+AgentPackage.Sha256+" 100 200\n"),[]));
+            if(command.Contains("AGENT_DISCOVERY_READY"))return Task.FromResult(new RemoteResult(0,"AGENT_DISCOVERY_READY"u8.ToArray(),[]));
+            if(command.Contains("'--commit'")){Commits++;return Task.FromResult(new RemoteResult(0,Encoding.UTF8.GetBytes("INSTALL_COMMITTED /data/zte-imei-studio/installations/11111111-1111-1111-1111-111111111111\n"),[]));}
             if(command.Contains("/api/auth/login")&&stdin is not null){AuthCalls++;return Task.FromResult(new RemoteResult(22,[],[]));}
             throw new Exception("Unexpected post-install action before credential proof");
         }

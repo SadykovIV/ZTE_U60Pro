@@ -315,11 +315,11 @@ struct ContentView: View {
                 StudioNote(symbol: "exclamationmark.triangle", text: title + ": " + detail)
             }
             if !pageRefreshErrors.isEmpty {
-                Button(L10n.text("Повторить обновление разделов"), action: model.refreshConnectedSections).buttonStyle(StudioButtonStyle())
+                Button(L10n.text("Повторить обновление разделов")) { model.refreshConnectedSections(Set(pageRefreshSections)) }.buttonStyle(StudioButtonStyle())
             }
         }
     }
-    var pageRefreshErrors: [(String, String)] {
+    var pageRefreshSections: [ConnectionOverviewSection] {
         let sections: [ConnectionOverviewSection]
         switch page {
         case .modem: sections = [.information]
@@ -337,7 +337,10 @@ struct ContentView: View {
         case .imei: sections = []
         case .esim: sections = []
         }
-        return sections.compactMap { section in model.sectionRefreshErrors[section].map { (section.title, $0) } }
+        return sections
+    }
+    var pageRefreshErrors: [(String, String)] {
+        pageRefreshSections.compactMap { section in model.sectionRefreshErrors[section].map { (section.title, $0) } }
     }
 
     var modemPage: some View {
@@ -359,7 +362,7 @@ struct ContentView: View {
             if !model.connected {
                 StudioCard {
                     Text(L10n.text("Сведения о подключённом устройстве")).font(.system(size: 18, weight: .semibold))
-                    Text(L10n.text("Подключитесь в «Подготовке модема» по SSH. После подключения сведения и состояние разделов обновятся автоматически."))
+                    Text(L10n.text("Подключитесь по SSH и нажмите «Обновить», чтобы прочитать сведения о модеме.", "Connect over SSH and click Refresh to read modem information."))
                         .font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
                     Button(L10n.text("Перейти к подготовке")) { page = .preparation }.buttonStyle(StudioButtonStyle())
                 }
@@ -386,8 +389,6 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 18) {
             connectionParametersCard
             connectionRoutingCard
-        }.onAppear {
-            if !model.connectionsChecked && !model.busy { model.discoverConnectionsPassively() }
         }
     }
     var connectionParametersCard: some View {
@@ -415,17 +416,6 @@ struct ContentView: View {
                         connectionPasswordField("ПАРОЛЬ АГЕНТА", placeholder: "Текущий или новый пароль", text: $model.agentPassword)
                     }
                     Text(L10n.text("Уже работающий SSH проверяется без этих паролей. Пароль Web нужен только для включения ADB, пароль агента — для новой установки."))
-                        .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
-                    Toggle(L10n.text("Принудительная подготовка: переустановить агент и SSH"), isOn: $model.forcePreparation)
-                        .disabled(model.setupPending)
-                    Text(L10n.text("Сначала сохраняется резервная копия. Агент получит введённый пароль; временные файлы удаляются после проверки. Незавершённая операция продолжается в сохранённом режиме."))
-                        .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
-                    HStack {
-                        Toggle(L10n.text("Очистить данные агента, VPN и дополнительных страниц"), isOn: $model.cleanPreparationComponents)
-                            .disabled(model.setupPending)
-                        OperationInfoButton(topic: .componentCleanup)
-                    }
-                    Text(L10n.text("Включает принудительную подготовку. Перед удалением компоненты сохраняются в архив на Mac; агент и SSH остаются."))
                         .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
                     connectionPasswordField("КЛЮЧ БЭКАПА (НЕОБЯЗАТЕЛЬНО)", placeholder: "Пусто — проверка известного ключа", text: $model.backupSuffix)
                     Text(L10n.text("Пустое поле использует известный ключ как кандидат. Ключ, архив и штатный USB-блок проверяются перед восстановлением; ручное значение не подменяется."))
@@ -736,7 +726,7 @@ struct ContentView: View {
                     }
                     Spacer(minLength: 0)
                     Button(action: model.refreshScreenLocalization) { Label(L10n.text("Проверить"), systemImage: "arrow.clockwise") }
-                        .buttonStyle(StudioButtonStyle()).disabled(!model.canManage)
+                        .buttonStyle(StudioButtonStyle()).disabled(!model.canReadModem)
                 }
             }
             StudioCard {

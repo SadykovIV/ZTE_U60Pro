@@ -5,6 +5,17 @@ extension ContentView {
         StudioCard {
             Text(L10n.text("Web → ADB → агент и SSH → подключение по SSH"))
                 .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary)
+            HStack(alignment: .top, spacing: 10) {
+                Toggle(L10n.text("Чистая установка после заводского сброса"), isOn: $model.cleanPreparationComponents)
+                    .toggleStyle(.checkbox)
+                    .disabled(model.busy || model.terminalActive)
+                OperationInfoButton(topic: .componentCleanup)
+            }
+            Text(L10n.text("Переустанавливает агент и SSH с введённым новым паролем агента. Компоненты программы сохраняются в архив перед очисткой; штатные настройки модема не сбрасываются."))
+                .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
+            Toggle(L10n.text("Принудительная подготовка: переустановить агент и SSH"), isOn: $model.forcePreparation)
+                .toggleStyle(.checkbox)
+                .disabled(model.busy || model.terminalActive)
             HStack(spacing: 10) {
                 Button(L10n.text(model.componentCleanupPending ? "Продолжить очистку компонентов" : "Выполнить предварительную подготовку модема"), action: model.preparePreferredSSH)
                     .buttonStyle(StudioButtonStyle(prominent: true)).disabled(!model.canPrepareModem)

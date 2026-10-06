@@ -5,16 +5,16 @@ using ZteImeiStudio.Windows.Core;
 
 namespace ZteImeiStudio.Windows.Features;
 
-public sealed record AgentInstallationStatus(string Hash, bool Running, bool StartupReady, bool RecoveryPending, string? BackupHash)
+public sealed record AgentInstallationStatus(string Hash, bool Running, bool StartupReady, bool RecoveryPending, string? BackupHash, string? Warning = null)
 {
     public string? Version => AgentPackage.VersionForHash(Hash);
     public bool IsCurrent => Hash == AgentPackage.Sha256;
 }
-public sealed record ScreenLocalizationStatus(string State, string Language, int Mounted, bool BootEnabled, int Pid, string Revision);
+public sealed record ScreenLocalizationStatus(string State, string Language, int Mounted, bool BootEnabled, int Pid, string Revision, string? Reason = null);
 
 public sealed partial class DeviceFeatureService
 {
-    private const string AgentManagerHash = "fd76710b266669b34d251b7f06ac31ae1ee55a5d123f3dde8ca19f367cf3f289";
+    private const string AgentManagerHash = "ba9216b75d9b6a5a003e05137416335083609f4d840a0394e6f9016d27527844";
     private const string ScreenRoot = "/data/zte-imei-screen-ru";
     private const string ScreenManagerHash = "810aae3c07c8019f2d0657f2bad6f1ee38f1dea5f1081210ab144478dd87c7b8";
     private static readonly HashSet<string> ScreenLegacyManagerHashes = ["6aed6654afb7a4fde7792a5f6034aa41e15b0fd77d794ed04d3a12c111c95fd2", "586a7727fb24a5701990c7cd82889887220c1c5566261c53ca21f3bb12549bfa"];
@@ -36,9 +36,13 @@ public sealed partial class DeviceFeatureService
 
         async Task<AgentInstallationStatus> ReadOnly()
         {
-            var identity = await ReadIdentityAsync(requireSupportedFirmware: true, ct);
-            var status = await Invoke(identity, null);
-            await VerifyIdentityAsync(identity, ct);
+            var manager = await ResourceAsync("AgentInstallation", "manager.sh", ct);
+            Check(Sha(manager) == AgentManagerHash, "Несовместимый установщик агента.");
+            var session = await SshReadProof.ReadSessionAsync(_shell, ct);
+            var result = await _shell.RunAsync("unset ZTE_AGENT_TEST_ROOT; sh -s -- status", manager, TimeSpan.FromSeconds(30), ct);
+            Check(result.Success, AgentStatusFailure(result));
+            var status = ParseAgentStatus(Text(result.Stdout));
+            session.Verify(await SshReadProof.ReadSessionAsync(_shell, ct));
             return status;
         }
         async Task<AgentInstallationStatus> Invoke(DeviceIdentity identity, string? token)
@@ -141,6 +145,28 @@ public sealed partial class DeviceFeatureService
     private async Task<AgentInstallationStatus> AgentStatusAtStageAsync(string stage, CancellationToken ct)
     {
         var output = await RunTextAsync("set -eu; test \"$(sha256sum " + Quote(stage + "/manager.sh") + " | cut -d ' ' -f1)\" = " + Quote(AgentManagerHash) + "; sh " + Quote(stage + "/manager.sh") + " status", ct: ct);
+        return ParseAgentStatus(output);
+    }
+
+    private static string AgentStatusFailure(ZteImeiStudio.Transport.RemoteResult result)
+    {
+        var codes = Text(result.Stderr).Split('\n').Where(line => line.StartsWith("AGENT_ERROR ", StringComparison.Ordinal))
+            .Select(line => line[12..]).Distinct(StringComparer.Ordinal).ToArray();
+        var code = codes.Length == 1 && codes[0] is "CID" or "OWNER" or "BINARY" or "ROOT_REQUIRED" or "UNSAFE_LAYOUT"
+            ? codes[0] : "STATUS_FAILED";
+        return code switch
+        {
+            "CID" => "Не удалось прочитать идентификатор устройства для проверки агента (AGENT_CID).",
+            "OWNER" => "Каталог установщика агента не подтвердил принадлежность программе (AGENT_OWNER).",
+            "BINARY" => "Файл агента не прошёл проверку типа и владельца (AGENT_BINARY).",
+            "ROOT_REQUIRED" => "Для проверки этого состояния агента нужен root (AGENT_ROOT_REQUIRED).",
+            "UNSAFE_LAYOUT" => "Каталоги агента не прошли проверку безопасности (AGENT_UNSAFE_LAYOUT).",
+            _ => "Не удалось проверить состояние агента (AGENT_STATUS_FAILED).",
+        };
+    }
+
+    private static AgentInstallationStatus ParseAgentStatus(string output)
+    {
         var values = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
         {
@@ -148,15 +174,19 @@ public sealed partial class DeviceFeatureService
             Check(pair.Length == 2 && values.TryAdd(pair[0], pair[1]), "Повреждён ответ проверки агента.");
         }
         Check(values.TryGetValue("AGENT_SHA", out var hash) && (hash == "absent" || Regex.IsMatch(hash, "^[0-9a-f]{64}$")), "Нет контрольной суммы установленного агента.");
+        Check(values.Keys.All(key => key is "AGENT_SHA" or "AGENT_RUNNING" or "AGENT_STARTUP" or "AGENT_PENDING" or "AGENT_BACKUP" or "AGENT_WARNING") &&
+              new[] { "AGENT_RUNNING", "AGENT_STARTUP", "AGENT_PENDING" }.All(key => !values.TryGetValue(key, out var flag) || flag is "yes" or "no"),
+              "Повреждён ответ проверки агента.");
+        Check(!values.TryGetValue("AGENT_WARNING", out var warning) || warning == "OWNER", "Повреждён ответ проверки агента.");
         string? backup = values.GetValueOrDefault("AGENT_BACKUP");
         Check(backup == null || Regex.IsMatch(backup, "^[0-9a-f]{64}$"), "Повреждён бэкап агента.");
         return new AgentInstallationStatus(hash!, values.GetValueOrDefault("AGENT_RUNNING") == "yes",
-            values.GetValueOrDefault("AGENT_STARTUP") == "yes", values.GetValueOrDefault("AGENT_PENDING") == "yes", backup);
+            values.GetValueOrDefault("AGENT_STARTUP") == "yes", values.GetValueOrDefault("AGENT_PENDING") == "yes", backup, warning);
     }
 
     public async Task<ScreenLocalizationStatus> GetScreenLocalizationStatusAsync(CancellationToken ct = default)
     {
-        var identity = await ReadIdentityAsync(requireSupportedFirmware: true, ct);
+        var session = await SshReadProof.ReadSessionAsync(_shell, ct);
         var presence = await RunTextAsync("if test -e " + ScreenRoot + " || test -L " + ScreenRoot + "; then echo present; else echo absent; fi", ct: ct);
         if (presence == "absent")
         {
@@ -165,13 +195,51 @@ public sealed partial class DeviceFeatureService
                 "state=absent; if test \"$mounted\" != 0 || test -e /etc/init.d/zte_imei_screen_ru || test -L /etc/init.d/zte_imei_screen_ru || test -e /etc/rc.d/S47zte_imei_screen_ru || test -L /etc/rc.d/S47zte_imei_screen_ru || test ! -f /etc/init.d/zte_topsw_devui || test -L /etc/init.d/zte_topsw_devui || test \"$(sha256sum /etc/init.d/zte_topsw_devui 2>/dev/null | cut -d ' ' -f1)\" != a30da6481637f1fd94e037373d406e574be7e722937a4965325086740be67e35; then state=error; fi; " +
                 "pid=$(pidof zte_topsw_devui 2>/dev/null | awk '{print $1}' || true); case \"$pid\" in ''|*[!0-9]*) pid=0;; esac; " +
                 "printf 'SCREEN_RU_STATUS state=%s language=%s mounted=%s boot=0 pid=%s revision=20260924\\n' \"$state\" \"$language\" \"$mounted\" \"$pid\"", ct: ct);
-            return ParseScreenStatus(output);
+            var status = ParseScreenStatus(output);
+            if (status.State == "error") status = status with { Reason = await ReadScreenFailureReasonAsync(ct) };
+            session.Verify(await SshReadProof.ReadSessionAsync(_shell, ct));
+            return status;
         }
         Check(presence == "present", "Не удалось определить состояние русификации.");
         var installedHash = await RunTextAsync("set -eu; test -d " + ScreenRoot + " && test ! -L " + ScreenRoot + "; test -f " + ScreenRoot + "/manager.sh && test ! -L " + ScreenRoot + "/manager.sh; sha256sum " + ScreenRoot + "/manager.sh | cut -d ' ' -f1", ct: ct);
         Check(installedHash == ScreenManagerHash || ScreenLegacyManagerHashes.Contains(installedHash), "Менеджер русификации изменён.");
-        var command = ScreenManagerCommand("status", identity.Cid, installedHash);
-        return ParseScreenStatus(await RunTextAsync(command, seconds: 45, ct: ct));
+        var command = ScreenManagerCommand("status", null, installedHash);
+        var installed = ParseScreenStatus(await RunTextAsync(command, seconds: 45, ct: ct));
+        if (installed.State == "error") installed = installed with { Reason = await ReadScreenFailureReasonAsync(ct) };
+        session.Verify(await SshReadProof.ReadSessionAsync(_shell, ct));
+        return installed;
+    }
+
+    private static readonly HashSet<string> ScreenStatusReasons = ["STOCK_INIT_MISSING", "STOCK_INIT_CHANGED", "LEFTOVER_HOOK_OR_MOUNT", "BOOT_HOOK_MISSING", "TRANSACTION_PENDING", "UI_NOT_RUNNING", "STATUS_UNVERIFIED"];
+
+    internal static string ScreenFailureDescription(string? reason) => reason switch {
+                "STOCK_INIT_MISSING" => "Отсутствует штатный сценарий запуска экрана (SCREEN_RU_STOCK_INIT_MISSING).",
+                "STOCK_INIT_CHANGED" => "Штатный сценарий запуска экрана отличается от проверенного (SCREEN_RU_STOCK_INIT_CHANGED).",
+                "LEFTOVER_HOOK_OR_MOUNT" => "Обнаружены оставшиеся подключения русификации без её каталога (SCREEN_RU_LEFTOVER_HOOK_OR_MOUNT).",
+                "BOOT_HOOK_MISSING" => "Отсутствует автозапуск установленной русификации (SCREEN_RU_BOOT_HOOK_MISSING).",
+                "TRANSACTION_PENDING" => "Осталась незавершённая операция русификации (SCREEN_RU_TRANSACTION_PENDING).",
+                "UI_NOT_RUNNING" => "Процесс штатного экрана не запущен (SCREEN_RU_UI_NOT_RUNNING).",
+                _ => "Состояние русификации не подтверждено (SCREEN_RU_STATUS_UNVERIFIED).",
+                };
+
+    private async Task<string> ReadScreenFailureReasonAsync(CancellationToken ct)
+    {
+        const string command = """
+        reason=STATUS_UNVERIFIED
+        if test ! -f /etc/init.d/zte_topsw_devui || test -L /etc/init.d/zte_topsw_devui; then reason=STOCK_INIT_MISSING
+        elif test ! -e /data/zte-imei-screen-ru && test ! -L /data/zte-imei-screen-ru; then
+          if test "$(sha256sum /etc/init.d/zte_topsw_devui 2>/dev/null | cut -d ' ' -f1)" != a30da6481637f1fd94e037373d406e574be7e722937a4965325086740be67e35; then reason=STOCK_INIT_CHANGED
+          elif test -e /etc/init.d/zte_imei_screen_ru || test -L /etc/init.d/zte_imei_screen_ru || test -e /etc/rc.d/S47zte_imei_screen_ru || test -L /etc/rc.d/S47zte_imei_screen_ru || awk '$5=="/usr/ui/language/English.ini" || $5=="/usr/ui/language/Chinese.ini" || $5=="/usr/bin/zte_topsw_devui" {found=1} END {exit !found}' /proc/self/mountinfo; then reason=LEFTOVER_HOOK_OR_MOUNT; fi
+        elif test -d /data/zte-imei-screen-ru && test ! -L /data/zte-imei-screen-ru; then
+          if test -e /data/zte-imei-screen-ru/.transaction || test -L /data/zte-imei-screen-ru/.transaction; then reason=TRANSACTION_PENDING
+          elif test -e /data/zte-imei-screen-ru/.enabled && { test ! -f /etc/init.d/zte_imei_screen_ru || test ! -L /etc/rc.d/S47zte_imei_screen_ru; }; then reason=BOOT_HOOK_MISSING
+          elif ! pidof zte_topsw_devui >/dev/null 2>&1; then reason=UI_NOT_RUNNING; fi
+        fi
+        printf '%s\n' "$reason"
+        """;
+        var result = await _shell.RunAsync(command, timeout: TimeSpan.FromSeconds(15), ct: ct);
+        var reason = Text(result.Stdout);
+        return result.Success && ScreenStatusReasons.Contains(reason) ? reason : "STATUS_UNVERIFIED";
     }
 
     public Task<ScreenLocalizationStatus> GetLocalizationStatusAsync(CancellationToken ct = default)
@@ -185,7 +253,6 @@ public sealed partial class DeviceFeatureService
         => MutateAsync(async (identity, token) =>
         {
             var current = await GetScreenLocalizationStatusAsync(ct);
-            Check(current.State != "error", "Текущее состояние русификации требует проверки.");
             if (current.State != "absent" && current.Revision == "20260924")
             {
                 if (current.State == "enabled") return current;
@@ -215,7 +282,7 @@ public sealed partial class DeviceFeatureService
         {
             var current = await GetScreenLocalizationStatusAsync(ct);
             if (current.State == "absent") return current;
-            Check(current.State is "enabled" or "disabled", "Состояние русификации требует проверки.");
+            Check(current.State is "enabled" or "disabled", ScreenFailureDescription(current.Reason));
             var hash = current.Revision switch
             {
                 "20260924" => ScreenManagerHash,
@@ -228,11 +295,11 @@ public sealed partial class DeviceFeatureService
             return result;
         }, ct);
 
-    private static string ScreenManagerCommand(string action, string cid, string hash)
+    private static string ScreenManagerCommand(string action, string? cid, string hash)
     {
         var manager = ScreenRoot + "/manager.sh";
         return "set -eu; test -d " + ScreenRoot + " && test ! -L " + ScreenRoot + "; test -f " + manager + " && test ! -L " + manager +
-            "; test \"$(sha256sum " + manager + " | cut -d ' ' -f1)\" = " + Quote(hash) + "; sh " + manager + " " + Quote(action) + " " + Quote(cid);
+            "; test \"$(sha256sum " + manager + " | cut -d ' ' -f1)\" = " + Quote(hash) + "; sh " + manager + " " + Quote(action) + (cid is null ? "" : " " + Quote(cid));
     }
 
     private static ScreenLocalizationStatus ParseScreenStatus(string output)
@@ -240,7 +307,7 @@ public sealed partial class DeviceFeatureService
         var lines = output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         Check(lines.Length == 1, "Неполный статус русификации.");
         var parts = lines[0].Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        Check(parts.Length == 7 && parts[0] == "SCREEN_RU_STATUS", "Неизвестный формат статуса русификации.");
+        Check(parts.Length is 7 or 8 && parts[0] == "SCREEN_RU_STATUS", "Неизвестный формат статуса русификации.");
         var fields = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var part in parts.Skip(1))
         {
@@ -249,7 +316,8 @@ public sealed partial class DeviceFeatureService
         }
         int mounted = 0;
         int pid = 0;
-        Check(fields.Keys.ToHashSet().SetEquals(["state", "language", "mounted", "boot", "pid", "revision"]) &&
+        Check(fields.Keys.Where(key => key != "reason").ToHashSet().SetEquals(["state", "language", "mounted", "boot", "pid", "revision"]) &&
+              (!fields.TryGetValue("reason", out var reason) || fields["state"] == "error" && ScreenStatusReasons.Contains(reason)) &&
               new[] { "absent", "enabled", "disabled", "error" }.Contains(fields["state"]) &&
               new[] { "en", "cn", "other" }.Contains(fields["language"]) &&
               int.TryParse(fields["mounted"], out mounted) && mounted is >= 0 and <= 3 &&
@@ -258,7 +326,7 @@ public sealed partial class DeviceFeatureService
               new[] { "20260922", "20260923", "20260924" }.Contains(fields["revision"]), "Некорректный статус русификации.");
         var boot = fields["boot"] == "1";
         Check(fields["state"] == "error" || (fields["state"] == "enabled" ? mounted == 3 && boot : mounted == 0 && !boot), "Состояние русификации не согласовано.");
-        return new ScreenLocalizationStatus(fields["state"], fields["language"], mounted, boot, pid, fields["revision"]);
+        return new ScreenLocalizationStatus(fields["state"], fields["language"], mounted, boot, pid, fields["revision"], fields.GetValueOrDefault("reason"));
     }
 
     private static byte[] ApplyScreenFontPatch(byte[] original, byte[] manifestBytes)

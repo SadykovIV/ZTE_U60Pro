@@ -64,6 +64,25 @@ internal static class AccessIdentity
 /// Observations for an authenticated SSH session, never write authorization.
 internal sealed record SshReadProof(string? Uid,string? System,string? Architecture,string? Cid,string? BootId,string? FirmwareHash,string? RouterHash)
 {
+    // A connection proves access and continuity, not component compatibility.
+    // Large firmware hashes belong to the operation that needs them.
+    internal const string SessionCommand = """
+    export PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C
+    zte_read_fact() { value=$("$@" 2>/dev/null) || value=; case "$value" in ''|*[!A-Za-z0-9_.-]*) printf '?\n';; *) test "${#value}" -le 128 && printf '%s\n' "$value" || printf '?\n';; esac; }
+    printf 'ZTE_SSH_READ_V1\n'
+    zte_read_fact id -u
+    zte_read_fact uname -s
+    zte_read_fact uname -m
+    zte_read_fact cat /sys/block/mmcblk0/device/cid
+    zte_read_fact cat /proc/sys/kernel/random/boot_id
+    printf '?\n?\n'
+    """;
+    internal static async Task<SshReadProof> ReadSessionAsync(IRemoteShell shell,CancellationToken ct)
+    {
+        var result=await shell.RunAsync(SessionCommand,timeout:TimeSpan.FromSeconds(10),ct:ct);
+        if(!result.Success)throw new InvalidDataException("Не удалось проверить сеанс SSH.");
+        return Parse(result.Stdout);
+    }
     internal const string Command = """
     export PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C
     zte_read_fact() { value=$("$@" 2>/dev/null) || value=; case "$value" in ''|*[!A-Za-z0-9_.-]*) printf '?\n';; *) test "${#value}" -le 128 && printf '%s\n' "$value" || printf '?\n';; esac; }

@@ -50,6 +50,7 @@ struct AgentInstallationStatus: Sendable {
     var running = false
     var startupReady = false
     var recoveryPending = false
+    var warningCode: String?
     var backupHash: String?
     static func parse(_ text: String) throws -> Self {
         var value = Self(), seen = Set<String>()
@@ -63,6 +64,9 @@ struct AgentInstallationStatus: Sendable {
             case "AGENT_STARTUP": value.startupReady = fields[1] == "yes"
             case "AGENT_PENDING": value.recoveryPending = fields[1] == "yes"
             case "AGENT_BACKUP": value.backupHash = fields[1]
+            case "AGENT_WARNING":
+                try require(fields[1] == "OWNER", "Неизвестное предупреждение проверки агента")
+                value.warningCode = fields[1]
             default: break
             }
         }
@@ -73,12 +77,10 @@ struct AgentInstallationStatus: Sendable {
 }
 final class AgentInstallationManager {
     let engine: ModemEngine
-    static let scriptHash = "fd76710b266669b34d251b7f06ac31ae1ee55a5d123f3dde8ca19f367cf3f289"
+    static let scriptHash = "ba9216b75d9b6a5a003e05137416335083609f4d840a0394e6f9016d27527844"
     init(engine: ModemEngine) { self.engine = engine }
     private func staged<T>(cleanupAllowed: () -> Bool = { true }, _ work: (String, Identity, String, String) throws -> T) throws -> T {
         try require(engine.lockFD >= 0, "Установка агента требует блокировки приложения")
-        try require(!engine.fm.fileExists(atPath: engine.root.appendingPathComponent("adb-access-pending.json").path), "Сначала завершите включение ADB для диагностики")
-        try require(!engine.fm.fileExists(atPath: engine.pendingURL.path) && !engine.fm.fileExists(atPath: engine.root.appendingPathComponent("setup-pending.json").path), "Сначала завершите текущую подготовку или смену IMEI")
         let script = try Data(contentsOf: engine.resources.appendingPathComponent("AgentInstallation/manager.sh"))
         try require(digest(script) == Self.scriptHash, "Повреждён установщик агента")
         let proof = try engine.measuredIdentity(); let identity = proof.identity, boot = proof.bootID, router = proof.routerHash
@@ -101,7 +103,35 @@ final class AgentInstallationManager {
         try AgentInstallationStatus.parse(engine.text("sh " + shellQuote(stage + "/manager.sh") + " status"))
     }
     func inspect() throws -> AgentInstallationStatus {
-        try staged { stage, _, _, _ in try status(stage) }
+        let script = try Data(contentsOf: engine.resources.appendingPathComponent("AgentInstallation/manager.sh"))
+        try require(digest(script) == Self.scriptHash, "Повреждён установщик агента")
+        let before = try SSHReadProof.parse(engine.remote(SSHReadProof.quickCommand))
+        let result = try engine.transport.run("unset ZTE_AGENT_TEST_ROOT; sh -s -- status", input: script, timeout: 20)
+        if result.status != 0 { throw IMEIError.message(Self.failure(result, operation: "Проверка агента")) }
+        let status = try AgentInstallationStatus.parse(CommandText.decode(result.stdout))
+        try before.verify(SSHReadProof.parse(engine.remote(SSHReadProof.quickCommand)))
+        return status
+    }
+
+    static func failure(_ result: CommandResult, operation: String) -> String {
+        let messages = [
+            "CID": "Не удалось прочитать идентификатор карты памяти модема.",
+            "OWNER": "Каталог истории установки агента имеет неизвестного владельца или повреждённый маркер. Он сохранён для диагностики.",
+            "PREPARE_FIRST": "Отсутствует корректный скрипт запуска агента. Выполните подготовку SSH и агента.",
+            "RUNNING_WITHOUT_BINARY": "Агент работает из удалённого файла. Требуется восстановить его установленный бинарник.",
+            "RECOVERY_REQUIRED": "Предыдущая установка агента не завершена. Восстановите её перед заменой файла.",
+            "START": "Новый файл установлен, но процесс агента не запустился. Проверьте журнал запуска агента.",
+            "SOURCE_HASH": "Переданный файл агента не совпадает с выбранным файлом.",
+            "BINARY": "Существующий файл агента имеет неподходящий тип, владельца или права.",
+            "OTHER_DEPLOYMENT": "На модеме ещё выполняется другая установка компонентов.",
+            "VPN_UPGRADE": "На модеме ещё выполняется обновление контроллера VPN.",
+            "AGENT_SETUP_PENDING": "Незавершённая установка агента и SSH меняет те же файлы. Завершите её или выберите чистую установку после заводского сброса."
+        ]
+        let lines = CommandText.decode(result.stderr).split(separator: "\n")
+        let code = lines.first(where: { $0.hasPrefix("AGENT_ERROR ") }).map { String($0.dropFirst("AGENT_ERROR ".count)) }
+        if let code, let message = messages[code] { return operation + ": " + message + " Код: " + code + "." }
+        if result.status < 0 || result.status == 255 { return operation + ": потеряно соединение SSH. Результат не подтверждён; подробности команды сохранены в журнале." }
+        return operation + " не подтверждена (exit " + String(result.status) + "). Подробности команды сохранены в журнале."
     }
     func install(_ candidate: AgentCandidate) throws -> AgentInstallationStatus {
         // Re-read and validate the exact file selected by the user before any device write.
@@ -123,7 +153,7 @@ final class AgentInstallationManager {
             cleanupSafe = false
             let result = try engine.transport.run("sh " + shellQuote(stage + "/manager.sh") + " install " + shellQuote(stage + "/agent.bin") + " " + shellQuote(candidate.sha256), input: nil, timeout: 90)
             cleanupSafe = result.status >= 0 && result.status < 255
-            try require(result.status == 0, "Замена агента не подтверждена (exit " + String(result.status) + "). Обновите состояние. При потере связи средства восстановления сохранены.")
+            try require(result.status == 0, Self.failure(result, operation: "Установка агента"))
             let after = try status(stage)
             try require(after.hash == candidate.sha256 && after.running && after.backupHash == (before.hash == "absent" ? nil : before.hash) && !after.recoveryPending, "Не удалось подтвердить замену агента; проверьте состояние и восстановление")
             engine.update(before.hash == "absent" ? "Агент установлен и процесс запущен." : "Агент заменён и процесс запущен. Предыдущий файл сохранён на модеме.", 1)

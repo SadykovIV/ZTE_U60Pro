@@ -38,6 +38,7 @@ struct ConnectionDeviceSummary: Codable, Equatable, Sendable {
     var agentVersion: String? = nil
     var imei: String? = nil
     var fields: [String: String] = [:]
+    var observedCID: String? { identity?.cid ?? fields["cid"] }
     var primaryIMEI: String? { webIdentity?.imei ?? imei }
     var firmware: String? { webIdentity?.firmware ?? fields["firmware"] }
     var model: String? { fields["model"] }
@@ -45,6 +46,7 @@ struct ConnectionDeviceSummary: Codable, Equatable, Sendable {
         if let identity {
             try require(identity.cid.count == 32 && identity.cid.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) } && (DeviceBackups.validHash(identity.firmwareHash) || identity.firmwareHash == "absent"), "Некорректная идентификация канала")
         }
+        if let cid = observedCID { try require(cid.count == 32 && cid.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }, "Некорректная идентификация канала") }
         if let bootID { try require(UUID(uuidString: bootID) != nil, "Некорректный идентификатор загрузки канала") }
         if let imei { try require(IMEI.valid(imei), "Некорректный IMEI канала") }
         if let webIdentity {
@@ -90,6 +92,7 @@ final class ReadOnlyChannelSession: @unchecked Sendable {
         let current = try refresh()
         try current.validate()
         if let identity = summary.identity { try require(current.identity == identity, "Устройство или прошивка выбранного канала изменились") }
+        if let cid = summary.observedCID { try require(current.observedCID == cid, "Устройство выбранного канала изменилось") }
         if let boot = summary.bootID { try require(current.bootID == boot, "Модем перезагрузился; проверьте подключение заново") }
         if let web = summary.webIdentity { try require(current.webIdentity == web, "Устройство веб-интерфейса изменилось") }
         if let imei = summary.primaryIMEI { try require(current.primaryIMEI == imei, "IMEI выбранного канала изменился; чтение остановлено") }
@@ -130,8 +133,9 @@ final class ConnectionRouter {
     }
     convenience init(engine: ModemEngine, expectedIdentity: Identity? = nil, expectedWebIdentity: WebIdentity? = nil, expectedIMEI: String? = nil,
                      webPassword: String = "", agentPassword: String = "", ssh: RemoteTransport? = nil,
-                     adb: ADBClient? = nil, web: ModemWebClient? = nil, agent: AgentAccessClient? = nil) throws {
-        let expected = try DiagnosticDeviceExpectation.load(root: engine.root, identity: expectedIdentity, web: expectedWebIdentity, imei: expectedIMEI)
+                     adb: ADBClient? = nil, web: ModemWebClient? = nil, agent: AgentAccessClient? = nil, expectedCID: String? = nil) throws {
+        var expected = try DiagnosticDeviceExpectation.load(root: engine.root, identity: expectedIdentity, web: expectedWebIdentity, imei: expectedIMEI)
+        if let expectedCID { expected.cids.insert(expectedCID) }
         let remote = ssh ?? engine.transport
         let webClient = try web ?? ModemWebClient(host: engine.connection.host)
         let agentClient = try agent ?? AgentAccessClient(host: engine.connection.host)
@@ -188,7 +192,7 @@ final class ConnectionRouter {
         return ConnectionProbeFailure(state: .unavailable, message: message)
     }
     private static func binding(_ summary: ConnectionDeviceSummary, expected: DiagnosticDeviceExpectation) -> ConnectionProbeFailure? {
-        if let identity = summary.identity, !expected.cids.isEmpty, !expected.cids.contains(identity.cid) {
+        if let cid = summary.observedCID, !expected.cids.isEmpty, !expected.cids.contains(cid) {
             return ConnectionProbeFailure(state: .identityMismatch, message: "CID канала относится к другому модему.")
         }
         if summary.fields["sshReadOnly"] == "1" { return nil }
@@ -259,9 +263,9 @@ final class ConnectionRouter {
                 sessions[channel] = session
                 // Strong SSH/ADB identities can supply the IMEI associated with
                 // a known CID. Weak API responses never invent that association.
-                if let identity = session.summary.identity {
+                if let cid = session.summary.observedCID {
                     if let error = Self.binding(session.summary, expected: context) { throw error }
-                    context.cids = [identity.cid]
+                    context.cids = [cid]
                     if let imei = session.summary.primaryIMEI { context.imeis = [imei] }
                 } else if context.cids.isEmpty, context.imeis.isEmpty, let imei = session.summary.primaryIMEI {
                     // An authenticated higher-priority API can identify which
@@ -277,7 +281,7 @@ final class ConnectionRouter {
                 }
                 // Before sending a password to the next HTTP service, check
                 // whether this strong proof rejected an earlier weak response.
-                if mode == .automatic, session.summary.identity != nil {
+                if mode == .automatic, session.summary.observedCID != nil {
                     for prior in priority.prefix(while: { $0 != channel }) {
                         guard let candidate = sessions[prior], let error = Self.binding(candidate.summary, expected: context), error.state.preventsDowngrade else { continue }
                         statuses[prior] = ConnectionChannelStatus(mode: prior, state: error.state, message: error.message, summary: candidate.summary)
@@ -301,7 +305,7 @@ final class ConnectionRouter {
             let summary = sessions[channel]!.summary
             if let error = Self.binding(summary, expected: context) {
                 statuses[channel] = ConnectionChannelStatus(mode: channel, state: error.state, message: error.message, summary: summary)
-            } else { statuses[channel] = ConnectionChannelStatus(mode: channel, state: .available, message: summary.identity == nil ? "Авторизация и IMEI подтверждены; CID этот API не сообщает" : "Авторизация и идентификация модема подтверждены", summary: summary) }
+            } else { statuses[channel] = ConnectionChannelStatus(mode: channel, state: .available, message: summary.observedCID == nil ? "Авторизация канала подтверждена" : "Авторизация и идентификация модема подтверждены", summary: summary) }
         }
         var chosen: ConnectionMode?
         var reason = "Доступный подтверждённый канал не найден. Проверьте подключения и учётные данные."
@@ -324,6 +328,7 @@ final class ConnectionRouter {
     }
     private static func summary(_ proof: SSHReadProof) -> ConnectionDeviceSummary {
         var fields = ["sshReadOnly": "1", "accessProfile": "read-only-ssh"]
+        if let value = proof.cid { fields["cid"] = value }
         if let value = proof.uid { fields["uid"] = value }
         if let value = proof.system { fields["system"] = value }
         if let value = proof.architecture { fields["architecture"] = value }
@@ -355,7 +360,7 @@ final class ConnectionRouter {
         do { try engine.connection.validate() }
         catch { throw ConnectionProbeFailure(state: .authenticationRequired, message: "SSH ещё не настроен: " + ActivityJournal.redact(error.localizedDescription)) }
         let read: () throws -> SSHReadProof = {
-            let result = try remote.run(SSHReadProof.command, input: nil, timeout: 15)
+            let result = try remote.run(SSHReadProof.quickCommand, input: nil, timeout: 15)
             guard result.status == 0 else {
                 let text = String(decoding: result.stderr + result.stdout, as: UTF8.self)
                 if DiagnosticTransportSelector.hostTrustFailure(text) { throw ConnectionProbeFailure(state: .trustRejected, message: "Ключ SSH изменился или не подтверждён") }
@@ -374,7 +379,11 @@ final class ConnectionRouter {
             return result
         }
         try session.verify()
-        return ReadOnlyChannelSession(mode: .ssh, summary: initial, diagnosticSession: session, sshEndpoint: Self.sshEndpoint(engine.connection)) { try shellSummary(session) }
+        return ReadOnlyChannelSession(mode: .ssh, summary: initial, diagnosticSession: session, sshEndpoint: Self.sshEndpoint(engine.connection)) {
+            let current = try read()
+            try proof.verify(current)
+            return summary(current)
+        }
     }
     private static func physicalSerials(_ adb: ADBClient) throws -> [String] { try adb.discovery().readyUSBSerials }
     private static func adbSession(_ adb: ADBClient, expected: DiagnosticDeviceExpectation) throws -> ReadOnlyChannelSession {

@@ -200,6 +200,15 @@ public sealed partial class OnboardingEngine
         if (File.Exists(CleanupPendingPath) || Directory.Exists(CleanupPendingPath))
             return await ResumeComponentCleanupAsync(ct).ConfigureAwait(false);
         var savedPending = await LoadPendingAsync(ct).ConfigureAwait(false);
+        if (cleanComponents && savedPending is { InstallRequested: true, CleanComponents: false, Phase: "ready" or "complete" })
+        {
+            if (string.IsNullOrEmpty(agentPassword) || agentPassword.Contains('\0'))
+                throw new ArgumentException("Введите отдельный пароль агента для установки.", nameof(agentPassword));
+            await FinishPriorReadyForReinstallAsync(savedPending, ct).ConfigureAwait(false);
+            savedPending = null;
+        }
+        if (cleanComponents && savedPending is { CleanComponents: false })
+            throw new InvalidDataException("Незавершённая подготовка ещё не готова к чистой переустановке.");
         cleanComponents = savedPending?.CleanComponents ?? cleanComponents;
         forceReinstall = savedPending?.ForceReinstall ?? (forceReinstall || cleanComponents);
         if (cleanComponents) _ = await ReadCleanupHelperAsync(ct).ConfigureAwait(false);
@@ -385,7 +394,7 @@ public sealed partial class OnboardingEngine
         if (!installOutput.Split('\n').Contains("INSTALL_READY " + expectedJournal))
             throw new InvalidDataException("Установщик не подтвердил готовность.");
         pending.RemoteJournal = expectedJournal;
-        pending.NewAgent = installOutput.Split('\n').Contains("INSTALL_AGENT new");
+        pending.NewAgent = CredentialOrigin(installOutput);
         pending.Phase = "ready";
         await SavePendingAsync(pending, ct).ConfigureAwait(false);
 
@@ -1055,14 +1064,13 @@ public sealed partial class OnboardingEngine
         await VerifyAgentReadyAsync(ssh, ct).ConfigureAwait(false);
         if (InstallerProfile(web,device)=="linux-arm64-access") await VerifyDiscoveryAgentAsync(ssh,ct).ConfigureAwait(false);
         await AuthenticateAgentAsync(ssh, agentPassword, ct).ConfigureAwait(false);
-        if (InstallerProfile(web, device) == "b31")
-        {
-            var state = await new ImeiEngine(ssh, _storage, _resources, _skipFirmwareCheck)
-                .InspectAsync(ct).ConfigureAwait(false);
-            if (state.Identity.Cid != device.Cid || state.Imeis[0] != web!.Imei)
-                throw new InvalidDataException("IMEI в NV и веб-интерфейсе различаются.");
-        }
         return device;
+    }
+
+    internal static bool? CredentialOrigin(string output)
+    {
+        var lines = output.Split('\n').Where(line => line.StartsWith("INSTALL_AGENT ", StringComparison.Ordinal)).ToArray();
+        return lines.Length == 1 ? lines[0] switch { "INSTALL_AGENT new" => true, "INSTALL_AGENT preserved" => false, _ => null } : null;
     }
 
     private static bool ValidEd25519Key(string base64)
@@ -1110,22 +1118,105 @@ public sealed partial class OnboardingEngine
         await AccessAgentReusePolicy.ReadAsync(ssh, allowPrevious: false, ct).ConfigureAwait(false);
     }
 
+    private async Task FinishPriorReadyForReinstallAsync(OnboardingPending pending, CancellationToken ct)
+    {
+        if (!pending.InstallRequested || pending.CleanComponents || pending.Phase is not ("ready" or "complete"))
+            throw new InvalidDataException("Незавершённая подготовка ещё не готова к чистой переустановке.");
+        var original = await File.ReadAllBytesAsync(PendingPath, ct).ConfigureAwait(false);
+        var trustedInstaller = (await VerifyAssetsAsync(ct).ConfigureAwait(false))["setup-agent.sh"];
+        IRemoteShell ssh = InstalledSshFactory?.Invoke() ?? new SshTransport(_host, 2222, KeyPath, KnownHostsPath);
+        var device = await AccessIdentity.ReadAsync(ssh, ct).ConfigureAwait(false);
+        if (device.Cid != pending.Cid || device.FirmwareHash != pending.FirmwareHash || device.RouterHash != pending.RouterHash ||
+            (pending.Profile == "linux-arm64-access" && device.BootId != pending.BootId))
+            throw new InvalidDataException("Устройство или профиль незавершённой установки изменился.");
+        var proof = await ssh.RunAsync("sh -s --", Encoding.UTF8.GetBytes(PriorReadyProofCommand(pending, device, trustedInstaller)), TimeSpan.FromSeconds(40), ct).ConfigureAwait(false);
+        if (!proof.Success && StrictUtf8.GetString(proof.Stderr).Split('\n').Contains("INSTALL_PRIOR_SCRIPT_CHANGED", StringComparer.Ordinal))
+            throw new InvalidDataException("Сценарий предыдущей подготовки отличается от проверенной версии. Журнал сохранён; новая установка не запускалась.");
+        if (!proof.Success || !proof.Stdout.AsSpan().SequenceEqual("INSTALL_PRIOR_READY_VERIFIED\n"u8))
+            throw new InvalidDataException("Не подтверждены файлы и резервная копия предыдущей подготовки. Журнал сохранён.");
+        if (await AccessIdentity.ReadAsync(ssh, ct).ConfigureAwait(false) != device)
+            throw new InvalidDataException("Модем или его загрузка изменились во время операции. Обновите состояние.");
+        var commit = await ssh.RunAsync(CommitCommand(pending, device), timeout: TimeSpan.FromSeconds(40), ct: ct).ConfigureAwait(false);
+        var expected = "INSTALL_COMMITTED " + InstallationPaths(pending).Journal;
+        if (!commit.Success || StrictUtf8.GetString(commit.Stdout).Split('\n').Count(line => line == expected) != 1)
+            throw new IOException("Предыдущую подготовку не удалось завершить; новая установка не запускалась.");
+        if (await AccessIdentity.ReadAsync(ssh, ct).ConfigureAwait(false) != device ||
+            !(await File.ReadAllBytesAsync(PendingPath, ct).ConfigureAwait(false)).AsSpan().SequenceEqual(original))
+            throw new InvalidDataException("Модем или журнал подготовки изменился. Новая установка не запускалась.");
+        await WritePrivateAsync(Path.Combine(pending.BackupDirectory, "setup-before-clean-reinstall.json"), original, ct).ConfigureAwait(false);
+        pending.Phase = "complete";
+        await SavePendingAsync(pending, ct).ConfigureAwait(false);
+        await FinishAsync(pending, ct).ConfigureAwait(false);
+        _progress?.Invoke("Предыдущая подготовка завершена по журналу. Начинается чистая установка с новым паролем.");
+    }
+
+    internal static string PriorReadyProofCommand(OnboardingPending pending, DeviceIdentity device, string installerHash)
+    {
+        if (!HashLinePattern.IsMatch(installerHash)) throw new InvalidDataException("Повреждён компонент настройки: setup-agent.sh");
+        var paths = InstallationPaths(pending);
+        var legacy = paths.Stage.StartsWith("/data/local/tmp/", StringComparison.Ordinal);
+        var startupRoot = legacy ? "data/local/tmp" : "data/zte-imei-studio";
+        var binRoot = legacy ? "data/bin" : "data/zte-imei-studio/bin";
+        var targets = new[] { "data/zte-agent", binRoot + "/dropbear", binRoot + "/dropbearkey", "etc/dropbear/authorized_keys",
+            "etc/dropbear/dropbear_ed25519_host_key", "etc/dropbear/dropbear_rsa_host_key", startupRoot + "/start_zte_agent.sh",
+            startupRoot + "/start_zte_imei_studio.sh", "etc/rc.local" };
+        var parents = legacy ? "/data /data/local /data/local/tmp /data/local/tmp/zte-imei-installations" : "/data /data/zte-imei-studio /data/zte-imei-studio/installations";
+        var policy = string.Join(' ', InstallerPolicy(device, pending.Profile ?? "").Skip(1));
+        var owner = string.Join(' ', new[] { pending.Id }.Concat(InstallerPolicy(device, pending.Profile ?? "")));
+        var beforePaths = Quote(string.Join('|', targets.Select(target => paths.Journal + "/before/" + target.Replace('/', '_'))));
+        var afterPaths = Quote(string.Join('|', targets.Select(target => "/" + target).Concat(new[] { paths.Journal + "/cid", paths.Journal + "/profile.identity" })));
+        return $$"""
+        set -eu
+        fail() { exit 71; }
+        safe_dir() { test -d "$1" && test ! -L "$1" && test "$(stat -c %u "$1")" = 0 || fail; mode=$(stat -c %a "$1"); case "$mode" in ''|*[!0-7]*) fail;; esac; test "$((0$mode & 0022))" = 0 || fail; }
+        plain_file() { test -f "$1" && test ! -L "$1" && test "$(stat -c %u:%h "$1")" = 0:1 || fail; }
+        safe_file() { plain_file "$1"; mode=$(stat -c %a "$1"); case "$mode" in ''|*[!0-7]*) fail;; esac; test "$((0$mode & 0022))" = 0 || fail; }
+        for path in {{parents}} /etc; do safe_dir "$path"; done
+        journal={{Quote(paths.Journal)}}; stage={{Quote(paths.Stage)}}
+        safe_dir "$journal"; test "$(stat -c %a "$journal")" = 700
+        safe_dir "$stage"; test "$(stat -c %a "$stage")" = 700
+        for name in .owner .install-requested setup-agent.sh; do safe_file "$stage/$name"; done
+        test "$(sha256sum "$stage/setup-agent.sh" | cut -d ' ' -f1)" = {{Quote(installerHash)}} || { printf 'INSTALL_PRIOR_SCRIPT_CHANGED\n' >&2; exit 71; }
+        test "$(cat "$stage/.owner")" = {{Quote(owner)}}
+        test "$(cat "$stage/.install-requested")" = {{Quote(owner)}}
+        for name in cid profile.identity state before.sha256 after.sha256; do safe_file "$journal/$name"; done
+        test "$(cat "$journal/cid")" = {{Quote(device.Cid)}}
+        test "$(cat "$journal/profile.identity")" = {{Quote(policy)}}
+        case "$(cat "$journal/state")" in ready|complete) ;; *) fail;; esac
+        test "$(cat /sys/block/mmcblk0/device/cid)" = {{Quote(device.Cid)}}
+        test "$(cat /proc/sys/kernel/random/boot_id)" = {{Quote(device.BootId)}}
+        safe_dir "$journal/before"
+        before_paths={{beforePaths}}
+        after_paths={{afterPaths}}
+        awk -v allowed="$before_paths" 'BEGIN{n=split(allowed,a,"[|]");for(i=1;i<=n;i++)want[a[i]]=1} NF!=2 || length($1)!=64 || $1 !~ /^[0-9a-f]+$/ || !want[$2] || seen[$2]++ {bad=1} END{exit bad}' "$journal/before.sha256"
+        awk -v allowed="$after_paths" 'BEGIN{n=split(allowed,a,"[|]");for(i=1;i<=n;i++)want[a[i]]=1} NF!=2 || length($1)!=64 || $1 !~ /^[0-9a-f]+$/ || !want[$2] || seen[$2]++ {bad=1} END{if(NR!=n)bad=1;exit bad}' "$journal/after.sha256"
+        for manifest in before.sha256 after.sha256; do
+          while read -r hash path; do
+            case "$path" in /etc/rc.local|"$journal/before/etc_rc.local") plain_file "$path";; *) safe_file "$path";; esac
+          done < "$journal/$manifest"
+          if test -s "$journal/$manifest"; then sha256sum -c "$journal/$manifest" >/dev/null 2>&1; fi
+        done
+        expected=$(awk '$2=="/data/zte-agent"{print $1}' "$journal/after.sha256")
+        found=0
+        for pid in $(pidof zte-agent); do
+          case "$pid" in ''|*[!0-9]*) fail;; esac
+          test "$(readlink "/proc/$pid/exe")" = /data/zte-agent || fail
+          test "$(sha256sum "/proc/$pid/exe" | cut -d ' ' -f1)" = "$expected" || fail
+          found=$((found+1))
+        done
+        test "$found" = 1
+        printf 'INSTALL_PRIOR_READY_VERIFIED\n'
+        """;
+    }
+
     private async Task CommitIfReadyAsync(OnboardingPending pending, DeviceIdentity device,
         string agentPassword, CancellationToken ct)
     {
         if (!pending.InstallRequested) return;
         var paths = InstallationPaths(pending);
         var journal = paths.Journal;
-        var ssh = new SshTransport(_host, 2222, KeyPath, KnownHostsPath);
-        if (pending.NewAgent is null)
-        {
-            var query = await ssh.RunAsync("if test -f " + Quote(journal + "/present/data_zte-agent") +
-                "; then printf EXISTING; else printf NEW; fi", ct: ct).ConfigureAwait(false);
-            if (!query.Success) throw new IOException("Не удалось определить состояние установленного агента.");
-            pending.NewAgent = StrictUtf8.GetString(query.Stdout) == "NEW";
-        }
-        if (pending.NewAgent == true)
-            await AuthenticateAgentAsync(ssh, agentPassword, ct).ConfigureAwait(false);
+        IRemoteShell ssh = InstalledSshFactory?.Invoke() ?? new SshTransport(_host, 2222, KeyPath, KnownHostsPath);
+        await AuthenticateAgentAsync(ssh, agentPassword, ct).ConfigureAwait(false);
         var result = await ssh.RunAsync(CommitCommand(pending, device),
             timeout: TimeSpan.FromSeconds(40), ct: ct).ConfigureAwait(false);
         if (!result.Success || !StrictUtf8.GetString(result.Stdout).Contains("INSTALL_COMMITTED " + journal,

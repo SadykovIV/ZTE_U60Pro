@@ -121,6 +121,22 @@ struct SSHReadProof: Equatable, Sendable {
         // saved hardware fact when the current device can expose that fact.
         cid.map { expected.cids.isEmpty || expected.cids.contains($0) } ?? true
     }
+    /// A connection checks only cheap device/session facts. Binary compatibility
+    /// is measured by the operation that needs it, never by passive monitoring.
+    static let quickCommand = """
+    export PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C
+    zte_read_fact() { value=$("$@" 2>/dev/null) || value=; case "$value" in ''|*[!A-Za-z0-9_.-]*) printf '?\\n';; *) test "${#value}" -le 128 && printf '%s\\n' "$value" || printf '?\\n';; esac; }
+    printf 'ZTE_SSH_READ_V1\\n'
+    zte_read_fact id -u
+    zte_read_fact uname -s
+    zte_read_fact uname -m
+    zte_read_fact cat /sys/block/mmcblk0/device/cid
+    zte_read_fact cat /proc/sys/kernel/random/boot_id
+    printf '?\\n?\\n'
+    """
+    var verificationCommand: String {
+        firmwareHash == nil && routerHash == nil ? Self.quickCommand : Self.command
+    }
     static let command = """
     export PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C
     zte_read_fact() { value=$("$@" 2>/dev/null) || value=; case "$value" in ''|*[!A-Za-z0-9_.-]*) printf '?\\n';; *) test "${#value}" -le 128 && printf '%s\\n' "$value" || printf '?\\n';; esac; }

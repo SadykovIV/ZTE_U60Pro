@@ -47,6 +47,7 @@ import AppKit
     @Published var connected = false
     @Published var accessReady = false
     var connectedIdentity: Identity?
+    var connectedReadCID: String?
     var connectedWebIdentity: WebIdentity?
     var connectedIMEI: String?
     @Published var log = ""
@@ -156,7 +157,7 @@ import AppKit
         return "Оба IMEI корректны по формату и контрольной сумме"
     }
     var canApply: Bool { permitsSSHOperations && (connected || (!webPassword.isEmpty && !agentPassword.isEmpty)) && !busy && !terminalActive && !pendingOperation && !setupPending && !diagnosticADBPending && !adbTogglePending && !systemRestorePending && IMEI.valid(imei1) && IMEI.valid(imei2) && imei1 != imei2 && (imei1 != currentIMEI1 || imei2 != currentIMEI2) }
-    var canManage: Bool { connected && activeChannel == .ssh && accessReady && permitsSSHOperations && !busy && !terminalActive && !pendingOperation && !setupPending && !adbTogglePending && !systemRestorePending }
+    var canManage: Bool { connected && activeChannel == .ssh && accessReady && permitsSSHOperations && !busy && !terminalActive && !adbTogglePending && !systemRestorePending }
     var ttlValidationMessage: String {
         do {
             _ = try TTLConfiguration(outboundEnabled: ttlOutboundEnabled, outboundText: ttlOutboundValue,
@@ -234,7 +235,7 @@ import AppKit
     }
     func accept(_ state: DeviceState) {
         connectionMonitorTask?.cancel(); connectionMonitorTask = nil
-        accessReady = true; connectedIdentity = state.identity; activeChannel = .ssh
+        accessReady = true; connectedIdentity = state.identity; connectedReadCID = state.identity.cid; activeChannel = .ssh
         channelSession = nil; channelSummary = nil; connectedWebIdentity = nil
         mergeChannelStatuses([ConnectionChannelStatus(mode: .ssh, state: .available, message: "SSH и устройство проверены")])
         connectedIMEI = state.imeis[0]
@@ -244,8 +245,14 @@ import AppKit
     func acceptIMEIRead(_ state: DeviceState) throws {
         try require(state.imeis.count == 2, "Модем не вернул оба IMEI")
         guard connected, let session = channelSession else { accept(state); return }
-        try require(activeChannel == .ssh && session.mode == .ssh && state.identity == connectedIdentity &&
-                    state.identity == session.diagnosticSession?.readProof.identity && state.boot == session.diagnosticSession?.readProof.bootID,
+        guard activeChannel == .ssh, session.mode == .ssh, let proof = session.diagnosticSession?.readProof else {
+            throw IMEIError.message("Устройство, прошивка или сеанс загрузки изменились во время чтения IMEI")
+        }
+        try require((connectedIdentity == nil || state.identity == connectedIdentity) &&
+                    (connectedReadCID == nil || state.identity.cid == connectedReadCID) &&
+                    (proof.cid == nil || state.identity.cid == proof.cid) &&
+                    (proof.firmwareHash == nil || state.identity.firmwareHash == proof.firmwareHash) &&
+                    (proof.bootID == nil || state.boot == proof.bootID),
                     "Устройство, прошивка или сеанс загрузки изменились во время чтения IMEI")
         if let connectedIMEI {
             try require(state.imeis[0] == connectedIMEI, "IMEI выбранного модема изменился. Проверьте подключение заново.")
@@ -253,6 +260,7 @@ import AppKit
         // A read does not replace the verified session, its monitor, or any
         // other section. Mutations use accept(_:) and rehydrate after reboot.
         currentIMEI1 = state.imeis[0]; currentIMEI2 = state.imeis[1]
+        connectedIdentity = state.identity; connectedReadCID = state.identity.cid; connectedIMEI = state.imeis[0]
     }
     func perform(continuingIMEIOperation: Bool = false, _ work: @escaping @Sendable (ModemEngine) throws -> DeviceState?) {
         guard !busy && !terminalActive && !systemRestorePending && permitsSSHOperations else { return }
@@ -480,7 +488,7 @@ import AppKit
     func enableScreenLocalization() { manageScreenLocalization(.enable) }
     func disableScreenLocalization() { manageScreenLocalization(.disable) }
     private func manageScreenLocalization(_ action: ScreenLocalizationAction) {
-        guard canManage else { return }
+        guard action == .status ? canReadModem : canManage else { return }
         let config = connection, root = storage, assets = resources
         let target = sshSelectionContext
         busy = true; progress = 0

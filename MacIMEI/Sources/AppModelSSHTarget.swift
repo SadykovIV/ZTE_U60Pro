@@ -12,7 +12,7 @@ struct SSHSelectionContext: @unchecked Sendable {
             let shell = try session.requireSSH()
             if let endpoint = session.sshEndpoint {
                 try require(endpoint == ConnectionRouter.sshEndpoint(engine.connection), "Параметры SSH изменились. Подключитесь заново.")
-                try shell.readProof.verify(SSHReadProof.parse(engine.remote(SSHReadProof.command, timeout: 15)))
+                try shell.readProof.verify(SSHReadProof.parse(engine.remote(shell.readProof.verificationCommand, timeout: 15)))
                 return // Operation-specific managers still check write privileges.
             }
         }

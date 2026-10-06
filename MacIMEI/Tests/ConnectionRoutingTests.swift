@@ -46,10 +46,11 @@ private final class SSH: RemoteTransport {
         try check(input == nil && !command.contains("chmod") && !command.contains("setup-agent.sh"), "SSH probe mutation")
         if status != 0 { return CommandResult(status: status, stdout: Data(), stderr: Data(message.utf8)) }
         if interrupted { throw CommandFailure(message: "SSH connection lost", partial: CommandResult(status: 255, stdout: Data(), stderr: Data())) }
-        if command == SSHReadProof.command {
+        if command == SSHReadProof.command || command == SSHReadProof.quickCommand {
             identityReads += 1
             let currentBoot = reboot && identityReads > 1 ? "10112233-4455-6677-8899-aabbccddeeff" : boot
-            return CommandResult(status: 0, stdout: Data((malformed ? "invalid" : "ZTE_SSH_READ_V1\n0\nLinux\naarch64\n" + cidValue + "\n" + currentBoot + "\n" + firmware + "\n" + ModemEngine.routerHash + "\n").utf8), stderr: Data())
+            let hashes = command == SSHReadProof.quickCommand ? "?\n?" : firmware + "\n" + ModemEngine.routerHash
+            return CommandResult(status: 0, stdout: Data((malformed ? "invalid" : "ZTE_SSH_READ_V1\n0\nLinux\naarch64\n" + cidValue + "\n" + currentBoot + "\n" + hashes + "\n").utf8), stderr: Data())
         }
         if command.contains(DiagnosticTransportSelector.identityCommand) {
             identityReads += 1
@@ -147,6 +148,15 @@ private final class Fixture {
     static func main() throws {
         var passed = 0
         func test(_ name: String, _ body: () throws -> Void) throws { try body(); passed += 1; print("PASS " + name) }
+        try test("Connect uses two lightweight SSH proofs and refresh uses one without component reads") {
+            let f = try Fixture(); f.ssh.status = 0
+            let result = try f.router().connect(mode: .ssh)
+            try check(result.actualMode == .ssh && f.ssh.calls.count == 2, "Connect did not stop after two SSH proofs")
+            try check(f.ssh.calls.allSatisfy { !$0.contains("sha256sum") && !$0.contains("/firmware/image/modem.b16") && !$0.contains("/usr/bin/diag-router") }, "Connect measured operation-specific binary hashes")
+            let value = try result.session!.readSummary()
+            try check(f.ssh.calls.count == 3 && value.bootID == boot, "Connection refresh read component details")
+            try check(f.adb.calls.isEmpty && f.web.calls.isEmpty && f.agent.calls.isEmpty, "Connect or refresh queried an unrelated transport")
+        }
         try test("manual modes probe only the selected channel on success and failure") {
             for selected in ConnectionMode.priority {
                 for failure in [false, true] {
@@ -248,13 +258,19 @@ private final class Fixture {
                 try check(result.session == nil && state(result, .ssh).preventsDowngrade && f.agent.calls.isEmpty && f.web.calls.isEmpty && f.adb.calls.isEmpty, "Identity failure sent credentials")
             }
         }
+        try test("Quick CID remains an independent reconnect expectation without a firmware hash") {
+            let f = try Fixture(); f.ssh.status = 0; f.ssh.cidValue = otherCID
+            let result = try ConnectionRouter(engine: f.engine, ssh: f.ssh, expectedCID: cid).connect(mode: .ssh)
+            try check(result.session == nil && state(result, .ssh) == .identityMismatch && f.ssh.calls.count == 1, "Quick reconnect accepted another CID")
+            try check(f.agent.calls.isEmpty && f.web.calls.isEmpty && f.adb.calls.isEmpty, "Identity mismatch caused a fallback")
+        }
         try test("production manual SSH exposes verified shell and never logs in to APIs") {
             let f = try Fixture(); f.ssh.status = 0
             let result = try f.router().select(mode: .ssh)
-            try check(result.actualMode == .ssh && result.session?.diagnosticSession?.proof?.identity.cid == cid && f.agent.calls.isEmpty && f.web.calls.isEmpty && f.adb.calls.isEmpty, "Manual SSH contacted another channel")
+            try check(result.actualMode == .ssh && result.session?.diagnosticSession?.readProof.cid == cid && f.agent.calls.isEmpty && f.web.calls.isEmpty && f.adb.calls.isEmpty, "Manual SSH contacted another channel")
             _ = try result.session!.requireSSH()
             let data = try result.session!.readSummary()
-            try check(data.identity?.cid == cid && data.fields["detailsUnavailable"] != nil, "Partial summary lost identity")
+            try check(data.observedCID == cid && data.identity == nil && data.fields["detailsUnavailable"] == nil, "Partial summary lost identity")
             f.ssh.interrupted = true
             try rejects { _ = try result.session!.readSummary() }
             try check(f.agent.calls.isEmpty && f.web.calls.isEmpty && f.adb.calls.isEmpty, "Disconnected SSH session fell back")

@@ -171,7 +171,7 @@ import AppKit
         channelStatuses = []; connectionsChecked = false; preparationError = ""; diagnosticADBMessage = ""
         clearDisplayLayout()
         diagnosticReport = nil; diagnosticText = ""; selectedDiagnostic = "system.log"
-        if clearIdentity { connectedIdentity = nil; connectedWebIdentity = nil; connectedIMEI = nil }
+        if clearIdentity { connectedIdentity = nil; connectedReadCID = nil; connectedWebIdentity = nil; connectedIMEI = nil }
     }
     func mergeChannelStatuses(_ statuses: [ConnectionChannelStatus]) {
         var byMode = Dictionary(uniqueKeysWithValues: channelStatuses.map { ($0.mode, $0) })
@@ -213,6 +213,7 @@ import AppKit
     func acceptChannelSummary(_ summary: ConnectionDeviceSummary) {
         channelSummary = summary
         if let identity = summary.identity { connectedIdentity = identity }
+        if let cid = summary.observedCID { connectedReadCID = cid }
         if let web = summary.webIdentity { connectedWebIdentity = web }
         if let imei = summary.primaryIMEI {
             if currentIMEI1 != imei { currentIMEI2 = "" }
@@ -284,7 +285,7 @@ import AppKit
         guard !busy, !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         refreshBackups(); refreshSystemBackups()
         let config = connection, root = storage, assets = resources
-        let expected = connectedIdentity, expectedWeb = connectedWebIdentity, expectedIMEI = connectedIMEI
+        let expected = connectedIdentity, expectedWeb = connectedWebIdentity, expectedIMEI = connectedIMEI, expectedCID = connectedReadCID
 
         let selected = channelSession
         busy = true; progress = 0; preparationError = ""
@@ -296,7 +297,7 @@ import AppKit
                     let engine = try ModemEngine(root: root, resources: assets, connection: config) { _, _ in }
                     return try engine.locked {
                         let statuses = try ConnectionRouter(engine: engine, expectedIdentity: expected, expectedWebIdentity: expectedWeb,
-                            expectedIMEI: expectedIMEI).discover(modes: [.ssh, .adb])
+                            expectedIMEI: expectedIMEI, expectedCID: expectedCID).discover(modes: [.ssh, .adb])
                         return statuses
                     }
                 }.value
@@ -314,11 +315,12 @@ import AppKit
         }
     }
 
-    func connectPreferredChannel() {
+    func connectPreferredChannel(resolve: (@Sendable () throws -> ChannelSelection)? = nil) {
         guard !busy, !terminalActive else { return }
         refreshBackups(); refreshSystemBackups()
         let config = connection, root = storage, assets = resources, mode = ConnectionMode.ssh
         let expected = connectedIdentity ?? modemInformation?.identity
+        let expectedCID = connectedReadCID
         let expectedWeb = connectedWebIdentity ?? channelSummary?.webIdentity
         let expectedIMEI = connectedIMEI ?? channelSummary?.primaryIMEI
         do { try secureDirectory(storage); try saveJSON(config, storage.appendingPathComponent("connection.json")) }
@@ -330,39 +332,17 @@ import AppKit
             guard let self else { return }
             do {
                 let result = try await Task.detached(priority: .userInitiated) {
+                    if let resolve { return try resolve() }
                     let engine = try ModemEngine(root: root, resources: assets, connection: config) { _, _ in }
                     return try engine.locked {
-                        try ConnectionRouter(engine: engine, expectedIdentity: expected, expectedWebIdentity: expectedWeb, expectedIMEI: expectedIMEI).connect(mode: mode)
+                        try ConnectionRouter(engine: engine, expectedIdentity: expected, expectedWebIdentity: expectedWeb, expectedIMEI: expectedIMEI, expectedCID: expectedCID).connect(mode: mode)
                     }
                 }.value
                 acceptChannelSelection(result)
                 append(result.reason, progress: result.actualMode == nil ? 0 : 0.2)
-                if let session = channelSession { try await loadConnectedSections(session, config: config) }
-                // An informational probe failure must not cancel a verified shell.
-                do {
-                    let statuses = try await Task.detached(priority: .userInitiated) {
-                        let engine = try ModemEngine(root: root, resources: assets, connection: config) { _, _ in }
-                        return try engine.locked {
-                            try ConnectionRouter(engine: engine, expectedIdentity: result.session?.summary.identity ?? expected,
-                                                 expectedWebIdentity: expectedWeb, expectedIMEI: result.session?.summary.primaryIMEI ?? expectedIMEI).discover(modes: [.ssh, .adb])
-                        }
-                    }.value
-                    acceptDiscoveredStatuses(statuses, authenticate: false)
-                } catch {
-                    preparationError = "Не удалось обновить список подключений: " + error.localizedDescription
-                    append(preparationError)
-                }
-                if let session = channelSession { acceptChannelSummary(try await Task.detached { try session.readSummary() }.value) }
-                if connected {
-                    do {
-                        adbControlStatus = try await Task.detached {
-                            let engine = try ModemEngine(root: root, resources: assets, connection: config)
-                            return try engine.locked { try ADBControlManager(engine: engine).status() }
-                        }.value
-                    } catch { diagnosticADBMessage = "Состояние ADB: " + ActivityJournal.redact(error.localizedDescription) }
-                }
-
-                if connected { append(connectionLabel + (sectionRefreshErrors.isEmpty ? ". Разделы обновлены." : ". Часть разделов требует внимания; причины показаны в них."), progress: 1) }
+                // Component status is read only by the corresponding explicit
+                // action. A verified SSH connection needs no agent, VPN or ADB.
+                if connected { append(connectionLabel, progress: 1) }
                 else { append(result.reason) }
             } catch {
                 markConnectionUnavailable(error.localizedDescription)
@@ -373,31 +353,16 @@ import AppKit
         }
     }
 
-    private func loadConnectedSections(_ session: ReadOnlyChannelSession, config: Connection,
-                                       sections: Set<ConnectionOverviewSection> = Set(ConnectionOverviewSection.allCases)) async throws {
-        let root = storage, assets = resources
-        let sections = session.summary.fields["accessProfile"] == "linux-arm64-access" ? sections.intersection([.information]) : sections
-        append(sections == [.information] ? "Обновляю сведения о модеме…" : connectionLabel + ". Обновляю сведения разделов…", progress: 0.25)
-        let snapshot = try await Task.detached(priority: .userInitiated) { [weak self] in
-            let engine = try ModemEngine(root: root, resources: assets, connection: config) { _, _ in }
-            return try engine.locked {
-                try ConnectionOverview.collect(engine: engine, session: session, sections: sections) { [weak self] section in
-                    Task { @MainActor [weak self] in self?.append("Обновляю раздел: " + section.title + "…") }
-                }
-            }
-        }.value
-        acceptConnectionOverview(snapshot)
-    }
     func refreshConnectedSections() {
-        refreshConnectedSections(Set(ConnectionOverviewSection.allCases))
+        refreshConnectedSections([.information])
     }
-    private func refreshConnectedSections(_ sections: Set<ConnectionOverviewSection>) {
+    func refreshConnectedSections(_ sections: Set<ConnectionOverviewSection>) {
         let config = connection, root = storage, assets = resources
-        let expected = connectedIdentity, expectedWeb = connectedWebIdentity, expectedIMEI = connectedIMEI
+        let expected = connectedIdentity, expectedWeb = connectedWebIdentity, expectedIMEI = connectedIMEI, expectedCID = connectedReadCID
         refreshConnectedSections(sections, reconnect: {
             let engine = try ModemEngine(root: root, resources: assets, connection: config) { _, _ in }
             return try engine.locked { try ConnectionRouter(engine: engine, expectedIdentity: expected,
-                expectedWebIdentity: expectedWeb, expectedIMEI: expectedIMEI).connect(mode: .ssh) }
+                expectedWebIdentity: expectedWeb, expectedIMEI: expectedIMEI, expectedCID: expectedCID).connect(mode: .ssh) }
         }, collect: { [weak self] session, sections in
             let engine = try ModemEngine(root: root, resources: assets, connection: config) { _, _ in }
             return try engine.locked {
@@ -425,7 +390,7 @@ import AppKit
                 }
                 acceptChannelSelection(result)
                 guard let session = channelSession else { throw IMEIError.message(connectionReason) }
-                let scoped = session.summary.fields["accessProfile"] == "linux-arm64-access" ? sections.intersection([.information]) : sections
+                let scoped = sections
                 append(scoped == [.information] ? "Обновляю сведения о модеме…" : connectionLabel + ". Обновляю сведения разделов…", progress: 0.25)
                 let snapshot = try await Task.detached(priority: .userInitiated) { try collect(session, scoped) }.value
                 acceptConnectionOverview(snapshot)
@@ -475,6 +440,7 @@ import AppKit
         guard canEnableDiagnosticADB else { return }
         let config = connection, root = storage, assets = resources
         let expected = connectedIdentity ?? modemInformation?.identity
+        let expectedCID = connectedReadCID
         let expectedWeb = connectedWebIdentity ?? channelSummary?.webIdentity
         let expectedIMEI = connectedIMEI ?? channelSummary?.primaryIMEI
         let suffix = backupSuffix
@@ -508,11 +474,10 @@ import AppKit
                     let result = try await Task.detached(priority: .userInitiated) {
                         let engine = try ModemEngine(root: root, resources: assets, connection: config)
                         return try engine.locked {
-                            try ConnectionRouter(engine: engine, expectedIdentity: expected, expectedWebIdentity: expectedWeb, expectedIMEI: expectedIMEI).connect(mode: .ssh)
+                            try ConnectionRouter(engine: engine, expectedIdentity: expected, expectedWebIdentity: expectedWeb, expectedIMEI: expectedIMEI, expectedCID: expectedCID).connect(mode: .ssh)
                         }
                     }.value
                     acceptChannelSelection(result)
-                    if let session = channelSession { try await loadConnectedSections(session, config: config) }
                 } catch { markConnectionUnavailable(error.localizedDescription); append("Проверка SSH после ADB: " + error.localizedDescription) }
             }
             busy = false; refreshBackups(); refreshActivity(); operationTask = nil

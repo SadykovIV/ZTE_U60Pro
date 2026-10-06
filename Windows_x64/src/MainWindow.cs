@@ -391,7 +391,7 @@ public sealed partial class MainWindow : Window
                     _forcePreparationCheckBox = force;
                     force.IsCheckedChanged += (_, _) =>
                     {
-                        if (!ReferenceEquals(_forcePreparationCheckBox, force)) return;
+                        if (!ReferenceEquals(_forcePreparationCheckBox, force) || _busy || _terminal?.IsConnected == true || _terminalOpening) return;
                         _form["force_reinstall"] = force.IsChecked == true ? "true" : "false";
                         if (force.IsChecked != true)
                         {
@@ -405,13 +405,13 @@ public sealed partial class MainWindow : Window
                     var clean = new CheckBox
                     {
                         Name = "CleanPreparation", IsChecked = Get("clean_components") == "true",
-                        Content = Localization.Translate("Очистить данные агента, VPN и дополнительных страниц"),
-                        Foreground = Foreground, IsEnabled = CanChangePreparationMode(),
+                        Content = Localization.Translate("Чистая установка после заводского сброса"),
+                        Foreground = Foreground, IsEnabled = CanSelectCleanPreparation(),
                     };
                     _cleanPreparationCheckBox = clean;
                     clean.IsCheckedChanged += (_, _) =>
                     {
-                        if (!ReferenceEquals(_cleanPreparationCheckBox, clean)) return;
+                        if (!ReferenceEquals(_cleanPreparationCheckBox, clean) || !CanSelectCleanPreparation()) return;
                         _form["clean_components"] = clean.IsChecked == true ? "true" : "false";
                         if (clean.IsChecked == true)
                         {
@@ -425,7 +425,6 @@ public sealed partial class MainWindow : Window
                     var cleanInfo = OperationInfoButton(OperationHelpContent.CleanPreparation);
                     cleanInfo.Name = "CleanPreparationInfo";
                     cleanRow.Children.Add(cleanInfo);
-                    panel.Children.Add(cleanRow);
                     var preparation = new WrapPanel { Orientation = Orientation.Horizontal };
                     _preparationButton = ActionButton(_snapshot?.ComponentCleanupPending == true ? "Продолжить очистку компонентов" : "Выполнить предварительную подготовку модема", async () =>
                         await ExecuteAsync(ModemOperation.PrepareSsh, ["host", "username", "web_password", "agent_password", "backup_key_suffix", "skip_firmware_check", "key_path", "known_hosts_path", "force_reinstall", "clean_components"]), true);
@@ -438,6 +437,7 @@ public sealed partial class MainWindow : Window
                         preparation.Children.Add(_cancelCleanupButton);
                     }
 
+                    preparation.Children.Add(cleanRow);
                     preparation.Children.Add(OperationInfoButton(OperationHelpContent.Preparation));
                     panel.Children.Add(preparation);
                 });
@@ -465,6 +465,7 @@ public sealed partial class MainWindow : Window
                         ("Проверить", ModemOperation.RefreshLocalization, null),
                         ("Установить", ModemOperation.InstallLocalization, null),
                         ("Восстановить предыдущий", ModemOperation.RestoreLocalization, null)));
+                    panel.Children.Add(ValueLine("Состояние", _snapshot?.ScreenLocalization));
                 });
                 break;
         }
@@ -1224,7 +1225,7 @@ public sealed partial class MainWindow : Window
 
     private void AddSnapshotCard()
     {
-        AddCard("Состояние устройства", "Данные обновляются при подключении и по кнопке «Обновить». ", panel =>
+        AddCard("Состояние устройства", "Сведения загружаются по кнопке «Обновить». Проверки компонентов выполняются в их разделах.", panel =>
         {
             panel.Children.Add(ValueLine("Подключение", _snapshot?.Status));
             panel.Children.Add(ValueLine("Модель", _snapshot?.Model));
@@ -1839,7 +1840,9 @@ public sealed partial class MainWindow : Window
             }
             else if (connectedSsh && !selectedConnectionChanged)
             {
-                var refreshed = await _service.RunAsync(new OperationRequest(ModemOperation.RefreshDevice, new Dictionary<string,string> { ["skip_firmware_check"] = Get("skip_firmware_check") == "true" ? "true" : "false" }), _lifetime.Token);
+                var operation = _page == 0 && _sections[0] == 2 ? ModemOperation.RefreshAgent
+                    : _page == 0 && _sections[0] == 3 ? ModemOperation.RefreshLocalization : ModemOperation.RefreshDevice;
+                var refreshed = await _service.RunAsync(new OperationRequest(operation, new Dictionary<string,string> { ["skip_firmware_check"] = Get("skip_firmware_check") == "true" ? "true" : "false" }), _lifetime.Token);
                 if (!refreshed.Success) refreshError = refreshed.Message;
             }
             else if (connectedSsh && selectedConnectionChanged)
@@ -1932,7 +1935,10 @@ public sealed partial class MainWindow : Window
         !(_snapshot?.IsConnected == true && _snapshot.ConnectionMode == "SSH"));
 
     private bool CanChangePreparationMode() => !_busy && _terminal?.IsConnected != true && !_terminalOpening &&
-        _snapshot?.PreparationPending != true && _snapshot?.AdbActivationPending != true;
+        _snapshot?.ComponentCleanupPending != true && _snapshot?.AdbActivationPending != true;
+
+    private bool CanSelectCleanPreparation() => !_busy && _terminal?.IsConnected != true && !_terminalOpening &&
+        _snapshot?.ComponentCleanupPending != true && _snapshot?.AdbActivationPending != true;
 
     private void SetBusy(bool busy)
     {
@@ -1943,7 +1949,7 @@ public sealed partial class MainWindow : Window
         if (_cancelCleanupButton is not null) _cancelCleanupButton.IsEnabled = CanPrepare();
         if (_skipFirmwareCheckBox is not null) _skipFirmwareCheckBox.IsEnabled = !busy && _terminal?.IsConnected != true && !_terminalOpening;
         if (_forcePreparationCheckBox is not null) _forcePreparationCheckBox.IsEnabled = CanChangePreparationMode();
-        if (_cleanPreparationCheckBox is not null) _cleanPreparationCheckBox.IsEnabled = CanChangePreparationMode();
+        if (_cleanPreparationCheckBox is not null) _cleanPreparationCheckBox.IsEnabled = CanSelectCleanPreparation();
         if (!busy && _page == 5 && _sections[5] == 2 && !_terminalAutoAttempted)
             _ = LoadPageDataAsync();
         UpdateDiagnosticAvailability();

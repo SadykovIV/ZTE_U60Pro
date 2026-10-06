@@ -10,6 +10,10 @@ public sealed partial class DeviceFeatureService
     // Never display arbitrary SSH stderr, which can include device/session data.
     private static string InstallerFailure(string phase, RemoteResult result)
     {
+        if (phase is "agent_install" or "agent_restore" && result.ExitCode > 0 && result.ExitCode < 255 &&
+            System.Text.Encoding.UTF8.GetString(result.Stderr).Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n')
+                .Contains("AGENT_ERROR AGENT_SETUP_PENDING", StringComparer.Ordinal))
+            return "Подготовка агента ещё владеет его файлами. Завершите её или выберите чистую установку после заводского сброса (AGENT_SETUP_PENDING).";
         if (VpnUpgradeFailure(result) is { } upgradeFailure) return upgradeFailure;
         var permitted = new HashSet<string>(StringComparer.Ordinal)
         {

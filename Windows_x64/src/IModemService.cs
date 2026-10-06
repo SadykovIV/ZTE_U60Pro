@@ -96,7 +96,8 @@ public sealed record DeviceSnapshot(
     bool? AdbEnabled = null,
     bool AdbControlSupported = false,
     string? AdbStatus = null,
-    bool ComponentCleanupPending = false);
+    bool ComponentCleanupPending = false,
+    string? ScreenLocalization = null);
 
 public sealed record VpnPageSnapshot(
     bool Installed,

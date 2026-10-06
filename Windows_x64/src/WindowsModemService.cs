@@ -22,6 +22,7 @@ public sealed partial class WindowsModemService : IModemService
     private readonly Func<Research.IResearchTransportFactory>? _researchFactory;
     private SshTransport? _ssh;
     private IRemoteShell? _sshRead;
+    private SshReadProof? _connectionProof;
     internal Func<IRemoteShell>? SshFactory { get; init; }
     private DeviceFeatureService? _features;
     private ImeiEngine? _imei;
@@ -354,26 +355,26 @@ public sealed partial class WindowsModemService : IModemService
         UpdateFirmwarePolicy(values);
         // The application's working channel is SSH. USB ADB remains available
         // independently for preparing SSH access.
-        _ssh = null; _sshRead = null; _imei = null; _features = null;
+        _ssh = null; _sshRead = null; _connectionProof = null; _imei = null; _features = null;
         _snapshot = new DeviceSnapshot(false, "SSH не подключён; проверьте доступ или выполните предварительную подготовку.", IpAddress: host);
         var transport = new SshTransport(host,_port,KeyPath,KnownHostsPath);
         IRemoteShell ssh = SshFactory?.Invoke() ?? transport;
         var imei = new ImeiEngine(ssh,_storage,_resources,_skipFirmwareCheck);
-        var identity = await SshReadProof.ReadAsync(ssh,ct);
-        identity.Verify(await SshReadProof.ReadAsync(ssh,ct));
+        var identity = await SshReadProof.ReadSessionAsync(ssh,ct);
+        identity.Verify(await SshReadProof.ReadSessionAsync(ssh,ct));
         _ssh = transport; _sshRead = ssh; _imei = imei; _features = new DeviceFeatureService(ssh,_resources,_storage,_skipFirmwareCheck);
-        var supported = identity.Uid == "0" && identity.System == "Linux" && identity.Architecture == "aarch64" && identity.Cid is not null && identity.BootId is not null && identity.FirmwareHash == ImeiEngine.FirmwareHash && identity.RouterHash == ImeiEngine.RouterHash;
-        _snapshot = new DeviceSnapshot(true,supported ? "Подключено по SSH" : "Подключено по SSH · доступ подтверждён; функции проверяются отдельно",
+        _connectionProof = identity;
+        _snapshot = new DeviceSnapshot(true,"Подключено по SSH · доступ подтверждён; функции проверяются отдельно",
             IpAddress:host,ConnectionMode:"SSH",Serial:identity.Cid);
-        await HydrateConnectedAsync(supported && Param(values,"access_only")!="true",ct);
         await File.WriteAllTextAsync(Path.Combine(_storage,"connection.json"),JsonSerializer.Serialize(new { host, port = _port, key_path = _keyPath, known_hosts_path = _knownHostsPath }),ct);
-        return supported ? "SSH подключён; CID и прошивка проверены." :
-            "SSH подключён. Доступные сведения прочитаны; установка и изменение настроек проверяются отдельно.";
+        return "SSH подключён. Проверки компонентов выполняются по запросу.";
     }
     private async Task<string> RefreshDeviceAsync(CancellationToken ct)
     {
         RequireSsh();
         var shell = _sshRead ?? _ssh!;
+        var proof = await SshReadProof.ReadSessionAsync(shell,ct);
+        _connectionProof?.Verify(proof);
         var info = await shell.RunAsync("ubus call system board",timeout:TimeSpan.FromSeconds(20),ct:ct);
         if (!info.Success)
         {
@@ -381,6 +382,7 @@ public sealed partial class WindowsModemService : IModemService
             if(!basic.Success||basic.Stdout.Length>4096)throw new IOException("Не удалось прочитать сведения о модеме.");
             var fields=AdbShellOutput.NormalizeText(new UTF8Encoding(false,true).GetString(basic.Stdout)).TrimEnd('\n').Split('\n');
             if(fields.Length!=3||fields.Any(x=>x.Length==0||x.Length>256||x.Any(char.IsControl)))throw new InvalidDataException("Некорректные сведения системы.");
+            proof.Verify(await SshReadProof.ReadSessionAsync(shell,ct));
             _snapshot=_snapshot with {Model=null,Firmware=null,Details=new Dictionary<string,string>{{"Система",fields[0]},{"Ядро",fields[1]},{"Архитектура",fields[2]}}};
             return "Сведения о модеме обновлены.";
         }
@@ -389,45 +391,10 @@ public sealed partial class WindowsModemService : IModemService
         string? property(string name) => root.TryGetProperty(name,out var value) ? value.ToString() : null;
         string? release = root.TryGetProperty("release",out var r) && r.ValueKind == JsonValueKind.Object &&
             r.TryGetProperty("description",out var d) ? d.GetString() : property("release");
+        proof.Verify(await SshReadProof.ReadSessionAsync(shell,ct));
         _snapshot = _snapshot with { Model = property("model"), Firmware = release,
             Details = new Dictionary<string,string> { ["Система"] = property("system") ?? "", ["Ядро"] = property("kernel") ?? "", ["Версия"] = property("version") ?? "" } };
         return "Сведения о модеме обновлены.";
-    }
-
-    private async Task HydrateConnectedAsync(bool supported,CancellationToken ct)
-    {
-        async Task Try(string name,Func<Task> work)
-        {
-            try { await work(); }
-            catch (Exception error) when (!ct.IsCancellationRequested) { Log("warning",name + ": " + error.GetType().Name); }
-        }
-        await Try("Сведения",async () => { _ = await RefreshDeviceAsync(ct); });
-        if (!supported) return;
-        await Try("IMEI",async () => {
-            var state = await _imei!.InspectAsync(ct);
-            _snapshot = _snapshot with { Imei = string.Join(" / ",state.Imeis) };
-        });
-        await Try("Агент",async () => {
-            var status = await _features!.GetAgentStatusAsync(ct);
-            _snapshot = _snapshot with { Agent = DescribeAgent(status) };
-        });
-        await Try("Launcher",async () => {
-            var status = await _features!.GetLauncherStatusAsync(ct);
-            _snapshot = _snapshot with { Launcher = status.State,
-                LauncherStyle = status.Layout?.Style,
-                LauncherMetrics = status.Layout is null ? null : string.Join(',', status.Layout.Metrics.Where(x => x.Enabled).Select(x => x.Id)),
-                LauncherMetricOrder = status.Layout is null ? null : string.Join(',', status.Layout.Metrics.Select(x => x.Id)),
-                LauncherPages = status.Pages is null ? null : string.Join(',', status.Pages.Order) };
-        });
-        await Try("TTL",async () => {
-            var status = await _features!.GetTtlStatusAsync(ct);
-            _snapshot = _snapshot with { Ttl = status.State };
-        });
-        await Try("VPN",async () => {
-            var status = await _features!.GetVpnStatusAsync(ct);
-            _snapshot = _snapshot with { Vpn = VpnSummary(status), VpnPage = VpnPage(status),
-                VpnSsid = status.Ssid, VpnPasswordMode = status.PasswordMode?.ToString().ToLowerInvariant() };
-        });
     }
 
     private static string VpnSummary(VpnStatus status) => status.Installed

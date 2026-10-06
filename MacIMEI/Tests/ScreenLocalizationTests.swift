@@ -12,7 +12,7 @@ private func rejects(_ contains: String, _ body: () throws -> Void) throws {
     throw Failure.check("Expected rejection containing \(contains)")
 }
 private func status(_ state: String, language: String = "cn", mounted: Int? = nil, boot: Int? = nil, pid: Int = 42) -> String {
-    "SCREEN_RU_STATUS state=\(state) language=\(language) mounted=\(mounted ?? (state == "enabled" ? 3 : 0)) boot=\(boot ?? (state == "enabled" ? 1 : 0)) pid=\(pid) revision=20260922\n"
+    "SCREEN_RU_STATUS state=\(state) language=\(language) mounted=\(mounted ?? (state == "enabled" ? 3 : 0)) boot=\(boot ?? (state == "enabled" ? 1 : 0)) pid=\(pid) revision=\(ScreenLocalization.revision)\n"
 }
 
 private final class MockScreen: RemoteTransport {
@@ -21,7 +21,8 @@ private final class MockScreen: RemoteTransport {
     var installed = false, enabled = false, badFirmware = false, badUpload = false
     var swapIdentityAt = 0, identityCalls = 0, managerMismatch = false, installFails = false
     var stalePID = false, corruptOriginal = false, staged = false, cleaned = false
-    var remoteLocked = false
+    var remoteLocked = false, remoteLockRefused = false
+    var quickReads = 0, quickDrift = "", errorReason: String?
     var stage = "", mutationActions = [String]()
     let original: Data
     init(original: Data) { self.original = original }
@@ -30,14 +31,27 @@ private final class MockScreen: RemoteTransport {
     }
     func run(_ command: String, input: Data?, timeout: TimeInterval) throws -> CommandResult {
         commands.append(command)
+        if command == SSHReadProof.quickCommand {
+            quickReads += 1
+            let cid = quickDrift == "cid" && quickReads > 1 ? String(repeating: "b", count: 32) : String(repeating: "a", count: 32)
+            let boot = quickDrift == "boot" && quickReads > 1 ? "22345678-1234-1234-1234-123456789abc" : "12345678-1234-1234-1234-123456789abc"
+            return output("ZTE_SSH_READ_V1\n0\nLinux\naarch64\n" + cid + "\n" + boot + "\n?\n?\n")
+        }
         if command.hasPrefix("sha256sum /firmware/image/modem.b16") {
             identityCalls += 1
             let cid = swapIdentityAt > 0 && identityCalls >= swapIdentityAt ? String(repeating: "b", count: 32) : String(repeating: "a", count: 32)
             return output((badFirmware ? String(repeating: "0", count: 64) : ModemEngine.firmwareHash) + "  /firmware/image/modem.b16\n" + ModemEngine.routerHash + "  /usr/bin/diag-router\n" + cid + "\n12345678-1234-1234-1234-123456789abc\n")
         }
-        if command.contains("if mkdir /tmp/zte-imei-app.lock") { remoteLocked = true; return output("") }
+        if command.contains("if mkdir /tmp/zte-imei-app.lock") {
+            if remoteLockRefused { return output("REMOTE_BUSY", code: 1) }
+            remoteLocked = true; return output("")
+        }
         if command.contains("&& rm /tmp/zte-imei-app.lock/owner") { remoteLocked = false; return output("") }
         if command == ScreenLocalization.probeCommand { return output(installed ? "SCREEN_RU_INSTALLED\n" : status("absent", language: "en", pid: 0)) }
+        if command == "sha256sum /data/zte-imei-screen-ru/manager.sh" {
+            return output(ScreenLocalization.resourceHashes["install.sh"]! + "  /data/zte-imei-screen-ru/manager.sh\n")
+        }
+        if command == ScreenLocalization.reasonCommand { return output(errorReason ?? "STATUS_UNVERIFIED") }
         if command.contains("sh /data/zte-imei-screen-ru/manager.sh ") {
             try check(command.contains("test ! -L") && command.contains("0$mode & 022") && command.contains(ScreenLocalization.resourceHashes["install.sh"]!), "Unverified manager execution")
             if managerMismatch { return output("manager hash mismatch", code: 1) }
@@ -45,7 +59,7 @@ private final class MockScreen: RemoteTransport {
             try check(action == "status" || remoteLocked, "Mutation without shared remote lock")
             if action == "enable" { enabled = true; mutationActions.append("enable") }
             if action == "disable" { enabled = false; mutationActions.append("disable") }
-            return output(status(enabled ? "enabled" : "disabled", language: enabled ? "cn" : "en", pid: stalePID ? 0 : 42))
+            return output(status(errorReason != nil ? "error" : enabled ? "enabled" : "disabled", language: enabled ? "cn" : "en", pid: stalePID ? 0 : 42))
         }
         if command == "cat /usr/bin/zte_topsw_devui" {
             var bytes = original
@@ -80,7 +94,9 @@ private final class MockScreen: RemoteTransport {
     static func main() throws {
         let project = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         let resources = project.appendingPathComponent("Resources")
-        let original = try Data(contentsOf: project.deletingLastPathComponent().appendingPathComponent("evidence/russian-ui-trial-20260922/zte_topsw_devui"))
+        let originalPath = ProcessInfo.processInfo.environment["ZTE_SCREEN_TEST_ORIGINAL"].map { URL(fileURLWithPath: $0) }
+            ?? project.deletingLastPathComponent().appendingPathComponent("evidence/russian-ui-trial-20260922/zte_topsw_devui")
+        let original = try Data(contentsOf: originalPath)
         let testRoot = FileManager.default.temporaryDirectory.appendingPathComponent("zte-screen-tests-" + UUID().uuidString)
         try secureDirectory(testRoot); defer { try? FileManager.default.removeItem(at: testRoot) }
         let key = testRoot.appendingPathComponent("key"), hosts = testRoot.appendingPathComponent("hosts")
@@ -119,7 +135,15 @@ private final class MockScreen: RemoteTransport {
             try rejects("Неполный") { _ = try ScreenLocalization.parseStatus(status("enabled").replacingOccurrences(of: " pid=42", with: "")) }
             try rejects("Несогласованное") { _ = try ScreenLocalization.parseStatus(status("enabled", mounted: 2)) }
             try rejects("Неизвестная") { _ = try ScreenLocalization.parseStatus(status("enabled", language: "ru")) }
-            try rejects("Неизвестная") { _ = try ScreenLocalization.parseStatus(status("enabled").replacingOccurrences(of: "20260922", with: "20990101")) }
+            try rejects("Неизвестная") { _ = try ScreenLocalization.parseStatus(status("enabled").replacingOccurrences(of: ScreenLocalization.revision, with: "20990101")) }
+        }
+        test("all seven fixed optional failure reasons retain error state and unknown reason is rejected") {
+            try check(ScreenLocalization.statusReasons.count == 7, "Unexpected reason catalog")
+            for (reason, text) in ScreenLocalization.statusReasons {
+                let result = try ScreenLocalization.parseStatus(status("error").trimmingCharacters(in: .newlines) + " reason=" + reason)
+                try check(result.state == .error && result.detail == text, "Fixed reason lost")
+            }
+            try rejects("Неизвестная причина") { _ = try ScreenLocalization.parseStatus(status("error").trimmingCharacters(in: .newlines) + " reason=PRIVATE_CANARY") }
         }
         test("partial mount error stays an explicit error") {
             let result = try ScreenLocalization.parseStatus(status("error", mounted: 2, boot: 1))
@@ -149,18 +173,45 @@ private final class MockScreen: RemoteTransport {
         }
         test("status is read only and does not read the executable or NV") {
             let mock = MockScreen(original: original); let result = try perform(manager(mock), .status)
-            try check(result.state == .absent && mock.commands.count == 2, "Read-only status mutated")
+            try check(result.state == .absent && mock.commands == [SSHReadProof.quickCommand, ScreenLocalization.probeCommand, SSHReadProof.quickCommand], "Read-only status mutated or hashed unrelated binaries")
+        }
+        test("status ignores local recovery and missing assets") {
+            let mock = MockScreen(original: original); mock.badFirmware = true
+            let value = try manager(mock, resourceRoot: testRoot.appendingPathComponent("missing-assets"))
+            try savePrivate(Data("saved-pending".utf8), value.engine.root.appendingPathComponent("setup-pending.json"))
+            try check(perform(value, .status).state == .absent && mock.identityCalls == 0 && !mock.remoteLocked && !mock.staged, "Unrelated setup resource or firmware prerequisite blocked status")
+            try check(mock.commands.count == 3 && Data(contentsOf: value.engine.root.appendingPathComponent("setup-pending.json")) == Data("saved-pending".utf8), "Read changed pending intent")
+        }
+        test("status refuses changed CID and boot without writes") {
+            for fact in ["cid", "boot"] {
+                let mock = MockScreen(original: original); mock.quickDrift = fact
+                try rejects("сеанс SSH изменились") { _ = try perform(manager(mock), .status) }
+                try check(mock.commands.count == 3 && !mock.staged && !mock.remoteLocked, "Drift caused status writes")
+            }
+        }
+        test("installed reset state returns the scoped fixed reason without upload") {
+            let mock = MockScreen(original: original); mock.installed = true; mock.errorReason = "BOOT_HOOK_MISSING"
+            let result = try perform(manager(mock, resourceRoot: testRoot.appendingPathComponent("missing-assets")), .status)
+            try check(result.state == .error && result.detail == ScreenLocalization.statusReasons["BOOT_HOOK_MISSING"] && mock.quickReads == 2 && mock.identityCalls == 0 && mock.inputs.isEmpty && !mock.remoteLocked, "Installed reset status was hidden or mutated")
         }
         test("unsupported firmware fails before upload or installation") {
             let mock = MockScreen(original: original); mock.badFirmware = true
             try rejects("Прошивка отличается") { _ = try perform(manager(mock), .enable) }
             try check(mock.commands.count == 1 && !mock.staged, "Unsupported firmware reached writes")
         }
-        test("pending IMEI operation stops before SSH") {
-            let mock = MockScreen(original: original), value = try manager(mock)
-            try savePrivate(Data(), value.engine.root.appendingPathComponent("pending.json"))
-            try rejects("Сначала завершите") { _ = try perform(value, .enable) }
-            try check(mock.commands.isEmpty, "Pending operation reached SSH")
+        test("unrelated IMEI and setup journals do not block verified screen installation") {
+            for name in ["pending.json", "setup-pending.json"] {
+                let mock = MockScreen(original: original), value = try manager(mock)
+                let path = value.engine.root.appendingPathComponent(name), bytes = Data("saved-unrelated-intent".utf8)
+                try savePrivate(bytes, path)
+                try check(perform(value, .enable).state == .enabled && mock.mutationActions == ["install"], "Unrelated journal blocked component installation")
+                try check(Data(contentsOf: path) == bytes && mock.commands.contains { $0.contains("if mkdir /tmp/zte-imei-app.lock") } && !mock.remoteLocked, "Component installation changed unrelated journal or skipped its live lock")
+            }
+        }
+        test("a live foreign remote operation still refuses screen changes") {
+            let mock = MockScreen(original: original); mock.remoteLockRefused = true
+            try rejects("REMOTE_BUSY") { _ = try perform(manager(mock), .enable) }
+            try check(mock.mutationActions.isEmpty && !mock.staged && mock.inputs.isEmpty, "Active remote owner was bypassed")
         }
         test("corrupt bundled asset fails before SSH") {
             let altered = testRoot.appendingPathComponent("altered-resources")

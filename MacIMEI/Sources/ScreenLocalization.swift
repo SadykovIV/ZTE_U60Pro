@@ -76,7 +76,9 @@ final class ScreenLocalization {
             try require(pair.count == 2 && values[String(pair[0])] == nil, "Повтор или повреждение поля статуса русификации")
             values[String(pair[0])] = String(pair[1])
         }
-        try require(Set(values.keys) == Set(["state", "language", "mounted", "boot", "pid", "revision"]), "Неполный статус русификации")
+        let required: Set<String> = ["state", "language", "mounted", "boot", "pid", "revision"]
+        try require(Set(values.keys) == required || Set(values.keys) == required.union(["reason"]), "Неполный статус русификации")
+        if let reason = values["reason"] { try require(Self.statusReasons[reason] != nil, "Неизвестная причина ошибки русификации") }
         guard let state = ScreenLocalizationState(rawValue: values["state"]!),
               let mounted = Int(values["mounted"]!), (0...3).contains(mounted),
               let pid = Int(values["pid"]!), pid >= 0,
@@ -87,9 +89,30 @@ final class ScreenLocalization {
         let boot = values["boot"] == "1"
         try require(state == .error || (state == .enabled ? mounted == 3 && boot : mounted == 0 && !boot), "Несогласованное состояние русификации")
         return ScreenLocalizationStatus(revision: values["revision"]!, state: state, language: values["language"]!,
-            detail: state == .error ? "Файлы или запуск интерфейса не прошли проверку. Подробности доступны в журнале." : "",
+            detail: state == .error ? Self.statusReasons[values["reason"] ?? "STATUS_UNVERIFIED"]! : "",
             mounted: mounted, bootEnabled: boot, pid: pid)
     }
+
+    static let statusReasons = [
+        "STOCK_INIT_MISSING": "Отсутствует штатный скрипт запуска экрана /etc/init.d/zte_topsw_devui.",
+        "STOCK_INIT_CHANGED": "Скрипт запуска экрана отличается от совместимого штатного или русифицированного варианта.",
+        "LEFTOVER_HOOK_OR_MOUNT": "Каталог русификации отсутствует, но остались её служба или подключённые файлы. Нужно восстановить установку.",
+        "BOOT_HOOK_MISSING": "После сброса отсутствует запуск русификации. Повторное включение восстановит его из установленного комплекта.",
+        "TRANSACTION_PENDING": "Предыдущее изменение русификации не завершено; журнал сохранён на модеме.",
+        "UI_NOT_RUNNING": "Процесс экранного интерфейса не запущен.",
+        "STATUS_UNVERIFIED": "Состояние файлов или запуска экрана не подтверждено. Подробности команды сохранены в журнале."
+    ]
+
+    static let reasonCommand = #"""
+    set -eu
+    reason=STATUS_UNVERIFIED
+    if test ! -f /etc/init.d/zte_topsw_devui || test -L /etc/init.d/zte_topsw_devui; then reason=STOCK_INIT_MISSING
+    elif test -e /data/zte-imei-screen-ru/.transaction; then reason=TRANSACTION_PENDING
+    elif test -d /data/zte-imei-screen-ru && test -f /data/zte-imei-screen-ru/.enabled && { test ! -f /etc/init.d/zte_imei_screen_ru || test ! -L /etc/rc.d/S47zte_imei_screen_ru; }; then reason=BOOT_HOOK_MISSING
+    elif ! pidof zte_topsw_devui >/dev/null 2>&1; then reason=UI_NOT_RUNNING
+    fi
+    printf '%s\n' "$reason"
+    """#
 
     static func applyFontPatch(_ original: Data, manifest: ScreenFontPatch) throws -> Data {
         func validHash(_ value: String) -> Bool {
@@ -134,12 +157,15 @@ final class ScreenLocalization {
         language=$(uci -q get zwrt_deviceui.Device.device_language || true)
         case "$language" in en|cn) ;; *) language=other;; esac
         mounted=$(awk '$5=="/usr/ui/language/English.ini" || $5=="/usr/ui/language/Chinese.ini" || $5=="/usr/bin/zte_topsw_devui" {n++} END {print n+0}' /proc/self/mountinfo)
-        state=absent
-        if test "$mounted" != 0 || test -e /etc/init.d/zte_imei_screen_ru || test -L /etc/init.d/zte_imei_screen_ru || test -e /etc/rc.d/S47zte_imei_screen_ru || test -L /etc/rc.d/S47zte_imei_screen_ru; then state=error; fi
-        if test ! -f /etc/init.d/zte_topsw_devui || test -L /etc/init.d/zte_topsw_devui || test "$(sha256sum /etc/init.d/zte_topsw_devui 2>/dev/null | awk '{print $1}')" != a30da6481637f1fd94e037373d406e574be7e722937a4965325086740be67e35; then state=error; fi
+        state=absent; reason=
+        if test "$mounted" != 0 || test -e /etc/init.d/zte_imei_screen_ru || test -L /etc/init.d/zte_imei_screen_ru || test -e /etc/rc.d/S47zte_imei_screen_ru || test -L /etc/rc.d/S47zte_imei_screen_ru; then state=error; reason=LEFTOVER_HOOK_OR_MOUNT; fi
+        if test ! -f /etc/init.d/zte_topsw_devui || test -L /etc/init.d/zte_topsw_devui; then state=error; reason=STOCK_INIT_MISSING
+        elif test "$(sha256sum /etc/init.d/zte_topsw_devui 2>/dev/null | awk '{print $1}')" != a30da6481637f1fd94e037373d406e574be7e722937a4965325086740be67e35; then state=error; reason=STOCK_INIT_CHANGED; fi
         pid=$(pidof zte_topsw_devui 2>/dev/null | awk '{print $1}' || true)
         case "$pid" in ''|*[!0-9]*) pid=0;; esac
-        printf 'SCREEN_RU_STATUS state=%s language=%s mounted=%s boot=0 pid=%s revision=20260924\n' "$state" "$language" "$mounted" "$pid"
+        printf 'SCREEN_RU_STATUS state=%s language=%s mounted=%s boot=0 pid=%s revision=20260924' "$state" "$language" "$mounted" "$pid"
+        if test -n "$reason"; then printf ' reason=%s' "$reason"; fi
+        printf '\n'
     fi
     """#
 
@@ -168,15 +194,23 @@ final class ScreenLocalization {
         if probe == "SCREEN_RU_INSTALLED" {
             let installedHash = try engine.text("sha256sum /data/zte-imei-screen-ru/manager.sh").split(separator: " ").first.map(String.init) ?? ""
             try require(([managerHash] + Array(Self.legacyManagerHashes.values)).contains(installedHash), "Неизвестная версия менеджера русификации")
-            return try invoke(Self.managerCommand(.status, cid: cid, hash: installedHash), timeout: 30)
+            var result = try invoke(Self.managerCommand(.status, cid: cid, hash: installedHash), timeout: 30)
+            if result.state == .error {
+                let reason = try engine.text(Self.reasonCommand)
+                result.detail = Self.statusReasons[reason] ?? Self.statusReasons["STATUS_UNVERIFIED"]!
+            }
+            return result
         }
         return try Self.parseStatus(probe)
     }
 
     func perform(_ action: ScreenLocalizationAction) throws -> ScreenLocalizationStatus {
         try engine.connection.validate()
-        for name in ["pending.json", "setup-pending.json", "adb-access-pending.json"] {
-            try require(!FileManager.default.fileExists(atPath: engine.root.appendingPathComponent(name).path), "Сначала завершите настройку или смену IMEI")
+        if action == .status {
+            let before = try SSHReadProof.parse(engine.remote(SSHReadProof.quickCommand))
+            let status = try inspect(cid: "", managerHash: Self.resourceHashes["install.sh"]!)
+            try before.verify(SSHReadProof.parse(engine.remote(SSHReadProof.quickCommand)))
+            return status
         }
         let bundle = try assets()
         let identity = try engine.identity().0

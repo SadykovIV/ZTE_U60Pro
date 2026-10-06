@@ -106,7 +106,9 @@ private final class StatusTransport: RemoteTransport {
         commands.append(command)
         if let input { payloadHashes.append(digest(input)) }
         let output: String
-        if command == "unset ZTE_AGENT_TEST_ROOT; sh -s -- status" {
+        if command == SSHReadProof.quickCommand {
+            output = "ZTE_SSH_READ_V1\n0\nLinux\naarch64\n" + identity.cid + "\n" + boot + "\n?\n?\n"
+        } else if command == "unset ZTE_AGENT_TEST_ROOT; sh -s -- status" {
             output = "AGENT_SHA absent\n"
         } else if command == "sh -s -- status " + shellQuote(identity.cid) {
             output = "TTL_STATUS state=disabled outbound=off inbound_inc=off capability=supported verification=not-applicable persistence=none\n"
@@ -268,6 +270,16 @@ private final class StatusTransport: RemoteTransport {
             try rejects("SSH") { _ = try ConnectionOverview.collect(session: session, readers: f.readers()) }
             try e.locked { try rejects("SSH") { _ = try ConnectionOverview.collect(engine: e, session: session) } }
             try check(stub.commands.isEmpty && f.readNames.isEmpty, "Foreign shell reached readers")
+        }
+        try test("Quick session permits an explicit agent status without reading other components") {
+            let stub = StatusTransport(), e = try engine(stub)
+            let proof=SSHReadProof(uid:"0",system:"Linux",architecture:"aarch64",cid:identity.cid,bootID:boot)
+            let light=ConnectionDeviceSummary(bootID:boot,fields:["cid":identity.cid,"sshReadOnly":"1","accessProfile":"read-only-ssh"])
+            let shell=DiagnosticSession(reason:"quick",proof:proof,readIdentity:{proof},execute:{_,_ in throw Failure.check("Unexpected information reader")})
+            let selected=ReadOnlyChannelSession(mode:.ssh,summary:light,diagnosticSession:shell,readSummary:{light})
+            let value=try e.locked { try ConnectionOverview.collect(engine:e,session:selected,sections:[.agent]) }
+            try check(value.sections == [.agent] && value.agent?.hash == "absent" && value.errors.isEmpty, "Generic profile hid explicit status")
+            try check(stub.commands.filter { $0 != SSHReadProof.quickCommand } == ["unset ZTE_AGENT_TEST_ROOT; sh -s -- status"], "Agent status scanned another component")
         }
         try test("Production collector refuses execution without the caller operation lock") {
             let f = Fixture(), stub = StatusTransport(), e = try engine(stub)

@@ -34,6 +34,127 @@ struct AccessSetupJournal: Codable {
 }
 
 extension OnboardingEngine {
+    /// A new clean install must not silently resume an earlier non-clean intent.
+    /// Close only an already-applied, unchanged installation with its own saved
+    /// installer, and preserve its journal before creating the new transaction.
+    func finishReadyBeforeCleanReinstall() throws {
+        guard fm.fileExists(atPath: pending.path) else { return }
+        let raw = try DeviceBackups.smallFile(pending, maximum: 65536)
+        guard let object = try JSONSerialization.jsonObject(with: raw) as? [String: Any] else {
+            throw IMEIError.message("Не удалось прочитать прежний журнал подготовки. Чистая установка не начиналась.")
+        }
+        if object["cleanComponents"] as? Bool == true { return }
+        try require(object["installRequested"] as? Bool == true && ["ready", "complete"].contains(object["phase"] as? String ?? ""),
+                    "Предыдущая установка ещё не подтвердила готовность. Чистая переустановка не начиналась; её точная стадия и журнал сохранены.")
+        let id: String, cid: String, firmware: String, router: String, profile: String, directory: URL
+        let stage: String?, remoteJournal: String?, savedBoot: String?
+        if object["intent"] as? String == "linux-arm64-access" {
+            let journal = try JSONDecoder().decode(AccessSetupJournal.self, from: raw)
+            try journal.validate(root: root)
+            (id,cid,firmware,router,profile,directory,stage,remoteJournal,savedBoot) =
+                (journal.id,journal.cid,journal.firmwareHash,journal.routerHash,journal.installerProfile,URL(fileURLWithPath:journal.directory),journal.remoteStage,journal.remoteJournal,journal.bootID)
+        } else {
+            let journal = try JSONDecoder().decode(SetupJournal.self, from: raw)
+            guard let measuredCID = journal.cid, let fw = journal.firmwareHash, let rh = journal.routerHash, let kind = journal.installerProfile else {
+                throw IMEIError.message("В прежнем журнале отсутствует идентификация установки; журнал сохранён.")
+            }
+            (id,cid,firmware,router,profile,directory,stage,remoteJournal,savedBoot) =
+                (journal.id,measuredCID,fw,rh,kind,URL(fileURLWithPath:journal.directory),journal.remoteStage,journal.remoteJournal,nil)
+        }
+        let isAccess = object["intent"] as? String == "linux-arm64-access"
+        let backupDirectory = directory.standardizedFileURL
+        try require(isAccess ? backupDirectory == root.appendingPathComponent("SetupBackups/"+id).standardizedFileURL :
+                    (backupDirectory.deletingLastPathComponent() == root.appendingPathComponent("SetupBackups").standardizedFileURL && UUID(uuidString:backupDirectory.lastPathComponent) != nil),
+                    "Каталог резервной копии прежней установки не подтверждён.")
+        let paths = try SetupRemotePaths(id: id, installRequested: true, stage: stage, journal: remoteJournal)
+        let connection = Connection(host: host, port: "2222", keyPath: root.appendingPathComponent("SSH/id_ed25519").path,
+            knownHostsPath: root.appendingPathComponent("SSH/known_hosts").path, skipFirmwareCheck: currentConnection.skipFirmwareCheck)
+        try connection.validate()
+        let ssh = sshFactory?(connection) ?? SSHTransport(connection)
+        func observe() throws -> DiagnosticDeviceProof {
+            let result = try ssh.run(AccessIdentity.command, input: nil, timeout: 20)
+            try require(result.status == 0, "SSH не подтвердил устройство перед чистой установкой. Прежний журнал сохранён.")
+            let proof = try AccessIdentity.parse(result.stdout)
+            try require(proof.identity == Identity(cid:cid,firmwareHash:firmware) && proof.routerHash == router && (savedBoot == nil || proof.bootID == savedBoot),
+                        "Прежняя установка относится к другому устройству, прошивке или загрузке. Чистая переустановка не начиналась.")
+            return proof
+        }
+        let before = try observe()
+        update("Проверяю готовую предыдущую установку перед чистой переустановкой", 0.05)
+        var policy = [cid,profile,firmware,router]
+        if let savedBoot { policy.append(savedBoot) }
+        let owner = ([id]+policy).joined(separator:" ")
+        let originalInstaller = try Data(contentsOf: assets.appendingPathComponent("setup-agent.sh"))
+        let scriptHash = digest(originalInstaller)
+        let text = String(decoding: originalInstaller, as: UTF8.self)
+        guard let start = text.range(of:"expected_targets='"), let end = text[start.upperBound...].firstIndex(of:"'") else {
+            throw IMEIError.message("Во встроенном установщике отсутствует список его файлов.")
+        }
+        let targets = String(text[start.upperBound..<end])
+        let validationArguments = [paths.journal,paths.stage,owner,scriptHash,targets].map(shellQuote).joined(separator:" ")
+        let validation = try ssh.run("sh -s -- " + validationArguments, input: Data(Self.readyReinstallProofScript.utf8), timeout: 30)
+        try require(validation.status == 0 && CommandText.decode(validation.stdout) == "INSTALL_READY_UNCHANGED",
+                    "Файлы предыдущей установки или её резервная копия изменились. Чистая переустановка не начиналась; подробности сохранены в журнале.")
+        let committed = try ssh.run(paths.commitCommand(id: id, policy: policy), input:nil, timeout:40)
+        try require(committed.status == 0 && CommandText.decode(committed.stdout).split(separator:"\n").contains(Substring("INSTALL_COMMITTED "+paths.journal)),
+                    "Не подтверждено завершение предыдущего установщика. Его журнал сохранён; новая установка не запускалась.")
+        let after = try observe()
+        try require(after.identity == before.identity && after.routerHash == before.routerHash && after.bootID == before.bootID,
+                    "Устройство изменилось при завершении предыдущей установки. Новая установка не запускалась.")
+        try savePrivate(raw, directory.appendingPathComponent("before-clean-reinstall.json"))
+        try fm.removeItem(at: pending)
+        _ = try? ssh.run("test -d " + shellQuote(paths.stage) + " && test ! -L " + shellQuote(paths.stage) +
+            " && test \"$(stat -c '%u:%a' " + shellQuote(paths.stage) + ")\" = 0:700 && rm -f " +
+            ["zte-agent","dropbear","setup-agent.sh","start_zte_imei_studio.sh","id_ed25519.pub","start-agent.sh","zte-timeout","legacy-agent.private.sh",".owner",".install-requested"].map { shellQuote(paths.stage+"/"+$0) }.joined(separator:" ") +
+            "; rmdir " + shellQuote(paths.stage), input:nil,timeout:15)
+        update("Прежняя установка проверена и её журнал сохранён. Начинаю новую чистую установку с новым паролем.", 0.1)
+    }
+    static let readyReinstallProofScript = #"""
+    set -eu
+    journal=$1; stage=$2; owner=$3; script_sha=$4; targets=$5
+    for directory in /data "$journal" "$journal/before"; do
+      test -d "$directory" && test ! -L "$directory" && test "$(stat -c %u "$directory")" = 0 || exit 1
+    done
+    test "$(stat -c %a "$journal")" = 700 && test "$(stat -c %a "$journal/before")" = 700 || exit 1
+    parent=${stage%/*}
+    for directory in "$parent" "$stage" "${journal%/*}"; do
+      test -d "$directory" && test ! -L "$directory" && test "$(stat -c %u "$directory")" = 0 || exit 1
+      mode=$(stat -c %a "$directory"); test "$((0$mode & 022))" = 0
+    done
+    test "$(stat -c %a "$stage")" = 700
+    for name in .owner .install-requested setup-agent.sh; do
+      test -f "$stage/$name" && test ! -L "$stage/$name" && test "$(stat -c '%u:%h' "$stage/$name")" = 0:1 || exit 1
+      mode=$(stat -c %a "$stage/$name"); test "$((0$mode & 022))" = 0
+    done
+    test "$(cat "$stage/.owner")" = "$owner" && test "$(cat "$stage/.install-requested")" = "$owner" || exit 1
+    actual_script=$(sha256sum "$stage/setup-agent.sh"); actual_script=${actual_script%% *}
+    test "$actual_script" = "$script_sha"
+    for name in before.sha256 after.sha256 state; do
+      test -f "$journal/$name" && test ! -L "$journal/$name" && test "$(stat -c '%u:%h' "$journal/$name")" = 0:1 || exit 1
+    done
+    case "$(cat "$journal/state")" in ready|complete) ;; *) exit 1;; esac
+    test -f "$journal/targets" && test ! -L "$journal/targets" && test "$(cat "$journal/targets")" = "$targets" || exit 1
+    expected_paths=$(for target in $targets; do printf '%s|' "/$target"; done; printf '%s|%s' "$journal/cid" "$journal/profile.identity")
+    awk -v expected="$expected_paths" '
+      BEGIN {n=split(expected,a,"[|]");for(i=1;i<=n;i++)want[a[i]]=1}
+      NF!=2 || length($1)!=64 || $1 !~ /^[0-9a-f]+$/ || !($2 in want) || seen[$2]++ {bad=1}
+      END {if(NR!=n)bad=1;exit bad}' "$journal/after.sha256"
+    sha256sum -c "$journal/before.sha256" >/dev/null
+    sha256sum -c "$journal/after.sha256" >/dev/null
+    expected=$(awk '$2=="/data/zte-agent" {n++; h=$1} END {if(n==1) print h}' "$journal/after.sha256")
+    test -n "$expected"
+    found=0
+    for p in $(pidof zte-agent); do
+      if test "$(readlink /proc/$p/exe)" = /data/zte-agent; then
+        actual=$(sha256sum /proc/$p/exe); actual=${actual%% *}
+        test "$actual" = "$expected"
+        found=$((found+1))
+      fi
+    done
+    test "$found" = 1
+    printf INSTALL_READY_UNCHANGED
+    """#
+
     /// Commit already succeeded, but saving the cleanup plan may have lost SSH.
     /// Recheck the saved target through prepared SSH without replaying setup.
     func resumeCommittedCleanup() throws -> SetupResult? {

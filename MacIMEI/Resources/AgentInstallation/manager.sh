@@ -14,11 +14,17 @@ hash() { sha256sum "$1" | awk '{print $1}'; }
 plain() { test -f "$1" && test ! -L "$1" && test "$(stat -c %u "$1")" = 0; }
 owned_dir() { test -d "$1" && test ! -L "$1" && test "$(stat -c '%u:%a' "$1")" = 0:700; }
 fail() { printf 'AGENT_ERROR %s\n' "$1" >&2; exit 1; }
-cid=$(cat "$root/sys/block/mmcblk0/device/cid")
-case "$cid" in ''|*[!0-9a-f]*) fail CID;; esac
-test "$(printf %s "$cid" | wc -c)" -eq 32 || fail CID
+cid=$(cat "$root/sys/block/mmcblk0/device/cid" 2>/dev/null || true)
+case "$cid" in ''|*[!0-9a-f]*) cid=;; esac
+test "$(printf %s "$cid" | wc -c)" -eq 32 || cid=
+test "$action" = status || test -n "$cid" || fail CID
+base_valid=1
 if test -e "$base" || test -L "$base"; then
-    owned_dir "$base" && plain "$base/owner" && test "$(cat "$base/owner")" = zte-agent-installer-v1 || fail OWNER
+    if ! { owned_dir "$base" && plain "$base/owner" && test "$(cat "$base/owner")" = zte-agent-installer-v1; }; then
+        test "$action" = status || fail OWNER
+        base_valid=0
+        printf 'AGENT_WARNING OWNER\n'
+    fi
 fi
 pids() {
     for proc in "$root"/proc/[0-9]*/exe; do
@@ -44,6 +50,7 @@ start_agent() {
     test -n "$(pids)"
 }
 valid_snapshot() {
+    test "$base_valid" = 1 && test -n "$cid" || return 1
     owned_dir "$base" && plain "$base/previous.sha256" && plain "$base/cid" || return 1
     test "$(cat "$base/cid")" = "$cid" || return 1
     if test "$(cat "$base/previous.sha256")" = absent; then
@@ -74,11 +81,14 @@ restore_previous() {
 }
 case "$action" in
 status)
-    if plain "$binary"; then printf 'AGENT_SHA %s\n' "$(hash "$binary")"; else printf 'AGENT_SHA absent\n'; fi
+    if test -e "$binary" || test -L "$binary"; then
+        plain "$binary" || fail BINARY
+        printf 'AGENT_SHA %s\n' "$(hash "$binary")"
+    else printf 'AGENT_SHA absent\n'; fi
     if test -n "$root"; then test ! -e "$root/running" || printf 'AGENT_RUNNING yes\n'
     elif test -n "$(pids)"; then printf 'AGENT_RUNNING yes\n'; fi
     if plain "$startup" && sh -n "$startup"; then printf 'AGENT_STARTUP yes\n'; fi
-    test ! -e "$base/pending" || printf 'AGENT_PENDING yes\n'
+    if test "$base_valid" = 0 || test -e "$base/pending"; then printf 'AGENT_PENDING yes\n'; fi
     if test -e "$base"; then
         if valid_snapshot && test "$(cat "$base/previous.sha256")" != absent; then printf 'AGENT_BACKUP %s\n' "$(cat "$base/previous.sha256")"; fi
     fi
@@ -99,6 +109,7 @@ install)
         else test -z "$(pids)" || fail RUNNING_WITHOUT_BINARY; fi
     fi
     test ! -e "$root/data/local/tmp/open-u60-transactions/active" || fail OTHER_DEPLOYMENT
+    test ! -e "$root/data/zte-imei-studio/installations/active" && test ! -L "$root/data/zte-imei-studio/installations/active" && test ! -e "$root/data/local/tmp/zte-imei-installations/active" && test ! -L "$root/data/local/tmp/zte-imei-installations/active" || fail AGENT_SETUP_PENDING
     test ! -e "$root/data/zte-vpn/controller-upgrade" || fail VPN_UPGRADE
     if test ! -e "$base"; then
         mkdir "$base"; chmod 700 "$base"; printf 'zte-agent-installer-v1\n' > "$base/owner"
@@ -142,6 +153,7 @@ install)
     ;;
 restore)
     test ! -e "$root/data/local/tmp/open-u60-transactions/active" || fail OTHER_DEPLOYMENT
+    test ! -e "$root/data/zte-imei-studio/installations/active" && test ! -L "$root/data/zte-imei-studio/installations/active" && test ! -e "$root/data/local/tmp/zte-imei-installations/active" && test ! -L "$root/data/local/tmp/zte-imei-installations/active" || fail AGENT_SETUP_PENDING
     test ! -e "$root/data/zte-vpn/controller-upgrade" || fail VPN_UPGRADE
     plain "$startup" && sh -n "$startup" || fail STARTUP
     valid_snapshot && test "$(cat "$base/previous.sha256")" != absent || fail BACKUP_INVALID

@@ -679,6 +679,7 @@ final class OnboardingEngine: @unchecked Sendable {
             if ComponentCleanup.hasPending(root: root) { return try resumeComponentCleanup() }
             if let cleanup = try resumeCommittedCleanup() { return cleanup }
             let requestedForce = forceReinstall || cleanComponents
+            if requestedForce && cleanComponents { try finishReadyBeforeCleanReinstall() }
             try require(!fm.fileExists(atPath: diagnosticPending.path), "Сначала завершите включение ADB для диагностики")
             if !requestedForce && !fm.fileExists(atPath: pending.path), let reused = try reuseSSH(expectedIdentity: expectedIdentity, expectedIMEI: expectedIMEI) { return reused }
             let expected = try DiagnosticDeviceExpectation.load(root: root, identity: expectedIdentity, web: nil, imei: expectedIMEI)

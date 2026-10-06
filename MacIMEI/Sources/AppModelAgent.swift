@@ -14,7 +14,7 @@ import AppKit
         } catch { customAgent = nil; append("Файл агента отклонён: " + error.localizedDescription) }
     }
     func refreshAgent() {
-        runManaged("Проверяю агент и возможность восстановления…", work: { engine in
+        runManaged("Проверяю агент и возможность восстановления…", readOnly: true, work: { engine in
             try engine.locked { try AgentInstallationManager(engine: engine).inspect() }
         }, finish: { [weak self] value in self?.agentInstallationStatus = value; self?.append("Состояние агента обновлено") })
     }

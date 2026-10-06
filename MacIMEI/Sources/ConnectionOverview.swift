@@ -58,8 +58,6 @@ enum ConnectionOverview {
         guard session.mode == .ssh, let shell = session.diagnosticSession, shell.transport == "ssh" else {
             throw IMEIError.message("Для подключения к модему требуется SSH")
         }
-        let profile = session.summary.fields["accessProfile"]
-        let sections = (profile == "linux-arm64-access" || profile == "read-only-ssh") ? sections.intersection([.information]) : sections
         let readers = ConnectionOverviewReaders(
             information: {
                 let result = try shell.run(ModemInformationManager.command, timeout: 30)
@@ -78,7 +76,7 @@ enum ConnectionOverview {
             // The session verifies its original transport. Separately bind the
             // manager's engine to that same device and boot before using SSH.
             if session.mode == .ssh {
-                let current = try SSHReadProof.parse(engine.remote(SSHReadProof.command, timeout: 15))
+                let current = try SSHReadProof.parse(engine.remote(shell.readProof.verificationCommand, timeout: 15))
                 try shell.readProof.verify(current)
             }
         }
@@ -92,7 +90,7 @@ enum ConnectionOverview {
             throw IMEIError.message("Для подключения к модему требуется SSH")
         }
         let summary = try session.readSummary()
-        try require(summary.identity == shell.readProof.identity && summary.bootID == shell.readProof.bootID,
+        try require(summary.observedCID == shell.readProof.cid && summary.identity == shell.readProof.identity && summary.bootID == shell.readProof.bootID,
                     "Сведения подключения не совпадают с проверенным сеансом модема")
         var snapshot = ConnectionOverviewSnapshot(summary: summary, limitedToADB: false, sections: sections)
         func verify() throws { try shell.verify(); try verifyEngine() }

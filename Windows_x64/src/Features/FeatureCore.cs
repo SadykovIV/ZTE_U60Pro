@@ -39,7 +39,7 @@ public sealed partial class DeviceFeatureService
     {
         var cleanup = Path.Combine(_storageRoot, "component-cleanup-pending.json");
         Check(!File.Exists(cleanup) && !Directory.Exists(cleanup), "Сначала завершите очистку компонентов программы в подготовке модема.");
-        foreach (var name in new[] { "imei-pending.json", "pending.json", "setup-pending.json", "adb-access-pending.json", AdbToggleTransaction.PendingName, "system-restore-pending.json" })
+        foreach (var name in new[] { "adb-access-pending.json", AdbToggleTransaction.PendingName, "system-restore-pending.json" })
         {
             var path = Path.Combine(_storageRoot, name);
             Check(!File.Exists(path) && !Directory.Exists(path),

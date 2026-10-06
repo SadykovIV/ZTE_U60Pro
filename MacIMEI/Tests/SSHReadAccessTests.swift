@@ -13,6 +13,10 @@ private final class Remote: RemoteTransport {
     func run(_ command: String, input: Data?, timeout: TimeInterval) throws -> CommandResult {
         calls.append(command)
         try check(input == nil && timeout <= 30, "Missing finite readonly bounds")
+        if command == SSHReadProof.quickCommand {
+            let proof = try SSHReadProof.parse(changed ? wire(bootID: "22222222-2222-2222-2222-222222222222") : data)
+            return CommandResult(status: 0, stdout: wire(uid:proof.uid ?? "?",arch:proof.architecture ?? "?",id:proof.cid ?? "?",bootID:proof.bootID ?? "?",router:"?"), stderr: Data())
+        }
         if command == SSHReadProof.command { return CommandResult(status: 0, stdout: changed ? wire(bootID: "22222222-2222-2222-2222-222222222222") : data, stderr: Data()) }
         if command == ModemInformationManager.command { return CommandResult(status: 1, stdout: Data(), stderr: Data()) }
         throw Failure.check("Unexpected remote dispatch")
@@ -32,7 +36,7 @@ private final class Remote: RemoteTransport {
             let chosen = try ConnectionRouter(engine:engine).connect(mode:.ssh)
             try check(chosen.actualMode == .ssh && chosen.session?.summary.identity == nil && chosen.session?.summary.fields["accessProfile"] == "read-only-ssh", "Unknown facts became false write compatibility")
             _ = try chosen.session!.requireSSH()
-            try check(remote.calls.allSatisfy { $0 == SSHReadProof.command }, "Read required agent/USB/helper")
+            try check(remote.calls.allSatisfy { $0 == SSHReadProof.quickCommand }, "Read required agent/USB/helper")
         }
         try test("non-root ARM32 read succeeds but supplies no ARM64 install proof") {
             let remote = Remote(); remote.data = wire(uid:"1000",arch:"armv7l")
@@ -68,6 +72,13 @@ private final class Remote: RemoteTransport {
             try target.verify(engine)
             remote.changed = true
             try reject { try target.verify(engine) }
+        }
+        try test("actual quick shell emits eight fields without hashing binaries") {
+            let result = try HostProcessRunner().run(URL(fileURLWithPath:"/bin/sh"),["-c",SSHReadProof.quickCommand],timeout:10)
+            try check(result.status == 0, "Quick shell failed")
+            let proof = try SSHReadProof.parse(result.stdout)
+            try check(proof.system == "Darwin" && proof.firmwareHash == nil && proof.routerHash == nil, "Quick proof manufactured binary observations")
+            try check(!SSHReadProof.quickCommand.contains("sha256") && !SSHReadProof.quickCommand.contains("modem.b16") && !SSHReadProof.quickCommand.contains("diag-router"), "Quick proof hashes operation-specific binaries")
         }
         try test("actual shell can observe a non-Linux host without files or root prerequisites") {
             let result = try HostProcessRunner().run(URL(fileURLWithPath:"/bin/sh"),["-c",SSHReadProof.command],timeout:10)

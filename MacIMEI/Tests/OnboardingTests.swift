@@ -1006,7 +1006,7 @@ private struct Fixture {
                 try check(apply.contains("'--reinstall'")==initial && f.host.installerCalls==1,"Changed checkbox changed pending mode")
             }
         }
-        run("Clean intent implies force and the saved choice survives changed retry input") {
+        run("Clean intent implies force and a changed retry cannot silently replace an unready intent") {
             for initial in [false,true] {
                 let f=try Fixture();defer { f.remove() }
                 f.host.identityMode=true;f.host.fullInstaller=true;f.host.deviceList="List of devices attached\nABC device usb:1\n";f.host.failPushAt=2
@@ -1015,7 +1015,7 @@ private struct Fixture {
                 try check(saved.cleanComponents==initial && saved.forceReinstall==initial && !saved.installRequested,
                           "Cleanup mode was not persisted before staging or failed to imply force")
                 f.host.pushCount=0;f.host.calls=[]
-                try rejects("interrupted upload") { _ = try f.engine.run(webPassword:"",agentPassword:testPassword,forceReinstall:!initial,cleanComponents:!initial) }
+                try rejects(initial ? "interrupted upload" : "не подтвердила готовность") { _ = try f.engine.run(webPassword:"",agentPassword:testPassword,forceReinstall:!initial,cleanComponents:!initial) }
                 let retained=try readJSON(AccessSetupJournal.self,f.engine.pending)
                 try check(retained.cleanComponents==initial && retained.forceReinstall==initial && f.host.installerCalls==0,
                           "Retry changed saved cleanup mode or dispatched installation")

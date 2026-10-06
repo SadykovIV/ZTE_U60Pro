@@ -12,23 +12,25 @@ void Keys(string storage)
     var blob=new byte[51]; blob[3]=11; "ssh-ed25519"u8.CopyTo(blob.AsSpan(4)); blob[18]=32;
     File.WriteAllText(Path.Combine(storage,"SSH","known_hosts"),"[192.0.2.1]:2222 ssh-ed25519 "+Convert.ToBase64String(blob)+"\n");
 }
-foreach(var uid in new[]{"0","1000"})
+foreach(var (uid,knownB31) in new[]{("0",false),("1000",false),("0",true)})
 {
     var storage=Path.Combine(Path.GetTempPath(),"zte-ssh-read-"+Guid.NewGuid());
     try
     {
         Keys(storage);
-        var remote=new Remote(uid);
+        var remote=new Remote(uid){KnownB31=knownB31};
         var service=new WindowsModemService(storage,Path.GetFullPath("Windows_x64/Resources")){SshFactory=()=>remote};
         var connected=await service.RunAsync(new(ModemOperation.Connect,new Dictionary<string,string>{{"host","192.0.2.1"}}));
         Need(connected.Success,connected.Message);
         var state=await service.GetDeviceSnapshotAsync();
-        Need(state.IsConnected&&state.Serial is null&&state.Imei is null&&state.ConnectionMode=="SSH","Read fabricated device identity");
-        Need(state.Details?.GetValueOrDefault("Ядро")=="fixture-kernel","Missing ubus prevented generic system facts");
+        Need(state.IsConnected&&state.Serial==(knownB31?new string('a',32):null)&&state.Imei is null&&state.ConnectionMode=="SSH","Read fabricated device identity");
+        Need(remote.Commands.Count==2&&remote.Commands.All(x=>!x.Contains("sha256sum")&&!x.Contains("/proc/[")),"Connect performs only two bounded session proofs, without component hashes or inventory");
+        Need(state.Details is null&&state.Agent is null&&state.Launcher is null&&state.Vpn is null&&state.Imei is null,"Connect does not hydrate component sections");
         var refresh=await service.RunAsync(new(ModemOperation.RefreshDevice));Need(refresh.Success,refresh.Message);
+        Need((await service.GetDeviceSnapshotAsync()).Details?.GetValueOrDefault("Ядро")=="fixture-kernel","Explicit refresh loads generic system facts without ubus");
         var reuse=await service.RunAsync(new(ModemOperation.PrepareSsh));Need(reuse.Success,reuse.Message);
-        Need(remote.Writes==0&&remote.Commands.All(x=>x==SshReadProof.Command||x=="ubus call system board"||x=="uname -s; uname -r; uname -m"),"Ordinary SSH requested agent/ADB/NV/lock");
-        Console.WriteLine("PASS service Connect/Info/Prepare without CID agent curl password uid="+uid);passed++;
+        Need(remote.Writes==0&&remote.Commands.All(x=>x.Contains("ZTE_SSH_READ_V1")||x=="ubus call system board"||x=="uname -s; uname -r; uname -m"),"Ordinary SSH requested agent/ADB/NV/lock");
+        Console.WriteLine("PASS service Connect/Info/Prepare performs no automatic component checks uid="+uid+" knownB31="+knownB31);passed++;
         var calls=remote.Commands.Count;
         var changed=await service.RunAsync(new(ModemOperation.PrepareSsh,new Dictionary<string,string>{{"host","192.0.2.2"}}));
         Need(!changed.Success&&remote.Commands.Count==calls,"Preparation reused SSH for a different selected endpoint");
@@ -72,15 +74,16 @@ foreach(var uid in new[]{"0","1000"})
     }
     finally{Directory.Delete(storage,true);}
 }
+await ComponentReadTests.Run(Path.GetFullPath("Windows_x64/Resources"));
 Console.WriteLine($"RESULT {passed} service groups passed; no device");
 sealed class Remote(string uid):IRemoteShell
 {
-    public List<string> Commands=[];public int Writes;public bool ChangeBoot,FailNext;private int reads;
+    public List<string> Commands=[];public int Writes;public bool ChangeBoot,FailNext,KnownB31;private int reads;
     public Task<RemoteResult> RunAsync(string command,byte[]? stdin=null,TimeSpan? timeout=null,CancellationToken ct=default)
     {
         if(FailNext){FailNext=false;throw new IOException("Synthetic SSH unavailable");}
         Commands.Add(command);if(stdin is not null||timeout is null||timeout>TimeSpan.FromSeconds(30))throw new Exception("Unexpected input/unbounded call");
-        if(command==SshReadProof.Command){reads++;var boot=ChangeBoot&&reads>1?"22222222-2222-2222-2222-222222222222":"11111111-1111-1111-1111-111111111111";return Task.FromResult(new RemoteResult(0,Encoding.UTF8.GetBytes("ZTE_SSH_READ_V1\n"+uid+"\nLinux\narmv7l\n?\n"+boot+"\n?\nabsent\n"),[]));}
+        if(command.Contains("ZTE_SSH_READ_V1")){reads++;var boot=ChangeBoot&&reads>1?"22222222-2222-2222-2222-222222222222":"11111111-1111-1111-1111-111111111111";var hashes=KnownB31&&command==SshReadProof.Command?ImeiEngine.FirmwareHash+"\n"+ImeiEngine.RouterHash:"?\n?";return Task.FromResult(new RemoteResult(0,Encoding.UTF8.GetBytes("ZTE_SSH_READ_V1\n"+uid+"\nLinux\n"+(KnownB31?"aarch64\n"+new string('a',32):"armv7l\n?")+"\n"+boot+"\n"+hashes+"\n"),[]));}
         if(command=="ubus call system board")return Task.FromResult(new RemoteResult(127,[],[]));
         if(command=="uname -s; uname -r; uname -m")return Task.FromResult(new RemoteResult(0,"Linux\nfixture-kernel\narmv7l\n"u8.ToArray(),[]));
         throw new Exception("Unexpected operation");

@@ -39,7 +39,13 @@ internal static class ForcePreparationTests
                     return Task.FromResult(Reply(prefix+ImeiEngine.FirmwareHash+"  /firmware/image/modem.b16\n"+ImeiEngine.RouterHash+"  /usr/bin/diag-router\n"+Cid+"\n"+Boot+"\n"+marker+"0\n"));
                 },Path.GetFullPath("Windows_x64/Resources/Onboarding/adb-stream.sh"));
                 var engine=new OnboardingEngine("192.0.2.1",folder,Path.GetFullPath("Windows_x64/Resources"),adb){ExistingSshFactory=()=>ssh,WebFactory=()=>new ModemWebClient("192.0.2.1",new NoWeb())};
-                try{await engine.PrepareAsync("","synthetic-new-password","",forceReinstall:requested,cleanComponents:mode.RequestedClean);}catch(IOException){}
+                try{await engine.PrepareAsync("","synthetic-new-password","",forceReinstall:requested,cleanComponents:mode.RequestedClean);}catch(Exception error) when(error is IOException or InvalidDataException){}
+                if(saved is not null&&!mode.SavedClean&&mode.RequestedClean)
+                {
+                    var retained=JsonSerializer.Deserialize<OnboardingPending>(File.ReadAllBytes(Path.Combine(folder,"setup-pending.json")))!;
+                    Check(preflight==0&&ssh.Calls==0&&uploads==0&&!retained.CleanComponents&&retained.ForceReinstall==saved.Value,"clean request cannot supersede an unfinished non-ready transaction or silently change its mode");
+                    continue;
+                }
                 Check(preflight==1&&ssh.Calls==0&&uploads==0,"explicit force/new or saved intent reaches measured preflight without SSH reuse, Web or uploads");
                 var pending=JsonSerializer.Deserialize<OnboardingPending>(File.ReadAllBytes(Path.Combine(folder,"setup-pending.json")))!;
                 Check(pending.ForceReinstall==expected&&pending.CleanComponents==expectedClean&&!pending.InstallRequested,"force intent is durable before dispatch and cannot override an existing journal");

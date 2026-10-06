@@ -29,7 +29,7 @@ static class PageInstallerTests
    check(skipInstall.Success&&b28.Hash==AgentPackage.Sha256,"explicit skip reaches actual agent installation on B28-like firmware and different router");
    check(b28.Events.SequenceEqual(new[]{"dashboard_preflight","agent_install","dashboard_install"})&&!b28.Events.Contains("vpn_components"),"skip preserves the complete agent/dashboard flow without enabling unrelated VPN");
    check((await policyService.RunAsync(new(ZteImeiStudio.Windows.ModemOperation.RefreshAgent))).Success,"explicit policy persists across sequential SSH actions without reconnect");
-   var resetPolicy=await policyService.RunAsync(new(ZteImeiStudio.Windows.ModemOperation.RefreshAgent,new Dictionary<string,string>{{"skip_firmware_check","false"}}));
+   var resetPolicy=await policyService.RunAsync(new(ZteImeiStudio.Windows.ModemOperation.InstallAgent,new Dictionary<string,string>{{"skip_firmware_check","false"}}));
    check(!resetPolicy.Success,"turning the shared checkbox off restores default firmware refusal");
    check((await policyService.RunAsync(new(ZteImeiStudio.Windows.ModemOperation.Connect,new Dictionary<string,string>{{"host","192.0.2.1"},{"skip_firmware_check","true"}}))).Success,"new SSH session accepts explicitly selected version policy");
    var reused=await policyService.RunAsync(new(ZteImeiStudio.Windows.ModemOperation.PrepareSsh));
@@ -141,6 +141,10 @@ static class PageInstallerTests
     await Reject(()=>Service(shell).InstallAgentAsync(),"bundled update preflight refusal, VPN absent="+absent);
     check(shell.Events.SequenceEqual(new[]{shell.FailPhase}),"bundled preflight refusal happens before installed component writes");
    }
+   var setupActive=new FakeShell{FreshVpn=true,FailPhase="agent_install",FailureStderr="PRIVATE detail\nAGENT_ERROR AGENT_SETUP_PENDING\n"};
+   try{await Service(setupActive).InstallAgentAsync();check(false,"active setup refuses an overlapping agent update");}
+   catch(DeviceFeatureException error){check(error.Message.Contains("AGENT_SETUP_PENDING")&&!error.Message.Contains("PRIVATE"),"actual setup-file ownership refusal has a fixed actionable message");}
+   check(setupActive.Hash!=AgentPackage.Sha256&&!setupActive.Events.Contains("dashboard_install"),"active setup refusal does not replace agent or dashboard");
    var alreadyCurrent=new FakeShell{Hash=AgentPackage.Sha256};await Service(alreadyCurrent).InstallAgentAsync();
    check(alreadyCurrent.Events.SequenceEqual(new[]{"vpn_preflight","vpn_controller","vpn_dashboard","vpn_launcher"}),"already-current agent still repairs related VPN components without reinstalling binary");
    const string previousCardCheckHash="413ba4b0a07540d6901e87e74c9730196eb3373cf35b8914e31a8194bfe5a839";
@@ -306,7 +310,7 @@ static class PageInstallerTests
             if(command=="set -eu; id -u; uname -s; uname -m")return Task.FromResult(Reply(PlatformReply));
             if(command.Contains("test \"$(cat /proc/sys/kernel/random/boot_id)\" = ")&&!command.Contains("= '"+Boot+"'"))return Task.FromResult(new RemoteResult(73,[],[]));
             if(command=="sha256sum /usr/bin/diag-router")return Task.FromResult(Reply(RouterIdentity+"  /usr/bin/diag-router\n"));
-            if(command==SshReadProof.Command)return Task.FromResult(Reply("ZTE_SSH_READ_V1\n0\nLinux\naarch64\n"+Cid+"\n"+Boot+"\n"+FirmwareIdentity+"\n"+RouterIdentity+"\n"));
+            if((command==SshReadProof.Command||command==SshReadProof.SessionCommand))return Task.FromResult(Reply("ZTE_SSH_READ_V1\n0\nLinux\naarch64\n"+Cid+"\n"+Boot+"\n"+FirmwareIdentity+"\n"+RouterIdentity+"\n"));
             if(command=="ubus call system board")return Task.FromResult(Reply("{\"model\":\"Synthetic B28-like fixture\"}"));
             if(command=="uname -s; uname -r; uname -m")return Task.FromResult(Reply("Linux\nfixture-kernel\naarch64\n"));
             if(command == "set -eu; if test ! -e /data/zte-agent && test ! -L /data/zte-agent; then echo absent; else test -f /data/zte-agent && test ! -L /data/zte-agent || exit 73; sha256sum /data/zte-agent | cut -d ' ' -f1; fi") return Task.FromResult(Reply(Hash));
@@ -322,7 +326,7 @@ static class PageInstallerTests
             if(command=="if test -e /data/zte-vpn || test -L /data/zte-vpn; then echo present; else echo absent; fi")return Task.FromResult(Reply(FreshVpn?"absent":"present"));
             if(command.Contains("sha256sum /firmware/image/modem.b16 /usr/bin/diag-router"))return Task.FromResult(Reply(FirmwareIdentity+"  /firmware/image/modem.b16\n"+RouterIdentity+"  /usr/bin/diag-router\n"+(MalformedIdentity?"missing":Cid)+"\n"+Boot));
             if(stdin is not null&&command.Contains("cat > ")){var path=Regex.Match(command,"cat > '([^']+)'").Groups[1].Value;Uploads[path]=stdin.ToArray();if(ChangeBootOnAnyUpload)Boot="11234567-89ab-cdef-0123-456789abcdef";if(path.EndsWith("page-layout.conf"))StagedPages++;if(path.Contains("/.page-layout-")&&ChangePagesOnUpload)Pages=new LauncherPages(new[]{"esim"}).Encode();if(path.Contains("/.page-layout-")&&ChangeBootOnUpload)Boot="11234567-89ab-cdef-0123-456789abcdef";return Task.FromResult(Reply(Convert.ToHexStringLower(SHA256.HashData(stdin))+"  "+path));}
-            if(command.Contains("/manager.sh' status"))return Task.FromResult(Reply("AGENT_SHA "+Hash+"\nAGENT_RUNNING "+(AgentRunning?"yes":"no")+"\nAGENT_STARTUP "+(AgentStartup?"yes":"no")+"\n"+(AgentPending?"AGENT_PENDING yes\n":"")+(BackupHash is null?"":"AGENT_BACKUP "+BackupHash+"\n")));
+            if(command.Contains("/manager.sh' status")||command=="unset ZTE_AGENT_TEST_ROOT; sh -s -- status")return Task.FromResult(Reply("AGENT_SHA "+Hash+"\nAGENT_RUNNING "+(AgentRunning?"yes":"no")+"\nAGENT_STARTUP "+(AgentStartup?"yes":"no")+"\n"+(AgentPending?"AGENT_PENDING yes\n":"")+(BackupHash is null?"":"AGENT_BACKUP "+BackupHash+"\n")));
             if(command.Contains("/manager.sh' install ")){var r=Step("agent_install");if(r.Success){BackupHash=Hash=="absent"?null:Hash;Hash=AgentPackage.Sha256;AgentRunning=true;}return Task.FromResult(r);}
             if(command.Contains("; sh '/tmp/zte-dashboard-stage-")){var id=Regex.Match(command,@"/tmp/zte-dashboard-stage-([0-9a-f-]{36})/").Groups[1].Value;return Task.FromResult(command.EndsWith(" preflight")?Step("dashboard_preflight","DASHBOARD_PREFLIGHT "+id):Step("dashboard_install","DASHBOARD_INSTALLED "+id));}
             if(command.Contains("; sh '/tmp/zte-vpn-agent-"))

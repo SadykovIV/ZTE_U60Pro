@@ -109,6 +109,7 @@ public sealed partial class WindowsModemService
         {
             case ModemOperation.RefreshAgent:
             {
+                _snapshot = _snapshot with { Agent = null };
                 var status = await _features!.GetAgentStatusAsync(ct);
                 _snapshot = _snapshot with { Agent = DescribeAgent(status) };
                 return _snapshot.Agent!;
@@ -126,11 +127,15 @@ public sealed partial class WindowsModemService
                 return _snapshot.Agent!;
             }
             case ModemOperation.RefreshLocalization:
-                return DescribeLocalization(await _features!.GetLocalizationStatusAsync(ct));
+                _snapshot = _snapshot with { ScreenLocalization = null };
+                _snapshot = _snapshot with { ScreenLocalization = DescribeLocalization(await _features!.GetLocalizationStatusAsync(ct)) };
+                return _snapshot.ScreenLocalization!;
             case ModemOperation.InstallLocalization:
-                return DescribeLocalization(await _features!.InstallLocalizationAsync(ct));
+                _snapshot = _snapshot with { ScreenLocalization = DescribeLocalization(await _features!.InstallLocalizationAsync(ct)) };
+                return _snapshot.ScreenLocalization!;
             case ModemOperation.RestoreLocalization:
-                return DescribeLocalization(await _features!.RestoreLocalizationAsync(ct));
+                _snapshot = _snapshot with { ScreenLocalization = DescribeLocalization(await _features!.RestoreLocalizationAsync(ct)) };
+                return _snapshot.ScreenLocalization!;
             case ModemOperation.ApplyImei:
             {
                 var first = Param(p,"imei1"); var second = Param(p,"imei2");
@@ -250,7 +255,8 @@ public sealed partial class WindowsModemService
     }
 
     private static string DescribeAgent(AgentInstallationStatus status)
-        => status.RecoveryPending ? "Требуется восстановление агента" :
+        => status.Warning == "OWNER" ? "Состояние агента прочитано, но каталог его установщика требует проверки (AGENT_OWNER)." :
+            status.RecoveryPending ? "Требуется восстановление агента" :
             status.Hash == "absent" ? "Агент не установлен" :
             status.Version is null ? (status.Running ? "Неизвестная сборка агента · запущен" : "Неизвестная сборка агента · не запущен") :
             status.IsCurrent ? (status.Running ? $"Агент {status.Version} · запущен" : $"Агент {status.Version} · не запущен") :
@@ -260,7 +266,7 @@ public sealed partial class WindowsModemService
             "enabled" => "Русификация включена (" + status.Language + ").",
             "disabled" => "Штатный интерфейс восстановлен.",
             "absent" => "Русификация не установлена.",
-            _ => "Состояние русификации требует проверки.",
+            _ => DeviceFeatureService.ScreenFailureDescription(status.Reason),
         };
 
     private async Task<string> ExportLocalDiagnosticsAsync(CancellationToken ct)

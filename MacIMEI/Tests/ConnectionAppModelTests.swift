@@ -52,6 +52,59 @@ private func snapshot() -> ConnectionOverviewSnapshot {
             let m = try model()
             try check(!m.connected && m.connectionLabel == "Нет подключения" && !m.canManage && !m.canCollectDiagnostics, "Fresh connection state is misleading")
         }
+        try await testAsync("Connect finishes without refreshing any component or probing other transports") {
+            let m = try model(); let chosen = selection(.ssh)
+            m.acceptConnectionOverview(snapshot())
+            m.connectPreferredChannel(resolve: { chosen })
+            await m.operationTask?.value
+            try check(m.connected && m.canManage && m.canReadModem && !m.busy && m.channelSession === chosen.session, "Connection depended on optional status reads")
+            try check(m.modemInformation == nil && m.agentInstallationStatus == nil && m.screenLocalizationStatus == nil && m.vpnInspection == nil && m.displayInspection == nil && m.adbControlStatus == nil && m.sectionRefreshErrors.isEmpty, "Connect populated unrelated state")
+            try check(!m.log.contains("State test must not") && m.preparationError.isEmpty, "Connect refreshed the fixture session")
+            m.connectionMonitorTask?.cancel()
+        }
+        try await testAsync("Pending journals do not hide independent language operations or component reads") {
+            let m = try model(); m.acceptChannelSelection(selection(.ssh))
+            try secureDirectory(m.storage.appendingPathComponent("SSH"))
+            try savePrivate(Data("fixture-key".utf8),URL(fileURLWithPath:m.keyPath))
+            try savePrivate(Data("fixture-host".utf8),URL(fileURLWithPath:m.knownHostsPath))
+            m.imei1 = "356938035643809"; m.imei2 = "353490068701222"
+            try check(m.canApply, "Fixture did not allow IMEI mutation before journals")
+            let pending = m.storage.appendingPathComponent("setup-pending.json")
+            let imeiPending = m.storage.appendingPathComponent("pending.json")
+            let pendingBytes = Data("{\"phase\":\"ready\"}".utf8)
+            try savePrivate(pendingBytes, pending)
+            try savePrivate(Data("{}".utf8), imeiPending)
+            m.refreshBackups()
+            try check(m.pendingOperation && m.setupPending && m.canManage && m.canReadModem && !m.canApply, "Unrelated journals blocked component access or permitted IMEI mutation")
+            m.refreshAgent(); let agentTask=m.operationTask
+            try check(agentTask != nil && m.busy, "Agent read blocked by pending preparation")
+            await agentTask?.value
+            try check(m.connected && !m.busy && m.log.contains("State test must not verify"), "Agent read did not reach selected-session guard")
+            m.refreshScreenLocalization(); let screenTask=m.operationTask
+            try check(screenTask != nil && m.busy, "Language status blocked by pending preparation")
+            await screenTask?.value
+            for enable in [true, false] {
+                if enable { m.enableScreenLocalization() } else { m.disableScreenLocalization() }
+                let task = m.operationTask
+                try check(task != nil && m.busy, "Independent language action blocked before its device proof")
+                await task?.value
+                try check(m.connected && !m.busy && m.log.contains("State test must not verify"), "Language action bypassed the selected-session guard")
+            }
+            let retainedBytes = try Data(contentsOf:pending)
+            try check(retainedBytes == pendingBytes, "Independent action changed the preparation journal")
+            try check(m.operationTask == nil && m.pendingOperation && m.setupPending && !m.canApply, "Independent action changed IMEI authorization")
+        }
+        try await testAsync("Independent language actions still respect busy terminal and active recovery guards") {
+            let m = try model(); m.acceptChannelSelection(selection(.ssh))
+            m.setupPending = true; m.pendingOperation = true
+            for guardName in ["busy", "terminal", "adb", "restore"] {
+                m.busy = guardName == "busy"; m.terminalActive = guardName == "terminal"
+                m.adbTogglePending = guardName == "adb"; m.systemRestorePending = guardName == "restore"
+                try check(!m.canManage, "Active operation guard was removed: " + guardName)
+                m.enableScreenLocalization(); m.disableScreenLocalization()
+                try check(m.operationTask == nil, "Blocked language action started a task: " + guardName)
+            }
+        }
         try test("Backup key test needs only host Web password and idle UI without granting write access") {
             let m = try model()
             try check(!m.canVerifyBackupKey, "Empty password permits key check")
@@ -209,6 +262,10 @@ private func snapshot() -> ConnectionOverviewSnapshot {
             try check(!m.cleanPreparationComponents && !m.forcePreparation, "Cleanup is enabled by default")
             m.cleanPreparationComponents=true
             try check(m.forcePreparation && m.canPrepareModem, "Cleanup did not require force preparation")
+            m.setupPending = true; m.cleanPreparationComponents = false; m.forcePreparation = false
+            m.cleanPreparationComponents = true
+            try check(m.cleanPreparationComponents && m.forcePreparation && m.canPrepareModem, "Pending setup hid explicit clean intent before backend validation")
+            m.setupPending = false
             m.forcePreparation=false
             try check(!m.cleanPreparationComponents, "Disabling force retained destructive cleanup intent")
             m.cleanPreparationComponents=true;m.editConnectionHost("192.0.2.15")
@@ -216,8 +273,8 @@ private func snapshot() -> ConnectionOverviewSnapshot {
             m.acceptChannelSelection(selection(.ssh))
             try savePrivate(Data("{}".utf8), ComponentCleanup.pendingURL(root:isolatedStorage))
             m.refreshBackups()
-            try check(m.componentCleanupPending && m.setupPending && m.canPrepareModem && !m.canManage,
-                      "Cleanup recovery is hidden or permits unrelated management")
+            try check(m.componentCleanupPending && m.setupPending && m.canPrepareModem && m.canManage && !m.canApply,
+                      "Cleanup recovery hides unrelated components or grants IMEI authorization")
         }
         try test("Cleanup cancel is phase gated and observes busy terminal and operation guards") {
             let m=try model();m.componentCleanupPending=true;m.componentCleanupCanCancel=true
@@ -272,7 +329,7 @@ private func snapshot() -> ConnectionOverviewSnapshot {
             m.esimPreview = true; try check(!m.canInstallEsimDisplay, "Preview can install pages"); m.esimPreview = false
             m.busy = true; try check(!m.canInstallEsimDisplay, "Busy state can install pages"); m.busy = false
             m.terminalActive = true; try check(!m.canInstallEsimDisplay, "Active terminal can install pages"); m.terminalActive = false
-            m.setupPending = true; try check(!m.canInstallEsimDisplay, "Pending setup can install pages"); m.setupPending = false
+            m.setupPending = true; try check(m.canInstallEsimDisplay, "Unrelated pending setup hides page installation; backend checks still apply"); m.setupPending = false
             m.setFirmwareCheckSkipped(false)
             try check(!m.canInstallEsimDisplay, "Re-enabled firmware policy reuses the previous session")
         }
@@ -436,6 +493,35 @@ private func snapshot() -> ConnectionOverviewSnapshot {
             m.acceptConnectionOverview(ConnectionOverviewSnapshot(summary: summary, limitedToADB: false, sections: [.information], errors: [.information: "fixture information failure"]))
             try check(m.modemInformation == nil && m.sectionRefreshErrors[.information] == "fixture information failure", "Scoped failure left stale information")
             try check(m.connected && m.canManage && m.agentInstallationStatus != nil && m.displayInspection != nil && m.accessState != nil && m.applicationInventory != nil && m.sectionRefreshErrors[.agent] == "earlier agent error", "Scoped failure erased unrelated data or disconnected")
+        }
+        try test("Quick SSH accepts operation-measured IMEI identity and retains CID through failures") {
+            let m = try model()
+            let quick=SSHReadProof(uid:"0",system:"Linux",architecture:"aarch64",cid:identity.cid,bootID:boot)
+            let light=ConnectionDeviceSummary(bootID:boot,fields:["cid":identity.cid,"sshReadOnly":"1","accessProfile":"read-only-ssh"])
+            let diagnostic=DiagnosticSession(reason:"quick",proof:quick,readIdentity:{quick},execute:{_,_ in throw IMEIError.message("No remote")})
+            let selected=ReadOnlyChannelSession(mode:.ssh,summary:light,diagnosticSession:diagnostic,readSummary:{light})
+            m.acceptChannelSelection(ChannelSelection(requestedMode:.ssh,actualMode:.ssh,statuses:[],session:selected,reason:"quick"))
+            try check(m.connectedIdentity == nil && m.connectedReadCID == identity.cid && m.canManage, "Quick connection fabricated firmware or lost CID")
+            for state in [DeviceState(identity:Identity(cid:String(repeating:"f",count:32),firmwareHash:identity.firmwareHash),boot:boot,records:[],imeis:[imei,imei]),
+                          DeviceState(identity:identity,boot:UUID().uuidString,records:[],imeis:[imei,imei])] {
+                var refused=false;do { try m.acceptIMEIRead(state) } catch { refused=true }
+                try check(refused && m.connectedIdentity == nil,"Quick IMEI read accepted CID/boot drift")
+            }
+            try m.acceptIMEIRead(DeviceState(identity:identity,boot:boot,records:[],imeis:[imei,"490154203237526"]))
+            try check(m.connectedIdentity == identity && m.channelSession === selected && m.currentIMEI1 == imei, "Measured identity rejected or replaced session")
+            m.markConnectionUnavailable("fixture timeout")
+            try check(m.connectedReadCID == identity.cid, "Transient failure lost bound CID")
+            m.connectedIdentity = nil
+            let missing=SSHReadProof(uid:"0",system:"Linux",architecture:"aarch64",bootID:boot)
+            let missingSummary=ConnectionDeviceSummary(bootID:boot,fields:["sshReadOnly":"1"])
+            let missingShell=DiagnosticSession(reason:"CID unavailable",proof:missing,readIdentity:{missing},execute:{_,_ in throw IMEIError.message("No remote")})
+            let missingSession=ReadOnlyChannelSession(mode:.ssh,summary:missingSummary,diagnosticSession:missingShell,readSummary:{missingSummary})
+            m.acceptChannelSelection(ChannelSelection(requestedMode:.ssh,actualMode:.ssh,statuses:[],session:missingSession,reason:"quick"))
+            var retainedCIDRefusal=false
+            do { try m.acceptIMEIRead(DeviceState(identity:Identity(cid:String(repeating:"f",count:32),firmwareHash:identity.firmwareHash),boot:boot,records:[],imeis:[imei,imei])) } catch { retainedCIDRefusal=true }
+            try check(retainedCIDRefusal,"Operation ignored previously observed CID when quick metadata was unavailable")
+            m.editConnectionHost("192.0.2.201")
+            try check(m.connectedReadCID == nil && m.connectedIdentity == nil, "New endpoint retained old CID")
         }
         try test("Reading IMEI preserves verified session, sections and drafts; identity drift is refused") {
             let m = try model(); let chosen = selection(.ssh)
