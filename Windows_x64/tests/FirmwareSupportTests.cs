@@ -50,6 +50,15 @@ static class FirmwareSupportTests
             {using var input=zip.GetEntry(font.ArchivePath)!.Open();using var bytes=new MemoryStream();input.CopyTo(bytes);Check(bytes.ToArray().SequenceEqual(withFonts.Data[font.Id]),"font bytes remain unchanged: "+font.Id);}
             CheckPayloads(zip);
         }
+        var withComponents=new Fake{IncludeComponents=true};var componentsResult=await Capture("firmware-components",withComponents);
+        using(var zip=ZipFile.OpenRead(componentsResult.Path))
+        {
+            var components=FirmwareSupportCollector.Inputs.Where(i=>i.ArchivePath.StartsWith("components/")).ToArray();
+            Check(componentsResult.Complete&&componentsResult.CapturedFiles==4+components.Length,"all firmware dependency files included in one verified archive");
+            foreach(var component in components)
+            {using var input=zip.GetEntry(component.ArchivePath)!.Open();using var bytes=new MemoryStream();input.CopyTo(bytes);Check(bytes.ToArray().SequenceEqual(withComponents.Data[component.Id]),"component bytes unchanged: "+component.Id);}
+            CheckPayloads(zip);
+        }
         var oversizedFont=await Capture("optional-font-over-limit",new Fake{IncludeFonts=true,Failure="oversize-font"});
         using(var zip=ZipFile.OpenRead(oversizedFont.Path))Check(oversizedFont.Complete&&oversizedFont.CapturedFiles==6&&!zip.Entries.Any(e=>e.FullName=="fonts/ZTEZhengYuan.ttf"),"an unavailable oversized optional font is omitted without claiming a required-file failure");
         var noIdentity=await Capture("no-cid-nonroot",new Fake{NoCid=true,NoAgent=true,Uid="1000",Architecture="armv7l"});
@@ -210,10 +219,10 @@ static class FirmwareSupportTests
     sealed class Fake:IRemoteShell
     {
         public const string Boot="11111111-1111-1111-1111-111111111111",Cid="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-        public string? Failure,State;public bool NoCid,NoAgent,IncludeFonts;public string Uid="0",Architecture="aarch64";public int IdentityReads,Inspects,Transfers,Uploads;
+        public string? Failure,State;public bool NoCid,NoAgent,IncludeFonts,IncludeComponents;public string Uid="0",Architecture="aarch64";public int IdentityReads,Inspects,Transfers,Uploads;
         public CancellationTokenSource? Cancel;
         public List<string> Commands=[];public List<byte[]> Inputs=[];
-        public Dictionary<string,byte[]> Data=FirmwareSupportCollector.Inputs.Where(x=>x.Required||x.Id.StartsWith("font_")).ToDictionary(x=>x.Id,x=>new byte[]{0,255,13,10,13,0,65,66,67,(byte)x.Id.Length});
+        public Dictionary<string,byte[]> Data=FirmwareSupportCollector.Inputs.ToDictionary(x=>x.Id,x=>new byte[]{0,255,13,10,13,0,65,66,67,(byte)x.Id.Length});
         public SshReadProof Proof()=>new(Uid,"Linux",Architecture,NoCid?null:Cid,Boot,null,null);
         public Task<RemoteResult> RunAsync(string command,byte[]? stdin=null,TimeSpan? timeout=null,CancellationToken ct=default)
         {
@@ -235,7 +244,7 @@ static class FirmwareSupportTests
             lines.AddRange(facts.Select(x=>"FACT\t"+x.Key+"\t"+Convert.ToBase64String(Encoding.UTF8.GetBytes(x.Value))));
             foreach(var input in FirmwareSupportCollector.Inputs)
             {
-                if(!input.Required&&!(IncludeFonts&&input.Id.StartsWith("font_"))||input.Id=="english"&&State is not null){lines.Add("FILE\t"+input.Id+"\t"+(input.Required?State:"missing")+"\t-\t-\t-\t-\t-");continue;}
+                if(!input.Required&&!(IncludeFonts&&input.Id.StartsWith("font_"))&&!(IncludeComponents&&input.ArchivePath.StartsWith("components/"))||input.Id=="english"&&State is not null){lines.Add("FILE\t"+input.Id+"\t"+(input.Required?State:"missing")+"\t-\t-\t-\t-\t-");continue;}
                 var size=(Failure=="oversize"&&input.Id=="init"||Failure=="oversize-font"&&input.Id=="font_zhengyuan")?input.Limit+1:Data[input.Id].LongLength;
                 var hash=Failure=="drift"&&Inspects==2&&input.Id=="ui"?new string('c',64):FirmwareSupportCollector.Sha(Data[input.Id]);
                 lines.Add("FILE\t"+input.Id+"\tpresent\t"+size+"\t"+hash+"\t0\t775\t1");

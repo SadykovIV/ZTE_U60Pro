@@ -16,7 +16,33 @@ originals_allowed() {
     done
     test -f "$base/owner" && test ! -L "$base/owner" && test "$(stat -c '%u:%h' "$base/owner")" = 0:1 && test "$(stat -c %s "$base/owner")" -le 64 && test "$(cat "$base/owner")" = zte-imei-screen-ru-v1
 }
+library() {
+    # Resolve a requested library alias only inside system library directories.
+    # Versioned symlinks are normal here; links into user configuration are not.
+    file=$1
+    for candidate in "$@"; do
+        if test -e "$candidate" || test -L "$candidate"; then file=$candidate; break; fi
+    done
+    if test ! -e "$file" && test ! -L "$file"; then
+        # OpenWrt can omit the unversioned development alias. A unique SONAME
+        # file is sufficient; multiple installed versions need explicit review.
+        for prefix in "$@"; do
+            found=
+            for candidate in "$prefix".*; do
+                test -e "$candidate" || test -L "$candidate" || continue
+                if test -n "$found"; then source_state=ambiguous; return; fi
+                found=$candidate
+            done
+            if test -n "$found"; then file=$found; break; fi
+        done
+    fi
+    if test ! -e "$file" && test ! -L "$file"; then return; fi
+    command -v readlink >/dev/null 2>&1 || { source_state=not_assessed; return; }
+    resolved=$(readlink -f "$file" 2>/dev/null) || { source_state=not_assessed; return; }
+    case "${resolved%/*}" in /lib|/usr/lib|/usr/lib/lua|/usr/lib/lua/luci) file=$resolved;; *) source_state=unsafe_target;; esac
+}
 path_for() {
+    source_state=present; binary=0
     case "$1" in
       ui) file=/usr/bin/zte_topsw_devui;;
       english) file=/usr/ui/language/English.ini;;
@@ -25,6 +51,39 @@ path_for() {
       font_zhengyuan) file=/usr/ui/fonts/ZTEZhengYuan.ttf;;
       font_roboto) file=/usr/ui/fonts/Roboto.ttf;;
       font_oswald) file=/usr/ui/fonts/Zoswald-Medium-24.ttf;;
+      ipacm) file=/usr/bin/ipacm; binary=1;;
+      ipa_switch) file=/sbin/ipacm_switch.sh;;
+      network_init) file=/etc/init.d/network;;
+      netifd) file=/sbin/netifd; binary=1;;
+      procd) file=/sbin/procd; binary=1;;
+      ubusd) file=/sbin/ubusd; binary=1;;
+      ubus_cli) file=/bin/ubus; binary=1;;
+      uci_cli) file=/sbin/uci; binary=1;;
+      lua_cli) file=/usr/bin/lua; binary=1
+        if test -L "$file"; then
+            resolved=$(readlink -f "$file" 2>/dev/null) || { source_state=not_assessed; return; }
+            case "$resolved" in /usr/bin/lua|/usr/bin/lua5.1|/usr/bin/lua5.2|/usr/bin/lua5.3|/usr/bin/lua5.4) file=$resolved;; *) source_state=unsafe_target;; esac
+        fi;;
+      mdm) file=/usr/bin/zte_topsw_mdm; binary=1;;
+      qcril) file=/usr/bin/qcrilNrd; binary=1;;
+      diag_router) file=/usr/bin/diag-router; binary=1;;
+      libdiag) binary=1; library /usr/lib/libdiag.so.1 /usr/lib/libdiag.so;;
+      libzte_sdk) binary=1; library /usr/lib/libzte_SDKowrt.so;;
+      libzte_gesture) binary=1; library /usr/lib/libzte_gesture.so;;
+      libzte_log) binary=1; library /usr/lib/libztelog.so;;
+      libfreetype) binary=1; library /usr/lib/libfreetype.so.6;;
+      libpng) binary=1; library /usr/lib/libpng16.so.16;;
+      libdrm) binary=1; library /usr/lib/libdrm.so.2;;
+      libgcc) binary=1; library /lib/libgcc_s.so.1 /usr/lib/libgcc_s.so.1;;
+      libc) binary=1; library /lib/libc.so /lib/libc.so.6;;
+      libuci) binary=1; library /lib/libuci.so /usr/lib/libuci.so;;
+      libubus) binary=1; library /lib/libubus.so /usr/lib/libubus.so;;
+      libubox) binary=1; library /lib/libubox.so /usr/lib/libubox.so;;
+      libblobmsg_json) binary=1; library /lib/libblobmsg_json.so /usr/lib/libblobmsg_json.so;;
+      libjson_c) binary=1; library /usr/lib/libjson-c.so.5 /usr/lib/libjson-c.so /lib/libjson-c.so.5;;
+      liblua) binary=1; library /usr/lib/liblua.so.5.1 /usr/lib/liblua.so /usr/lib/liblua5.1.so;;
+      lua_uci) binary=1; library /usr/lib/lua/uci.so;;
+      lua_jsonc) binary=1; library /usr/lib/lua/luci/jsonc.so /usr/lib/lua/jsonc.so;;
       original_ui) originals_allowed || return 1; file=/data/zte-imei-screen-ru/backup/zte_topsw_devui;;
       original_english) originals_allowed || return 1; file=/data/zte-imei-screen-ru/backup/English.ini;;
       original_chinese) originals_allowed || return 1; file=/data/zte-imei-screen-ru/backup/Chinese.ini;;
@@ -33,7 +92,8 @@ path_for() {
     esac
 }
 file_state() {
-    state=present
+    state=$source_state
+    test "$state" = present || return 0
     cursor=; rest=${file#/}
     while :; do
         case "$rest" in */*) part=${rest%%/*}; rest=${rest#*/};; *) break;; esac
@@ -45,6 +105,10 @@ file_state() {
     elif test ! -e "$file"; then state=missing
     elif test ! -f "$file"; then state=not_regular
     elif test ! -r "$file"; then state=unreadable
+    fi
+    if test "$state" = present && test "$binary" = 1; then
+        if ! command -v od >/dev/null 2>&1; then state=not_assessed
+        elif test "$(od -An -tx1 -N4 "$file" | tr -d ' \r\n')" != 7f454c46; then state=not_elf; fi
     fi
 }
 fact() { printf 'FACT\t%s\t' "$1"; printf '%s' "$2" | base64 | tr -d '\r\n'; printf '\n'; }
@@ -125,7 +189,7 @@ inspect)
     fact http_dashboard_status "$(http_status dashboard)"
     mounts=$(awk '$5=="/usr/ui/language/English.ini" || $5=="/usr/ui/language/Chinese.ini" || $5=="/usr/bin/zte_topsw_devui" {n++} END {print n+0}' /proc/self/mountinfo 2>/dev/null || printf not_assessed)
     fact ui_mounts "$mounts"
-    for id in ui english chinese init original_ui original_english original_chinese original_init font_zhengyuan font_roboto font_oswald; do file_row "$id"; done
+    for id in ui english chinese init original_ui original_english original_chinese original_init font_zhengyuan font_roboto font_oswald ipacm ipa_switch network_init netifd procd ubusd ubus_cli uci_cli lua_cli mdm qcril diag_router libdiag libzte_sdk libzte_gesture libzte_log libfreetype libpng libdrm libgcc libc libuci libubus libubox libblobmsg_json libjson_c liblua lua_uci lua_jsonc; do file_row "$id"; done
     printf 'FIRMWARE_SUPPORT_END\n'
     ;;
 file)

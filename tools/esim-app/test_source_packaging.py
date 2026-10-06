@@ -89,6 +89,11 @@ class AgentUpgradeRetentionTests(unittest.TestCase):
         self.put(self.mac / 'VPN/update-agent.sh', 'agent_sha='+self.first+'\ncase "$old" in '+self.historical+'|"$agent_sha") :;; esac\ndashboard_sha='+self.first+'\ndashboard_installer_sha='+self.first+'\n')
         self.put(self.mac / 'AgentInstallation/dashboard.sh', 'payload_sha='+self.first+'\n')
         self.put(self.mac / 'AgentInstallation/manager.sh', 'synthetic installer')
+        self.put(self.mac / 'SSHAccounts/access-services.sh', '#!/bin/sh\n# BEGIN_REVIEWED_AGENT_HASHES\nknown_agent_hash() { return 1; }\n# END_REVIEWED_AGENT_HASHES\n')
+        self.put(self.mac / 'ScreenLocalization/install.sh', 'synthetic screen installer')
+        self.put(self.mac / 'FirmwareSupport/collect.sh', 'synthetic support collector')
+        for group in ['SSHAccounts', 'ScreenLocalization', 'FirmwareSupport']:
+            permanent.manifest(self.mac / group)
         for app in [self.mac, self.win / 'Resources']:
             self.put(app / 'Onboarding/provenance.json', json.dumps({'files':{}, 'local_changes':[]}))
         self.put(self.mac / 'FirmwareResearch/probes.json', '{}')
@@ -127,12 +132,19 @@ class AgentUpgradeRetentionTests(unittest.TestCase):
         body=re.search(r'SupportedUpgradeHashes = new\[\] \{(.*?)\}\.ToFrozenSet',text,re.S)[1]
         return {current,*re.findall(r'"([0-9a-f]{64})"',body)}
 
+    def access_set(self):
+        script=(self.mac/'SSHAccounts/access-services.sh').read_text()
+        body=script.split('# BEGIN_REVIEWED_AGENT_HASHES\n')[1].split('# END_REVIEWED_AGENT_HASHES')[0]
+        return set(re.findall(r'[0-9a-f]{64}',body))
+
     def test_two_generations_retain_source_pins_and_sync_exactly(self):
         second=self.generate(b'synthetic generation two')
         self.assertEqual(self.swift_set(),{self.first,self.historical,second})
+        self.assertEqual(self.access_set(),self.swift_set())
         self.synchronize();self.assertEqual(self.windows_set(),self.swift_set())
         third=self.generate(b'synthetic generation three')
         self.assertEqual(self.swift_set(),{self.first,self.historical,second,third})
+        self.assertEqual(self.access_set(),self.swift_set())
         self.synchronize();self.assertEqual(self.windows_set(),self.swift_set())
         before=self.swift.read_bytes();self.generate(b'synthetic generation three')
         self.assertEqual(self.swift.read_bytes(),before,'same generation must not duplicate history')
@@ -163,6 +175,17 @@ class AgentUpgradeRetentionTests(unittest.TestCase):
         self.assertEqual(self.windows_set(),self.swift_set())
         self.cs.write_text(self.cs.read_text().replace('"'+self.historical+'",',''))
         with self.assertRaises(ValueError):self.synchronize(check=True)
+
+    def test_service_registry_drift_is_detected_and_only_reviewed_hashes_are_kept(self):
+        self.generate(b'synthetic generation two')
+        script=self.mac/'SSHAccounts/access-services.sh'
+        script.write_text(script.read_text().replace(') return 0;;','|'+self.custom+') return 0;;'))
+        permanent.manifest(script.parent)
+        with self.assertRaises(ValueError):sync.synchronize_agent_access_registry(self.root,check=True)
+        self.synchronize()
+        self.assertEqual(self.access_set(),self.swift_set())
+        self.assertNotIn(self.custom,self.access_set())
+        self.assertEqual(script.read_bytes(),(self.win/'Resources/SSHAccounts/access-services.sh').read_bytes())
 
 
 if __name__ == '__main__':

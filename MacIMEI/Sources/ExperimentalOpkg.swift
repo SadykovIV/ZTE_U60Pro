@@ -29,7 +29,7 @@ struct ExperimentalOpkgResult: Sendable {
 /// Real opkg in a private chroot and offline package root. No system package DB.
 final class ExperimentalOpkgManager {
     static let remoteRoot = "/data/zte-imei-apps/opkg-private"
-    static let helperHash = "8a1659c18eabfd7da8f7201d722f674634e10f485b6cea41d2c2a569e628c17b"
+    static let helperHash = "bfe9f77c9dc9ae8e6e0a250bcd12c68bac22cedee6cd48755340b2a95939f262"
     static let runtimeMetadataHash = "1ed406a3644f16bb7937ce11cb395a2520bdeb4eb36090b6d1d9d7753804a74a"
     let engine: ModemEngine
     init(engine: ModemEngine) { self.engine = engine }
@@ -152,15 +152,31 @@ final class ExperimentalOpkgManager {
     func execute(_ arguments: [String]) throws -> ExperimentalOpkgResult { try Self.validate(arguments); return try perform("execute", arguments) }
     private func perform(_ action: String, _ arguments: [String] = [], payload: Data? = nil) throws -> ExperimentalOpkgResult {
         try require(engine.lockFD >= 0, "Операция opkg требует блокировки")
-        for name in ["pending.json", "setup-pending.json", "adb-access-pending.json"] { try require(!engine.fm.fileExists(atPath: engine.root.appendingPathComponent(name).path), "Сначала завершите настройку или смену IMEI") }
-        try require(!SystemBackups.hasPendingRestore(root: engine.root), "Сначала завершите полное восстановление")
-        let identity = try engine.identity()
-        try require(identity.0.firmwareHash == ModemEngine.firmwareHash, "Экспериментальный opkg предназначен только для проверенной MU5250 B31")
         let readOnly = ["inspect", "read-feeds"].contains(action)
+        if !readOnly {
+            for name in ["pending.json", "setup-pending.json", "adb-access-pending.json"] { try require(!engine.fm.fileExists(atPath: engine.root.appendingPathComponent(name).path), "Сначала завершите настройку или смену IMEI") }
+        }
+        try require(!SystemBackups.hasPendingRestore(root: engine.root), "Сначала завершите полное восстановление")
+        let readProof: DiagnosticDeviceProof?
+        let identity: (Identity, String)
+        if readOnly {
+            let proof = try engine.measuredIdentity();readProof = proof
+            identity = (proof.identity, proof.bootID)
+        } else { readProof = nil;identity = try engine.identity() }
+        if !readOnly { try require(identity.0.firmwareHash == ModemEngine.firmwareHash, "Экспериментальный opkg предназначен только для проверенной MU5250 B31") }
         if !readOnly { try engine.acquireRemoteLock() }
         let resources = engine.resources.appendingPathComponent("ExperimentalOpkg")
         let helper = try DeviceBackups.smallFile(resources.appendingPathComponent("manager.sh"), maximum: 131072, publicResource: true)
         try require(digest(helper) == Self.helperHash, "Повреждён адаптер opkg")
+        if readOnly {
+            let command = "sh -s -- " + [action, identity.0.cid, identity.1].map(shellQuote).joined(separator: " ")
+            let response: Data
+            do { response = try engine.remote(command, input: helper, timeout: 60) }
+            catch { throw IMEIError.message(Self.failureMessage(error.localizedDescription)) }
+            let result = try Self.parse(response)
+            try require(try engine.measuredIdentity() == readProof, "Модем или загрузка изменились во время операции opkg; обновите состояние")
+            return result
+        }
         let stage = "/tmp/zte-opkg-" + UUID().uuidString.lowercased()
         _ = try engine.remote("set -eu; umask 077; test ! -L /tmp; mkdir " + shellQuote(stage))
         defer { _ = try? engine.remote("test -d " + shellQuote(stage) + " && test ! -L " + shellQuote(stage) + " && rm -f " + shellQuote(stage + "/manager.sh") + " " + shellQuote(stage + "/runtime.tar.gz") + " " + shellQuote(stage + "/zte-timeout") + " " + shellQuote(stage + "/feeds.txt") + " && rmdir " + shellQuote(stage), timeout: 15) }

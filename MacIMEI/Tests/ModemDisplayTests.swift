@@ -16,7 +16,8 @@ private func rejects(_ fragment: String, _ work: () throws -> Void) throws {
 private final class MockDisplay: RemoteTransport {
     var commands = [String](), inputs = [String: Data]()
     var identityCalls = 0, swappedAt = 0, rebootAt = 0
-    var firmware = ModemEngine.firmwareHash
+    var firmware = ModemEngine.firmwareHash, router = ModemEngine.routerHash
+    var routerChangedAt = 0, identityReadError = false
     var ui = ModemDisplayManager.uiHashes.sorted()[0], initHash = ModemDisplayManager.initHashes.sorted()[0]
     var root = "0", integrity = "0", enabled = "0", failure = "0", service = "0", startup = "0", running = "0", transaction = "0"
     var malformed = false, badUpload = false, installerFails = false, falseSuccess = false
@@ -40,11 +41,13 @@ private final class MockDisplay: RemoteTransport {
     }
     func run(_ command: String, input: Data?, timeout: TimeInterval) throws -> CommandResult {
         commands.append(command)
-        if command.hasPrefix("sha256sum /firmware/image/modem.b16") {
+        if command == AccessIdentity.command {
+            if identityReadError { return output("read failed", status: 1) }
             identityCalls += 1
             let cid = String(repeating: swappedAt > 0 && identityCalls >= swappedAt ? "b" : "a", count: 32)
             let boot = rebootAt > 0 && identityCalls >= rebootAt ? "22345678-1234-1234-1234-123456789abc" : "12345678-1234-1234-1234-123456789abc"
-            return output("\(firmware)  /firmware/image/modem.b16\n\(ModemEngine.routerHash)  /usr/bin/diag-router\n\(cid)\n\(boot)\n")
+            let observedRouter = routerChangedAt > 0 && identityCalls >= routerChangedAt ? String(repeating: "d", count: 64) : router
+            return output("\(firmware)  /firmware/image/modem.b16\n\(observedRouter)  /usr/bin/diag-router\n\(cid)\n\(boot)\n")
         }
         if command == ModemDisplayManager.probeCommand {
             return output("MODEM_DISPLAY uid=0 arch=aarch64 ui=\(ui) init=\(initHash) root=\(root) integrity=\(integrity) enabled=\(enabled) failure=\(failure) service=\(service) startup=\(startup) running=\(running) transaction=\(transaction) installed=\(root == "0" ? "missing" : libraryHash) manifest=\(root == "0" ? "missing" : manifestHash)\(malformed ? " root=0" : "")\n")
@@ -212,12 +215,21 @@ private final class MockDisplay: RemoteTransport {
                 try check(make(mock).inspect().state == .outdated, "Mixed/old components not reported")
             }
         }
-        test("B02 is unsupported despite disabled general firmware check") {
-            let mock = MockDisplay(hashes: hashes); mock.firmware = "7f1905a2844337640c08b66edffbde147adf20b3ab3e1e54fefe4939c40e633e"
-            let value = try make(mock)
-            try check(value.inspect().state == .unsupported, "B02 granted display ABI")
-            try rejects("только для экранного") { _ = try install(value) }
-            try check(mock.inputs.isEmpty && mock.stage.isEmpty && !mock.commands.contains(where: { $0.contains("if mkdir") }), "Unsupported firmware reached write")
+        test("exact B28 screen profile is independent of modem firmware and router binaries") {
+            for ui in ["8d2ebbde880934f52195ad9595815d728f7aa4671bb0633d5a5149b09467ae90", "d6c3cd409705d5aa9c12185c84074513b159088025f005da7dbf01c51e3c3715"] {
+                let mock = MockDisplay(hashes: hashes); mock.ui = ui; mock.firmware = "absent"; mock.router = "absent"
+                let value = try make(mock)
+                try check(value.inspect().canInstall, "Exact B28 screen denied by unrelated binary absence")
+                try check(install(value).state == .ready && mock.installerCalls == 1, "Exact B28 install did not complete")
+            }
+        }
+        test("present unreadable identity and router drift reject") {
+            let bad = MockDisplay(hashes: hashes); bad.identityReadError = true
+            do { _ = try install(make(bad)); throw Failure.check("Unreadable identity accepted") } catch is Failure { throw Failure.check("Unreadable identity accepted") } catch {}
+            try check(bad.inputs.isEmpty, "Unreadable identity uploaded")
+            let changed = MockDisplay(hashes: hashes); changed.routerChangedAt = 4
+            try rejects("модем изменился") { _ = try install(make(changed)) }
+            try check(changed.inputs.isEmpty, "Router drift reached upload")
         }
         test("unknown screen binary or stock init rejects before write") {
             for ui in [true, false] {

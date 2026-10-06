@@ -10,7 +10,7 @@ struct ResearchObservation: Codable, Sendable { let id: String; let title: Resea
 struct ResearchObservationResult: Codable, Sendable, Identifiable { let id: String; let title: ResearchText; let probe: String; let fact: String; let state: String; let value: String?; var sourceStatus: String? = nil; var sourceExitCode: Int32? = nil; var reason: String? = nil }
 struct ResearchSpecification: Codable, Sendable {
     // Updated only when the reviewed, bundled command allowlist changes.
-    static let expectedSHA256 = "e26ce1071e2d5707ca435991cd0be4b6e5197ff9cdf63321502fbb74f4d314d3"
+    static let expectedSHA256 = "88a58d72e3dda052d6468ac933099a2cf2c6d48f7a872727f73155bb9d7c9845"
     let schemaVersion: Int; let revision: Int; let profiles: [ResearchProfile]; let probes: [ResearchProbe]; let features: [ResearchFeature]
     var observations: [ResearchObservation]? = nil
     static func load(_ resources: URL) throws -> Self {

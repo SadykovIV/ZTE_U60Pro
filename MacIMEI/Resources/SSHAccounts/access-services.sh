@@ -14,10 +14,8 @@ safe_dir() {
     case "$(stat -c %a "$1")" in 700|750|755) ;; *) return 1;; esac
 }
 identity() {
-    test "$(id -u)" = 0 && test "$(uname -m)" = aarch64 &&
-    test "$(cat /sys/block/mmcblk0/device/cid)" = "$cid" &&
-    test "$(hash /firmware/image/modem.b16)" = 604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263 &&
-    test "$(hash /usr/bin/diag-router)" = 55c54f74aaa427940254a2f16c36771e675a80a002363e4f10b0dfcb604d9c6f
+    test "$(id -u)" = 0 && test "$(uname -s)" = Linux && test "$(uname -m)" = aarch64 &&
+    test "$(cat /sys/block/mmcblk0/device/cid)" = "$cid"
 }
 # Only PIDs that own a LISTEN socket at the selected port. No name-based kill.
 listeners() {
@@ -35,24 +33,58 @@ listeners() {
     done
 }
 port_open() { awk -v port="$1" '$2 ~ (":" port "$") && $4=="0A" {found=1} END{exit !found}' /proc/net/tcp /proc/net/tcp6; }
+# Generated from BundledAgent's independently verified release registry.
+# BEGIN_REVIEWED_AGENT_HASHES
+known_agent_hash() {
+    case "$1" in
+      0563f12c64311bf1058cd3a4136a0b328d07e1cba7b8e92b962ec5bf3c7e4215|07154bffefb022eff87c46deb51b73501110edd6e6bf9248ccbec248b2fbe56e|3da0915669ca101fe8b2faef3d683405957a2fbd49000a58257d28868321b3df|413ba4b0a07540d6901e87e74c9730196eb3373cf35b8914e31a8194bfe5a839|43ecb851c163a0575cdcb0e21561ae5097bb52026daac33cb46c85deba6a278d|4d28622aa277c5407b142dea7f3c919c992b8beda9ec622a889a02bd7ab721eb|52324f0c99f13a3445c08431f8b4ed15b468352f5b20709e3304cf4d32577b48|5deb5e93ee7d37403b0a931f0e127c64e4d9b4825855653e5b890572b02848aa|6168ae6c539bb3ca7136eb40a1d4cae03d75aa18900be105f2ff2d5016da4b5c|66c3fb83f3db5b194a39db563a453d421f6a4f3ccb9228cf360883ce2fed1629|7a2d1a517d564a3d66dfe98e6622be6ca2428635aa9cbd83cbf02c179dd7703e|7cdddfbf529a0de70726cafbfacbd56d77286b001feb1efcf123ef323b07d433|8d72032d37fff80195a106b257cc1f72ec76a4085224b0161a4bc81cd0167a4e|8ee8073b684613f358a5b857f7ed85ac165fc96f0d74980b04be006659ebea67|9def1ae625eeee2d3357c5583b441c3a910ef546513d10c80355536b3b5146e7|b082c8dfc8238d73dc0bdee7453cd60e0816f7f16b2febbf42d16ac7b6bfd466|b23d57c223e898df9d26574fdfbd01a0b6f4d3835ebe9752ed642b0484625ef7|b5c27d398e85db8a87d454d729cb36f22e54a2d832fb1117b27aa055e5032537|be945c0a7181070aa69be3bb579a1e967a1cf147b2af2987f31ae5d242b10a66|c50ba6b7ac6f77c581c2b657ba769f976d8d20aca0c6b7d08c9254ef2de9d346|c7fd7f594db16c71f67ba066d112fefabca4290f74cc3f2506350260479a19f6|d3fd8a8316eb1f63d6e737ef99f8cf7e3a2946cf80acb8df6c3d8bd16911bce4|e138c8eca5612c02e8b40e2af53eb6bfb65f138b0992f2f5dca4a02cc4cac762|e9f3e2170a7a2fa80a4836fd7d0db92c4aa119b4b8cceaa0907450123de29d19|ec4c21f70c666d28b016445eb9ab391e05d21b0974d3c6553671aa73acd183da|f2e0404c2c1be4c058c27b0a19c99c1d380e1c91d61503661424d53e799e235b|f85bd358b6d2b8d418375d45b52472f13e5a25942ed670d6671c275c33204d68) return 0;;
+      *) return 1;;
+    esac
+}
+# END_REVIEWED_AGENT_HASHES
 agent_launcher_valid() {
-    plain "$1" || return 1
-    # Accept only the generated launcher grammar. A shell-quoted password is
-    # validated byte-for-byte but never printed, evaluated separately or logged.
-    awk '
-      /^[[:space:]]*$/ || /^#/ {next}
-      {n++; if(n==1) {
-        prefix="export ZTE_AGENT_PASSWORD="; if(index($0,prefix)!=1)exit 1;
-        value=substr($0,length(prefix)+1); q=sprintf("%c",39); bs=sprintf("%c",92);
-        if(substr(value,1,1)!=q || substr(value,length(value),1)!=q)exit 1;
-        for(i=2;i<length(value);i++) if(substr(value,i,1)==q) {
-          if(substr(value,i,4)!=q bs q q || i+3>=length(value))exit 1; i+=3;
+    plain "$1" && test "$(stat -c %h "$1")" = 1 || return 1
+    case "$(stat -c %a "$1")" in 600|700) ;; *) return 1;; esac
+    size=$(stat -c %s "$1") || return 1
+    test "$size" -gt 0 && test "$size" -le 16384 || return 1
+    test "$(LC_ALL=C tr -d '\000' < "$1" | wc -c)" -eq "$size" || return 1
+    # Same generated normal/discovery grammar as the agent's owned restart.
+    # The password is parsed as literal shell-quoted data, never evaluated.
+    LC_ALL=C awk '
+      function reject() {bad=1;exit 1}
+      function quoted(value, i,q,bs) {
+        q=sprintf("%c",39);bs=sprintf("%c",92)
+        if(length(value)<3 || substr(value,1,1)!=q || substr(value,length(value),1)!=q)return 0
+        for(i=2;i<length(value);i++)if(substr(value,i,1)==q) {
+          if(substr(value,i,4)!=q bs q q || i+3>=length(value))return 0;i+=3
         }
-      } else if(n==2 && $0!="unset ZTE_AGENT_PIN")exit 1;
-      else if(n==3 && $0!="trap " sprintf("%c%c",39,39) " HUP")exit 1;
-      else if(n==4 && $0!="nohup sh -c " sprintf("%c",39) "/data/zte-agent 2>&1 | logger -t zte-agent" sprintf("%c",39) " >/dev/null 2>&1 </dev/null &")exit 1;
-      else if(n>4)exit 1 }
-      END{if(n!=4)exit 1}' "$1"
+        return 1
+      }
+      function bind_valid(line, prefix,value,ip,a,n,i) {
+        prefix="export ZTE_AGENT_BIND=";if(index(line,prefix)!=1)return 0
+        value=substr(line,length(prefix)+1);if(!quoted(value))return 0
+        ip=substr(value,2,length(value)-2);if(ip !~ /:9090$/)return 0
+        sub(/:9090$/,"",ip);n=split(ip,a,".");if(n!=4)return 0
+        for(i=1;i<=4;i++)if(a[i] !~ /^[0-9]+$/ || (length(a[i])>1 && substr(a[i],1,1)=="0") || a[i]+0>255)return 0
+        return 1
+      }
+      /\r/ {reject()}
+      /^[ \t]*$/ || /^#/ {next}
+      /[[:cntrl:]]/ {reject()}
+      {lines[++n]=$0;if(n>6)reject()}
+      END {
+        if(bad || (n!=4 && n!=6))exit 1
+        prefix="export ZTE_AGENT_PASSWORD="
+        if(index(lines[1],prefix)!=1 || !quoted(substr(lines[1],length(prefix)+1)))exit 1
+        offset=0
+        if(n==6) {
+          q=sprintf("%c",39)
+          if(lines[2]!="export ZTE_AGENT_MODE=" q "discovery" q || !bind_valid(lines[3]))exit 1
+          offset=2
+        }
+        if(lines[2+offset]!="unset ZTE_AGENT_PIN" || lines[3+offset]!="trap " sprintf("%c%c",39,39) " HUP")exit 1
+        if(lines[4+offset]!="nohup sh -c " sprintf("%c",39) "/data/zte-agent 2>&1 | logger -t zte-agent" sprintf("%c",39) " >/dev/null 2>&1 </dev/null &")exit 1
+      }' "$1"
 }
 dashboard_root() {
     # Validate the selected document root before granting controls or stopping a
@@ -82,7 +114,7 @@ service_info() {
            plain /data/local/tmp/stop_open_u60_listener.sh && test "$(hash /data/local/tmp/stop_open_u60_listener.sh)" = 82474a9f2ee061d105041986efb904c2cb0ee43353a7be94cd2ad18f450d9d08 && dashboard_root; then controlled=1; fi;;
       agent)
         port=2382; exe=/data/zte-agent; launch=/data/zte-imei-studio/start_zte_agent.sh
-        if safe_dir /data && safe_dir /data/zte-imei-studio && plain "$exe" && test "$(hash "$exe")" = b5c27d398e85db8a87d454d729cb36f22e54a2d832fb1117b27aa055e5032537 && agent_launcher_valid "$launch"; then controlled=1; fi;;
+        if safe_dir /data && safe_dir /data/zte-imei-studio && test "$(stat -c %a /data/zte-imei-studio)" = 700 && plain "$exe" && test -x "$exe" && known_agent_hash "$(hash "$exe")" && agent_launcher_valid "$launch"; then controlled=1; fi;;
       managementSSH) port=08AE;;
       userSSH)
         port=08AF; exe=/data/zte-imei-admin/bin/dropbear; launch=/data/zte-imei-admin/start-ssh-users.sh

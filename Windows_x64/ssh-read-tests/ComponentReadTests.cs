@@ -18,7 +18,7 @@ static class ComponentReadTests
             Need(status.Hash=="absent"&&!status.Running&&!status.StartupReady,"factory reset agent absence is readable");
             Need(shell.Uploads==0&&!shell.Commands.Any(c=>c.Contains("mkdir")||c.Contains("rm -f")),"agent status never creates a remote stage or uploads a file");
             Need(shell.Commands.Count==3&&shell.Commands.All(c=>!c.Contains("sha256sum /firmware")),"agent status uses session proofs and one scoped manager call");
-            Need(shell.Inputs.Single().AsSpan().SequenceEqual(File.ReadAllBytes(Path.Combine(resources,"AgentInstallation/manager.sh"))),"agent status sends exactly pinned manager bytes through stdin");
+            Need(shell.Inputs.Single().AsSpan().SequenceEqual(File.ReadAllBytes(Path.Combine(resources,"AgentInstallation/manager.sh")).Concat(Encoding.UTF8.GetBytes("\n"+DeviceFeatureService.AgentModeProbe)).ToArray()),"agent status sends pinned manager plus fixed mode projection through stdin");
             Need(shell.Commands.Contains("unset ZTE_AGENT_TEST_ROOT; sh -s -- status"),"agent status clears the test-root environment before running the pinned helper");
             var owner=new ReadShell{AgentOutput="AGENT_SHA absent\nAGENT_PENDING yes\nAGENT_WARNING OWNER\n"};
             var warning=await new DeviceFeatureService(owner,resources,root).GetAgentStatusAsync();
@@ -68,6 +68,7 @@ static class ComponentReadTests
         {
             Commands.Add(command);
             if(command.Contains("ZTE_SSH_READ_V1"))return Task.FromResult(Reply("ZTE_SSH_READ_V1\n0\nLinux\naarch64\n?\n"+(ChangeBoot&&++Proofs>1?"22222222-2222-2222-2222-222222222222":Boot)+"\n?\n?\n"));
+            if(command==AccessIdentity.Command)return Task.FromResult(Reply(DeviceFeatureService.FirmwareHash+"  /firmware/image/modem.b16\n"+DeviceFeatureService.RouterHash+"  /usr/bin/diag-router\n"+Cid+"\n"+Boot));
             if(command.Contains("sha256sum /firmware/image/modem.b16 /usr/bin/diag-router"))return Task.FromResult(Reply(DeviceFeatureService.FirmwareHash+"  /firmware/image/modem.b16\n"+DeviceFeatureService.RouterHash+"  /usr/bin/diag-router\n"+Cid+"\n"+Boot));
             if(command=="unset ZTE_AGENT_TEST_ROOT; sh -s -- status") {Inputs.Add(stdin!);return Task.FromResult(AgentError is null?Reply(AgentOutput):new RemoteResult(1,[],Encoding.UTF8.GetBytes(AgentError)));}
             if(command.Contains("cat > ")&&stdin is not null){Uploads++;return Task.FromResult(Reply(Convert.ToHexStringLower(SHA256.HashData(stdin))+"  fixture"));}
@@ -77,8 +78,8 @@ static class ComponentReadTests
             if(ScreenOwned&&command.Contains("/manager.sh | cut")&&!command.Contains("; sh "))return Task.FromResult(Reply((string)typeof(DeviceFeatureService).GetField("ScreenManagerHash",BindingFlags.NonPublic|BindingFlags.Static)!.GetRawConstantValue()!));
             if(ScreenOwned&&command.Contains("; sh /data/zte-imei-screen-ru/manager.sh"))
             {
-                if(command.Contains("'enable'")){Enables++;return Task.FromResult(Reply("SCREEN_RU_STATUS state=enabled language=cn mounted=3 boot=1 pid=3 revision=20260924"));}
-                return Task.FromResult(Reply("SCREEN_RU_STATUS state="+(ScreenError?"error":"disabled")+" language=en mounted=0 boot=0 pid=3 revision=20260924"));
+                if(command.Contains("'enable'")){Enables++;return Task.FromResult(Reply("SCREEN_RU_STATUS state=enabled language=cn mounted=3 boot=1 pid=3 revision=20261006"));}
+                return Task.FromResult(Reply("SCREEN_RU_STATUS state="+(ScreenError?"error":"disabled")+" language=en mounted=0 boot=0 pid=3 revision=20261006"));
             }
             if(command.Contains("SCREEN_RU_STATUS"))return Task.FromResult(Reply("SCREEN_RU_STATUS state="+(ScreenError?"error":"absent")+" language=en mounted=0 boot=0 pid=3 revision=20260924\n"));
             if(command.Contains("reason=STATUS_UNVERIFIED"))return Task.FromResult(Reply(ScreenOwned?"BOOT_HOOK_MISSING\n":"STOCK_INIT_MISSING\n"));

@@ -9,7 +9,7 @@ using ZteImeiStudio.Windows.Research;
 var passed=0;
 void Check(bool condition,string name) { if(!condition)throw new Exception(name);Console.WriteLine("PASS "+name);passed++; }
 var bundled=Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,"../../../../Resources/FirmwareResearch/probes.json"));
-var productionSpec=ResearchSpec.Load(bundled);Check(productionSpec.Probes.Length==55 && productionSpec.Observations?.Length==66 && productionSpec.Features.Length==19 && productionSpec.Revision==10 && productionSpec.Sha256==ResearchSpec.ExpectedSpecificationSha256,"production probe contract matches pinned digest");
+var productionSpec=ResearchSpec.Load(bundled);Check(productionSpec.Probes.Length==57 && productionSpec.Observations?.Length==76 && productionSpec.Features.Length==19 && productionSpec.Revision==11 && productionSpec.Sha256==ResearchSpec.ExpectedSpecificationSha256,"production probe contract matches pinned digest");
 var genericAccess=productionSpec.Features.Single(f=>f.Id=="generic-access");
 Check(genericAccess.Profiles.Length==0 && genericAccess.Requirements.All(r=>r.Fact!="tool_ubus" && r.Probe!="ubus-inventory" && r.Probe!="firmware-hashes"),"generic access observation has no firmware or vendor API dependency");
 Check(genericAccess.Requirements.Any(r=>r.Probe=="identity" && r.Fact=="root" && r.Expected=="1") && genericAccess.Requirements.Any(r=>r.Fact=="architecture" && r.Expected=="aarch64"),"generic access retains root and ARM64 prerequisites");

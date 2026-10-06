@@ -273,6 +273,27 @@ private final class Fixture {
             try check(result.complete && result.fileCount == 7, "fonts blocked capture")
             try check(try f.payload("files/font_zhengyuan") == data, "font altered")
         }
+        test("all firmware dependencies are archived with exact bytes and explicit sources") {
+            let f = try Fixture()
+            let data = Data([127, 69, 76, 70, 2, 1, 1, 0, 255, 13, 10])
+            for id in FirmwareSupportCollector.componentIDs { f.wire.files[id] = data }
+            let result = try f.collector().collect(to: f.output)
+            try check(result.complete && result.fileCount == 4 + FirmwareSupportCollector.componentIDs.count, "dependency capture count")
+            for id in FirmwareSupportCollector.componentIDs {
+                try check(try f.payload("files/" + id) == data, "component altered: " + id)
+            }
+            let metadata = String(decoding: try f.payload("metadata.json"), as: UTF8.self)
+            try check(metadata.contains("libzte_SDKowrt.so") && metadata.contains("ipacm_switch.sh"), "source inventory missing")
+        }
+        test("unavailable dependency records its reason without preventing other evidence") {
+            for reason in ["unsafe_target", "not_elf"] {
+                let f = try Fixture(); f.wire.states["libzte_sdk"] = reason
+                let result = try f.collector().collect(to: f.output)
+                try check(result.complete && result.fileCount == 4, "optional dependency blocked useful export")
+                let metadata = String(decoding: try f.payload("metadata.json"), as: UTF8.self)
+                try check(metadata.contains(reason), "omission reason lost")
+            }
+        }
         test("known secrets and activation data are stripped from attached research") {
             let f = try Fixture(); var report = researchReport()
             report.warnings = ["KNOWN_PASSWORD_CANARY", "password=PRIVATE_RESEARCH_PASSWORD", "LPA:1$private.example$PRIVATE_ACTIVATION"]

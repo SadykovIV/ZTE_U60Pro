@@ -1,7 +1,7 @@
 """Exercise the real installer with isolated files and simulated OpenWrt services."""
 from pathlib import Path
 import hashlib, os, re, shutil, subprocess, tempfile, unittest, uuid
-SRC=Path(__file__).resolve().parents[1]/'Resources/VPN'
+SRC=Path(os.environ.get('ZTE_LAUNCHER_TEST_BUNDLE', str(Path(__file__).resolve().parents[1]/'Resources/VPN')))
 sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
 class LauncherInstallTests(unittest.TestCase):
  def setUp(self):
@@ -12,6 +12,8 @@ class LauncherInstallTests(unittest.TestCase):
   self.lock=self.base/'lock';self.lock.mkdir();(self.lock/'owner').write_text('test')
   self.cid=self.base/'cid';self.cid.write_text('test-device\n')
   self.firmware=self.base/'firmware';self.firmware.write_bytes(b'firmware fixture')
+  self.ui=self.base/'zte_topsw_devui';self.ui.write_bytes(b'B31 UI fixture')
+  self.b28_ui=b'B28 UI fixture';self.b28_russian_ui=b'B28 Russian UI fixture'
   self.rc=self.etc/'rc.local';self.rc.write_text('#!/bin/sh\n# existing services\nexit 0\n');self.before=self.rc.read_bytes();self.rc.chmod(0o755)
   self.stock=self.etc/'init.d/zte_topsw_devui';self.stock.write_text('#!/bin/sh\nexit 0\n');self.stock.chmod(0o755)
   self.root=self.data/'zte-launcher';self.transaction=self.data/'zte-launcher-update'
@@ -20,13 +22,16 @@ class LauncherInstallTests(unittest.TestCase):
  %u) echo {os.getuid()};; %a) /usr/bin/stat -f %Lp "$3";; %u:%a) printf '{os.getuid()}:';/usr/bin/stat -f %Lp "$3";; %u:%a:%h) printf '{os.getuid()}:';/usr/bin/stat -f %Lp:%l "$3";; *) exit 1;; esac\n''')
   self.command('sha256sum','exec /usr/bin/shasum -a 256 "$@"\n')
   self.command('sync',':\n')
+  self.command('id','echo 0\n')
+  self.command('uname','case "$1" in -s) echo Linux;; -m) echo aarch64;; *) exit 1;; esac\n')
   self.command('sh','''case "$1" in */launcher-start.sh) if [ -n "${START_CALL_LOG:-}" ]; then printf 'start\\n' >> "$START_CALL_LOG";fi; [ "${FAIL_START:-0}" = 0 ];exit $?;; *) exec /bin/sh "$@";; esac\n''')
   for name in ['launcher.so','launcher-run.sh','launcher-watch.sh','launcher-service.sh','launcher-start.sh','launcher.sha256']:
    shutil.copyfile(SRC/name,self.stage/name)
   script=(SRC/'install-launcher.sh').read_text()
-  for old,new in [('/data',str(self.data)),('/etc',str(self.etc)),('/sys/block/mmcblk0/device/cid',str(self.cid)),('/firmware/image/modem.b16',str(self.firmware)),('/tmp/zte-imei-app.lock',str(self.lock)),('/tmp/zte-launcher-trial/supervisor',str(self.base/'trial')),('/tmp/zte-vpn-screen',str(self.base/'screen'))]:script=script.replace(old,new)
+  for old,new in [('/usr/bin/zte_topsw_devui',str(self.ui)),('/data',str(self.data)),('/etc',str(self.etc)),('/sys/block/mmcblk0/device/cid',str(self.cid)),('/firmware/image/modem.b16',str(self.firmware)),('/tmp/zte-imei-app.lock',str(self.lock)),('/tmp/zte-launcher-trial/supervisor',str(self.base/'trial')),('/tmp/zte-vpn-screen',str(self.base/'screen'))]:script=script.replace(old,new)
   script=script.replace('= 0:700',f'= {os.getuid()}:700').replace('= 0:600',f'= {os.getuid()}:600').replace('stat -c %u \"$dir\")\" = 0',f'stat -c %u \"$dir\")\" = {os.getuid()}').replace('stat -c %u '+str(self.rc)+')\" = 0',f'stat -c %u {self.rc})\" = {os.getuid()}')
   script=script.replace('604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263',sha(self.firmware)).replace('a30da6481637f1fd94e037373d406e574be7e722937a4965325086740be67e35',sha(self.stock))
+  script=script.replace('e3914e78a8488cb736770f0ac9fb8ce10e0e5222fa50285f08e9e8be90d7f1e9',sha(self.ui)).replace('8d2ebbde880934f52195ad9595815d728f7aa4671bb0633d5a5149b09467ae90',hashlib.sha256(self.b28_ui).hexdigest()).replace('d6c3cd409705d5aa9c12185c84074513b159088025f005da7dbf01c51e3c3715',hashlib.sha256(self.b28_russian_ui).hexdigest())
   # Service command execution is stubbed, its installed bytes still match the signed payload.
   script=script.replace(str(self.etc)+'/init.d/zte_launcher stop', 'test -f '+str(self.etc)+'/init.d/zte_launcher')
   self.script=self.base/'install.sh';self.script.write_text(script)
@@ -38,6 +43,23 @@ class LauncherInstallTests(unittest.TestCase):
  def assert_success(self,result):self.assertEqual(result.returncode,0,result.stderr.decode())
  def tree(self):
   return {str(p.relative_to(self.base)):(p.read_bytes(),p.stat().st_mode) for p in self.base.rglob('*') if p.is_file()}
+ def test_b28_stock_and_russian_install_repeat_rollback_without_modem_binary(self):
+  self.firmware.unlink()
+  for data in (self.b28_ui,self.b28_russian_ui):
+   self.ui.write_bytes(data);self.assert_success(self.run_install('preflight'))
+   self.assert_success(self.run_install());self.assert_success(self.run_install())
+   rc=self.rc.read_bytes();stock=self.stock.read_bytes()
+   self.assertNotEqual(self.run_install(FAIL_START='1').returncode,0)
+   self.assertEqual(self.rc.read_bytes(),rc);self.assertEqual(self.stock.read_bytes(),stock)
+   self.assertTrue((self.root/'enabled').exists())
+ def test_unknown_ui_and_wrong_platform_reject_before_transaction(self):
+  self.ui.write_bytes(b'unknown UI');before=self.tree()
+  self.assertEqual(self.run_install('preflight').returncode,68);self.assertEqual(self.tree(),before)
+  self.ui.write_bytes(self.b28_ui);self.command('uname','echo other\n');before=self.tree()
+  self.assertEqual(self.run_install().returncode,68);self.assertEqual(self.tree(),before)
+ def test_ui_symlink_does_not_grant_profile(self):
+  self.ui.unlink();self.ui.symlink_to(self.firmware);before=self.tree()
+  self.assertEqual(self.run_install().returncode,68);self.assertEqual(self.tree(),before)
  def test_preflight_is_read_only_for_first_and_existing_install(self):
   before=self.tree();r=self.run_install('preflight');self.assert_success(r)
   self.assertEqual(r.stdout.strip(),b'LAUNCHER_PREFLIGHT_OK');self.assertEqual(self.tree(),before)

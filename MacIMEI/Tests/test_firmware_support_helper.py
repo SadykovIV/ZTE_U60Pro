@@ -36,6 +36,7 @@ FONTS = {
     "font_roboto": "/usr/ui/fonts/Roboto.ttf",
     "font_oswald": "/usr/ui/fonts/Zoswald-Medium-24.ttf",
 }
+COMPONENTS = {'ipacm': '/usr/bin/ipacm', 'ipa_switch': '/sbin/ipacm_switch.sh', 'network_init': '/etc/init.d/network', 'netifd': '/sbin/netifd', 'procd': '/sbin/procd', 'ubusd': '/sbin/ubusd', 'ubus_cli': '/bin/ubus', 'uci_cli': '/sbin/uci', 'lua_cli': '/usr/bin/lua', 'mdm': '/usr/bin/zte_topsw_mdm', 'qcril': '/usr/bin/qcrilNrd', 'diag_router': '/usr/bin/diag-router', 'libdiag': '/usr/lib/libdiag.so.1', 'libzte_sdk': '/usr/lib/libzte_SDKowrt.so', 'libzte_gesture': '/usr/lib/libzte_gesture.so', 'libzte_log': '/usr/lib/libztelog.so', 'libfreetype': '/usr/lib/libfreetype.so.6', 'libpng': '/usr/lib/libpng16.so.16', 'libdrm': '/usr/lib/libdrm.so.2', 'libgcc': '/lib/libgcc_s.so.1', 'libc': '/lib/libc.so', 'libuci': '/lib/libuci.so', 'libubus': '/lib/libubus.so', 'libubox': '/lib/libubox.so', 'libblobmsg_json': '/lib/libblobmsg_json.so', 'libjson_c': '/usr/lib/libjson-c.so.5', 'liblua': '/usr/lib/liblua.so.5.1', 'lua_uci': '/usr/lib/lua/uci.so', 'lua_jsonc': '/usr/lib/lua/luci/jsonc.so'}
 FACTS = set("uid os architecture firmware inner openwrt_version target agent_present agent_sha256 agent_running_count agent_mode agent_mapped_matches_disk http_health_status http_capabilities_status http_dashboard_status ui_mounts".split())
 CANARY = "PRIVATE_PASSWORD_CANARY_NEVER_EXPORT"
 SHIM = r'''#!__PYTHON__
@@ -99,11 +100,13 @@ class Fixture:
         self.put("/proc/self/mountinfo", b"1 2 3:4 / /none rw - tmpfs tmpfs rw\n")
         self.put("/data/zte-agent", b"synthetic agent")
         text = SOURCE.read_text()
-        prefixes = r"/usr/bin/zte_topsw_devui|/usr/ui|/etc|/data|/proc"
-        text = re.sub(prefixes, lambda m: str(self.root) + m.group(0), text)
+        prefixes = r"(?<![A-Za-z0-9_])/(?:usr|lib|etc|data|proc|sbin)|/bin/ubus"
         old = "export PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C"
         assert text.count(old) == 1
         text = text.replace(old, "export PATH='" + str(self.bin) + ":/usr/bin:/bin' LC_ALL=C")
+        text = re.sub(prefixes, lambda m: str(self.root) + m.group(0), text)
+        # The private fixture PATH is already absolute and must not be remapped.
+        text = text.replace("export PATH='" + str(self.bin) + ":" + str(self.root) + "/usr/bin:/bin'", "export PATH='" + str(self.bin) + ":/usr/bin:/bin'")
         self.helper = self.root / "collect.sh"
         self.helper.write_text(text)
         self.save()
@@ -141,7 +144,7 @@ class Fixture:
             else:
                 assert len(parts) == 8 and parts[0] == "FILE" and parts[1] not in files
                 files[parts[1]] = parts[2:]
-        assert set(facts) == FACTS and set(files) == REQUIRED.keys() | OPTIONAL.keys() | FONTS.keys()
+        assert set(facts) == FACTS and set(files) == REQUIRED.keys() | OPTIONAL.keys() | FONTS.keys() | COMPONENTS.keys()
         assert result.stderr == b""
         return facts, files
 
@@ -158,7 +161,7 @@ class Fixture:
         (self.path(f"/proc/{pid}") / "exe").symlink_to(self.path("/data/zte-agent"))
 
     def stream(self, name="ui", size=None, digest=None):
-        data = self.path((REQUIRED | OPTIONAL | FONTS)[name]).read_bytes()
+        data = self.path((REQUIRED | OPTIONAL | FONTS | COMPONENTS)[name]).read_bytes()
         return self.run("file", name, str(len(data) if size is None else size), digest or hashlib.sha256(data).hexdigest())
 
 
@@ -177,6 +180,77 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(facts["firmware"], "FLY_CN_MU5250V1.0.0B13")
         self.assertEqual(facts["inner"], "BD_FLYMODEMMU5250V1.0.0B28")
         self.assertEqual(facts["openwrt_version"], "23.05.4")
+
+    def test_components_stream_exact_bytes(self):
+        data = b"\x7fELF\x02\x01\x01component\x00\xff\r\n"
+        for name, path in COMPONENTS.items():
+            self.fx.put(path, data)
+        files = self.fx.inspect()[1]
+        for name in COMPONENTS:
+            with self.subTest(component=name):
+                self.assertEqual(files[name][0], "present")
+                result = self.fx.stream(name)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, data)
+
+    def test_versioned_system_library_alias_is_captured(self):
+        data = b"\x7fELF\x02\x01versioned library\x00\xff"
+        target = self.fx.put("/usr/lib/libfreetype.so.6.18.0", data)
+        self.fx.path(COMPONENTS["libfreetype"]).symlink_to(target.name)
+        self.assertEqual(self.fx.inspect()[1]["libfreetype"][0], "present")
+        result = self.fx.stream("libfreetype")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, data)
+
+    def test_library_alias_never_exports_user_data(self):
+        target = self.fx.put("/data/private-library", b"\x7fELF" + CANARY.encode())
+        alias = self.fx.path(COMPONENTS["libzte_sdk"])
+        alias.parent.mkdir(parents=True, exist_ok=True); alias.symlink_to(target)
+        self.assertEqual(self.fx.inspect()[1]["libzte_sdk"][0], "unsafe_target")
+        result = self.fx.stream("libzte_sdk")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, b"")
+
+    def test_library_path_rejects_non_elf_file(self):
+        self.fx.put(COMPONENTS["libzte_sdk"], CANARY.encode())
+        self.assertEqual(self.fx.inspect()[1]["libzte_sdk"][0], "not_elf")
+        result = self.fx.stream("libzte_sdk")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, b"")
+
+    def test_library_fallback_under_lib_is_captured(self):
+        data = b"\x7fELF\x02\x01\x01uci"
+        self.fx.put("/usr/lib/libuci.so", data)
+        self.assertEqual(self.fx.inspect()[1]["libuci"][0], "present")
+        result = self.fx.run("file", "libuci", str(len(data)), hashlib.sha256(data).hexdigest())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, data)
+
+    def test_soname_without_development_alias_is_captured(self):
+        data = b"\x7fELF\x02\x01\x01ubus"
+        self.fx.put("/lib/libubus.so.20230605", data)
+        self.assertEqual(self.fx.inspect()[1]["libubus"][0], "present")
+        result = self.fx.run("file", "libubus", str(len(data)), hashlib.sha256(data).hexdigest())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, data)
+
+    def test_multiple_sonames_have_explicit_ambiguity(self):
+        data = b"\x7fELF\x02\x01\x01ubus"
+        for name in ["20220601", "20230605"]:
+            self.fx.put("/lib/libubus.so." + name, data)
+        self.assertEqual(self.fx.inspect()[1]["libubus"][0], "ambiguous")
+        result = self.fx.run("file", "libubus", str(len(data)), hashlib.sha256(data).hexdigest())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, b"")
+
+    def test_lua_executable_alias_is_captured(self):
+        data = b"\x7fELF\x02\x01\x01lua"
+        target = self.fx.put("/usr/bin/lua5.1", data)
+        self.fx.path(COMPONENTS["lua_cli"]).symlink_to(target.name)
+        self.assertEqual(self.fx.inspect()[1]["lua_cli"][0], "present")
+        result = self.fx.stream("lua_cli")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, data)
 
     def test_optional_font_bytes_and_receipt(self):
         for name, path in FONTS.items():

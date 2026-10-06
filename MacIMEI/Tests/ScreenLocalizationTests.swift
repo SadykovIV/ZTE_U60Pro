@@ -23,6 +23,8 @@ private final class MockScreen: RemoteTransport {
     var stalePID = false, corruptOriginal = false, staged = false, cleaned = false
     var remoteLocked = false, remoteLockRefused = false
     var quickReads = 0, quickDrift = "", errorReason: String?
+    var legacy = false, accessFails = false, bootDriftAt = 0
+    var installError = "installer rejected unknown mount"
     var stage = "", mutationActions = [String]()
     let original: Data
     init(original: Data) { self.original = original }
@@ -37,10 +39,12 @@ private final class MockScreen: RemoteTransport {
             let boot = quickDrift == "boot" && quickReads > 1 ? "22345678-1234-1234-1234-123456789abc" : "12345678-1234-1234-1234-123456789abc"
             return output("ZTE_SSH_READ_V1\n0\nLinux\naarch64\n" + cid + "\n" + boot + "\n?\n?\n")
         }
-        if command.hasPrefix("sha256sum /firmware/image/modem.b16") {
+        if command == AccessIdentity.command {
+            if accessFails { return output("platform refused", code: 71) }
             identityCalls += 1
             let cid = swapIdentityAt > 0 && identityCalls >= swapIdentityAt ? String(repeating: "b", count: 32) : String(repeating: "a", count: 32)
-            return output((badFirmware ? String(repeating: "0", count: 64) : ModemEngine.firmwareHash) + "  /firmware/image/modem.b16\n" + ModemEngine.routerHash + "  /usr/bin/diag-router\n" + cid + "\n12345678-1234-1234-1234-123456789abc\n")
+            let boot = bootDriftAt > 0 && identityCalls >= bootDriftAt ? "22345678-1234-1234-1234-123456789abc" : "12345678-1234-1234-1234-123456789abc"
+            return output((badFirmware ? String(repeating: "0", count: 64) : ModemEngine.firmwareHash) + "  /firmware/image/modem.b16\n" + ModemEngine.routerHash + "  /usr/bin/diag-router\n" + cid + "\n" + boot + "\n")
         }
         if command.contains("if mkdir /tmp/zte-imei-app.lock") {
             if remoteLockRefused { return output("REMOTE_BUSY", code: 1) }
@@ -49,19 +53,19 @@ private final class MockScreen: RemoteTransport {
         if command.contains("&& rm /tmp/zte-imei-app.lock/owner") { remoteLocked = false; return output("") }
         if command == ScreenLocalization.probeCommand { return output(installed ? "SCREEN_RU_INSTALLED\n" : status("absent", language: "en", pid: 0)) }
         if command == "sha256sum /data/zte-imei-screen-ru/manager.sh" {
-            return output(ScreenLocalization.resourceHashes["install.sh"]! + "  /data/zte-imei-screen-ru/manager.sh\n")
+            return output((legacy ? ScreenLocalization.legacyManagerHashes["20260924"]! : ScreenLocalization.resourceHashes["install.sh"]!) + "  /data/zte-imei-screen-ru/manager.sh\n")
         }
         if command == ScreenLocalization.reasonCommand { return output(errorReason ?? "STATUS_UNVERIFIED") }
         if command.contains("sh /data/zte-imei-screen-ru/manager.sh ") {
-            try check(command.contains("test ! -L") && command.contains("0$mode & 022") && command.contains(ScreenLocalization.resourceHashes["install.sh"]!), "Unverified manager execution")
+            try check(command.contains("test ! -L") && command.contains("0$mode & 022") && command.contains(legacy ? ScreenLocalization.legacyManagerHashes["20260924"]! : ScreenLocalization.resourceHashes["install.sh"]!), "Unverified manager execution")
             if managerMismatch { return output("manager hash mismatch", code: 1) }
             let action = command.components(separatedBy: "sh /data/zte-imei-screen-ru/manager.sh ")[1].split(separator: " ")[0]
             try check(action == "status" || remoteLocked, "Mutation without shared remote lock")
             if action == "enable" { enabled = true; mutationActions.append("enable") }
             if action == "disable" { enabled = false; mutationActions.append("disable") }
-            return output(status(errorReason != nil ? "error" : enabled ? "enabled" : "disabled", language: enabled ? "cn" : "en", pid: stalePID ? 0 : 42))
+            return output(status(errorReason != nil ? "error" : enabled ? "enabled" : "disabled", language: enabled ? "cn" : "en", pid: stalePID ? 0 : 42).replacingOccurrences(of: ScreenLocalization.revision, with: legacy ? "20260924" : ScreenLocalization.revision))
         }
-        if command == "cat /usr/bin/zte_topsw_devui" {
+        if command == "cat /usr/bin/zte_topsw_devui" || command == "cat /data/zte-imei-screen-ru/backup/zte_topsw_devui" {
             var bytes = original
             if corruptOriginal { bytes[0] ^= 1 }
             return CommandResult(status: 0, stdout: bytes, stderr: Data())
@@ -78,8 +82,8 @@ private final class MockScreen: RemoteTransport {
         }
         if command.hasPrefix("sh '/tmp/zte-screen-ru-install-") {
             try check(staged && inputs.count == 6 && command.contains("' install '") && command.hasSuffix("'" + String(repeating: "a", count: 32) + "'"), "Installer arguments or incomplete upload")
-            if installFails { return output("installer rejected unknown mount", code: 1) }
-            installed = true; enabled = true; mutationActions.append("install")
+            if installFails { return output(installError, code: 1) }
+            installed = true; enabled = true; legacy = false; mutationActions.append("install")
             return output(status("enabled", pid: stalePID ? 0 : 42))
         }
         if command.hasPrefix("rm -f '/tmp/zte-screen-ru-install-") {
@@ -194,10 +198,39 @@ private final class MockScreen: RemoteTransport {
             let result = try perform(manager(mock, resourceRoot: testRoot.appendingPathComponent("missing-assets")), .status)
             try check(result.state == .error && result.detail == ScreenLocalization.statusReasons["BOOT_HOOK_MISSING"] && mock.quickReads == 2 && mock.identityCalls == 0 && mock.inputs.isEmpty && !mock.remoteLocked, "Installed reset status was hidden or mutated")
         }
-        test("unsupported firmware fails before upload or installation") {
+        test("unknown radio firmware with exact screen profile installs without override") {
             let mock = MockScreen(original: original); mock.badFirmware = true
-            try rejects("Прошивка отличается") { _ = try perform(manager(mock), .enable) }
-            try check(mock.commands.count == 1 && !mock.staged, "Unsupported firmware reached writes")
+            try check(perform(manager(mock), .enable).state == .enabled, "Unrelated radio firmware blocked verified UI")
+            try check(mock.commands.contains(AccessIdentity.command), "No measured Linux ARM64 proof")
+        }
+        test("failed measured platform proof stops before lock or stage") {
+            let mock = MockScreen(original: original); mock.accessFails = true
+            try rejects("platform refused") { _ = try perform(manager(mock), .enable) }
+            try check(mock.commands.count == 1 && !mock.staged && !mock.remoteLocked, "Invalid access proof reached writes")
+        }
+        test("previous 20260924 manager upgrades using preserved original and remains restorable") {
+            let mock = MockScreen(original: original); mock.installed = true; mock.enabled = true; mock.legacy = true
+            let value = try manager(mock)
+            try check(perform(value, .enable).state == .enabled && mock.mutationActions == ["install"], "Known previous manager not upgraded")
+            try check(mock.commands.contains("cat /data/zte-imei-screen-ru/backup/zte_topsw_devui"), "Read patched UI instead of original")
+            try check(perform(value, .disable).state == .disabled, "Upgraded manager not restorable")
+        }
+        test("previous 20260924 restore uses its pinned manager without upgrade") {
+            let mock = MockScreen(original: original); mock.installed = true; mock.enabled = true; mock.legacy = true
+            try check(perform(manager(mock), .disable).state == .disabled && mock.mutationActions == ["disable"] && !mock.staged, "Legacy restore was replaced")
+        }
+        test("B28 patch selection and actual installer path preserve six-file payload") {
+            guard let path = ProcessInfo.processInfo.environment["ZTE_SCREEN_TEST_B28"] else { throw Failure.check("B28 fixture path missing") }
+            let bytes = try Data(contentsOf: URL(fileURLWithPath: path))
+            let mock = MockScreen(original: bytes); mock.badFirmware = true
+            try check(perform(manager(mock), .enable).state == .enabled && mock.inputs.count == 6, "B28 install failed")
+            try check(digest(mock.inputs["zte_topsw_devui"]!) == "d6c3cd409705d5aa9c12185c84074513b159088025f005da7dbf01c51e3c3715", "B28 output wrong")
+            try check(digest(mock.inputs["font.patch.json"]!) == ScreenLocalization.resourceHashes["font.patch.b28.json"], "Wrong manifest staged")
+        }
+        test("boot drift after install is never reported success") {
+            let mock = MockScreen(original: original); mock.bootDriftAt = 4
+            try rejects("другой модем") { _ = try perform(manager(mock), .enable) }
+            try check(mock.cleaned && mock.mutationActions == ["install"], "Post-operation proof not performed")
         }
         test("unrelated IMEI and setup journals do not block verified screen installation") {
             for name in ["pending.json", "setup-pending.json"] {
@@ -225,7 +258,7 @@ private final class MockScreen: RemoteTransport {
         test("first install transfers only locally verified files and cleans its stage") {
             let mock = MockScreen(original: original); let result = try perform(manager(mock), .enable)
             try check(result.state == .enabled && mock.mutationActions == ["install"] && mock.cleaned, "Incomplete install")
-            try check(mock.identityCalls == 3 && digest(mock.inputs["zte_topsw_devui"]!) == "16eb92e27f54b5cf5c6b316a6e7a62b782053a2a609d0d4904a7f08a7bc0afa4", "Missing CID/hash checks")
+            try check(mock.identityCalls == 4 && digest(mock.inputs["zte_topsw_devui"]!) == "16eb92e27f54b5cf5c6b316a6e7a62b782053a2a609d0d4904a7f08a7bc0afa4", "Missing CID/hash checks")
         }
         test("repeated enable reuses the installed manager without repatching") {
             let mock = MockScreen(original: original); mock.installed = true; mock.enabled = true
@@ -270,6 +303,11 @@ private final class MockScreen: RemoteTransport {
             let mock = MockScreen(original: original); mock.installFails = true
             try rejects("unknown mount") { _ = try perform(manager(mock), .enable) }
             try check(mock.cleaned && !mock.installed, "Failed install incorrectly confirmed")
+        }
+        test("changed font returns a specific explanation and cleans stage") {
+            let mock = MockScreen(original: original); mock.installFails = true; mock.installError = "SCREEN_RU_ERROR FONT_CHANGED\n"
+            try rejects("метрики русского текста не подтверждены") { _ = try perform(manager(mock), .enable) }
+            try check(mock.cleaned && !mock.installed, "Font refusal did not clean owned stage")
         }
         test("successful command without running UI is not success") {
             let mock = MockScreen(original: original); mock.installed = true; mock.stalePID = true

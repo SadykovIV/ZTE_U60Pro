@@ -107,9 +107,12 @@ with (root/'listener-starts').open('a') as out:out.write('start\\n')
         self.assertEqual((self.f.p/'listener-starts').read_text(),'start\n')
         self.assertEqual((self.f.base/'transactions'/TOKEN/'state').read_text(),'recovery-required\n')
         self.assertTrue((self.f.base/'active').exists())
-    def test_firmware_mismatch_before_mutation(self):
-        (self.f.p/'firmware/image/modem.b16').write_text('different')
-        r=self.run_delete();self.assertNotEqual(r.returncode,0);self.assertIn(b'FIRMWARE_MISMATCH',r.stderr);self.unchanged()
+    def test_cid_mismatch_before_mutation(self):
+        (self.f.p/'sys/block/mmcblk0/device/cid').write_text('f'*32)
+        r=self.run_delete();self.assertNotEqual(r.returncode,0);self.assertIn(b'CID_MISMATCH',r.stderr);self.unchanged()
+    def test_unrelated_firmware_and_router_absence_allows_owned_deletion(self):
+        (self.f.p/'firmware/image/modem.b16').unlink();(self.f.p/'usr/bin/diag-router').unlink()
+        r=self.run_delete();self.assertEqual(r.returncode,0,r.stderr.decode());self.assertFalse((self.f.base/'homes/admin').exists())
     def test_secondary_group_membership_not_silently_removed(self):
         p=self.f.etc/'group';p.write_text(p.read_text()+'external:x:123:admin\n')
         r=self.run_delete();self.assertNotEqual(r.returncode,0);self.assertIn(b'SECONDARY_GROUP_MEMBERSHIP',r.stderr)
@@ -119,6 +122,7 @@ with (root/'listener-starts').open('a') as out:out.write('start\\n')
 class Services(unittest.TestCase):
     def setUp(self):
         self.f=Fixture();self.stage=self.f.p/('tmp/zte-access-'+TOKEN);self.stage.mkdir(mode=0o700)
+        stat=self.f.bin/'stat';stat.write_text(stat.read_text().replace(".replace('%g','0')", ".replace('%g','0').replace('%h',str(os.stat(p).st_nlink)).replace('%s',str(os.stat(p).st_size))"))
         (self.f.p/'data/local/tmp').mkdir(parents=True);(self.f.p/'data/bin').mkdir();(self.f.p/'data/www').mkdir()
         lock=self.f.p/'tmp/zte-imei-app.lock';lock.mkdir(mode=0o700);(lock/'owner').write_text(LOCK)
         (self.f.p/'data/www/index.html').write_text('dashboard')
@@ -129,6 +133,7 @@ class Services(unittest.TestCase):
         (self.f.p/'data/zte-imei-studio').mkdir(mode=0o700)
         self.launcher=self.f.p/'data/zte-imei-studio/start_zte_agent.sh'
         self.launcher.write_text("#!/bin/sh\nexport ZTE_AGENT_PASSWORD='hidden value'\nunset ZTE_AGENT_PIN\ntrap '' HUP\nnohup sh -c '/data/zte-agent 2>&1 | logger -t zte-agent' >/dev/null 2>&1 </dev/null &\n".replace('/data/',str(self.f.p/'data')+'/'))
+        self.launcher.chmod(0o700)
         source=(ROOT/'Resources/SSHAccounts/access-services.sh').read_text()
         mapping=dict(self.f.mapping);mapping['/tmp/zte-access-']=str(self.f.p/'tmp/zte-access-');mapping['/tmp/zte-imei-app.lock']=str(lock)
         source=re.sub('|'.join(re.escape(k) for k in sorted(mapping,key=len,reverse=True)),lambda m:mapping[m.group(0)],source)
@@ -173,6 +178,11 @@ net.write_text(net.read_text()+'0: 00000000:2382 00000000:0000 0A 0 0 0 0 0 700\
     def test_status_has_six_services_and_never_starts_agent(self):
         r=self.run_service();self.assertEqual(r.returncode,0,r.stderr.decode());self.assertEqual(r.stdout.count(b'ACCESS_SERVICE '),6)
         self.assertIn(b'ACCESS_SERVICE agent stopped control',r.stdout);self.assertFalse((self.f.p/'proc/700').exists())
+    def test_absent_unrelated_firmware_files_keep_status_and_owned_action(self):
+        (self.f.p/'firmware/image/modem.b16').unlink();(self.f.p/'usr/bin/diag-router').unlink()
+        r=self.run_service();self.assertEqual(r.returncode,0,r.stderr.decode())
+        r=self.run_service('agent','start');self.assertEqual(r.returncode,0,r.stderr.decode())
+        self.assertIn(b'ACCESS_SERVICE agent running control',r.stdout)
     def test_management_channel_cannot_be_stopped(self):
         r=self.run_service('managementSSH','stop');self.assertNotEqual(r.returncode,0);self.assertIn(b'PROTECTED_SERVICE',r.stderr);self.assertTrue((self.f.p/'proc/600').exists())
     def test_agent_start_stop_and_restart_only_own_process(self):
@@ -192,6 +202,32 @@ net.write_text(net.read_text()+'0: 00000000:2382 00000000:0000 0A 0 0 0 0 0 700\
     def test_single_quote_escape_password_is_accepted_without_printing(self):
         self.launcher.write_text(self.launcher.read_text().replace("'hidden value'","'hidden '\\''value'"))
         r=self.run_service();self.assertIn(b'ACCESS_SERVICE agent stopped control',r.stdout);self.assertNotIn(b'hidden',r.stdout+r.stderr)
+    def test_current_bundled_hash_is_in_exact_service_registry(self):
+        current=re.search(r'static let sha256 = "([a-f0-9]{64})"',(ROOT/'Sources/BundledAgent.swift').read_text())[1]
+        prefix=self.script.read_text().split('mode=${1:-}')[0]
+        r=subprocess.run(['/bin/sh','-c',prefix+'\nknown_agent_hash '+current],capture_output=True,timeout=5)
+        self.assertEqual(r.returncode,0,r.stderr.decode())
+        r=subprocess.run(['/bin/sh','-c',prefix+'\nknown_agent_hash '+('0'*64)],capture_output=True,timeout=5)
+        self.assertNotEqual(r.returncode,0)
+    def test_discovery_startup_is_controllable_and_its_secret_is_never_output(self):
+        self.launcher.write_text(self.launcher.read_text().replace('unset ZTE_AGENT_PIN',"export ZTE_AGENT_MODE='discovery'\nexport ZTE_AGENT_BIND='192.168.0.1:9090'\nunset ZTE_AGENT_PIN"))
+        r=self.run_service();self.assertEqual(r.returncode,0,r.stderr.decode());self.assertIn(b'ACCESS_SERVICE agent stopped control',r.stdout)
+        r=self.run_service('agent','start');self.assertEqual(r.returncode,0,r.stderr.decode());self.assertNotIn(b'hidden',r.stdout+r.stderr)
+    def test_malformed_discovery_or_unknown_environment_is_not_executed(self):
+        original=self.launcher.read_text()
+        extra="export ZTE_AGENT_MODE='discovery'\nexport ZTE_AGENT_BIND='192.168.0.1:9090'\n"
+        valid=original.replace('unset ZTE_AGENT_PIN',extra+'unset ZTE_AGENT_PIN')
+        for body in [valid.replace("'discovery'","'normal'"),valid.replace('192.168.0.1','192.168.00.1'),valid.replace(':9090',':9091'),
+                     valid.replace('unset ZTE_AGENT_PIN',"export ZTE_AGENT_BIND='192.168.0.1:9090'\nunset ZTE_AGENT_PIN"),
+                     original.replace('unset ZTE_AGENT_PIN',"export LD_PRELOAD='/tmp/foreign'\nunset ZTE_AGENT_PIN"),
+                     original.replace("'hidden value'","''"),original.replace("'hidden value'","'hidden\tvalue'"),original.replace('\n','\r\n'),original+'#\0comment\n']:
+            self.launcher.write_text(body);r=self.run_service('agent','start');self.assertNotEqual(r.returncode,0);self.assertFalse((self.f.p/'proc/700').exists());self.assertNotIn(b'hidden',r.stdout+r.stderr)
+    def test_agent_startup_requires_private_single_link_and_executable_binary(self):
+        self.launcher.chmod(0o644);r=self.run_service('agent');self.assertNotEqual(r.returncode,0)
+        self.launcher.chmod(0o700);link=self.launcher.with_name('extra-link');os.link(self.launcher,link)
+        r=self.run_service('agent');self.assertNotEqual(r.returncode,0);link.unlink()
+        (self.f.p/'data/zte-agent').chmod(0o600);r=self.run_service('agent');self.assertNotEqual(r.returncode,0)
+        self.assertFalse((self.f.p/'proc/700').exists())
     def test_password_command_substitution_outside_quotes_refused(self):
         self.launcher.write_text(self.launcher.read_text().replace("'hidden value'","'hidden'$(touch /tmp/unsafe)'value'"))
         r=self.run_service();self.assertIn(b'ACCESS_SERVICE agent stopped readonly',r.stdout)

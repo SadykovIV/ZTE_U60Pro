@@ -1,5 +1,5 @@
 #!/bin/sh
-# B31 screen localization manager. A pinned, reversible stock-UI init hook is
+# Screen localization manager for exact, independently verified UI profiles. A pinned, reversible stock-UI init hook is
 # needed because /etc's persistent overlay mounts after procd queues rc.d paths.
 # No rc.local, modem/NV or read-only rootfs writes.
 # install: sh STAGE/install.sh install STAGE CID
@@ -17,14 +17,13 @@ english_target=/usr/ui/language/English.ini
 chinese_target=/usr/ui/language/Chinese.ini
 ui_target=/usr/bin/zte_topsw_devui
 cache_target=/cache/language.txt
-revision=20260924
+revision=20261006
 english_sha=d97925e40f9c119e05dd692e8fbce36593b55aa3faf718af373b2cb57075981a
 chinese_sha=5c4b6e3896593172608f2d8890da56c7ff521667129375d0a52383243bb760df
 patched_ui_sha=16eb92e27f54b5cf5c6b316a6e7a62b782053a2a609d0d4904a7f08a7bc0afa4
 original_english_sha=47348faa9783bc69109743eb9cfcc3bd3888508040e9eca51cb4a6460b7a70ce
 original_chinese_sha=b84c05af9046dd2458b2220633320fb0089e1000e03c45c3dc81dc72df0c44fc
 original_ui_sha=e3914e78a8488cb736770f0ac9fb8ce10e0e5222fa50285f08e9e8be90d7f1e9
-firmware_sha=604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263
 service_sha=8b25166707a21bb3b55f77d9af34822a39aa5e8058b5c521431f0379386051e9
 original_init_sha=a30da6481637f1fd94e037373d406e574be7e722937a4965325086740be67e35
 patched_init_sha=0a462f4021b1306ac5fbf074a674bae9fef952f240436a47468c0126c5d41b50
@@ -67,6 +66,36 @@ mounts_safe() {
     if is_mounted "$english_target"; then owned_mount "$english_target" English.ini || return 1; fi
     if is_mounted "$chinese_target"; then owned_mount "$chinese_target" Chinese.ini || return 1; fi
     if is_mounted "$ui_target"; then owned_mount "$ui_target" zte_topsw_devui || return 1; fi
+}
+# Select from the true original, including when the current path is bind-mounted.
+# No firmware-name or unrelated radio binary is a screen ABI grant.
+select_profile() {
+    profile_ui=$ui_target; profile_english=$english_target; profile_chinese=$chinese_target
+    if exists "$root"; then
+        root_owned || return 1
+        profile_ui=$root/backup/zte_topsw_devui
+        profile_english=$root/backup/English.ini; profile_chinese=$root/backup/Chinese.ini
+        regular "$root/backup/zte_topsw_devui.init" && test "$(hash "$root/backup/zte_topsw_devui.init")" = "$original_init_sha" || return 1
+    fi
+    regular "$profile_ui" && regular "$profile_english" && regular "$profile_chinese" || return 1
+    case "$(hash "$profile_ui")" in
+      e3914e78a8488cb736770f0ac9fb8ce10e0e5222fa50285f08e9e8be90d7f1e9)
+        screen_profile=b31
+        original_ui_sha=e3914e78a8488cb736770f0ac9fb8ce10e0e5222fa50285f08e9e8be90d7f1e9
+        patched_ui_sha=16eb92e27f54b5cf5c6b316a6e7a62b782053a2a609d0d4904a7f08a7bc0afa4
+        original_english_sha=47348faa9783bc69109743eb9cfcc3bd3888508040e9eca51cb4a6460b7a70ce;;
+      8d2ebbde880934f52195ad9595815d728f7aa4671bb0633d5a5149b09467ae90)
+        screen_profile=fly-b28
+        original_ui_sha=8d2ebbde880934f52195ad9595815d728f7aa4671bb0633d5a5149b09467ae90
+        patched_ui_sha=d6c3cd409705d5aa9c12185c84074513b159088025f005da7dbf01c51e3c3715
+        original_english_sha=24a1022bf9380cfadaf4c4a737f1f0ce8ecf1ad025563376f7dd83eb94e6ceae;;
+      *) return 1;;
+    esac
+    test "$(hash "$profile_english")" = "$original_english_sha" && test "$(hash "$profile_chinese")" = "$original_chinese_sha"
+}
+font_valid() {
+    safe_dir /usr/ui/fonts && regular /usr/ui/fonts/ZTEZhengYuan.ttf &&
+    test "$(hash /usr/ui/fonts/ZTEZhengYuan.ttf)" = b8b1aca17b0e53c2ea7e840f7fe5d6f05db038f2d549fde95c1308a600665a56
 }
 originals_visible() {
     test "$(hash "$english_target")" = "$original_english_sha" && test "$(hash "$chinese_target")" = "$original_chinese_sha" && test "$(hash "$ui_target")" = "$original_ui_sha"
@@ -276,6 +305,7 @@ trap 'fail INTERRUPTED' HUP INT TERM
 
 # Validate commands before touching device state.
 test "$(id -u)" = 0 || fail ROOT_REQUIRED
+test "$(uname -s)" = Linux && test "$(uname -m)" = aarch64 || fail PLATFORM
 case "$mode" in
   install) test "$#" = 3 || fail ARGUMENTS; stage=$2; expected_cid=$3; valid_cid "$expected_cid" || fail CID_FORMAT;;
   status|enable|disable) test "$#" -ge 1 && test "$#" -le 2 || fail ARGUMENTS; expected_cid=${2:-};;
@@ -283,6 +313,7 @@ case "$mode" in
   *) fail MODE;;
 esac
 if test -n "$expected_cid"; then valid_cid "$expected_cid" && test "$expected_cid" = "$(cat /sys/block/mmcblk0/device/cid)" || fail CID_CHANGED; fi
+select_profile || fail SCREEN_PROFILE
 if test "$mode" = status; then exit 0; fi
 layout_safe || fail UNSAFE_LAYOUT
 external_guards || fail OTHER_DEVICE_OPERATION
@@ -297,7 +328,7 @@ if test "$mode" = install; then
     for file in English.ini Chinese.ini zte_topsw_devui install.sh service.sh; do regular "$stage/$file" || fail STAGE_FILE; done
     test "$(hash "$stage/English.ini")" = "$english_sha" && test "$(hash "$stage/Chinese.ini")" = "$chinese_sha" && test "$(hash "$stage/zte_topsw_devui")" = "$patched_ui_sha" && test "$(hash "$stage/service.sh")" = "$service_sha" || fail STAGE_HASH
     test "$(hash "$stage/install.sh")" = "$(hash "$0")" || fail STAGE_MANAGER
-    test "$(hash /firmware/image/modem.b16)" = "$firmware_sha" || fail FIRMWARE_CHANGED
+    font_valid || fail FONT_CHANGED
     hook_safe || fail FOREIGN_BOOT_HOOK
     if exists "$root"; then
         root_owned || fail UNKNOWN_INSTALLATION
@@ -310,9 +341,12 @@ if test "$mode" = install; then
           586a7727fb24a5701990c7cd82889887220c1c5566261c53ca21f3bb12549bfa)
             prior_english=ff50ba66260b636a3bc10b90baae3df0ba68fcc37f343288ea802d3e65fea11e
             prior_chinese=92dd43aff9057ba801a4e41069168a658bd8ed5acd3a12fddee1e245b05c5d98;;
+          810aae3c07c8019f2d0657f2bad6f1ee38f1dea5f1081210ab144478dd87c7b8)
+            prior_english=$english_sha; prior_chinese=$chinese_sha;;
           *) prior_english=; prior_chinese=;;
         esac
         if test -n "$prior_english"; then
+            test "$screen_profile" = b31 || fail UNKNOWN_INSTALLATION
             test "$(hash "$root/English.ini")" = "$prior_english" &&
             test "$(hash "$root/Chinese.ini")" = "$prior_chinese" &&
             test "$(hash "$root/zte_topsw_devui")" = "$patched_ui_sha" &&
@@ -397,7 +431,7 @@ fi
 # From this point errors in an enabled boot also revoke the marker and restore EN.
 if test "$mode" = boot; then mutation=1; fi
 assets_valid || fail ASSET_INTEGRITY
-test "$(hash /firmware/image/modem.b16)" = "$firmware_sha" || fail FIRMWARE_CHANGED
+font_valid || fail FONT_CHANGED
 uci_safe || fail UCI_PENDING_CHANGES
 for item in English.ini Chinese.ini zte_topsw_devui; do
     case "$item" in English.ini) target=$english_target; digest=$original_english_sha;; Chinese.ini) target=$chinese_target; digest=$original_chinese_sha;; *) target=$ui_target; digest=$original_ui_sha;; esac

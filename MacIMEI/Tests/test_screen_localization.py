@@ -19,18 +19,19 @@ import unittest
 
 REPO = Path(__file__).resolve().parents[2]
 RES = REPO / "MacIMEI/Resources/ScreenLocalization"
+EVIDENCE = Path(os.environ.get("ZTE_SCREEN_EVIDENCE", str(REPO / "evidence")))
 CID = "0123456789abcdef0123456789abcdef"
 TOKEN = "11111111-2222-3333-4444-555555555555"
 FIRMWARE = "604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263"
 STOCK = {
-    "English.ini": REPO / "evidence/russian-ui-20260922/usr/ui/language/English.ini",
-    "Chinese.ini": REPO / "evidence/russian-ui-chinese-slot-20260922/Chinese.original.ini",
-    "zte_topsw_devui": REPO / "evidence/russian-ui-trial-20260922/zte_topsw_devui",
+    "English.ini": EVIDENCE / "russian-ui-20260922/usr/ui/language/English.ini",
+    "Chinese.ini": EVIDENCE / "russian-ui-chinese-slot-20260922/Chinese.original.ini",
+    "zte_topsw_devui": EVIDENCE / "russian-ui-trial-20260922/zte_topsw_devui",
 }
 PAYLOAD = {
     "English.ini": RES / "English.ini",
     "Chinese.ini": RES / "Chinese.ini",
-    "zte_topsw_devui": REPO / "evidence/russian-ui-font-trial-20260922/zte_topsw_devui",
+    "zte_topsw_devui": EVIDENCE / "russian-ui-font-trial-20260922/zte_topsw_devui",
 }
 TARGETS = {
     "English.ini": "/usr/ui/language/English.ini",
@@ -64,7 +65,7 @@ def digest(path):
 def failpoint(action):
  return os.environ.get('MOCK_FAIL')==action
 if name=='id': print(0)
-elif name=='uname': print('aarch64')
+elif name=='uname': print('Linux' if args==['-s'] else 'aarch64')
 elif name=='sleep': pass
 elif name=='sync':
  event('sync')
@@ -201,7 +202,7 @@ class ScreenLocalizationTests(unittest.TestCase):
         dispatcher.write_text(MOCK_COMMANDS)
         for name in ["id","uname","sleep","sync","df","logger","pidof","readlink","stat","sha256sum","uci","mount","umount"]:
             self.command(name, "#!/bin/sh\nexec "+shlex.quote(sys.executable)+" "+shlex.quote(str(dispatcher))+" "+name+' "$@"\n')
-        stock_init=(REPO/"evidence/russian-ui-persistent-20260922/stock-ui-init.sh").read_text()
+        stock_init=(EVIDENCE/"russian-ui-persistent-20260922/stock-ui-init.sh").read_text()
         self.write("/etc/init.d/zte_topsw_devui",self.redirect(stock_init),0o755)
         fixture_service=shlex.quote(sys.executable)+" "+shlex.quote(str(dispatcher))+" service-fixture"
         rc_common='\n'.join([
@@ -219,6 +220,7 @@ class ScreenLocalizationTests(unittest.TestCase):
         for name, source in PAYLOAD.items():
             shutil.copyfile(source,self.stage/name)
             (self.stage/name).chmod(0o755 if name=="zte_topsw_devui" else 0o644)
+        self.write("/usr/ui/fonts/ZTEZhengYuan.ttf", (EVIDENCE/"friend-adaptation-20261006-191138/fonts/ZTEZhengYuan.ttf").read_bytes(), 0o644)
         self.original_rc=(self.root/"etc/rc.local").read_bytes()
 
     def tearDown(self):
@@ -310,6 +312,69 @@ class ScreenLocalizationTests(unittest.TestCase):
         with (self.root/"proc/self/mountinfo").open("a") as f:
             f.write(f"90 1 {dev} {root} {self.root}{target} rw - tmpfs tmpfs rw\n")
 
+    def b28(self):
+        folder = EVIDENCE / "friend-adaptation-20261006-191138/files"
+        self.b28_originals = {name: (folder/name).read_bytes() for name in TARGETS}
+        for name, data in self.b28_originals.items():
+            self.write(TARGETS[name], data, 0o755 if name == "zte_topsw_devui" else 0o644)
+            (self.root/"stock"/name).write_bytes(data)
+        manifest = json.loads((EVIDENCE/"b28-adaptation-20261006/font.patch.B28.candidate.json").read_text())
+        original = self.b28_originals["zte_topsw_devui"]
+        self.assertEqual(sha(original), manifest["inputSHA256"])
+        patched = bytearray(original)
+        for edit in manifest["patches"]:
+            before, after = bytes.fromhex(edit["originalHex"]), bytes.fromhex(edit["replacementHex"])
+            offset = edit["offset"]
+            self.assertEqual(original[offset:offset+len(before)], before)
+            patched[offset:offset+len(before)] = after
+        self.assertEqual(sha(patched), manifest["outputSHA256"])
+        (self.stage/"zte_topsw_devui").write_bytes(patched)
+        self.env["MOCK_FIRMWARE_SHA"] = "f"*64
+
+    def test_b28_install_disable_enable_preserves_exact_originals(self):
+        self.b28()
+        self.assert_success(self.install())
+        self.assertEqual(len(json.loads((self.root/"mounts.json").read_text())), 3)
+        for name, data in self.b28_originals.items():
+            self.assertEqual((self.installed/"backup"/name).read_bytes(), data)
+        self.assert_success(self.manager("disable"))
+        for name, data in self.b28_originals.items():
+            self.assertEqual((self.root/TARGETS[name].lstrip("/")).read_bytes(), data)
+        self.assertEqual(self.language(), "en")
+        self.assert_success(self.manager("enable"))
+        self.cold_boot_state()
+        self.assert_success(self.boot())
+        self.assertEqual(len(json.loads((self.root/"mounts.json").read_text())), 3)
+
+    def test_b28_failed_start_restores_b28_not_b31(self):
+        self.b28()
+        result = self.install(MOCK_FAIL_CANDIDATE_START="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(self.installed.exists(), result.stderr)
+        for name, data in self.b28_originals.items():
+            self.assertEqual((self.root/TARGETS[name].lstrip("/")).read_bytes(), data)
+        self.assertEqual(self.language(), "en")
+        self.assertFalse((self.installed/".enabled").exists())
+
+    def test_b28_mixed_b31_english_is_refused_without_mutation(self):
+        self.b28()
+        self.write(TARGETS["English.ini"], STOCK["English.ini"].read_bytes())
+        result = self.install()
+        self.assertNotEqual(result.returncode, 0)
+        self.assert_no_device_mutations()
+
+    def test_upgrade_20260924_preserves_originals_and_restore(self):
+        self.prepare_scripts()
+        old = (EVIDENCE/"b28-screen-install-20261006/install.20260924.sh").read_text()
+        (self.stage/"install.sh").write_text(self.redirect(old))
+        self.assert_success(self.run_script(self.stage/"install.sh", "install", self.stage, CID))
+        before = {p.name:p.read_bytes() for p in (self.installed/"backup").iterdir()}
+        self.assert_success(self.install())
+        self.assertEqual(before, {p.name:p.read_bytes() for p in (self.installed/"backup").iterdir()})
+        self.assertEqual((self.installed/"manager.sh").read_text(), self.redirect((RES/"install.sh").read_text()))
+        self.assert_success(self.manager("disable"))
+        self.assert_originals()
+
     def test_refuses_install_while_temporary_display_is_open(self):
         (self.root / "tmp/zte-vpn-screen").mkdir()
         result = self.install()
@@ -319,17 +384,17 @@ class ScreenLocalizationTests(unittest.TestCase):
 
     def test_upgrade_pinned_legacy_keeps_original_backups(self):
         self.prepare_scripts()
-        old = (REPO / "evidence/vpn-wifi-20260923/screen-install-before-vpn.sh").read_text()
+        old = (EVIDENCE / "vpn-wifi-20260923/screen-install-before-vpn.sh").read_text()
         (self.stage / "install.sh").write_text(self.redirect(old))
         for name in ("English.ini", "Chinese.ini"):
-            (self.stage / name).write_bytes((REPO / "evidence/russian-ui-compact-copy-20260922" / name).read_bytes())
+            (self.stage / name).write_bytes((EVIDENCE / "russian-ui-compact-copy-20260922" / name).read_bytes())
         self.assert_success(self.run_script(self.stage / "install.sh", "install", self.stage, CID))
         before = {p.name:p.read_bytes() for p in (self.installed / "backup").iterdir()}
         for name in ("English.ini", "Chinese.ini"):
             (self.stage / name).write_bytes((RES / name).read_bytes())
         result = self.install()
         self.assert_success(result)
-        self.assertIn("revision=20260924", result.stdout)
+        self.assertIn("revision=20261006", result.stdout)
         self.assertEqual(before, {p.name:p.read_bytes() for p in (self.installed / "backup").iterdir()})
         self.assertIn("WiFi с VPN", (self.installed / "Chinese.ini").read_text())
         self.assertEqual(self.language(), "cn")
@@ -339,7 +404,7 @@ class ScreenLocalizationTests(unittest.TestCase):
 
     def test_upgrade_vpn_caption_keeps_original_backups(self):
         self.prepare_scripts()
-        previous = REPO / "evidence/vpn-profiles-screen-20260924"
+        previous = EVIDENCE / "vpn-profiles-screen-20260924"
         old = (previous / "screen-install-20260923.sh").read_text()
         (self.stage / "install.sh").write_text(self.redirect(old))
         for name in ("English.ini", "Chinese.ini"):
@@ -350,7 +415,7 @@ class ScreenLocalizationTests(unittest.TestCase):
             (self.stage / name).write_bytes((RES / name).read_bytes())
         result = self.install()
         self.assert_success(result)
-        self.assertIn("revision=20260924", result.stdout)
+        self.assertIn("revision=20261006", result.stdout)
         self.assertIn("WiFi с VPN", (self.installed / "Chinese.ini").read_text())
         self.assertEqual(before, {p.name:p.read_bytes() for p in (self.installed / "backup").iterdir()})
         self.assert_success(self.manager("disable"))
@@ -370,7 +435,7 @@ class ScreenLocalizationTests(unittest.TestCase):
         self.assertEqual(self.language(),"en")
         self.assertEqual((self.root/"cache/language.txt").read_text().strip(),"english")
         self.assertEqual((self.root/"cache/language.txt").stat().st_mode&0o777,0o640)
-        original_init=(REPO/"evidence/russian-ui-persistent-20260922/stock-ui-init.sh").read_text()
+        original_init=(EVIDENCE/"russian-ui-persistent-20260922/stock-ui-init.sh").read_text()
         self.assertEqual((self.root/"etc/init.d/zte_topsw_devui").read_text(),self.redirect(original_init))
         self.assertEqual((self.root/"etc/init.d/zte_topsw_devui").stat().st_mode&0o777,0o755)
         self.assert_originals()
@@ -404,9 +469,14 @@ class ScreenLocalizationTests(unittest.TestCase):
         self.assertEqual(init.read_text(),before)
         self.assert_no_device_mutations()
 
-    def test_unknown_firmware_refused_before_mutation(self):
-        result=self.install(MOCK_FIRMWARE_SHA="f"*64)
-        self.assertNotEqual(result.returncode,0,result.stdout)
+    def test_radio_firmware_is_not_screen_abi_gate(self):
+        self.assert_success(self.install(MOCK_FIRMWARE_SHA="f"*64))
+
+    def test_changed_cyrillic_font_refused_before_mutation(self):
+        self.write("/usr/ui/fonts/ZTEZhengYuan.ttf", b"unknown font")
+        result = self.install()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("FONT_CHANGED", result.stderr)
         self.assert_no_device_mutations()
 
     def test_empty_install_cid_refused_before_mutation(self):
@@ -543,10 +613,11 @@ class ScreenLocalizationTests(unittest.TestCase):
         self.assertFalse((self.installed/".enabled").exists())
         self.assertFalse(any(x.startswith("service-") for x in self.calls()))
 
-    def test_cold_boot_new_firmware_does_not_mount_old_patch(self):
+    def test_cold_boot_changed_font_does_not_mount_patch(self):
         self.assert_success(self.install())
         self.cold_boot_state()
-        self.boot(MOCK_FIRMWARE_SHA="f"*64)
+        self.write("/usr/ui/fonts/ZTEZhengYuan.ttf", b"changed font")
+        self.boot()
         self.assert_originals()
         self.assertEqual(self.language(),"en")
         self.assertEqual(json.loads((self.root/"mounts.json").read_text()),[])

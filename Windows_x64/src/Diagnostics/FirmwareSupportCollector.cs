@@ -17,7 +17,7 @@ internal sealed record FirmwareSupportResult(string Path, bool Complete, int Cap
 /// Fixed file paths and read-only research commands; raw environment and HTTP bodies are never exported.
 internal static class FirmwareSupportCollector
 {
-    internal const string ExpectedHelperSha256 = "85cc338700611787a53228bb28ab461b8924c903c31eebddd9333edad1d56c00";
+    internal const string ExpectedHelperSha256 = "8270fd3811ec49eb4f52321662ed78618f55572ac0ee7b3803c68dc3baf8423c";
     internal sealed record Input(string Id, string RemotePath, string ArchivePath, long Limit, bool Required);
     internal static readonly Input[] Inputs = [
         new("ui", "/usr/bin/zte_topsw_devui", "files/zte_topsw_devui", 256L*1024*1024, true),
@@ -31,9 +31,38 @@ internal static class FirmwareSupportCollector
         new("font_zhengyuan", "/usr/ui/fonts/ZTEZhengYuan.ttf", "fonts/ZTEZhengYuan.ttf", 16L*1024*1024, false),
         new("font_roboto", "/usr/ui/fonts/Roboto.ttf", "fonts/Roboto.ttf", 16L*1024*1024, false),
         new("font_oswald", "/usr/ui/fonts/Zoswald-Medium-24.ttf", "fonts/Zoswald-Medium-24.ttf", 16L*1024*1024, false),
+        new("ipacm", "/usr/bin/ipacm", "components/ipacm", 256L*1024*1024, false),
+        new("ipa_switch", "/sbin/ipacm_switch.sh", "components/ipa_switch", 256L*1024*1024, false),
+        new("network_init", "/etc/init.d/network", "components/network_init", 256L*1024*1024, false),
+        new("netifd", "/sbin/netifd", "components/netifd", 256L*1024*1024, false),
+        new("procd", "/sbin/procd", "components/procd", 256L*1024*1024, false),
+        new("ubusd", "/sbin/ubusd", "components/ubusd", 256L*1024*1024, false),
+        new("ubus_cli", "/bin/ubus", "components/ubus_cli", 256L*1024*1024, false),
+        new("uci_cli", "/sbin/uci", "components/uci_cli", 256L*1024*1024, false),
+        new("lua_cli", "/usr/bin/lua", "components/lua_cli", 256L*1024*1024, false),
+        new("mdm", "/usr/bin/zte_topsw_mdm", "components/mdm", 256L*1024*1024, false),
+        new("qcril", "/usr/bin/qcrilNrd", "components/qcril", 256L*1024*1024, false),
+        new("diag_router", "/usr/bin/diag-router", "components/diag_router", 256L*1024*1024, false),
+        new("libdiag", "/usr/lib/libdiag.so.1 | /usr/lib/libdiag.so", "components/libdiag", 256L*1024*1024, false),
+        new("libzte_sdk", "/usr/lib/libzte_SDKowrt.so", "components/libzte_sdk", 256L*1024*1024, false),
+        new("libzte_gesture", "/usr/lib/libzte_gesture.so", "components/libzte_gesture", 256L*1024*1024, false),
+        new("libzte_log", "/usr/lib/libztelog.so", "components/libzte_log", 256L*1024*1024, false),
+        new("libfreetype", "/usr/lib/libfreetype.so.6", "components/libfreetype", 256L*1024*1024, false),
+        new("libpng", "/usr/lib/libpng16.so.16", "components/libpng", 256L*1024*1024, false),
+        new("libdrm", "/usr/lib/libdrm.so.2", "components/libdrm", 256L*1024*1024, false),
+        new("libgcc", "/lib/libgcc_s.so.1 | /usr/lib/libgcc_s.so.1", "components/libgcc", 256L*1024*1024, false),
+        new("libc", "/lib/libc.so | /lib/libc.so.6", "components/libc", 256L*1024*1024, false),
+        new("libuci", "/lib/libuci.so | /usr/lib/libuci.so", "components/libuci", 256L*1024*1024, false),
+        new("libubus", "/lib/libubus.so | /usr/lib/libubus.so", "components/libubus", 256L*1024*1024, false),
+        new("libubox", "/lib/libubox.so | /usr/lib/libubox.so", "components/libubox", 256L*1024*1024, false),
+        new("libblobmsg_json", "/lib/libblobmsg_json.so | /usr/lib/libblobmsg_json.so", "components/libblobmsg_json", 256L*1024*1024, false),
+        new("libjson_c", "/usr/lib/libjson-c.so.5 | /usr/lib/libjson-c.so | /lib/libjson-c.so.5", "components/libjson_c", 256L*1024*1024, false),
+        new("liblua", "/usr/lib/liblua.so.5.1 | /usr/lib/liblua.so | /usr/lib/liblua5.1.so", "components/liblua", 256L*1024*1024, false),
+        new("lua_uci", "/usr/lib/lua/uci.so", "components/lua_uci", 256L*1024*1024, false),
+        new("lua_jsonc", "/usr/lib/lua/luci/jsonc.so | /usr/lib/lua/jsonc.so", "components/lua_jsonc", 256L*1024*1024, false),
     ];
     private static readonly HashSet<string> FactKeys = ["uid","os","architecture","firmware","inner","openwrt_version","target","agent_present","agent_sha256","agent_running_count","agent_mode","agent_mapped_matches_disk","http_health_status","http_capabilities_status","http_dashboard_status","ui_mounts"];
-    private static readonly HashSet<string> FileStates = ["present","missing","not_assessed","symlink","not_regular","unreadable","empty"];
+    private static readonly HashSet<string> FileStates = ["present","missing","not_assessed","symlink","not_regular","unreadable","empty","unsafe_target","not_elf","ambiguous"];
     private static readonly UTF8Encoding Utf8 = new(false,true);
     private static readonly JsonSerializerOptions Json = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, WriteIndented = true };
     internal delegate Task<RemoteFileResult> StreamFile(string command, string path, long maximum, TimeSpan timeout, CancellationToken ct, byte[] input);
@@ -197,7 +226,7 @@ internal static class FirmwareSupportCollector
                 foreach(var item in ResearchReportFiles.BuildExportFiles(research,value=>ResearchReportFiles.CleanExportText(value,privacy.Clean,token),token,privacy.CleanApplicationVersion))
                     entries.Add("research/"+item.Key,(null,item.Value));
             }
-            entries.Add("README.txt",(null,Utf8.GetBytes("Firmware adaptation evidence; read-only SSH collection.\nFiles under files/ and originals/ are unchanged bytes, not redacted text.\nRaw files are limited to the current screen program, language files, screen init script, optional screen fonts and verified originals from our localization backup. Agent startup, passwords, keys, raw device identifiers, user configuration, NV and SIM/eSIM profiles are excluded.\nactivity/ contains sanitized application activity; it may include earlier actions and is not a same-device proof. research/ contains a fresh full read-only firmware survey from the same captured SSH selection, inside the before/after inspection window. No cached firmware survey is copied.\nHTTP 401 means authentication is required, not an agent failure. Runtime mode may restrict features despite a running process.\nobservedFactsStable refers only to available quick SSH identity observations. identityStable is true only with both CID and boot continuity; partial or transport-only binding cannot establish full device identity. Runtime facts retain separate before/after observations and may differ.\nThe survey covers access/agent, firmware APIs, IMEI prerequisites, TTL, VPN, screen/launcher, backups, packages and eSIM prerequisites; it performs no NV, APDU or functional write tests. Missing optional fonts do not make collection incomplete. Missing required files or a partial survey do. An incomplete report is evidence only, not compatibility or write authorization.\n")));
+            entries.Add("README.txt",(null,Utf8.GetBytes("Firmware adaptation evidence; read-only SSH collection.\nFiles under files/ and originals/ are unchanged bytes, not redacted text.\nRaw files include the screen program, language files, init script, fonts, verified localization originals, networking executables and init script, ZTE modem/QCRIL code, DIAG, SDK, gesture and rendering/system library dependencies. Library source paths separated by | are ordered aliases; a versioned alias may resolve only within system library directories and must contain ELF bytes. Missing dependencies remain explicit. Complete collection does not mean complete adaptation or a functional test pass. Agent startup, passwords, keys, raw device identifiers, user configuration, NV and SIM/eSIM profiles are excluded.\nactivity/ contains sanitized application activity; it may include earlier actions and is not a same-device proof. research/ contains a fresh full read-only firmware survey from the same captured SSH selection, inside the before/after inspection window. No cached firmware survey is copied.\nHTTP 401 means authentication is required, not an agent failure. Runtime mode may restrict features despite a running process.\nobservedFactsStable refers only to available quick SSH identity observations. identityStable is true only with both CID and boot continuity; partial or transport-only binding cannot establish full device identity. Runtime facts retain separate before/after observations and may differ.\nThe survey covers access/agent, firmware APIs, IMEI prerequisites, TTL, VPN, screen/launcher, backups, packages and eSIM prerequisites; it performs no NV, APDU or functional write tests. Missing optional fonts do not make collection incomplete. Missing required files or a partial survey do. An incomplete report is evidence only, not compatibility or write authorization.\n")));
             var payloads=new List<object>();
             foreach(var (name,entry) in entries)payloads.Add(new { path=name,bytes=entry.Data?.LongLength??new FileInfo(entry.Path!).Length,sha256=entry.Data is {} data?Sha(data):await FileSha(entry.Path!,token) });
             var binding=before.Cid is not null&&before.BootId is not null?"full":before.Cid is not null||before.BootId is not null?"partial":"transport-only";

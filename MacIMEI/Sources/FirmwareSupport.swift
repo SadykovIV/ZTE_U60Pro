@@ -27,12 +27,42 @@ struct FirmwareSupportResult: Sendable {
 /// Explicit, read-only export. It never loads an NV helper, agent credentials,
 /// firmware allowlist, remote lock, or a fallback transport.
 final class FirmwareSupportCollector {
-    static let helperSHA256 = "85cc338700611787a53228bb28ab461b8924c903c31eebddd9333edad1d56c00"
+    static let helperSHA256 = "8270fd3811ec49eb4f52321662ed78618f55572ac0ee7b3803c68dc3baf8423c"
     static let requiredIDs = ["ui", "english", "chinese", "init"]
-    static let allIDs = requiredIDs + ["original_ui", "original_english", "original_chinese", "original_init", "font_zhengyuan", "font_roboto", "font_oswald"]
+    static let componentIDs = ["ipacm", "ipa_switch", "network_init", "netifd", "procd", "ubusd", "ubus_cli", "uci_cli", "lua_cli", "mdm", "qcril", "diag_router", "libdiag", "libzte_sdk", "libzte_gesture", "libzte_log", "libfreetype", "libpng", "libdrm", "libgcc", "libc", "libuci", "libubus", "libubox", "libblobmsg_json", "libjson_c", "liblua", "lua_uci", "lua_jsonc"]
+    static let allIDs = requiredIDs + ["original_ui", "original_english", "original_chinese", "original_init", "font_zhengyuan", "font_roboto", "font_oswald"] + componentIDs
     static let sources = ["ui": "/usr/bin/zte_topsw_devui", "english": "/usr/ui/language/English.ini", "chinese": "/usr/ui/language/Chinese.ini", "init": "/etc/init.d/zte_topsw_devui",
         "original_ui": "/data/zte-imei-screen-ru/backup/zte_topsw_devui", "original_english": "/data/zte-imei-screen-ru/backup/English.ini", "original_chinese": "/data/zte-imei-screen-ru/backup/Chinese.ini", "original_init": "/data/zte-imei-screen-ru/backup/zte_topsw_devui.init",
-        "font_zhengyuan": "/usr/ui/fonts/ZTEZhengYuan.ttf", "font_roboto": "/usr/ui/fonts/Roboto.ttf", "font_oswald": "/usr/ui/fonts/Zoswald-Medium-24.ttf"]
+        "font_zhengyuan": "/usr/ui/fonts/ZTEZhengYuan.ttf", "font_roboto": "/usr/ui/fonts/Roboto.ttf", "font_oswald": "/usr/ui/fonts/Zoswald-Medium-24.ttf",
+        "ipacm": "/usr/bin/ipacm",
+        "ipa_switch": "/sbin/ipacm_switch.sh",
+        "network_init": "/etc/init.d/network",
+        "netifd": "/sbin/netifd",
+        "procd": "/sbin/procd",
+        "ubusd": "/sbin/ubusd",
+        "ubus_cli": "/bin/ubus",
+        "uci_cli": "/sbin/uci",
+        "lua_cli": "/usr/bin/lua",
+        "mdm": "/usr/bin/zte_topsw_mdm",
+        "qcril": "/usr/bin/qcrilNrd",
+        "diag_router": "/usr/bin/diag-router",
+        "libdiag": "/usr/lib/libdiag.so.1 | /usr/lib/libdiag.so",
+        "libzte_sdk": "/usr/lib/libzte_SDKowrt.so",
+        "libzte_gesture": "/usr/lib/libzte_gesture.so",
+        "libzte_log": "/usr/lib/libztelog.so",
+        "libfreetype": "/usr/lib/libfreetype.so.6",
+        "libpng": "/usr/lib/libpng16.so.16",
+        "libdrm": "/usr/lib/libdrm.so.2",
+        "libgcc": "/lib/libgcc_s.so.1 | /usr/lib/libgcc_s.so.1",
+        "libc": "/lib/libc.so | /lib/libc.so.6",
+        "libuci": "/lib/libuci.so | /usr/lib/libuci.so",
+        "libubus": "/lib/libubus.so | /usr/lib/libubus.so",
+        "libubox": "/lib/libubox.so | /usr/lib/libubox.so",
+        "libblobmsg_json": "/lib/libblobmsg_json.so | /usr/lib/libblobmsg_json.so",
+        "libjson_c": "/usr/lib/libjson-c.so.5 | /usr/lib/libjson-c.so | /lib/libjson-c.so.5",
+        "liblua": "/usr/lib/liblua.so.5.1 | /usr/lib/liblua.so | /usr/lib/liblua5.1.so",
+        "lua_uci": "/usr/lib/lua/uci.so",
+        "lua_jsonc": "/usr/lib/lua/luci/jsonc.so | /usr/lib/lua/jsonc.so"]
     static let factKeys: Set<String> = ["uid", "os", "architecture", "firmware", "inner", "openwrt_version", "target", "agent_present", "agent_sha256", "agent_running_count", "agent_mode", "agent_mapped_matches_disk", "http_health_status", "http_capabilities_status", "http_dashboard_status", "ui_mounts"]
     static let metadataLimit = 65_536
     static let totalLimit: Int64 = 600 * 1024 * 1024
@@ -42,7 +72,7 @@ final class FirmwareSupportCollector {
         case "english", "chinese": return 16 * 1024 * 1024
         case "font_zhengyuan", "font_roboto", "font_oswald": return 16 * 1024 * 1024
         case "init": return 4 * 1024 * 1024
-        default: return 0
+        default: return componentIDs.contains(id) ? 256 * 1024 * 1024 : 0
         }
     }
     let root: URL, resources: URL, connection: Connection
@@ -88,7 +118,7 @@ final class FirmwareSupportCollector {
             } else if parts.first == "FILE" {
                 try require(parts.count == 8 && allIDs.contains(parts[1]) && files[parts[1]] == nil, invalid)
                 let id = parts[1], status = parts[2]
-                try require(["present", "missing", "not_assessed", "symlink", "not_regular", "unreadable", "empty"].contains(status), invalid)
+                try require(["present", "missing", "not_assessed", "symlink", "not_regular", "unreadable", "empty", "unsafe_target", "not_elf", "ambiguous"].contains(status), invalid)
                 if status == "present" {
                     guard let bytes = Int64(parts[3]), String(bytes) == parts[3], bytes > 0,
                           DeviceBackups.validHash(parts[4]), let uid = UInt32(parts[5]), String(uid) == parts[5],
@@ -165,15 +195,15 @@ final class FirmwareSupportCollector {
         let present = before.files.filter { $0.status == "present" && ($0.bytes ?? Int64.max) <= Self.limit($0.id) }
         for (index, item) in present.enumerated() {
             try checkCancelled()
-            update("Читаю экранные файлы для адаптации…", 0.15 + 0.6 * Double(index) / Double(max(1, present.count)))
+            update("Читаю компоненты прошивки для адаптации…", 0.15 + 0.6 * Double(index) / Double(max(1, present.count)))
             let path = filesRoot.appendingPathComponent(item.id)
             let command = "sh -s -- file " + [item.id, String(item.bytes!), item.sha256!].map(shellQuote).joined(separator: " ")
             let result: BackupStreamResult
             do { result = try streamer.stream(command, input: script, to: path, maxBytes: Self.limit(item.id), timeout: 180, cancelled: cancelled) }
-            catch { try checkCancelled(); throw IMEIError.message("Передача экранного файла не подтверждена; архив не сохранён") }
+            catch { try checkCancelled(); throw IMEIError.message("Передача файла прошивки не подтверждена; архив не сохранён") }
             let local = try DeviceBackups.hashFile(path, cancelled: cancelled)
             try require(result.bytes == item.bytes && result.sha256 == item.sha256 && local.bytes == item.bytes && local.sha256 == item.sha256,
-                        "Контрольная сумма экранного файла не совпала; архив не сохранён")
+                        "Контрольная сумма файла прошивки не совпала; архив не сохранён")
             total += local.bytes
             try require(total <= Self.totalLimit, "Данные для адаптации превышают допустимый размер")
             entries.append(["path": "files/" + item.id, "sha256": local.sha256, "bytes": String(local.bytes)])
@@ -201,7 +231,7 @@ final class FirmwareSupportCollector {
         let after = try inspect(script), afterProof = try quickProof()
         try beforeProof.verify(afterProof)
         try selectedQuick.verify(afterProof)
-        try require(before.files == after.files, "Экранные файлы изменились во время чтения; архив не сохранён")
+        try require(before.files == after.files, "Файлы прошивки изменились во время чтения; архив не сохранён")
         for key in ["uid", "os", "architecture", "firmware", "inner", "openwrt_version", "target"] {
             try require(before.facts[key] == after.facts[key], "Система изменилась во время чтения; архив не сохранён")
         }
@@ -220,7 +250,7 @@ final class FirmwareSupportCollector {
             try add(payload.data, "research/" + payload.path)
         }
         var elf = [String: [String: String]]()
-        for id in ["ui", "original_ui"] where present.contains(where: { $0.id == id }) {
+        for id in ["ui", "original_ui"] + Self.componentIDs where present.contains(where: { $0.id == id }) {
             let file = try DeviceBackups.openFile(filesRoot.appendingPathComponent(id)); defer { try? file.close() }
             elf[id] = Self.elfMetadata(try file.read(upToCount: 64) ?? Data())
         }
@@ -252,8 +282,15 @@ final class FirmwareSupportCollector {
         storage and backups. Partial probes and missing facts remain explicit.
         Available ZTEZhengYuan, Roboto and Zoswald TTF fonts are also included
         for glyph and layout analysis. Their absence is listed as an omission.
-        Fixed screen files, projected metadata and sanitized activity
-        events are included. No agent startup/password, configuration, NV, SIM
+        The component set includes ipacm and its switch script, network init,
+        netifd, procd, ubus/uci/Lua, ZTE modem and QCRIL executables, DIAG and
+        ZTE SDK/gesture libraries, UI rendering and system library dependencies.
+        A source containing " | " lists ordered library aliases. Only ELF files
+        resolved within system library directories are collected through aliases.
+        Missing dependencies remain explicit; complete collection is not proof
+        that every component has been adapted or that a function works.
+        Fixed firmware files, projected metadata and sanitized activity
+        events are included. No agent startup/password, user configuration, NV, SIM
         profiles or complete firmware image is collected. No device changes.
         SSH continuity compares available observations; unavailable CID or boot
         stays unavailable, and no device identifier is included in this metadata.

@@ -11,13 +11,14 @@ WINDOWS = Path(__file__).resolve().parent
 ROOT = WINDOWS.parent
 SOURCE = ROOT / 'MacIMEI/Resources'
 DEST = WINDOWS / 'Resources'
-GROUPS = ('Onboarding', 'VPN', 'AgentDashboard', 'AgentDashboardInstall', 'AgentInstallation', 'Esim', 'FirmwareSupport')
+GROUPS = ('Onboarding', 'VPN', 'AgentDashboard', 'AgentDashboardInstall', 'AgentInstallation', 'Esim', 'FirmwareSupport', 'ScreenLocalization', 'SSHAccounts')
 PINS = {
     'src/Core/AgentPackage.cs': {'Sha256': 'Onboarding/zte-agent'},
     'src/Features/VpnFeatures.cs': {'VpnHelperHash': 'VPN/vpnctl', 'DashboardHash': 'AgentDashboard/index.html', 'LauncherHash': 'VPN/launcher.so'},
+    'src/Features/AccessFeatures.cs': {'AccessScriptHash': 'SSHAccounts/access-services.sh'},
     'src/Features/LauncherFeatures.cs': {'LauncherManifestHash': 'VPN/launcher.sha256'},
     'src/Features/AgentDashboardFeatures.cs': {'DashboardInstallerHash': 'AgentDashboardInstall/dashboard.sh'},
-    'src/Features/AdminFeatures.cs': {'AgentManagerHash': 'AgentInstallation/manager.sh'},
+    'src/Features/AdminFeatures.cs': {'AgentManagerHash': 'AgentInstallation/manager.sh', 'ScreenManagerHash': 'ScreenLocalization/install.sh'},
     'src/Research/FirmwareResearch.cs': {'ExpectedSpecificationSha256': 'FirmwareResearch/probes.json'},
     'src/Diagnostics/FirmwareSupportCollector.cs': {'ExpectedHelperSha256': 'FirmwareSupport/collect.sh'},
 }
@@ -82,11 +83,33 @@ def synchronize_agent_upgrade_hashes(source, current, hashes):
         raise ValueError('Missing or ambiguous Windows agent registry')
     return updated
 
+def synchronize_agent_access_registry(root, check=False):
+    """Generate service ownership checks from the same reviewed release registry."""
+    _, hashes = swift_agent_upgrade_hashes((root / 'MacIMEI/Sources/BundledAgent.swift').read_text())
+    folder = root / 'MacIMEI/Resources/SSHAccounts'
+    script = regular(folder / 'access-services.sh')
+    source = script.read_text()
+    begin, end = '# BEGIN_REVIEWED_AGENT_HASHES', '# END_REVIEWED_AGENT_HASHES'
+    if source.count(begin) != 1 or source.count(end) != 1:
+        raise ValueError('Missing or ambiguous service agent registry')
+    body = (begin + '\nknown_agent_hash() {\n    case "$1" in\n      '
+            + '|'.join(sorted(hashes)) + ') return 0;;\n      *) return 1;;\n    esac\n}\n' + end)
+    updated = re.sub(re.escape(begin) + r'.*?' + re.escape(end), lambda _: body, source, flags=re.S)
+    if check:
+        if updated != source: raise ValueError('Service agent upgrade registry mismatch')
+    else:
+        # Validate all previous resource bytes before updating this one generated entry.
+        manifest = validate_group(folder)
+        script.write_text(updated)
+        manifest['access-services.sh'] = sha(script)
+        (folder / 'SHA256.json').write_text(json.dumps(manifest, indent=2) + '\n')
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--check', action='store_true', help='Verify mirrored resources and compiled pins without edits')
     args = parser.parse_args()
     swift_current, upgrade_hashes = swift_agent_upgrade_hashes((ROOT / 'MacIMEI/Sources/BundledAgent.swift').read_text())
+    synchronize_agent_access_registry(ROOT, check=args.check)
     manifests = {name: validate_group(SOURCE / name) for name in GROUPS}
     for name, manifest in manifests.items():
         destination = DEST / name

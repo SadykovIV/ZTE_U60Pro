@@ -58,21 +58,29 @@ private final class MockApplications: RemoteTransport {
     var commands = [String](), inputs = [Data?]()
     var identityCalls = 0, changeIdentity = false, uploadBadHash = false
     var failPassword = false, anonymousOpen = false, proxyRunning = false
-    var badFirmware = false, badLogin = false, serviceACKLost = false, startACKLost = false
+    var badLogin = false, serviceACKLost = false, startACKLost = false
+    var firmware = ModemEngine.firmwareHash, router = ModemEngine.routerHash
+    var platformFailure = false, absentFiles = false, drift = "", driftAt = 2
+    var release = "23.05.4", architecture = "aarch64_cortex-a53"
     var installed = false, rootMode = "ro", serviceHash = "", serviceBadHash = false
     var removalPrepared = false, removalCommitted = false, archiveRead = false, archiveCorrupt = false, removalACKLost = false
-    var hugeArchive = false, unmanaged = false
+    var hugeArchive = false, unmanaged = false, optionalReaderUnavailable = false
     var localLogDirectory: URL?
     let archiveData = Data("private recovery archive fixture".utf8)
     var staged = false, passwordSet = false, promoted = false, serviceCreated = false, started = false, stopped = false
     func output(_ text: String, status: Int32 = 0) -> CommandResult { CommandResult(status: status, stdout: Data(text.utf8), stderr: status == 0 ? Data() : Data(text.utf8)) }
     func run(_ command: String, input: Data?, timeout: TimeInterval) throws -> CommandResult {
         commands.append(command); inputs.append(input)
-        if command == ModemApplications.inventoryCommand { return output(inventoryText(rootMode: rootMode, installed: installed, proxy: proxyRunning, unmanaged: unmanaged)) }
-        if command.hasPrefix("sha256sum /firmware/image/modem.b16") {
+        if command == ModemApplications.inventoryCommand { return output(inventoryText(rootMode: rootMode, installed: installed, proxy: proxyRunning, unmanaged: unmanaged).replacingOccurrences(of: "23.05.4", with: release).replacingOccurrences(of: "aarch64_cortex-a53", with: architecture)) }
+        if command == AccessIdentity.command || command.hasPrefix("sha256sum /firmware/image/modem.b16") {
             identityCalls += 1
-            let cid = changeIdentity && identityCalls > 1 ? String(repeating: "b", count: 32) : String(repeating: "a", count: 32)
-            return output((badFirmware ? String(repeating: "0", count: 64) : ModemEngine.firmwareHash) + "  /firmware/image/modem.b16\n" + ModemEngine.routerHash + "  /usr/bin/diag-router\n" + cid + "\n12345678-1234-1234-1234-123456789abc\n")
+            if command == AccessIdentity.command && platformFailure { return output("PLATFORM", status: 71) }
+            let changed = identityCalls >= driftAt
+            let cid = (changeIdentity || drift == "cid") && changed ? String(repeating: "b", count: 32) : String(repeating: "a", count: 32)
+            let fw = changed && drift == "firmware" ? String(repeating: "c", count: 64) : (absentFiles ? "absent" : firmware)
+            let rh = changed && drift == "router" ? String(repeating: "d", count: 64) : (absentFiles ? "absent" : router)
+            let boot = changed && drift == "boot" ? "22345678-1234-1234-1234-123456789abc" : "12345678-1234-1234-1234-123456789abc"
+            return output(fw + "  /firmware/image/modem.b16\n" + rh + "  /usr/bin/diag-router\n" + cid + "\n" + boot + "\n")
         }
         if command.hasPrefix("sh -s -- 'prepare'") {
             try check(installed && input.map(digest) == ModemApplications.removalScriptHash, "Unverified remover executed")
@@ -96,6 +104,8 @@ private final class MockApplications: RemoteTransport {
             let token = args[3]
             return output("SSCLASH_REMOVED archive=/data/zte-imei-apps/.removals/" + token + "/archive.tar.gz\n")
         }
+        if optionalReaderUnavailable && (command.contains("/tmp/zte-diag-") || command.hasPrefix("sh -s -- 'inspect'")) { return output("FIXTURE_OPTIONAL_READER_UNAVAILABLE", status: 71) }
+        if command.contains("/tmp/zte-imei-app.lock") { return output("") }
         if command.hasPrefix("opkg --noaction install ") { return output("Unknown package. No index loaded.", status: 1) }
         if command.contains("safe_dir()") {
             try check(command.contains("safe_dir /data") && command.contains("safe_dir /etc/init.d") && command.contains("safe_dir /data/zte-imei-apps"), "Ownership guards absent")
@@ -221,13 +231,126 @@ private final class MockApplications: RemoteTransport {
         }
         test("CID rechecked after download before first write") {
             let mock = MockApplications(); mock.changeIdentity = true
-            try rejects("другой модем") { _ = try app(mock).installSSClash(password: "strong-secret-123") }
+            try rejects("изменились") { _ = try app(mock).installSSClash(password: "strong-secret-123") }
             try check(mock.identityCalls == 2 && !mock.staged, "Identity change crossed write boundary")
         }
-        test("unsupported firmware rejected before inventory or writes") {
-            let mock = MockApplications(); mock.badFirmware = true
-            try rejects("Прошивка отличается") { _ = try app(mock).installSSClash(password: "strong-secret-123") }
-            try check(mock.commands.count == 1 && !mock.staged, "Firmware mismatch reached installer")
+        let b28Firmware = "5a4489882538b5ab1d3e0049371f1b620d28d262a429923299b4f2626d40d478"
+        for profile in ["B28", "B31", "absent"] {
+            test("default connection installs SSClash for measured " + profile) {
+                let mock = MockApplications(); mock.firmware = profile == "B28" ? b28Firmware : ModemEngine.firmwareHash; mock.absentFiles = profile == "absent"
+                let manager = try app(mock)
+                try check(!manager.engine.connection.skipFirmwareCheck, "Fixture bypassed firmware policy")
+                _ = try manager.installSSClash(password: "strong-secret-123")
+                try check(mock.started && mock.passwordSet && mock.identityCalls >= 3, "Measured install lacked final identity")
+                try check(!mock.commands.contains { $0.hasPrefix("sha256sum /firmware/image/modem.b16") }, "Strict global firmware gate was called")
+            }
+            test("default connection starts SSClash for measured " + profile) {
+                let mock = MockApplications(); mock.firmware = profile == "B28" ? b28Firmware : ModemEngine.firmwareHash; mock.absentFiles = profile == "absent"
+                _ = try app(mock).startSSClash()
+                try check(mock.started && !mock.passwordSet && mock.identityCalls == 3, "Start lacked bound proof or reset password")
+            }
+            test("default connection removes SSClash for measured " + profile) {
+                let mock = MockApplications(); mock.installed = true; mock.firmware = profile == "B28" ? b28Firmware : ModemEngine.firmwareHash; mock.absentFiles = profile == "absent"
+                _ = try app(mock).removeSSClash()
+                try check(mock.removalCommitted && mock.archiveRead && mock.identityCalls >= 4, "Measured removal lacked identity/backup")
+            }
+        }
+        for field in ["cid", "boot", "firmware", "router"] {
+            test("install blocks " + field + " drift before stage") {
+                let mock = MockApplications(); mock.drift = field
+                try rejects("изменились") { _ = try app(mock).installSSClash(password: "strong-secret-123") }
+                try check(!mock.staged, "Device drift crossed first write")
+            }
+            test("remove blocks " + field + " drift before prepare") {
+                let mock = MockApplications(); mock.installed = true; mock.drift = field
+                try rejects("изменились") { _ = try app(mock).removeSSClash() }
+                try check(!mock.removalPrepared && !mock.stopped && !mock.archiveRead, "Device drift crossed prepare")
+            }
+            test("remove blocks " + field + " drift before commit") {
+                let mock = MockApplications(); mock.installed = true; mock.drift = field; mock.driftAt = 3
+                try rejects("изменились") { _ = try app(mock).removeSSClash() }
+                try check(mock.archiveRead && !mock.removalCommitted && mock.installed, "Device drift crossed commit")
+            }
+        }
+        test("install final identity drift cannot claim success or stop another modem") {
+            let mock = MockApplications(); mock.drift = "boot"; mock.driftAt = 3
+            let manager = try app(mock)
+            try rejects("изменились") { _ = try manager.installSSClash(password: "strong-secret-123") }
+            try check(mock.started && !mock.stopped, "Final drift claimed success or wrote to changed modem")
+            let journal = try readJSON([String: String].self, manager.engine.logDirectory.appendingPathComponent("ssclash-install.json"))
+            try check(journal["phase"] == "needs-inspection-stop-not-requested", "Journal falsely claimed a cleanup command")
+        }
+        test("remove final identity drift retains verified recovery archive") {
+            let mock = MockApplications(); mock.installed = true; mock.drift = "router"; mock.driftAt = 4
+            let manager = try app(mock)
+            try rejects("изменились") { _ = try manager.removeSSClash() }
+            let files = try FileManager.default.contentsOfDirectory(at: manager.engine.logDirectory, includingPropertiesForKeys: nil)
+            try check(mock.removalCommitted && files.contains { $0.pathExtension == "gz" }, "Final check lost local archive")
+        }
+        for action in ["install", "remove", "start"] {
+            test(action + " fails platform proof before inventory or writes") {
+                let mock = MockApplications(); mock.platformFailure = true; mock.installed = action == "remove"
+                try rejects("PLATFORM") { if action == "install" { _ = try app(mock).installSSClash(password: "strong-secret-123") } else if action == "remove" { _ = try app(mock).removeSSClash() } else { _ = try app(mock).startSSClash() } }
+                try check(mock.commands.count == 1 && !mock.staged && !mock.removalPrepared, "Platform failure reached mutation")
+            }
+        }
+        for abi in ["release", "architecture"] {
+            test("SSClash retains " + abi + " component ABI guard") {
+                let mock = MockApplications(); if abi == "release" { mock.release = "99.99" } else { mock.architecture = "x86_64" }
+                try rejects("SSClash") { _ = try app(mock).installSSClash(password: "strong-secret-123") }
+                try check(!mock.staged && !mock.passwordSet, "Wrong ABI reached writes")
+            }
+        }
+        for profile in ["B28", "B31", "absent"] {
+            test("managed application inventory reads " + profile + " with unrelated IMEI/setup journals") {
+                let mock = MockApplications(); mock.firmware = profile == "B28" ? b28Firmware : ModemEngine.firmwareHash; mock.absentFiles = profile == "absent"; mock.optionalReaderUnavailable = true
+                let manager = try app(mock)
+                for name in ["pending.json", "setup-pending.json"] { try savePrivate(Data("fixture".utf8), manager.engine.root.appendingPathComponent(name)) }
+                let value = try manager.engine.locked { try manager.inventoryWithManagedApps() }
+                try check(value.managedAppsChecked && value.applicationStorage != nil && value.managedAppErrors.count == 2, "Inventory or optional failure attribution lost")
+                try check(!mock.commands.contains { $0.hasPrefix("sha256sum /firmware/image/modem.b16") || $0.contains("/tmp/zte-imei-app.lock") }, "Inventory required global B31 policy or mutation lock")
+                try check(mock.identityCalls >= 3 && !mock.staged && !mock.removalPrepared && !mock.started, "Inventory changed SSClash or omitted identity checks")
+            }
+        }
+        for field in ["cid", "boot", "firmware", "router"] {
+            test("managed application inventory rejects " + field + " drift") {
+                let mock = MockApplications(); mock.drift = field; mock.optionalReaderUnavailable = true
+                let manager = try app(mock)
+                try rejects("изменилось") { _ = try manager.engine.locked { try manager.inventoryWithManagedApps() } }
+                try check(!mock.staged && !mock.removalPrepared && !mock.started, "Inventory drift reached SSClash write")
+            }
+        }
+        test("UI SSClash preparation accepts B28 with unrelated IMEI and setup journals") {
+            let mock = MockApplications(); mock.firmware = b28Firmware
+            let manager = try app(mock)
+            for name in ["pending.json", "setup-pending.json"] { try savePrivate(Data("fixture".utf8), manager.engine.root.appendingPathComponent(name)) }
+            try manager.engine.locked { try manager.prepareSSClashOperation(); _ = try manager.installSSClash(password: "strong-secret-123") }
+            try check(mock.started && mock.commands.contains { $0.contains("mkdir /tmp/zte-imei-app.lock") }, "UI preparation did not use remote lock")
+            try check(mock.commands.contains { $0.contains("rmdir /tmp/zte-imei-app.lock") }, "Remote lock was not released")
+        }
+        test("UI SSClash preparation binds device across lock acquisition") {
+            let mock = MockApplications(); mock.drift = "boot"
+            let manager = try app(mock)
+            try rejects("изменились") { try manager.engine.locked { try manager.prepareSSClashOperation(); _ = try manager.installSSClash(password: "strong-secret-123") } }
+            try check(!mock.staged && !mock.started, "Lock acquisition lost device binding")
+        }
+        for name in ["adb-access-pending.json", "adb-toggle-pending.json", "component-cleanup-pending.json", "system-restore-pending.json"] {
+            test("UI SSClash preparation retains " + name + " exclusion") {
+                let mock = MockApplications(); let manager = try app(mock)
+                try savePrivate(Data("fixture".utf8), manager.engine.root.appendingPathComponent(name))
+                try rejects("Сначала") { try manager.engine.locked { try manager.prepareSSClashOperation(); _ = try manager.installSSClash(password: "strong-secret-123") } }
+                try check(!mock.staged && !mock.started && !mock.commands.contains { $0.contains("mkdir /tmp/zte-imei-app.lock") }, "ADB recovery crossed mutation gate")
+            }
+        }
+        test("start rejects boot drift before service mutation") {
+            let mock = MockApplications(); mock.drift = "boot"
+            try rejects("изменились") { _ = try app(mock).startSSClash() }
+            try check(!mock.started && !mock.stopped, "Changed device received start/stop")
+        }
+        test("start final drift avoids success and stop on changed device") {
+            let mock = MockApplications(); mock.drift = "router"; mock.driftAt = 3
+            try rejects("изменились") { _ = try app(mock).startSSClash() }
+            try check(mock.started && !mock.stopped, "Final changed device received cleanup")
         }
         test("successful mocked install auth before bind and no proxy") {
             let mock = MockApplications(); let manager = try app(mock)
@@ -334,8 +457,8 @@ private final class MockApplications: RemoteTransport {
             try check(!mock.archiveRead && !mock.removalCommitted, "Unbounded archive transfer")
         }
         test("device identity changes block removal commit") {
-            let mock = MockApplications(); mock.installed = true; mock.changeIdentity = true
-            try rejects("другой модем") { _ = try app(mock).removeSSClash() }
+            let mock = MockApplications(); mock.installed = true; mock.changeIdentity = true; mock.driftAt = 3
+            try rejects("изменились") { _ = try app(mock).removeSSClash() }
             try check(mock.archiveRead && !mock.removalCommitted, "Wrong modem committed")
         }
         test("lost commit acknowledgement retains recoverable local archive") {

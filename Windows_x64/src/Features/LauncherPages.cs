@@ -43,10 +43,10 @@ public sealed partial class DeviceFeatureService
         _ = pages.Encode();
         return MutateAsync(async (identity, token) =>
         {
-            var before = await GetLauncherStatusAsync(ct);
+            var before = await ReadLauncherStatusAsync(identity, ct);
             Check(before.CanApplyLayout && before.Pages is not null, before.Detail ?? "Launcher не готов к настройке.");
             return await WriteLauncherPagesAsync(identity, token, before.Pages!, pages, ct);
-        }, ct);
+        }, ct, measuredAgentPlatform: true);
     }
 
     private async Task<LauncherStatus> WriteLauncherPagesAsync(DeviceIdentity identity, string token, LauncherPages expected, LauncherPages pages, CancellationToken ct)

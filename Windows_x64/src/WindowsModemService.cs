@@ -202,7 +202,7 @@ public sealed partial class WindowsModemService : IModemService
                         LauncherMetrics = launcher.Layout is null ? null : string.Join(',', launcher.Layout.Metrics.Where(x => x.Enabled).Select(x => x.Id)),
                         LauncherMetricOrder = launcher.Layout is null ? null : string.Join(',', launcher.Layout.Metrics.Select(x => x.Id)),
                         LauncherPages = launcher.Pages is null ? null : string.Join(',', launcher.Pages.Order) };
-                    result = request.Operation == ModemOperation.InstallEsimLauncher ? "Страница eSIM установлена на экран модема. Профили не изменены." : launcher.Detail ?? launcher.State; break;
+                    result = launcher.Detail ?? (request.Operation == ModemOperation.InstallEsimLauncher ? "Страница eSIM установлена на экран модема. Профили не изменены." : launcher.State); break;
                 case ModemOperation.ApplyLauncherPages:
                     RequireSsh();
                     if (p?.ContainsKey("pages") != true) throw new InvalidDataException("Выбор страниц не передан.");

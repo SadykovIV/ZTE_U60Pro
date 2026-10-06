@@ -23,12 +23,13 @@ identity() {
  grep -qx "DISTRIB_RELEASE='23.05.4'" /etc/openwrt_release && grep -qx "DISTRIB_ARCH='aarch64_cortex-a53'" /etc/openwrt_release || fail PLATFORM
  [ ! -e /tmp/fota_install_processing ] || fail FIRMWARE_UPDATE
 }
-platform() {
- identity
+read_identity() {
+ [ "$(id -u)" = 0 ] && [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ] || fail ROOT_ARCH
+ [ "$(cat /sys/block/mmcblk0/device/cid)" = "$CID" ] && [ "$(cat /proc/sys/kernel/random/boot_id)" = "$BOOT" ] || fail DEVICE_CHANGED
+}
+owned_layout() {
  [ -d /data ] && [ ! -L /data ] && [ "$(stat -c %u /data)" = 0 ] || fail DATA
  mode=$(stat -c %a /data);[ "$((0$mode & 022))" = 0 ] || fail DATA_MODE
- awk '$2=="/data" {n++;split($4,a,",");for(i in a){if(a[i]=="rw")rw=1;if(a[i]=="noexec")bad=1}} END{exit !(n==1&&rw&&!bad)}' /proc/mounts || fail DATA_NOT_EXECUTABLE
- for c in chroot flock cp tar gzip find sha256sum stat awk sed readlink mknod sort cmp; do command -v "$c" >/dev/null || fail "CAPABILITY_$c"; done
  if exists "$BASE"; then
   [ -d "$BASE" ] && [ ! -L "$BASE" ] && [ "$(stat -c %u "$BASE")" = 0 ] || fail OWNER
   mode=$(stat -c %a "$BASE");[ "$((0$mode & 022))" = 0 ] || fail OWNER
@@ -36,6 +37,14 @@ platform() {
   [ "$(cat "$BASE/.zte-imei-owner")" = zte-imei-apps-v1 ] || fail OWNER
  fi
  if awk -v r="$ROOT" '$2==r||index($2,r"/")==1{bad=1}END{exit !bad}' /proc/mounts; then fail NESTED_MOUNT; fi
+}
+platform() {
+ identity
+ [ -d /data ] && [ ! -L /data ] && [ "$(stat -c %u /data)" = 0 ] || fail DATA
+ mode=$(stat -c %a /data);[ "$((0$mode & 022))" = 0 ] || fail DATA_MODE
+ awk '$2=="/data" {n++;split($4,a,",");for(i in a){if(a[i]=="rw")rw=1;if(a[i]=="noexec")bad=1}} END{exit !(n==1&&rw&&!bad)}' /proc/mounts || fail DATA_NOT_EXECUTABLE
+ for c in chroot flock cp tar gzip find sha256sum stat awk sed readlink mknod sort cmp; do command -v "$c" >/dev/null || fail "CAPABILITY_$c"; done
+ owned_layout
 }
 free_space() { FREE=$(df -Pk /data | awk 'NR==2{print $4}'); case "$FREE" in ''|*[!0-9]*) fail FREE_SPACE;; esac; }
 running() {
@@ -300,9 +309,13 @@ make_candidate() {
 ACTION=$1;CID=$2;BOOT=$3;shift 3
 printf '%s\n' "$CID" | grep -Eq '^[0-9a-f]{32}$' || fail CID
 printf '%s\n' "$BOOT" | grep -Eq '^[0-9a-f-]{36}$' || fail BOOT
+case "$ACTION" in inspect|read-feeds)
+ [ "$#" = 0 ] || fail ARGUMENTS
+ read_identity;owned_layout;state
+ if [ "$ACTION" = read-feeds ];then print_feeds;fi
+ report;read_identity;exit 0;;
+esac
 platform;state
-if [ "$ACTION" = inspect ];then [ "$#" = 0 ] || fail ARGUMENTS;report;exit 0;fi
-if [ "$ACTION" = read-feeds ];then [ "$#" = 0 ] || fail ARGUMENTS;print_feeds;report;exit 0;fi
 check_supervisor
 case "$ACTION" in execute) validate_args "$@";;install-adapter|remove-adapter|rollback|save-feeds) ;;*) fail COMMAND;;esac
 if [ "$ACTION" != install-adapter ] && ! exists "$ROOT";then fail NOT_INSTALLED;fi

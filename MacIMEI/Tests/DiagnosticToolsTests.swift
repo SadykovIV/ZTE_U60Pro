@@ -13,7 +13,7 @@ private final class Remote: RemoteTransport {
     var boot = "11111111-2222-3333-4444-555555555555", firmware = ModemEngine.firmwareHash
     var active = "none", previous = "unset", running = false, free = 100000
     var selected: Set<String>?, previousSelected: Set<String>?
-    var badUpload = false, failInstall = false, malformedReceipt = false, missingRollbackReceipt = false
+    var platformFailure = false, absentFiles = false, badUpload = false, failInstall = false, malformedReceipt = false, missingRollbackReceipt = false
     var badSupervisorUpload = false, inspectError: String?
     var commands: [String] = [], archiveUploads = 0, supervisorUploads = 0, installed = false
     let bundle: DiagnosticToolsBundle
@@ -24,8 +24,9 @@ private final class Remote: RemoteTransport {
     func run(_ command: String, input: Data?, timeout: TimeInterval) throws -> CommandResult {
         commands.append(command)
         func result(_ text: String, _ status: Int32 = 0) -> CommandResult { .init(status: status, stdout: status == 0 ? Data(text.utf8) : Data(), stderr: status == 0 ? Data() : Data(text.utf8)) }
-        if command.hasPrefix("sha256sum /firmware/image/modem.b16") {
-            return result(firmware + "  /firmware/image/modem.b16\n" + ModemEngine.routerHash + "  /usr/bin/diag-router\n" + cid + "\n" + boot + "\n")
+        if command == AccessIdentity.command {
+            if platformFailure { return result("PLATFORM",71) }
+            return result((absentFiles ? "absent" : firmware) + "  /firmware/image/modem.b16\n" + (absentFiles ? "absent" : ModemEngine.routerHash) + "  /usr/bin/diag-router\n" + cid + "\n" + boot + "\n")
         }
         if let input, command.contains("cat > '") {
             let path = command.components(separatedBy: "cat > '")[1].components(separatedBy: "'")[0]
@@ -241,26 +242,39 @@ private final class Fixture {
             try rejects { _ = try f.engine.locked { try manager.change("remove") } }
             try check(f.remote.active == f.remote.bundle.id, "Running tools changed")
         }
-        try test("Unknown firmware and low space block preparation") {
+        try test("Invalid platform and low space block preparation") {
             for firmware in [false, true] {
                 let f = try Fixture()
-                if firmware { f.remote.firmware = String(repeating: "b", count: 64) } else { f.remote.free = 0 }
+                if firmware { f.remote.platformFailure = true } else { f.remote.free = 0 }
                 try rejects { _ = try f.engine.locked { try DiagnosticToolsManager(engine: f.engine).prepare() } }
                 try check(f.remote.archiveUploads == 0, "Blocked prepare uploaded archive")
             }
         }
-        try test("Explicit firmware override reaches package checks and preserves their refusal") {
-            let f = try Fixture(skipFirmwareCheck: true)
+        try test("Measured non-B31 identity reaches package checks and preserves their refusal") {
+            let f = try Fixture()
             f.remote.firmware = String(repeating: "b", count: 64)
             let manager = DiagnosticToolsManager(engine: f.engine)
             let plan = try f.engine.locked { try manager.prepare(toolID: "htop") }
             let installed = try f.engine.locked { try manager.install(plan) }
             try check(installed.selected == ["htop"] && f.remote.archiveUploads == 1, "Override failed on compatible packages")
-            let refused = try Fixture(skipFirmwareCheck: true)
+            let refused = try Fixture()
             refused.remote.firmware = String(repeating: "b", count: 64)
             refused.remote.inspectError = "UNSUPPORTED_PLATFORM"
             try rejects { _ = try refused.engine.locked { try DiagnosticToolsManager(engine: refused.engine).prepare(toolID: "htop") } }
             try check(refused.remote.archiveUploads == 0 && !refused.remote.installed, "Override bypassed package ABI refusal")
+        }
+        try test("Absent unrelated files and local IMEI pending permit inspect and install") {
+            let f = try Fixture(), manager = DiagnosticToolsManager(engine:f.engine); f.remote.absentFiles = true
+            for name in ["pending.json","setup-pending.json"] { try savePrivate(Data("synthetic".utf8),f.root.appendingPathComponent(name)) }
+            let plan=try f.engine.locked { try manager.prepare(toolID:"htop") }
+            _=try f.engine.locked { try manager.install(plan) }
+            try check(f.remote.installed,"Absent dependency blocked tools")
+        }
+        try test("Actual system restore still blocks diagnostic staging") {
+            let f=try Fixture(), manager=DiagnosticToolsManager(engine:f.engine)
+            try savePrivate(Data("synthetic".utf8),f.root.appendingPathComponent("system-restore-pending.json"))
+            try rejects { _=try f.engine.locked { try manager.inspect() } }
+            try check(f.remote.commands.isEmpty,"System restore blocker bypassed")
         }
         print("DiagnosticToolsTests: \(count) passed")
     }

@@ -1,4 +1,4 @@
-/* Exact-B31 extension of TUFormMain. Widgets, navigation and timer callbacks
+/* Exact-profile extension of TUFormMain. Widgets, navigation and timer callbacks
  * run on the stock LVGL thread; the worker only exchanges plain snapshots. */
 #define _GNU_SOURCE
 #include "backend.h"
@@ -111,7 +111,9 @@ static void format_info(const struct snapshot *s,int ru,struct info_text *out){
 }
 
 #ifndef LAUNCHER_FORMAT_TEST
-#define F(a,r,...) ((r(*)(__VA_ARGS__))(uintptr_t)(a))
+#include "abi.h"
+static const struct launcher_abi *abi;
+#define F(a,r,...) ((r(*)(__VA_ARGS__))(uintptr_t)launcher_abi_address(abi,(a)))
 #define P(o,n) (*(void **)((char *)(o)+(n)))
 #define HIDDEN 1
 #define CLICKABLE 2
@@ -135,12 +137,12 @@ static void *allocs[160],*timer;static int nalloc,current=1,offset,last_language
 static struct snapshot shown;static unsigned last_generation=(unsigned)-1;
 static int pending_wifi=-1;
 static char selected_id[37],selected_name[257];
-static int tr_ru(void){return *(int*)0x2288088==2;}
+static int tr_ru(void){return *(int*)abi->language==2;}
 static const char *tr(const char *ru,const char *en){return tr_ru()?ru:en;}
 static void pos(void *o,int x,int y){F(0x537450,void,void*,int,int)(o,x,y);}
 static void size(void *o,int w,int h){F(0x5382b4,void,void*,int,int)(o,w,h);}
 static void flag(void *o,unsigned f,int on){F(on?0x42e3c0:0x42e4f4,void,void*,unsigned)(P(o,8),f);}
-static void color(void *o,int offset,int text){unsigned char *p=(void*)(uintptr_t)(0xe80214+offset);F(text?0x52f904:0x53793c,void,void*,int,int,int,int)(o,p[0],p[1],p[2],255);}
+static void color(void *o,int offset,int text){unsigned char *p=(void*)(uintptr_t)(abi->palette+offset);F(text?0x52f904:0x53793c,void,void*,int,int,int,int)(o,p[0],p[1],p[2],255);}
 static void *objmem(size_t n){void *p=calloc(1,n);if(!p||nalloc>=160)_exit(70);allocs[nalloc++]=p;return p;}
 static void text(void *o,const char *s){struct{const char *p;size_t n;size_t cap;size_t pad;}str={s,strlen(s),strlen(s),0};F(0x52fa80,void,void*,void*,int)(o,&str,0);}
 static void *label(void *p,int x,int y,int w,int h,int font,const char *s){
@@ -285,7 +287,7 @@ static void render(void){
  last_generation=shown.generation;last_language=tr_ru();
 }
 static void tick(void *unused){
- (void)unused;if(!mainform||*(unsigned char*)0x2287598)return;
+ (void)unused;if(!mainform||*(unsigned char*)abi->modal)return;
  apply_pages();
  int fd=open("/tmp/zte-launcher/page",O_RDONLY|O_NOFOLLOW|O_CLOEXEC);if(fd>=0){
   char name[16]={0};ssize_t n=read(fd,name,sizeof name-1);close(fd);unlink("/tmp/zte-launcher/page");
@@ -300,7 +302,7 @@ static void tick(void *unused){
  esim_snapshot(&esim_shown);backend_snapshot(&shown);if(esim_shown.generation!=esim_generation||shown.generation!=last_generation||shown.telemetry.stale!=old_stale||shown.telemetry.valid!=old_valid||tr_ru()!=last_language)render();
  /* Periodic updates read telemetry/VPN only. Card reads are explicit:
   * eSIM entry, a refresh button, or the existing post-mutation verification. */
- static unsigned ticks;if(++ticks%10==0&&current>=3&&page_kind(current)!=PAGE_ESIM&& !*(unsigned char*)0x2287598&&F(0x538658,int,void*)(mainform))backend_refresh();
+ static unsigned ticks;if(++ticks%10==0&&current>=3&&page_kind(current)!=PAGE_ESIM&& !*(unsigned char*)abi->modal&&F(0x538658,int,void*)(mainform))backend_refresh();
 }
 static void destroy(void *form){
  if(form==mainform){
@@ -318,7 +320,7 @@ static void create(void *form){
  titles[0]=label(pages[0],16,12,288,34,24,"");info_status=label(pages[0],16,50,288,20,14,"");
  info_scroll=panel(pages[0],0,INFO_VIEWPORT_Y,320,INFO_VIEWPORT_HEIGHT,0);
  flag(info_scroll,CLICKABLE|SCROLLABLE|CHAIN_HOR,1);flag(info_scroll,CHAIN_VER|BUBBLE,0);
- /* Verified B31 LVGL functions: vertical-only content, horizontal chaining. */
+ /* Verified profile LVGL functions: vertical-only content, horizontal chaining. */
  F(0x433198,void,void*,unsigned)(P(info_scroll,8),12);F(0x433134,void,void*,unsigned)(P(info_scroll,8),3);
  for(int i=0;i<INFO_MAX_SELECTED;i++){
   info_cards[i]=panel(info_scroll,14,0,292,48,1);flag(info_cards[i],CLICKABLE,0);
@@ -352,14 +354,16 @@ static int hook(uintptr_t addr,uintptr_t before,void *after){
  if(*(uintptr_t*)addr!=before)return -1;uintptr_t page=addr&~(uintptr_t)4095;
  if(mprotect((void*)page,4096,PROT_READ|PROT_WRITE))return -1;*(void**)addr=after;return mprotect((void*)page,4096,PROT_READ);
 }
+static uintptr_t read_pointer(uintptr_t address){return *(uintptr_t*)address;}
+static uint32_t read_word(uintptr_t address){return *(uint32_t*)address;}
 __attribute__((constructor)) static void init(void){
  if(!getenv("ZTE_LAUNCHER"))return;unsetenv("LD_PRELOAD");unsetenv("ZTE_LAUNCHER");
- if(getauxval(AT_PHDR)!=0x400040 || getauxval(AT_ENTRY)!=0x421dc4)return;
- /* Setter/getter signatures are also checked as complete code ranges at build
-  * time against both supported UI binaries. Fail closed before adding hooks. */
- if(*(uint32_t*)0x433198!=0xa9be7bfd||*(uint32_t*)0x4331d0!=0x33180e81||*(uint32_t*)0x433134!=0xa9be7bfd||*(uint32_t*)0x433174!=0x33000681||*(uint32_t*)0x5380bc!=0xa9be7bfd||*(uint32_t*)0x5380f0!=0xf9469e10||*(uint32_t*)0x42ace8!=0xb4000120||*(uint32_t*)0x42ad04!=0xd3608c00||*(uint32_t*)0x42ad2c!=0xf9402000)return;
- if(*(uintptr_t*)0xe72aa0!=0x4bd900||*(uintptr_t*)0xe7d968!=0x4bd9ec||*(uintptr_t*)0xe7b448!=0x4bc1d0||*(uintptr_t*)0xe72a08!=0x4b7ffc||*(uintptr_t*)0xe79c30!=0x4b7ffc)return;
- if(hook(0xe72aa0,0x4bd900,create)||hook(0xe7d968,0x4bd9ec,scroll_release)||hook(0xe7b448,0x4bc1d0,update_dots)||hook(0xe72a08,0x4b7ffc,destroy)||hook(0xe79c30,0x4b7ffc,destroy))_exit(71);
- fprintf(stderr,"launcher: B31 hooks installed\n");
+ abi=launcher_abi_select(getauxval(AT_PHDR),getauxval(AT_ENTRY));
+ /* The wrapper checks the full UI hash. Every address below comes from that
+  * profile; all five slots and instruction checks must pass before any write. */
+ if(!launcher_abi_valid(abi,read_pointer,read_word)){abi=NULL;return;}
+ void *callbacks[5]={create,scroll_release,update_dots,destroy,destroy};
+ for(size_t i=0;i<5;i++)if(hook(abi->hooks[i].slot,abi->hooks[i].target,callbacks[i]))_exit(71);
+ fprintf(stderr,"launcher: %s hooks installed\n",abi->name);
 }
 #endif /* LAUNCHER_FORMAT_TEST */

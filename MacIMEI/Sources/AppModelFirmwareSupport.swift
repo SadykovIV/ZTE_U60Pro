@@ -32,9 +32,9 @@ import UniformTypeIdentifiers
                     try await Task.detached(priority: .userInitiated) { [weak self] in
                         let collector = try FirmwareSupportCollector(root: root, resources: assets, connection: config, session: session, secrets: secrets, selectionIsCurrent: { [weak self] in
                             DispatchQueue.main.sync { self?.firmwareSupportSelectionMatches(config, session: session) ?? false }
-                        }) { [weak self] message, fraction in
+                        }, update: { [weak self] message, fraction in
                             Task { @MainActor [weak self] in self?.append(message, progress: fraction) }
-                        }
+                        })
                         return try collector.collect(to: destination, cancelled: { cancellation.cancelled })
                     }.value
                 } onCancel: { cancellation.cancel() }

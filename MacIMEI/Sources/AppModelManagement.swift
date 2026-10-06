@@ -162,8 +162,8 @@ import AppKit
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         runManaged("Удаляю SSClash-Go с сохранением копии…", work: { engine in
             try engine.locked {
-                _ = try engine.identity(); try engine.acquireRemoteLock()
                 let manager = ModemApplications(engine: engine)
+                try manager.prepareSSClashOperation()
                 let message = try manager.removeSSClash()
                 return (try manager.inventory(), message)
             }

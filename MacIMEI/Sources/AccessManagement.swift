@@ -37,7 +37,7 @@ final class AccessManager: @unchecked Sendable {
         return data
     }
     private func checkPending() throws {
-        for name in ["pending.json", "setup-pending.json", "adb-access-pending.json"] {
+        for name in ["adb-access-pending.json"] {
             try require(!FileManager.default.fileExists(atPath: engine.root.appendingPathComponent(name).path), "Сначала завершите текущую операцию с модемом")
         }
     }
@@ -47,10 +47,10 @@ final class AccessManager: @unchecked Sendable {
     }
     func inspect() throws -> AccessManagementState {
         try engine.locked {
-            try checkPending()
-            let (identity, _) = try engine.identity()
+            let proof = try engine.measuredIdentity(), identity = proof.identity
             let services = try readServices(cid: identity.cid, data: script())
             let accounts = try SSHAccountManager(root: engine.root, resources: engine.resources, connection: engine.connection, transport: engine.transport).readStateUnlocked()
+            try require(try engine.measuredIdentity() == proof, "Подключён другой модем")
             return AccessManagementState(services: services, sshAccounts: accounts)
         }
     }
@@ -59,7 +59,7 @@ final class AccessManager: @unchecked Sendable {
         try require(engine.connection.port == "2222", "Управление службами доступно через защищённый служебный SSH на порту 2222")
         return try engine.locked {
             try checkPending()
-            let (identity, _) = try engine.identity()
+            let proof = try engine.measuredIdentity(), identity = proof.identity
             try engine.acquireRemoteLock()
             let data = try script()
             let before = try readServices(cid: identity.cid, data: data)
@@ -73,7 +73,7 @@ final class AccessManager: @unchecked Sendable {
             let path = stage + "/access-services.sh"
             let output = try engine.remote("umask 077; cat > " + shellQuote(path) + " && chmod 600 " + shellQuote(path) + " && sha256sum " + shellQuote(path), input: data)
             try require(String(decoding: output, as: UTF8.self).split(separator: " ").first == Substring(digest(data)), "Не совпала контрольная сумма управления доступом")
-            let (again, _) = try engine.identity(); try require(again.cid == identity.cid, "Подключён другой модем")
+            try require(try engine.measuredIdentity() == proof, "Подключён другой модем")
             let command = ["sh",shellQuote(path),"action",shellQuote(identity.cid),shellQuote(engine.connection.host),service.rawValue,action.rawValue,shellQuote(stage),shellQuote(engine.remoteLockToken!)].joined(separator:" ")
             engine.update("Изменяю состояние службы: " + service.rawValue + "…", 0.4)
             let result = try engine.transport.run(command, input: nil, timeout: 75)
@@ -82,6 +82,7 @@ final class AccessManager: @unchecked Sendable {
             let services = try Self.parseServices(String(decoding: result.stdout, as: UTF8.self), host: engine.connection.host)
             try require(services.first(where: { $0.id == service })?.state == (action == .stop ? .stopped : .running), "Состояние службы после операции не совпало с ожидаемым")
             let accounts = try SSHAccountManager(root: engine.root, resources: engine.resources, connection: engine.connection, transport: engine.transport).readStateUnlocked()
+            try require(try engine.measuredIdentity() == proof, "Подключён другой модем")
             try saveJSON(["service":service.rawValue,"action":action.rawValue,"cid":identity.cid,"phase":"complete"], journal.appendingPathComponent("operation.json"))
             engine.update("Состояние службы изменено. Настройки автозапуска сохранены.", 1)
             return AccessManagementState(services: services, sshAccounts: accounts)

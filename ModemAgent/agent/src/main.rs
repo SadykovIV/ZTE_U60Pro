@@ -33,7 +33,7 @@ mod vpn;
 mod esim;
 
 #[cfg(feature = "esim")]
-const AGENT_VERSION: &str = "2.9.0-esim.4";
+const AGENT_VERSION: &str = "2.9.0-esim.5";
 #[cfg(not(feature = "esim"))]
 const AGENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 

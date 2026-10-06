@@ -270,12 +270,13 @@ public sealed partial class WindowsModemService
     }
 
     private static string DescribeAgent(AgentInstallationStatus status)
-        => status.Warning == "OWNER" ? "Состояние агента прочитано, но каталог его установщика требует проверки (AGENT_OWNER)." :
+        => (status.Warning == "OWNER" ? "Состояние агента прочитано, но каталог его установщика требует проверки (AGENT_OWNER)." :
             status.RecoveryPending ? "Требуется восстановление агента" :
             status.Hash == "absent" ? "Агент не установлен" :
             status.Version is null ? (status.Running ? "Неизвестная сборка агента · запущен" : "Неизвестная сборка агента · не запущен") :
             status.IsCurrent ? (status.Running ? $"Агент {status.Version} · запущен" : $"Агент {status.Version} · не запущен") :
-            status.Running ? $"Агент {status.Version} · предыдущая сборка · запущен" : $"Агент {status.Version} · предыдущая сборка · не запущен";
+            status.Running ? $"Агент {status.Version} · предыдущая сборка · запущен" : $"Агент {status.Version} · предыдущая сборка · не запущен") +
+           (status.Hash == "absent" ? "" : " · режим агента: " + status.Mode);
     private static string DescribeLocalization(ScreenLocalizationStatus status)
         => status.State switch {
             "enabled" => "Русификация включена (" + status.Language + ").",

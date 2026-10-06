@@ -91,17 +91,18 @@ fn iw_info(iface: &str) -> (String, String) {
 
 /// Count associated stations. Calls `iw` directly and counts in Rust — the
 /// old `sh -c "iw ... | grep -c Station"` spawned three processes per band.
-fn station_count(iface: &str) -> u64 {
+fn station_count(iface: &str) -> Option<u64> {
     let Ok(output) = Command::new("iw")
         .args([iface, "station", "dump"])
         .bounded_output()
     else {
-        return 0;
+        return None;
     };
-    String::from_utf8_lossy(&output.stdout)
+    if !output.status.success() { return None; }
+    Some(String::from_utf8_lossy(&output.stdout)
         .lines()
         .filter(|l| l.trim_start().starts_with("Station "))
-        .count() as u64
+        .count() as u64)
 }
 
 fn bandwidth_options(hwmode: &str, standards: &str, is_5g: bool) -> Vec<String> {
@@ -131,10 +132,13 @@ fn bandwidth_options(hwmode: &str, standards: &str, is_5g: bool) -> Vec<String> 
 // GET /api/wifi/status
 // ---------------------------------------------------------------------------
 
-pub fn wifi_status(_state: &AppState) -> (u16, Value) {
+pub fn wifi_status(state: &AppState) -> (u16, Value) {
     let mut result = serde_json::Map::new();
     let report = ubus::call("zwrt_wlan", "report", Some("{}")).ok();
     let cfg = WifiConfig::load();
+    if state.mode == crate::agent_mode::AgentMode::Discovery && cfg.wireless.is_empty() {
+        return (503, json!({"ok": false, "state": "not-assessed", "error": "Wi-Fi configuration is not available"}));
+    }
 
     // Global switches from wireless feature config (both UCI namespaces),
     // with report fallback when exposed there.
@@ -221,9 +225,16 @@ pub fn wifi_status(_state: &AppState) -> (u16, Value) {
     // Client counts
     let c2g = station_count("wlan0");
     let c5g = station_count("wlan2");
-    result.insert("clients_2g".into(), json!(c2g));
-    result.insert("clients_5g".into(), json!(c5g));
-    result.insert("clients_total".into(), json!(c2g + c5g));
+    if state.mode == crate::agent_mode::AgentMode::Discovery {
+        result.insert("clients_2g".into(), json!(c2g));
+        result.insert("clients_5g".into(), json!(c5g));
+        result.insert("clients_total".into(), json!(c2g.zip(c5g).map(|(a,b)| a+b)));
+        result.insert("station_counts_state".into(), json!(if c2g.is_some() && c5g.is_some() { "known" } else { "not-assessed" }));
+    } else {
+        result.insert("clients_2g".into(), json!(c2g.unwrap_or(0)));
+        result.insert("clients_5g".into(), json!(c5g.unwrap_or(0)));
+        result.insert("clients_total".into(), json!(c2g.unwrap_or(0) + c5g.unwrap_or(0)));
+    }
 
     // Guest WiFi summary
     result.insert(

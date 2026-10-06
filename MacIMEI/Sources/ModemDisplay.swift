@@ -11,6 +11,8 @@ struct ModemDisplayInspection: Sendable {
     var bootID: String
     var installedHash: String?
     var expectedHash: String
+    var routerHash: String = ""
+    func sameDevice(as other: Self) -> Bool { identity == other.identity && bootID == other.bootID && routerHash == other.routerHash }
     var running: Bool = false
     var canInstall: Bool = false
     var layout: ModemDisplayLayout? = .defaultLayout
@@ -37,7 +39,7 @@ struct ModemDisplayInspection: Sendable {
 }
 
 /// The caller holds ModemEngine.locked for the whole operation. Display changes
-/// always require the exact reviewed B31 UI ABI, even when general checks are off.
+/// always require the exact reviewed UI ABI, even when general checks are off.
 final class ModemDisplayManager {
     static let root = "/data/zte-launcher"
     static let layoutPath = root + "/info-layout.conf"
@@ -46,7 +48,9 @@ final class ModemDisplayManager {
     static let fileNames = payloadNames + ["launcher.sha256", "install-launcher.sh"]
     static let uiHashes: Set<String> = [
         "e3914e78a8488cb736770f0ac9fb8ce10e0e5222fa50285f08e9e8be90d7f1e9",
-        "16eb92e27f54b5cf5c6b316a6e7a62b782053a2a609d0d4904a7f08a7bc0afa4"
+        "16eb92e27f54b5cf5c6b316a6e7a62b782053a2a609d0d4904a7f08a7bc0afa4",
+        "8d2ebbde880934f52195ad9595815d728f7aa4671bb0633d5a5149b09467ae90",
+        "d6c3cd409705d5aa9c12185c84074513b159088025f005da7dbf01c51e3c3715"
     ]
     static let initHashes: Set<String> = [
         "a30da6481637f1fd94e037373d406e574be7e722937a4965325086740be67e35",
@@ -232,17 +236,19 @@ final class ModemDisplayManager {
     }
 
     private func inspect(assets: Assets) throws -> ModemDisplayInspection {
-        let (identity, boot) = try engine.diagnosticIdentity()
+        let proof = try engine.measuredIdentity()
+        let identity = proof.identity, boot = proof.bootID
         let fields = try Self.parse(engine.text(Self.probeCommand))
         var result = ModemDisplayInspection(state: .absent, detail: "На экране будут доступны информация о модеме, VPN и eSIM.", identity: identity, bootID: boot,
                                            installedHash: fields["installed"] == "missing" ? nil : fields["installed"], expectedHash: assets.hashes["launcher.so"]!)
+        result.routerHash = proof.routerHash
         if fields["root"] == "1" { try readLayout(into: &result); try readPages(into: &result) }
-        let after = try engine.diagnosticIdentity()
-        try require(after.0 == identity && after.1 == boot, "Во время проверки дисплея модем изменился или перезагрузился")
-        guard identity.firmwareHash == ModemEngine.firmwareHash && fields["uid"] == "0" && fields["arch"] == "aarch64" &&
+        let after = try engine.measuredIdentity()
+        try require(after == proof, "Во время проверки дисплея модем изменился или перезагрузился")
+        guard fields["uid"] == "0" && fields["arch"] == "aarch64" &&
               Self.uiHashes.contains(fields["ui"]!) && Self.initHashes.contains(fields["init"]!) else {
             result.state = .unsupported
-            result.detail = "Плитки проверены только для экранного интерфейса MU5250 B31 (штатного или русифицированного). Отключение общей проверки прошивки это ограничение не снимает."
+            result.detail = "Плитки доступны только для экранного интерфейса с проверенным ABI-профилем (B31 или FLY B28, штатного или русифицированного). Общая проверка прошивки не заменяет проверку экранного интерфейса."
             return result
         }
         if fields["transaction"] == "2" || fields["root"] == "2" {
@@ -283,7 +289,7 @@ final class ModemDisplayManager {
         try require(before.canInstall && before.layoutIsSafe && before.layout != nil, before.pagesWarning ?? before.layoutWarning ?? before.detail)
         try engine.acquireRemoteLock()
         let locked = try inspect(assets: bundle)
-        try require(locked.identity == before.identity && locked.bootID == before.bootID && locked.layout == before.layout && locked.layoutIsDefault == before.layoutIsDefault && locked.pages == before.pages && locked.pagesIsDefault == before.pagesIsDefault,
+        try require(locked.sameDevice(as: before) && locked.layout == before.layout && locked.layoutIsDefault == before.layoutIsDefault && locked.pages == before.pages && locked.pagesIsDefault == before.pagesIsDefault,
                     "Перед установкой страницы eSIM модем или его раскладка изменились")
         try require(locked.canInstall && locked.layoutIsSafe, locked.pagesWarning ?? locked.layoutWarning ?? locked.detail)
         try preflightEsimLauncher(assets: bundle, expected: locked)
@@ -302,11 +308,11 @@ final class ModemDisplayManager {
                 _ = try AgentInstallationManager(engine: engine).installBundled(candidate)
             }
             let checked = try inspect(assets: bundle)
-            try require(checked.identity == locked.identity && checked.bootID == locked.bootID && checked.layout == locked.layout && checked.layoutIsDefault == locked.layoutIsDefault && checked.pages == locked.pages && checked.pagesIsDefault == locked.pagesIsDefault,
+            try require(checked.sameDevice(as: locked) && checked.layout == locked.layout && checked.layoutIsDefault == locked.layoutIsDefault && checked.pages == locked.pages && checked.pagesIsDefault == locked.pagesIsDefault,
                         "Во время обновления агента модем или его раскладка изменились")
             installed = try ModemDisplayManager(engine: engine, updateVPNIntegration: { false }).install()
         }
-        try require(installed.identity == before.identity && installed.bootID == before.bootID && installed.layout == before.layout && installed.layoutIsDefault == before.layoutIsDefault && installed.pages == before.pages && installed.pagesIsDefault == before.pagesIsDefault,
+        try require(installed.sameDevice(as: before) && installed.layout == before.layout && installed.layoutIsDefault == before.layoutIsDefault && installed.pages == before.pages && installed.pagesIsDefault == before.pagesIsDefault,
                     "Страница eSIM установлена, но сохранение раскладки не подтверждено. Обновите состояние Launcher.")
         guard let pages = installed.pages else { throw IMEIError.message("Не удалось прочитать порядок страниц") }
         return try applyPagesLocked(pages.includingEsim(), assets: bundle, expected: installed)
@@ -350,7 +356,7 @@ final class ModemDisplayManager {
         try require(before.canInstall, before.pagesWarning ?? before.layoutWarning ?? before.detail)
         try engine.acquireRemoteLock()
         let locked = try inspect(assets: bundle)
-        try require(locked.identity == before.identity && locked.bootID == before.bootID, "Перед установкой дисплея модем изменился или перезагрузился")
+        try require(locked.sameDevice(as: before), "Перед установкой дисплея модем изменился или перезагрузился")
         try require(locked.canInstall, locked.pagesWarning ?? locked.layoutWarning ?? locked.detail)
         if locked.state == .ready && locked.running {
             return try applyPreferences(layout: layout, pages: pages, assets: bundle, expected: locked)
@@ -373,7 +379,7 @@ final class ModemDisplayManager {
             engine.update("Передаю компоненты дисплея: \(index + 1) из \(Self.fileNames.count)", 0.2 + Double(index + 1) / Double(Self.fileNames.count) * 0.5)
         }
         let checked = try inspect(assets: bundle)
-        try require(checked.identity == before.identity && checked.bootID == before.bootID, "После передачи дисплея модем изменился или перезагрузился")
+        try require(checked.sameDevice(as: before), "После передачи дисплея модем изменился или перезагрузился")
         try require(checked.canInstall, checked.detail)
         guard let token = engine.remoteLockToken else { throw IMEIError.message("Потеряна блокировка дисплея") }
         let command = "set -eu; test \"$(cat /tmp/zte-imei-app.lock/owner)\" = " + shellQuote(token) +
@@ -400,7 +406,7 @@ final class ModemDisplayManager {
         try require(before.canApplyLayout, before.layoutWarning ?? "Сначала установите или обновите плитки дисплея. " + before.detail)
         try engine.acquireRemoteLock()
         let locked = try inspect(assets: bundle)
-        try require(locked.identity == before.identity && locked.bootID == before.bootID, "Перед настройкой дисплея модем изменился или перезагрузился")
+        try require(locked.sameDevice(as: before), "Перед настройкой дисплея модем изменился или перезагрузился")
         try require(locked.canApplyLayout, locked.layoutWarning ?? "Дисплей не готов к изменению настройки")
         return try applyLocked(layout, assets: bundle, expected: locked)
     }
@@ -418,7 +424,7 @@ final class ModemDisplayManager {
         try require(before.canApplyPages, before.pagesWarning ?? "Сначала установите или обновите плитки дисплея. " + before.detail)
         try engine.acquireRemoteLock()
         let locked = try inspect(assets: bundle)
-        try require(locked.identity == before.identity && locked.bootID == before.bootID, "Перед настройкой дисплея модем изменился или перезагрузился")
+        try require(locked.sameDevice(as: before), "Перед настройкой дисплея модем изменился или перезагрузился")
         try require(locked.canApplyPages, locked.pagesWarning ?? "Дисплей не готов к изменению настройки")
         return try applyPagesLocked(pages, assets: bundle, expected: locked)
     }
@@ -459,7 +465,7 @@ final class ModemDisplayManager {
         let proofFields = String(decoding: proof, as: UTF8.self).split(whereSeparator: \.isWhitespace)
         try require(proofFields.count == 2 && proofFields[0] == Substring(digest(bytes)) && proofFields[1] == Substring(path), "При передаче повреждена настройка дисплея; прежняя настройка сохранена")
         let checked = try inspect(assets: assets)
-        try require(checked.identity == expected.identity && checked.bootID == expected.bootID, "Перед сохранением настройки дисплея модем изменился или перезагрузился")
+        try require(checked.sameDevice(as: expected), "Перед сохранением настройки дисплея модем изменился или перезагрузился")
         try require(checked.canApplyLayout, checked.layoutWarning ?? "Дисплей изменился перед сохранением настройки")
         let commit = "# MODEM_DISPLAY_LAYOUT_COMMIT\n" + guardCommand +
             "test -d " + shellQuote(stage) + " && test ! -L " + shellQuote(stage) + " && test \"$(stat -c %u:%a " + shellQuote(stage) + ")\" = 0:700 || exit 73\n" +
@@ -472,7 +478,7 @@ final class ModemDisplayManager {
         let replyFields = String(decoding: reply, as: UTF8.self).split(whereSeparator: \.isWhitespace)
         try require(replyFields.count == 2 && replyFields[0] == Substring(digest(bytes)) && replyFields[1] == Substring(Self.layoutPath), "Модем не подтвердил запись настройки дисплея. Повторите проверку.")
         var result = try inspect(assets: assets)
-        try require(result.identity == expected.identity && result.bootID == expected.bootID, "После сохранения настройки дисплея модем изменился или перезагрузился")
+        try require(result.sameDevice(as: expected), "После сохранения настройки дисплея модем изменился или перезагрузился")
         try require(result.canApplyLayout && result.layout == layout && !result.layoutIsDefault, "Проверка сохранённой настройки дисплея не пройдена")
         result.detail = "Показатели и порядок сохранены на модеме. Плитка применит настройку при открытии страницы или очередном обновлении экрана."
         return result
@@ -502,7 +508,7 @@ final class ModemDisplayManager {
         let proofFields = String(decoding: proof, as: UTF8.self).split(whereSeparator: \.isWhitespace)
         try require(proofFields.count == 2 && proofFields[0] == Substring(digest(bytes)) && proofFields[1] == Substring(path), "При передаче повреждена настройка дисплея; прежняя настройка сохранена")
         let checked = try inspect(assets: assets)
-        try require(checked.identity == expected.identity && checked.bootID == expected.bootID, "Перед сохранением настройки дисплея модем изменился или перезагрузился")
+        try require(checked.sameDevice(as: expected), "Перед сохранением настройки дисплея модем изменился или перезагрузился")
         try require(checked.canApplyPages, checked.pagesWarning ?? "Дисплей изменился перед сохранением настройки")
         try require(checked.pages == expected.pages && checked.pagesIsDefault == expected.pagesIsDefault, "Порядок страниц изменился во время сохранения. Прочитайте его заново.")
         let previousGuard: String
@@ -523,7 +529,7 @@ final class ModemDisplayManager {
         let replyFields = String(decoding: reply, as: UTF8.self).split(whereSeparator: \.isWhitespace)
         try require(replyFields.count == 2 && replyFields[0] == Substring(digest(bytes)) && replyFields[1] == Substring(Self.pagesPath), "Модем не подтвердил запись настройки дисплея. Повторите проверку.")
         var result = try inspect(assets: assets)
-        try require(result.identity == expected.identity && result.bootID == expected.bootID, "После сохранения настройки дисплея модем изменился или перезагрузился")
+        try require(result.sameDevice(as: expected), "После сохранения настройки дисплея модем изменился или перезагрузился")
         try require(result.canApplyPages && result.pages == pages && !result.pagesIsDefault, "Проверка сохранённой настройки дисплея не пройдена")
         result.detail = "Выбор и порядок страниц сохранены на модеме. Лаунчер применит их без перезапуска экрана."
         return result
@@ -531,7 +537,7 @@ final class ModemDisplayManager {
 
     private func confirmInstall(assets: Assets, expected: ModemDisplayInspection) throws -> ModemDisplayInspection {
         let result = try inspect(assets: assets)
-        try require(result.identity == expected.identity && result.bootID == expected.bootID, "При установке дисплея модем изменился или перезагрузился")
+        try require(result.sameDevice(as: expected), "При установке дисплея модем изменился или перезагрузился")
         try require(result.state == .ready, "Дисплей после установки не подтвердил ожидаемое состояние. " + result.detail)
         return result
     }

@@ -5,7 +5,7 @@ using ZteImeiStudio.Windows.Core;
 
 namespace ZteImeiStudio.Windows.Features;
 
-public sealed record AgentInstallationStatus(string Hash, bool Running, bool StartupReady, bool RecoveryPending, string? BackupHash, string? Warning = null)
+public sealed record AgentInstallationStatus(string Hash, bool Running, bool StartupReady, bool RecoveryPending, string? BackupHash, string? Warning = null, string Mode = "not_assessed")
 {
     public string? Version => AgentPackage.VersionForHash(Hash);
     public bool IsCurrent => Hash == AgentPackage.Sha256;
@@ -16,9 +16,10 @@ public sealed partial class DeviceFeatureService
 {
     private const string AgentManagerHash = "ba9216b75d9b6a5a003e05137416335083609f4d840a0394e6f9016d27527844";
     private const string ScreenRoot = "/data/zte-imei-screen-ru";
-    private const string ScreenManagerHash = "810aae3c07c8019f2d0657f2bad6f1ee38f1dea5f1081210ab144478dd87c7b8";
-    private static readonly HashSet<string> ScreenLegacyManagerHashes = ["6aed6654afb7a4fde7792a5f6034aa41e15b0fd77d794ed04d3a12c111c95fd2", "586a7727fb24a5701990c7cd82889887220c1c5566261c53ca21f3bb12549bfa"];
-    private static readonly string[] ScreenFileNames = ["install.sh", "service.sh", "English.ini", "Chinese.ini", "font.patch.json"];
+    private const string ScreenManagerHash = "0ce40f0d3e4375165f5e4424db023b786f70f9cacf88bfe07c1c893cff12db7d";
+    private const string ScreenRevision = "20261006";
+    private static readonly HashSet<string> ScreenLegacyManagerHashes = ["6aed6654afb7a4fde7792a5f6034aa41e15b0fd77d794ed04d3a12c111c95fd2", "586a7727fb24a5701990c7cd82889887220c1c5566261c53ca21f3bb12549bfa", "810aae3c07c8019f2d0657f2bad6f1ee38f1dea5f1081210ab144478dd87c7b8"];
+    private static readonly string[] ScreenFileNames = ["install.sh", "service.sh", "English.ini", "Chinese.ini", "font.patch.json", "font.patch.b28.json"];
 
     public Task<AgentInstallationStatus> GetAgentInstallationStatusAsync(CancellationToken ct = default)
         => InvokeAgentAsync("status", ct);
@@ -37,14 +38,14 @@ public sealed partial class DeviceFeatureService
         // exactly these bytes for the upload even if the local file changes later.
         var selectedBytes = candidate?.ReadValidatedBytes();
         if (action == "status") return ReadOnly();
-        return MutateAsync(async (identity, token) => await Invoke(identity, token), ct, measuredAgentPlatform: candidate is not null || action == "restore");
+        return MutateAsync(async (identity, token) => await Invoke(identity, token), ct, measuredAgentPlatform: true);
 
         async Task<AgentInstallationStatus> ReadOnly()
         {
             var manager = await ResourceAsync("AgentInstallation", "manager.sh", ct);
             Check(Sha(manager) == AgentManagerHash, "Несовместимый установщик агента.");
             var session = await SshReadProof.ReadSessionAsync(_shell, ct);
-            var result = await _shell.RunAsync("unset ZTE_AGENT_TEST_ROOT; sh -s -- status", manager, TimeSpan.FromSeconds(30), ct);
+            var result = await _shell.RunAsync("unset ZTE_AGENT_TEST_ROOT; sh -s -- status", manager.Concat(Encoding.UTF8.GetBytes("\n" + AgentModeProbe)).ToArray(), TimeSpan.FromSeconds(30), ct);
             Check(result.Success, AgentStatusFailure(result));
             var status = ParseAgentStatus(Text(result.Stdout));
             session.Verify(await SshReadProof.ReadSessionAsync(_shell, ct));
@@ -147,6 +148,7 @@ public sealed partial class DeviceFeatureService
 
     private async Task<AgentInstallationStatus> InstallAgentBinaryAtStageAsync(DeviceIdentity identity, string token, string stage, AgentInstallationStatus before, CancellationToken ct, Action<bool>? completion = null, string? candidateHash = null)
     {
+        Check(identity == await ReadAgentIdentityAsync(ct), "Устройство изменилось во время операции с агентом.");
         var expectedHash = candidateHash ?? VpnAgentHash;
         if (before.Hash == expectedHash && before.Running) return before;
         completion?.Invoke(false);
@@ -161,9 +163,26 @@ public sealed partial class DeviceFeatureService
 
     private async Task<AgentInstallationStatus> AgentStatusAtStageAsync(string stage, CancellationToken ct)
     {
-        var output = await RunTextAsync("set -eu; test \"$(sha256sum " + Quote(stage + "/manager.sh") + " | cut -d ' ' -f1)\" = " + Quote(AgentManagerHash) + "; sh " + Quote(stage + "/manager.sh") + " status", ct: ct);
+        var output = await RunTextAsync("set -eu; test \"$(sha256sum " + Quote(stage + "/manager.sh") + " | cut -d ' ' -f1)\" = " + Quote(AgentManagerHash) + "; sh " + Quote(stage + "/manager.sh") + " status;\n" + AgentModeProbe, ct: ct);
         return ParseAgentStatus(output);
     }
+
+    // Only the fixed mode projection is returned; process environments never leave the modem.
+    internal const string AgentModeProbe = """
+        mode=not_assessed; count=0
+        if command -v readlink >/dev/null 2>&1 && command -v tr >/dev/null 2>&1 && command -v awk >/dev/null 2>&1; then
+          for exe in /proc/[0-9]*/exe; do
+            test "$(readlink "$exe" 2>/dev/null || true)" = /data/zte-agent || continue
+            count=$((count+1)); envfile=${exe%/exe}/environ
+            if test "$count" != 1; then mode=ambiguous; continue; fi
+            if test -r "$envfile"; then
+              mode=$(tr '\000' '\n' < "$envfile" 2>/dev/null | awk 'index($0,"ZTE_AGENT_MODE=")==1 {n++;v=substr($0,16)} END {if(NR==0)print "not_assessed";else if(n==0)print "default";else if(n!=1)print "ambiguous";else if(v=="normal"||v=="discovery")print v;else print "unknown"}')
+            fi
+          done
+        fi
+        case "$mode" in normal|discovery|default|unknown|ambiguous|not_assessed) ;; *) mode=not_assessed;; esac
+        printf 'AGENT_MODE %s\n' "$mode"
+        """;
 
     private static string AgentStatusFailure(ZteImeiStudio.Transport.RemoteResult result)
     {
@@ -191,14 +210,16 @@ public sealed partial class DeviceFeatureService
             Check(pair.Length == 2 && values.TryAdd(pair[0], pair[1]), "Повреждён ответ проверки агента.");
         }
         Check(values.TryGetValue("AGENT_SHA", out var hash) && (hash == "absent" || Regex.IsMatch(hash, "^[0-9a-f]{64}$")), "Нет контрольной суммы установленного агента.");
-        Check(values.Keys.All(key => key is "AGENT_SHA" or "AGENT_RUNNING" or "AGENT_STARTUP" or "AGENT_PENDING" or "AGENT_BACKUP" or "AGENT_WARNING") &&
+        Check(values.Keys.All(key => key is "AGENT_SHA" or "AGENT_RUNNING" or "AGENT_STARTUP" or "AGENT_PENDING" or "AGENT_BACKUP" or "AGENT_WARNING" or "AGENT_MODE") &&
               new[] { "AGENT_RUNNING", "AGENT_STARTUP", "AGENT_PENDING" }.All(key => !values.TryGetValue(key, out var flag) || flag is "yes" or "no"),
               "Повреждён ответ проверки агента.");
         Check(!values.TryGetValue("AGENT_WARNING", out var warning) || warning == "OWNER", "Повреждён ответ проверки агента.");
+        var mode = values.GetValueOrDefault("AGENT_MODE", "not_assessed");
+        Check(mode is "normal" or "discovery" or "default" or "unknown" or "ambiguous" or "not_assessed", "Повреждён ответ проверки агента.");
         string? backup = values.GetValueOrDefault("AGENT_BACKUP");
         Check(backup == null || Regex.IsMatch(backup, "^[0-9a-f]{64}$"), "Повреждён бэкап агента.");
         return new AgentInstallationStatus(hash!, values.GetValueOrDefault("AGENT_RUNNING") == "yes",
-            values.GetValueOrDefault("AGENT_STARTUP") == "yes", values.GetValueOrDefault("AGENT_PENDING") == "yes", backup, warning);
+            values.GetValueOrDefault("AGENT_STARTUP") == "yes", values.GetValueOrDefault("AGENT_PENDING") == "yes", backup, warning, mode);
     }
 
     public async Task<ScreenLocalizationStatus> GetScreenLocalizationStatusAsync(CancellationToken ct = default)
@@ -211,7 +232,7 @@ public sealed partial class DeviceFeatureService
                 "mounted=$(awk '$5==\"/usr/ui/language/English.ini\" || $5==\"/usr/ui/language/Chinese.ini\" || $5==\"/usr/bin/zte_topsw_devui\" {n++} END {print n+0}' /proc/self/mountinfo); " +
                 "state=absent; if test \"$mounted\" != 0 || test -e /etc/init.d/zte_imei_screen_ru || test -L /etc/init.d/zte_imei_screen_ru || test -e /etc/rc.d/S47zte_imei_screen_ru || test -L /etc/rc.d/S47zte_imei_screen_ru || test ! -f /etc/init.d/zte_topsw_devui || test -L /etc/init.d/zte_topsw_devui || test \"$(sha256sum /etc/init.d/zte_topsw_devui 2>/dev/null | cut -d ' ' -f1)\" != a30da6481637f1fd94e037373d406e574be7e722937a4965325086740be67e35; then state=error; fi; " +
                 "pid=$(pidof zte_topsw_devui 2>/dev/null | awk '{print $1}' || true); case \"$pid\" in ''|*[!0-9]*) pid=0;; esac; " +
-                "printf 'SCREEN_RU_STATUS state=%s language=%s mounted=%s boot=0 pid=%s revision=20260924\\n' \"$state\" \"$language\" \"$mounted\" \"$pid\"", ct: ct);
+                "printf 'SCREEN_RU_STATUS state=%s language=%s mounted=%s boot=0 pid=%s revision=" + ScreenRevision + "\\n' \"$state\" \"$language\" \"$mounted\" \"$pid\"", ct: ct);
             var status = ParseScreenStatus(output);
             if (status.State == "error") status = status with { Reason = await ReadScreenFailureReasonAsync(ct) };
             session.Verify(await SshReadProof.ReadSessionAsync(_shell, ct));
@@ -270,29 +291,32 @@ public sealed partial class DeviceFeatureService
         => MutateAsync(async (identity, token) =>
         {
             var current = await GetScreenLocalizationStatusAsync(ct);
-            if (current.State != "absent" && current.Revision == "20260924")
+            if (current.State != "absent" && current.Revision == ScreenRevision)
             {
                 if (current.State == "enabled") return current;
-                var result = ParseScreenStatus(await RunTextAsync(Guard(identity, token) + ScreenManagerCommand("enable", identity.Cid, ScreenManagerHash), seconds: 240, ct: ct));
+                var result = ParseScreenStatus(await RunScreenCommandAsync(Guard(identity, token) + ScreenManagerCommand("enable", identity.Cid, ScreenManagerHash), 240, ct));
                 Check(result.State == "enabled" && result.Language == "cn" && result.Pid > 0, "Русификация не подтвердила запуск.");
                 return result;
             }
             var originalCommand = current.State == "absent" ? "cat /usr/bin/zte_topsw_devui" : "cat " + ScreenRoot + "/backup/zte_topsw_devui";
             var original = (await RunAsync(originalCommand, seconds: 120, ct: ct)).Stdout;
             var files = await LoadResourcesAsync("ScreenLocalization", ScreenFileNames, ct);
-            var patched = ApplyScreenFontPatch(original, files["font.patch.json"]);
+            var selectedPatch = SelectScreenFontPatch(original, files["font.patch.json"], files["font.patch.b28.json"]);
+            var patched = ApplyScreenFontPatch(original, selectedPatch);
+            files["font.patch.json"] = selectedPatch;
+            files.Remove("font.patch.b28.json");
             files.Add("zte_topsw_devui", patched);
-            await VerifyIdentityAsync(identity, ct);
+            Check(identity == await ReadAgentIdentityAsync(ct), "Модем или его загрузка изменились во время операции. Обновите состояние.");
             var stage = await StageAsync("zte-screen-ru-install", files, ct);
             try
             {
-                var output = await RunTextAsync(Guard(identity, token) + "sh " + Quote(stage + "/install.sh") + " install " + Quote(stage) + " " + Quote(identity.Cid), seconds: 270, ct: ct);
+                var output = await RunScreenCommandAsync(Guard(identity, token) + "sh " + Quote(stage + "/install.sh") + " install " + Quote(stage) + " " + Quote(identity.Cid), 270, ct);
                 var result = ParseScreenStatus(output);
                 Check(result.State == "enabled" && result.Language == "cn" && result.Pid > 0, "Русификация не подтвердила запуск.");
                 return result;
             }
             finally { await CleanupStageAsync(stage, files.Keys, CancellationToken.None); }
-        }, ct);
+        }, ct, measuredAgentPlatform: true);
 
     public Task<ScreenLocalizationStatus> RestoreScreenLocalizationAsync(CancellationToken ct = default)
         => MutateAsync(async (identity, token) =>
@@ -302,15 +326,32 @@ public sealed partial class DeviceFeatureService
             Check(current.State is "enabled" or "disabled", ScreenFailureDescription(current.Reason));
             var hash = current.Revision switch
             {
-                "20260924" => ScreenManagerHash,
+                ScreenRevision => ScreenManagerHash,
+                "20260924" => "810aae3c07c8019f2d0657f2bad6f1ee38f1dea5f1081210ab144478dd87c7b8",
                 "20260922" => "6aed6654afb7a4fde7792a5f6034aa41e15b0fd77d794ed04d3a12c111c95fd2",
                 "20260923" => "586a7727fb24a5701990c7cd82889887220c1c5566261c53ca21f3bb12549bfa",
                 _ => throw new DeviceFeatureException("Неизвестная версия русификации.")
             };
-            var result = ParseScreenStatus(await RunTextAsync(Guard(identity, token) + ScreenManagerCommand("disable", identity.Cid, hash), seconds: 240, ct: ct));
+            var result = ParseScreenStatus(await RunScreenCommandAsync(Guard(identity, token) + ScreenManagerCommand("disable", identity.Cid, hash), 240, ct));
             Check(result.State == "disabled" && result.Language == "en" && result.Pid > 0, "Штатный интерфейс не подтвердил восстановление.");
             return result;
-        }, ct);
+        }, ct, measuredAgentPlatform: true);
+
+    private async Task<string> RunScreenCommandAsync(string command, int seconds, CancellationToken ct)
+    {
+        var result = await _shell.RunAsync(command, timeout: TimeSpan.FromSeconds(seconds), ct: ct);
+        if (!result.Success)
+        {
+            var reason = Text(result.Stderr);
+            throw new DeviceFeatureException(reason switch
+            {
+                "SCREEN_RU_ERROR FONT_CHANGED" => "Шрифт ZTEZhengYuan.ttf отличается от проверенного; метрики русского текста не подтверждены.",
+                "SCREEN_RU_ERROR SCREEN_PROFILE" => "Экранный интерфейс или его исходные словари не соответствуют проверенному профилю.",
+                _ => $"Команда модема завершилась с кодом {result.ExitCode}: {reason[..Math.Min(reason.Length, 450)]}"
+            });
+        }
+        return Text(result.Stdout);
+    }
 
     private static string ScreenManagerCommand(string action, string? cid, string hash)
     {
@@ -340,10 +381,30 @@ public sealed partial class DeviceFeatureService
               int.TryParse(fields["mounted"], out mounted) && mounted is >= 0 and <= 3 &&
               int.TryParse(fields["pid"], out pid) && pid >= 0 &&
               fields["boot"] is "0" or "1" &&
-              new[] { "20260922", "20260923", "20260924" }.Contains(fields["revision"]), "Некорректный статус русификации.");
+              new[] { "20260922", "20260923", "20260924", ScreenRevision }.Contains(fields["revision"]), "Некорректный статус русификации.");
         var boot = fields["boot"] == "1";
         Check(fields["state"] == "error" || (fields["state"] == "enabled" ? mounted == 3 && boot : mounted == 0 && !boot), "Состояние русификации не согласовано.");
         return new ScreenLocalizationStatus(fields["state"], fields["language"], mounted, boot, pid, fields["revision"], fields.GetValueOrDefault("reason"));
+    }
+
+    private static byte[] SelectScreenFontPatch(byte[] original, params byte[][] manifests)
+    {
+        var hash = Sha(original);
+        var matches = new List<byte[]>();
+        foreach (var bytes in manifests)
+        {
+            using var document = JsonDocument.Parse(bytes);
+            var manifest = document.RootElement;
+            var input = StringProperty(manifest, "inputSHA256");
+            var output = StringProperty(manifest, "outputSHA256");
+            Check(manifest.GetProperty("version").GetInt32() == 1 && input is not null && HashPattern.IsMatch(input) &&
+                  output is not null && HashPattern.IsMatch(output) && manifest.GetProperty("inputSize").GetInt32() > 0 &&
+                  manifest.GetProperty("outputSize").GetInt32() == manifest.GetProperty("inputSize").GetInt32(),
+                  "Неизвестный формат профиля русификации.");
+            if (input == hash && manifest.GetProperty("inputSize").GetInt32() == original.Length) matches.Add(bytes);
+        }
+        Check(matches.Count == 1, "Экранный интерфейс не соответствует единственному проверенному профилю русификации.");
+        return matches[0];
     }
 
     private static byte[] ApplyScreenFontPatch(byte[] original, byte[] manifestBytes)
@@ -354,7 +415,7 @@ public sealed partial class DeviceFeatureService
         var outputHash = StringProperty(manifest, "outputSHA256");
         Check(manifest.GetProperty("version").GetInt32() == 1 && original.Length == manifest.GetProperty("inputSize").GetInt32() &&
               original.Length == manifest.GetProperty("outputSize").GetInt32() && Sha(original) == inputHash,
-            "Исходный экранный интерфейс не соответствует проверенной B31.");
+            "Исходный экранный интерфейс не соответствует выбранному профилю русификации.");
         var result = (byte[])original.Clone();
         var previousEnd = 0;
         var patches = manifest.GetProperty("patches").EnumerateArray().ToArray();

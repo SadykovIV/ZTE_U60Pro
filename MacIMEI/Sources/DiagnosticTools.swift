@@ -40,9 +40,10 @@ struct DiagnosticToolsStatus: Equatable, Sendable {
 struct DiagnosticToolsPlan: Sendable {
     let identity: Identity, bootID: String, before: DiagnosticToolsStatus, bundleID: String
     let toolID: String?
+    let routerHash: String
     var selected: Set<String> { toolID.map { before.selected.union([$0]) } ?? DiagnosticTool.ids }
-    init(identity: Identity, bootID: String, before: DiagnosticToolsStatus, bundleID: String, toolID: String? = nil) {
-        self.identity = identity; self.bootID = bootID; self.before = before; self.bundleID = bundleID; self.toolID = toolID
+    init(identity: Identity, bootID: String, before: DiagnosticToolsStatus, bundleID: String, toolID: String? = nil, routerHash: String = ModemEngine.routerHash) {
+        self.identity = identity; self.bootID = bootID; self.before = before; self.bundleID = bundleID; self.toolID = toolID; self.routerHash = routerHash
     }
 }
 
@@ -105,13 +106,13 @@ final class DiagnosticToolsManager {
                      canRollback: previous != "unset", running: fields["running"] == "1", freeKiB: free,
                      selected: selected, previousSelected: previousSelected)
     }
-    private func guardOperation(mutation: Bool) throws -> (Identity, String) {
+    private func guardOperation(mutation: Bool) throws -> DiagnosticDeviceProof {
         try require(engine.lockFD >= 0, "Проверка приложений требует блокировки операции")
-        for name in ["pending.json", "setup-pending.json", "adb-access-pending.json"] {
+        for name in ["adb-access-pending.json"] where mutation {
             try require(!engine.fm.fileExists(atPath: engine.root.appendingPathComponent(name).path), "Сначала завершите настройку или смену IMEI")
         }
         try require(!SystemBackups.hasPendingRestore(root: engine.root), "Сначала завершите восстановление модема")
-        let value = try engine.identity()
+        let value = try engine.measuredIdentity()
         if mutation { try engine.acquireRemoteLock() }
         return value
     }
@@ -173,7 +174,7 @@ final class DiagnosticToolsManager {
         let identity = try guardOperation(mutation: false)
         return try staged { stage in
             let status = try run(stage, ["inspect"])
-            try require(try engine.identity() == identity, "Устройство или загрузка изменились во время проверки приложений")
+            try require(try engine.measuredIdentity() == identity, "Устройство или загрузка изменились во время проверки приложений")
             return status
         }
     }
@@ -187,15 +188,15 @@ final class DiagnosticToolsManager {
         if let toolID, let active = status.active, active != bundle.id {
             try require(status.selected.subtracting([toolID]).isEmpty, "Индивидуальная установка изменила бы общую версию других приложений. Автоматическое обновление остановлено.")
         }
-        try require(try engine.identity() == identity, "Модем изменился во время подготовки установки")
-        return .init(identity: identity.0, bootID: identity.1, before: status, bundleID: bundle.id, toolID: toolID)
+        try require(try engine.measuredIdentity() == identity, "Модем изменился во время подготовки установки")
+        return .init(identity: identity.identity, bootID: identity.bootID, before: status, bundleID: bundle.id, toolID: toolID, routerHash: identity.routerHash)
     }
     func install(_ plan: DiagnosticToolsPlan) throws -> DiagnosticToolsStatus {
         if let toolID = plan.toolID { try require(DiagnosticTool.ids.contains(toolID), "Неизвестное диагностическое приложение") }
         let bundle = try Self.bundle(resources: engine.resources, verifyArchive: true)
         try require(bundle.id == plan.bundleID, "Набор изменился после проверки; повторите проверку")
         let identity = try guardOperation(mutation: true)
-        try require(identity.0 == plan.identity && identity.1 == plan.bootID, "Устройство или загрузка изменились после проверки")
+        try require(identity.identity == plan.identity && identity.bootID == plan.bootID && identity.routerHash == plan.routerHash, "Устройство или загрузка изменились после проверки")
         return try staged(requiresTimeout: true) { stage in
             let before = try run(stage, ["inspect"])
             try require(before.active == plan.before.active && before.previous == plan.before.previous && before.canRollback == plan.before.canRollback && before.selected == plan.before.selected && before.previousSelected == plan.before.previousSelected && !before.running,
@@ -203,9 +204,9 @@ final class DiagnosticToolsManager {
             let data = try DeviceBackups.smallFile(engine.resources.appendingPathComponent("DiagnosticTools/bundle.tar.gz"), maximum: 8_388_608, publicResource: true)
             try require(digest(data) == bundle.archiveSHA256, "Архив изменился во время установки")
             try upload(data, path: stage + "/bundle.tar.gz", expected: bundle.archiveSHA256)
-            let result = try run(stage, ["install", stage, bundle.id, bundle.archiveSHA256, plan.toolID ?? "all", identity.0.cid, identity.1], timeout: 180)
+            let result = try run(stage, ["install", stage, bundle.id, bundle.archiveSHA256, plan.toolID ?? "all", identity.identity.cid, identity.bootID], timeout: 180)
             let changed = before.active != bundle.id || before.selected != plan.selected
-            try require(try engine.identity() == identity && result.active == bundle.id && result.selected == plan.selected &&
+            try require(try engine.measuredIdentity() == identity && result.active == bundle.id && result.selected == plan.selected &&
                         result.previous == (changed ? before.active : before.previous) &&
                         result.previousSelected == (changed ? before.selected : before.previousSelected) &&
                         result.canRollback == (changed || before.canRollback),
@@ -223,9 +224,9 @@ final class DiagnosticToolsManager {
             try require(!before.running, "Сначала завершите работающие утилиты")
             try require(action == "remove" ? before.installed : before.canRollback, "Для этой операции нет сохранённого состояния")
             if let toolID { try require(before.isInstalled(toolID), "Приложение не установлено") }
-            let args = action == "remove" ? [action, toolID ?? "all", identity.0.cid, identity.1] : [action, identity.0.cid, identity.1]
+            let args = action == "remove" ? [action, toolID ?? "all", identity.identity.cid, identity.bootID] : [action, identity.identity.cid, identity.bootID]
             let result = try run(stage, args, timeout: 180)
-            try require(try engine.identity() == identity, "Устройство изменилось во время изменения набора")
+            try require(try engine.measuredIdentity() == identity, "Устройство изменилось во время изменения набора")
             let selected = action == "remove" ? (toolID.map { before.selected.subtracting([$0]) } ?? []) : before.previousSelected
             let active = action == "remove" ? (selected.isEmpty ? nil : before.active) : before.previous
             try require(result.active == active && result.selected == selected && result.previous == before.active && result.previousSelected == before.selected && result.canRollback,

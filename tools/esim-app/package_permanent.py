@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Package the pinned eSIM server and web dashboard for both app installers."""
 from pathlib import Path
-import argparse, gzip, hashlib, io, json, re, shutil, tarfile
+import argparse, gzip, hashlib, importlib.util, io, json, re, shutil, tarfile
 ROOT=Path(__file__).resolve().parents[2]
 def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()
 def manifest(base):
@@ -35,7 +35,7 @@ def main():
     if sha(args.agent)!=args.sha256:raise SystemExit('Agent SHA mismatch')
     swift_path=ROOT/'MacIMEI/Sources/BundledAgent.swift'
     swift_source=retain_previous_agent_hash(swift_path.read_text(),args.sha256)
-    version='2.9.0-esim.4';mac=ROOT/'MacIMEI/Resources';win=ROOT/'Windows_x64/Resources';dist=ROOT/'ModemAgent/web-app/dist'
+    version='2.9.0-esim.5';mac=ROOT/'MacIMEI/Resources';win=ROOT/'Windows_x64/Resources';dist=ROOT/'ModemAgent/web-app/dist'
     if not (dist/'index.html').is_file():raise SystemExit('Build dashboard first')
     helper=ROOT/'ModemAgent/target/aarch64-unknown-linux-musl/release/zte-vpnctl'
     shutil.copy2(helper,mac/'VPN/vpnctl')
@@ -95,5 +95,8 @@ def main():
         s,n=re.subn(r'(static let '+key+r' = ")[a-f0-9]+(")',lambda m:m[1]+value+m[2],s)
         if n!=1:raise SystemExit('Missing VPN pin '+key)
     p.write_text(s)
+    spec=importlib.util.spec_from_file_location('public_resource_sync',Path(__file__).resolve().parents[2]/'Windows_x64/sync_public_resources.py')
+    sync=importlib.util.module_from_spec(spec);spec.loader.exec_module(sync)
+    sync.synchronize_agent_access_registry(ROOT)
     print(json.dumps({'agent_version':version,'agent_sha256':args.sha256,'vpnctl_sha256':sha(helper),'launcher_sha256':sha(mac/'VPN/launcher.so'),'dashboard_script_sha256':sha(bundle/'dashboard.sh'),'dashboard_index_sha256':sha(dist/'index.html'),'dashboard_archive_sha256':sha(archive),'same_installed_and_rpc_agent_required':True},indent=2))
 if __name__=='__main__':main()

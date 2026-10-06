@@ -17,7 +17,7 @@ extension ContentView {
                 OperationInfoButton(topic: .firmwareSupport)
                 Spacer()
             }
-            Text(L10n.text("Свежий отчёт по SSH, агенту, экрану, Launcher, VPN/Wi-Fi, TTL, SIM/eSIM, приложениям и резервным копиям; файлы экрана, языки и доступные шрифты. Один ZIP для адаптации функций программы."))
+            Text(L10n.text("Свежий отчёт по функциям программы, файлы экрана, сетевых компонентов и библиотек ZTE, языки, шрифты и журнал действий. Один ZIP для адаптации прошивки."))
                 .font(.system(size: 12)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
             Button(L10n.text("Собрать данные для адаптации прошивки")) { model.collectFirmwareSupport() }
                 .buttonStyle(StudioButtonStyle(prominent: true)).disabled(!model.canCollectFirmwareSupport)

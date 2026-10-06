@@ -6,6 +6,7 @@ private final class Remote: RemoteTransport {
     var boot = "11111111-2222-3333-4444-555555555555", firmware = ModemEngine.firmwareHash
     var active = "none", previous = "unset", packages = "", corruptUpload = false, failCommand = false, reboot = false
     var commands: [String] = [], archives = 0, timeoutUploads = 0
+    var measuredReads = 0, platformFailure = false
     var badTimeoutUpload = false
     var feeds = "src/gz official_base https://downloads.openwrt.org/releases/23.05.4/packages/aarch64_cortex-a53/base\n"
     var uploadedFeeds: String?
@@ -14,6 +15,11 @@ private final class Remote: RemoteTransport {
     func run(_ command: String, input: Data?, timeout: TimeInterval) throws -> CommandResult {
         commands.append(command)
         func result(_ text: String, _ code: Int32 = 0) -> CommandResult { .init(status: code, stdout: code == 0 ? Data(text.utf8) : Data(), stderr: code == 0 ? Data() : Data(text.utf8)) }
+        if command == AccessIdentity.command {
+            measuredReads += 1
+            if platformFailure { return result("PLATFORM", 71) }
+            return result(firmware + "  /firmware/image/modem.b16\n" + ModemEngine.routerHash + "  /usr/bin/diag-router\n" + cid + "\n" + boot + "\n")
+        }
         if command.hasPrefix("sha256sum /firmware/image/modem.b16") { return result(firmware + "  /firmware/image/modem.b16\n" + ModemEngine.routerHash + "  /usr/bin/diag-router\n" + cid + "\n" + boot + "\n") }
         if let input, command.contains("cat > '") {
             let path = command.components(separatedBy: "cat > '")[1].components(separatedBy: "'")[0]
@@ -22,14 +28,15 @@ private final class Remote: RemoteTransport {
             if path.hasSuffix("zte-timeout") { timeoutUploads += 1; try check(digest(input) == ModemHostTools.timeoutHash && command.contains("chmod 700"), "Timeout helper was not pinned/executable") }
             return result(((corruptUpload || (badTimeoutUpload && path.hasSuffix("zte-timeout"))) ? String(repeating: "0", count: 64) : digest(input)) + "  " + path + "\n")
         }
-        if command.contains("; sh '") {
-            try check(command.contains(ExperimentalOpkgManager.helperHash) && command.contains(cid) && command.contains(boot), "Helper omitted hash/device proof")
+        if command.contains("; sh '") || command.hasPrefix("sh -s -- ") {
+            let pinned = command.hasPrefix("sh -s -- ") ? input.map(digest) == ExperimentalOpkgManager.helperHash : command.contains(ExperimentalOpkgManager.helperHash)
+            try check(pinned && command.contains(cid) && command.contains(boot), "Helper omitted hash/device proof")
             if failCommand { return result("OPKG_ERROR FEED_SIGNATURE", 1) }
             if command.contains(" 'install-adapter' ") { try check(archives == 1, "Runtime not uploaded");previous = active;active = "g-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" }
             if command.contains(" 'remove-adapter' ") { previous = active;active = "none";packages = "" }
             if command.contains(" 'rollback' ") { let old = active;active = previous;previous = old }
             if command.contains(" 'execute' ") { try check(command.contains(" 'list' ") || command.hasSuffix(" 'list'") || command.hasSuffix(" 'files' 'htop'"), "Unexpected argv") }
-            if command.contains(" 'read-feeds' ") { return result("__ZTE_OPKG_FEEDS_V1__\nrelease=23.05.4\narchitecture=aarch64_cortex-a53\ngeneration=\(active)\nkey=b5043e70f9a75cde\n" + feeds.split(separator: "\n").map { "source=" + $0 + "\n" }.joined() + "__END_FEEDS__\n" + status()) }
+            if command.contains(" 'read-feeds' ") { if reboot { boot = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" }; return result("__ZTE_OPKG_FEEDS_V1__\nrelease=23.05.4\narchitecture=aarch64_cortex-a53\ngeneration=\(active)\nkey=b5043e70f9a75cde\n" + feeds.split(separator: "\n").map { "source=" + $0 + "\n" }.joined() + "__END_FEEDS__\n" + status()) }
             if command.contains(" 'save-feeds' ") {
                 guard command.hasSuffix(" '" + active + "'") else { return result("OPKG_ERROR FEEDS_STALE", 1) }
                 try check(feedUploads > 0 && command.contains(digest(Data(uploadedFeeds!.utf8))), "Feeds payload proof omitted")
@@ -107,6 +114,24 @@ private final class Fixture {
             let f = try Fixture(), m = ExperimentalOpkgManager(engine:f.engine)
             try rejects { _ = try m.inspect() }
             let s = try f.engine.locked { try m.inspect() };try check(!s.installed && f.remote.archives == 0 && f.remote.timeoutUploads == 0, "Inspect installed data")
+        }
+        try test("B28 read status and feeds use measured identity without staging or unrelated pending") {
+            let f = try Fixture(), m = ExperimentalOpkgManager(engine:f.engine)
+            f.remote.firmware = String(repeating:"b",count:64)
+            try Data("{}".utf8).write(to:f.root.appendingPathComponent("pending.json"))
+            try Data("{}".utf8).write(to:f.root.appendingPathComponent("setup-pending.json"))
+            _ = try f.engine.locked { try m.inspect() }
+            f.remote.active = "g-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+            _ = try f.engine.locked { try m.loadFeeds() }
+            try check(f.remote.measuredReads == 4 && f.remote.archives == 0 && f.remote.timeoutUploads == 0 && !f.remote.commands.contains { $0.contains("mkdir") || $0.contains("cat >") }, "Read unexpectedly staged or skipped proof")
+        }
+        try test("Read status rejects platform failure and final boot drift") {
+            for platform in [true,false] {
+                let f = try Fixture(), m = ExperimentalOpkgManager(engine:f.engine)
+                f.remote.platformFailure = platform;f.remote.reboot = !platform
+                try rejects { _ = try f.engine.locked { try m.inspect() } }
+                try check(f.remote.archives == 0 && !f.remote.commands.contains { $0.contains("mkdir") }, "Read refusal staged data")
+            }
         }
         try test("Install remove rollback and files query verify final receipt") {
             let f = try Fixture(), m = ExperimentalOpkgManager(engine:f.engine)

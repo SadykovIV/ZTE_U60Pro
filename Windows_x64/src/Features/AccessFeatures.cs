@@ -14,7 +14,7 @@ public sealed partial class DeviceFeatureService
 {
     private static readonly string[] AccessServiceIds = ["stockWeb", "dashboard", "agent", "managementSSH", "userSSH", "adb"];
     private static readonly HashSet<string> ControllableServices = ["dashboard", "agent", "userSSH"];
-    private const string AccessScriptHash = "31677c8f6229b0360844afce30606f060cf6bf091f7da89011bbd60ac89804d5";
+    private const string AccessScriptHash = "66346448554d622c52daaef3150dd99318549c4c70f92274364ecba87f24e7c4";
 
     private static void ValidateLanAddress(string value)
         => Check(IPAddress.TryParse(value, out var address) && address.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(address), "Укажите IPv4-адрес модема.");
@@ -25,10 +25,10 @@ public sealed partial class DeviceFeatureService
     public async Task<AccessStatus> GetAccessStatusAsync(string lanAddress, CancellationToken ct = default)
     {
         ValidateLanAddress(lanAddress);
-        var identity = await ReadIdentityAsync(requireSupportedFirmware: true, ct);
+        var identity = await ReadAgentIdentityAsync(ct);
         var services = await ReadAccessServicesAsync(identity, lanAddress, ct);
         var accounts = await GetSshAccountStatusAsync(lanAddress, ct);
-        await VerifyIdentityAsync(identity, ct);
+        Check(identity == await ReadAgentIdentityAsync(ct), "Модем или его загрузка изменились во время операции. Обновите состояние.");
         return new AccessStatus(services, accounts);
     }
 
@@ -58,7 +58,7 @@ public sealed partial class DeviceFeatureService
                 return new AccessStatus(services, accounts);
             }
             finally { await CleanupStageAsync(stage, ["access-services.sh", "launcher.private.sh"], CancellationToken.None); }
-        }, ct);
+        }, ct, measuredAgentPlatform: true);
     }
 
     private async Task<IReadOnlyList<AccessServiceStatus>> ReadAccessServicesAsync(DeviceIdentity identity, string lanAddress, CancellationToken ct)
@@ -154,7 +154,7 @@ public sealed partial class DeviceFeatureService
                 return after;
             }
             finally { await CleanupStageAsync(stage, files.Keys, CancellationToken.None); }
-        }, ct);
+        }, ct, measuredAgentPlatform: true);
     }
 
     public Task<SshAccountStatus> DeleteSshAccountAsync(string username, string lanAddress, CancellationToken ct = default)
@@ -177,6 +177,6 @@ public sealed partial class DeviceFeatureService
                 return after;
             }
             finally { await CleanupStageAsync(stage, files.Keys, CancellationToken.None); }
-        }, ct);
+        }, ct, measuredAgentPlatform: true);
     }
 }

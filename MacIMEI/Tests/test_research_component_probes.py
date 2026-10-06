@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Execute the actual revision-10 shell with a private, mechanical namespace map.
+"""Execute the actual revision-11 shell with a private, mechanical namespace map.
 
 No device, service, network, APDU or installed component is invoked. Fake tools
 record all requests and return synthetic private fields to check projection.
@@ -18,11 +18,12 @@ REPO = Path(__file__).resolve().parents[2]
 SPEC = REPO / 'MacIMEI/Resources/FirmwareResearch/probes.json'
 IDS = ['component-rpc-schemas', 'agent-runtime-mode', 'wifi-runtime-shape',
        'vpn-installation-state', 'vpn-kernel-routing', 'launcher-runtime-state',
-       'ttl-apn-state', 'esim-passive-dependencies', 'component-install-dependencies']
+       'ttl-apn-state', 'esim-passive-dependencies', 'component-install-dependencies',
+       'usb-configfs-shape', 'vendor-read-response-shapes']
 CANARY = 'PRIVATE_SENTINEL_PASSWORD_7391'
 
 FAKE = r'''
-import hashlib,json,os,stat,sys
+import hashlib,json,os,stat,sys,subprocess
 from pathlib import Path
 cmd=Path(sys.argv[0]).name;args=sys.argv[1:]
 cfg=json.loads(Path(os.environ['FIXTURE_CONFIG']).read_text())
@@ -37,9 +38,34 @@ if cmd=='ubus':
   print(cfg['schemas'][obj]);sys.exit()
  if 'call' not in args:sys.exit(7)
  i=args.index('call');obj,method=args[i+1:i+3]
- allowed={('service','list'),('zwrt_apn_object','get_apn_mode')}
+ allowed={('service','list'),('zwrt_apn_object','get_apn_mode'),('zte_nwinfo_api','nwinfo_get_netinfo'),('zwrt_router.api','router_get_dns_para'),('zwrt_bsp.battery','list'),('zwrt_bsp.charger','list'),('zwrt_wlan','report')}
  if (obj,method) not in allowed:print('FORBIDDEN_METHOD',file=sys.stderr);sys.exit(9)
+ if obj in cfg.get('raw_responses',{}):print(cfg['raw_responses'][obj]);sys.exit()
  print(json.dumps(cfg.get('responses',{}).get(obj,{})));sys.exit()
+if cmd=='lua':
+ # Execute the production Lua projection, using Python's standard JSON decoder
+ # solely as the host substitute for the modem's luci.jsonc C module.
+ # Neither the projection nor its field whitelist is duplicated in the fixture.
+ body=sys.stdin.read();valid=True
+ try:data=json.loads(body) if body else {}
+ except ValueError:data={};valid=False
+ def literal(x):
+  if x is None:return 'nil'
+  if isinstance(x,bool):return 'true' if x else 'false'
+  if isinstance(x,str):return '"'+''.join('\\%03d'%c for c in x.encode())+'"'
+  if isinstance(x,(int,float)):return repr(x)
+  if isinstance(x,list):return '{'+','.join(literal(v) for v in x)+'}'
+  return '{'+','.join('['+literal(k)+']='+literal(v) for k,v in x.items())+'}'
+ parser=cfg.get('parser','luci.jsonc')
+ if parser=='missing':shim='package.path="";package.cpath="";'
+ else:
+  implementation='error("PRIVATE_SENTINEL_PASSWORD_7391")' if not valid or parser=='error' else 'return '+literal(data)
+  name='jsonc' if parser=='jsonc' else 'luci.jsonc'
+  shim='package.path="";package.cpath="";package.preload['+literal(name)+']=function() return {parse=function(_) '+implementation+' end} end;'
+ if cfg.get('lua51'):shim+='arg=nil;' # Lua 5.1 builds script args after evaluating -e.
+ args[args.index('-e')+1]=shim+args[args.index('-e')+1]
+ result=subprocess.run(['/opt/homebrew/bin/lua',*args],input=body,text=True,capture_output=True)
+ sys.stdout.write(result.stdout);sys.stderr.write(result.stderr);sys.exit(result.returncode)
 if cmd=='jsonfilter':
  try:
   data=json.loads(args[args.index('-s')+1]);key=args[args.index('-e')+1][2:]
@@ -72,7 +98,7 @@ elif cmd=='stat':
  if fmt not in values:sys.exit(3)
  print(values[fmt])
 elif cmd=='readlink':
- try:print(os.readlink(args[-1]))
+ try:print(str(Path(args[-1]).resolve(strict=True)) if '-f' in args else os.readlink(args[-1]))
  except OSError:sys.exit(1)
 elif cmd=='sha256sum':
  try:b=Path(args[-1]).read_bytes()
@@ -97,7 +123,7 @@ class ComponentProbes(unittest.TestCase):
         for name in ['sh','awk','tr','head','cat','cmp']:
             real = '/bin/'+name if Path('/bin/'+name).exists() else '/usr/bin/'+name
             (self.bin/name).symlink_to(real)
-        for name in ['ubus','jsonfilter','uci','hostapd_cli','curl','pidof','stat','readlink','sha256sum','ip']:
+        for name in ['ubus','jsonfilter','uci','hostapd_cli','curl','pidof','stat','readlink','sha256sum','ip','lua']:
             (self.bin/name).write_text('#!'+sys.executable+'\n'+FAKE)
             (self.bin/name).chmod(0o700)
         self.config = Path(self.temp.name)/'config.json'
@@ -294,8 +320,122 @@ class ComponentProbes(unittest.TestCase):
         f,out=self.execute(IDS[8]);self.assertEqual(f['component_rc_local_mode'],'775')
         self.assertEqual(f['component_startup_contents_read'],'0');self.assertNotIn('0:0:775',out)
 
+    def test_wms_schema_lists_writers_but_never_calls_them(self):
+        self.cfg['schemas']['zwrt_wms']="'zwrt_wms' @123\n"+'\n'.join([
+            ' "zwrt_wms_get_cmd_status":{"sms_cmd":"String"}',
+            ' "zte_libwms_get_sms_data":{"page":"Integer","data_per_page":"Integer","mem_store":"String","tags":"String","order_by":"String"}',
+            ' "zte_libwms_send_sms":{"number":"String","sms_time":"String","message_body":"String","id":"Integer","encode_type":"String"}',
+            ' "zwrt_wms_delete_sms":{"id":"Integer"}',
+            ' "zwrt_wms_modify_tag":{"id":"Integer","tag":"String"}'])
+        f,out=self.execute(IDS[0]);self.assertEqual(f['rpc_zwrt_wms_methods'],'5')
+        self.assertEqual(f['rpc_zwrt_wms_schema'],'known')
+        self.assertIn('FIELD<message_body> TYPE<String>',out)
+        self.assertFalse(any('call' in json.loads(x) for x in self.calls.read_text().splitlines()))
+
+    def test_opkg_uses_actual_private_manager_layout_without_execution(self):
+        self.file('/data/zte-imei-apps/opkg-private/opkg',CANARY,0o700)
+        self.file('/data/zte-imei-apps/opkg-private/state','active=none\nprevious=unset\n')
+        for name in ['generations','runners']:(self.root/('data/zte-imei-apps/opkg-private/'+name)).mkdir()
+        f,out=self.execute('opkg-layout');self.assertEqual(f['private_opkg_present'],'1')
+        self.assertEqual(f['adapter_status_executed'],'0')
+        self.assertIn('/opkg-private/generations ',out);self.assertIn('/opkg-private/state ',out)
+        self.assertNotIn('/zte-imei-apps/opkg/',out)
+        (self.root/'data/zte-imei-apps/opkg-private/opkg').unlink()
+        self.file('/data/zte-imei-apps/opkg/opkg',CANARY,0o700)
+        f,_=self.execute('opkg-layout');self.assertEqual(f['private_opkg_present'],'0')
+        self.assertTrue(all(json.loads(x)[0]=='stat' for x in self.calls.read_text().splitlines()))
+
+    def usb(self):
+        base='/sys/kernel/config/usb_gadget/g1'
+        for name in ['ffs.adb','gsi.rndis','ffs.diag','cser.nmea.1','mass_storage.0']:
+            (self.root/(base+'/functions/'+name).lstrip('/')).mkdir(parents=True)
+        self.link(base+'/configs/c.1/f1',base+'/functions/gsi.rndis')
+        self.link(base+'/configs/c.1/f6',base+'/functions/ffs.adb')
+        self.file(base+'/UDC','a600000.dwc3\n')
+        self.file('/sys/devices/platform/udc/state','configured\n')
+        self.link('/sys/class/udc/a600000.dwc3','/sys/devices/platform/udc')
+        # These values must never even be requested.
+        self.file(base+'/strings/0x409/serialnumber',CANARY)
+        self.file(base+'/functions/gsi.rndis/dev_addr',CANARY)
+        return base
+
+    def test_usb_function_and_link_classes_without_serial_or_mac(self):
+        base=self.usb();f,out=self.execute(IDS[9])
+        self.assertEqual(f['usb_configfs_gadgets'],'1')
+        self.assertEqual(f['usb_gadget_1_functions'],'5')
+        self.assertEqual(f['usb_gadget_1_links'],'2')
+        self.assertEqual(f['usb_gadget_1_udc_state'],'configured')
+        self.assertIn('USB_CONFIG_LINK gadget=1 config=1 class=adb',out)
+        self.assertNotIn('a600000',out)
+        calls=self.calls.read_text();self.assertNotIn('serialnumber',calls);self.assertNotIn('dev_addr',calls)
+
+    def test_usb_unknown_names_and_foreign_symlinks_are_not_exported(self):
+        base=self.usb()
+        (self.root/(base+'/functions/'+CANARY).lstrip('/')).mkdir()
+        self.file('/data/'+CANARY,CANARY)
+        self.link(base+'/configs/c.1/'+CANARY,'/data/'+CANARY)
+        f,out=self.execute(IDS[9]);self.assertEqual(f['usb_gadget_1_unknown_functions'],'1')
+        self.assertEqual(f['usb_gadget_1_unknown_links'],'1');self.assertNotIn('/data/',out)
+        self.file(base+'/UDC',CANARY)
+        f,_=self.execute(IDS[9]);self.assertEqual(f['usb_gadget_1_udc_state'],'not-assessed')
+
+    def test_usb_missing_and_symlink_root_not_an_empty_inventory(self):
+        f,_=self.execute(IDS[9]);self.assertEqual(f['usb_configfs_inventory'],'not-assessed')
+        (self.root/'data/private').mkdir();self.link('/sys/kernel/config/usb_gadget','/data/private')
+        f,_=self.execute(IDS[9]);self.assertEqual(f['usb_configfs_path'],'symlink')
+        self.assertEqual(f['usb_configfs_inventory'],'not-assessed')
+
+    def test_usb_unbound_and_read_failure_not_confused(self):
+        base=self.usb();self.file(base+'/UDC','\n')
+        f,_=self.execute(IDS[9]);self.assertEqual(f['usb_gadget_1_udc_bound'],'0')
+        self.assertEqual(f['usb_gadget_1_udc_state'],'unbound')
+        self.cfg['fail']=['readlink']
+        f,_=self.execute(IDS[9]);self.assertEqual(f['usb_gadget_1_unknown_links'],'2')
+
+    def test_response_shapes_execute_actual_lua_projection_no_values(self):
+        self.cfg['responses'].update({
+            'zte_nwinfo_api':{'network_type':CANARY,'lte_rsrp':-90,CANARY:{'password':CANARY}},
+            'zwrt_router.api':{'wan_prefer_dns_manual':'192.168.77.1','password':CANARY},
+            'zwrt_bsp.battery':{'battery_online':True,'battery_capacity':{'secret':CANARY}},
+            'zwrt_bsp.charger':{'direct_power_supply_mode':CANARY},
+            'zwrt_wlan':{'wifi_onoff':CANARY,'wifi6_switch':False,'ssid':CANARY}})
+        f,out=self.execute(IDS[10]);self.assertEqual(f['vendor_nwinfo_shape'],'observed')
+        self.assertIn('FIELD<network_type> TYPE<string>',out)
+        self.assertIn('FIELD<lte_rsrp> TYPE<number>',out)
+        self.assertIn('FIELD<battery_online> TYPE<boolean>',out)
+        self.assertIn('FIELD<battery_capacity> TYPE<table>',out)
+        self.assertEqual(f['vendor_nwinfo_unlisted_fields'],'1')
+        self.assertEqual(f['vendor_shape_compatibility_granted'],'0')
+        self.assertNotIn('192.168.77.1',out);self.assertNotIn('-90',out)
+        calls=[json.loads(x) for x in self.calls.read_text().splitlines()]
+        ubus=[x for x in calls if x[0]=='ubus'];self.assertEqual(len(ubus),6)
+        self.assertTrue(all(x[-1]=='{}' and 'call' in x for x in ubus))
+        self.assertTrue(all(CANARY not in str(x) for x in calls)) # Response goes via stdin, never argv.
+
+    def test_response_parser_fallback_missing_and_error(self):
+        self.cfg['parser']='jsonc';f,_=self.execute(IDS[10]);self.assertEqual(f['vendor_apn_shape'],'observed')
+        self.cfg['parser']='missing';self.calls.write_text('')
+        f,_=self.execute(IDS[10]);self.assertEqual(f['vendor_response_parser'],'not-assessed')
+        self.assertFalse(any(json.loads(x)[0]=='ubus' for x in self.calls.read_text().splitlines()))
+        self.cfg['parser']='error';f,_=self.execute(IDS[10]);self.assertEqual(f['vendor_apn_shape'],'not-assessed')
+
+    def test_lua51_evaluates_projection_without_global_arg(self):
+        self.cfg['lua51']=True
+        f,out=self.execute(IDS[10]);self.assertEqual(f['vendor_response_parser'],'available')
+        self.assertEqual(f['vendor_apn_shape'],'observed')
+        self.assertIn('RPC_RESPONSE apn FIELD<apn_mode> TYPE<number>',out)
+
+    def test_response_malformed_oversize_failure_and_duplicate_are_private(self):
+        for body in ['{"apn_mode":'+CANARY, '["'+CANARY+'"]', '{"apn_mode":"'+('x'*131072)+'"}', '{"apn_mode":"'+CANARY+'"}garbage']:
+            self.cfg['raw_responses']={'zwrt_apn_object':body}
+            f,_=self.execute(IDS[10]);self.assertEqual(f['vendor_apn_shape'],'not-assessed')
+        self.cfg['raw_responses']={'zwrt_apn_object':'{"apn_mode":"'+CANARY+'","apn_mode":true}'}
+        f,out=self.execute(IDS[10]);self.assertEqual(f['vendor_shape_compatibility_granted'],'0')
+        self.assertIn('FIELD<apn_mode> TYPE<boolean>',out) # Existing parser duplicate semantics; type only.
+        self.cfg['fail']=['ubus'];f,_=self.execute(IDS[10]);self.assertEqual(f['vendor_apn_shape'],'not-assessed')
+
     def test_all_groups_missing_tools_no_writes_or_secret(self):
-        for name in ['ubus','pidof','stat','uci','awk']:(self.bin/name).unlink()
+        for name in ['ubus','pidof','stat','uci','awk','readlink']:(self.bin/name).unlink()
         for id in IDS:
             f,_=self.execute(id);self.assertEqual(f['probe_tools'],'not-assessed')
 
@@ -303,9 +443,10 @@ class ComponentProbes(unittest.TestCase):
         blob=SPEC.read_bytes();s=json.loads(blob)
         self.assertEqual(blob,(REPO/'Windows_x64/Resources/FirmwareResearch/probes.json').read_bytes())
         baseline=json.loads(subprocess.check_output(['git','show','814a5a1:MacIMEI/Resources/FirmwareResearch/probes.json'],cwd=REPO))
-        self.assertEqual(s['probes'][:46],baseline['probes']);self.assertEqual(s['features'],baseline['features'])
-        self.assertEqual(s['revision'],10);self.assertEqual(len(s['probes']),55)
-        self.assertLessEqual(len(s['probes']),64);self.assertEqual(len({p['id'] for p in s['probes']}),55)
+        self.assertEqual([x for x in s['probes'][:46] if x['id']!='opkg-layout'],[x for x in baseline['probes'] if x['id']!='opkg-layout'])
+        self.assertEqual(s['features'],baseline['features'])
+        self.assertEqual(s['revision'],11);self.assertEqual(len(s['probes']),57)
+        self.assertLessEqual(len(s['probes']),64);self.assertEqual(len({p['id'] for p in s['probes']}),57)
         self.assertEqual(len({o['id'] for o in s['observations']}),len(s['observations']))
         for p in s['probes']:
             r=subprocess.run(['/bin/sh','-n'],input=p['command'],text=True,capture_output=True)

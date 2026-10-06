@@ -5,6 +5,9 @@ use serde_json::{json, Value};
 use crate::handlers::AppState;
 use crate::ubus;
 
+#[path = "agent_restart.rs"]
+mod agent_restart;
+
 /// GET /api/device/thermal/all — read all useful thermal zones from sysfs
 pub fn device_thermal_all(state: &AppState) -> (u16, Value) {
     if state.mode == crate::agent_mode::AgentMode::Discovery {
@@ -146,24 +149,15 @@ pub fn device_shutdown(_state: &AppState) -> (u16, Value) {
     }
 }
 
-pub fn agent_restart(_state: &AppState) -> (u16, Value) {
-    // Spawn a detached process that waits, then kills and restarts the agent.
-    // We respond first so the client gets a 200 before we die.
-    let script = "sleep 1; kill $(pidof zte-agent) 2>/dev/null; sleep 1; sh /data/local/tmp/start_zte_agent.sh >/dev/null 2>&1 &";
-    match std::process::Command::new("sh")
-        .args(["-c", script])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-    {
+pub fn agent_restart(state: &AppState) -> (u16, Value) {
+    match agent_restart::schedule(state.mode == crate::agent_mode::AgentMode::Discovery) {
         Ok(_) => (
             200,
             json!({"ok": true, "message": "Agent restarting in ~2 seconds"}),
         ),
-        Err(e) => (
-            500,
-            json!({"ok": false, "error": format!("failed to spawn restart: {e}")}),
+        Err(code) => (
+            409,
+            json!({"ok": false, "code": code, "error": "Agent restart could not be safely prepared"}),
         ),
     }
 }

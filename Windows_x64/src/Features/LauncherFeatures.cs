@@ -61,14 +61,26 @@ public sealed record LauncherStatus(string State, bool Running, bool CanInstall,
 public sealed partial class DeviceFeatureService
 {
     private const string LauncherRoot = "/data/zte-launcher";
-    private const string LauncherManifestHash = "638952749088173eb8a90656e24a9f34ef19937bf21cd490cc332974df9d2664";
+    private const string LauncherManifestHash = "eeae2396f3fe909574146e12eee60ab38298ca039bfe373f16235e8227df8390";
     private static readonly string[] LauncherNames = ["launcher.so", "launcher-run.sh", "launcher-watch.sh", "launcher-service.sh", "launcher-start.sh", "launcher.sha256", "install-launcher.sh"];
-    private static readonly HashSet<string> UiHashes = ["e3914e78a8488cb736770f0ac9fb8ce10e0e5222fa50285f08e9e8be90d7f1e9", "16eb92e27f54b5cf5c6b316a6e7a62b782053a2a609d0d4904a7f08a7bc0afa4"];
+    private static readonly HashSet<string> UiHashes = ["e3914e78a8488cb736770f0ac9fb8ce10e0e5222fa50285f08e9e8be90d7f1e9", "16eb92e27f54b5cf5c6b316a6e7a62b782053a2a609d0d4904a7f08a7bc0afa4", "8d2ebbde880934f52195ad9595815d728f7aa4671bb0633d5a5149b09467ae90", "d6c3cd409705d5aa9c12185c84074513b159088025f005da7dbf01c51e3c3715"];
     private static readonly HashSet<string> InitHashes = ["a30da6481637f1fd94e037373d406e574be7e722937a4965325086740be67e35", "0a462f4021b1306ac5fbf074a674bae9fef952f240436a47468c0126c5d41b50"];
 
     public async Task<LauncherStatus> GetLauncherStatusAsync(CancellationToken ct = default)
     {
-        var identity = await ReadIdentityAsync(ct: ct);
+        var identity = await ReadAgentIdentityAsync(ct);
+        return await ReadLauncherStatusAsync(identity, ct);
+    }
+
+    private async Task<LauncherStatus> ReadLauncherStatusAsync(DeviceIdentity identity, CancellationToken ct)
+    {
+        var status = await ReadLauncherStateAsync(identity, ct);
+        Check(identity == await ReadAgentIdentityAsync(ct), "Модем или его загрузка изменились во время операции. Обновите состояние.");
+        return status;
+    }
+
+    private async Task<LauncherStatus> ReadLauncherStateAsync(DeviceIdentity identity, CancellationToken ct)
+    {
         const string probe = "set -eu; uname -m; id -u; sha256sum /usr/bin/zte_topsw_devui /etc/init.d/zte_topsw_devui | cut -d ' ' -f1; " +
             "if test -e /data/zte-launcher || test -L /data/zte-launcher; then echo present; else echo absent; fi; " +
             "if test -d /data/zte-launcher && test ! -L /data/zte-launcher; then " +
@@ -80,7 +92,7 @@ public sealed partial class DeviceFeatureService
             "if test -e /data/zte-launcher-update || test -L /data/zte-launcher-update; then echo pending; else echo clear; fi";
         var lines = (await RunTextAsync(probe, ct: ct)).Split('\n', StringSplitOptions.TrimEntries);
         Check(lines.Length >= 6, "Неполный ответ проверки Launcher.");
-        var compatible = identity.FirmwareHash == FirmwareHash && identity.RouterHash == RouterHash && lines[0] == "aarch64" && lines[1] == "0" && UiHashes.Contains(lines[2]) && InitHashes.Contains(lines[3]);
+        var compatible = lines[0] == "aarch64" && lines[1] == "0" && UiHashes.Contains(lines[2]) && InitHashes.Contains(lines[3]);
         if (lines[4] == "absent")
         {
             if (lines[5] == "pending") return new LauncherStatus("recovery-pending", false, false, false, null, null, "Есть незавершённая установка Launcher.");
@@ -128,10 +140,11 @@ public sealed partial class DeviceFeatureService
     public Task<LauncherStatus> InstallEsimLauncherAsync(CancellationToken ct = default)
         => InstallLauncherWithPagesAsync(null, true, ct);
 
-    private Task<LauncherStatus> InstallLauncherWithPagesAsync(LauncherPages? requested, bool includeEsim, CancellationToken ct)
-        => MutateAsync(async (identity, token) =>
+    private async Task<LauncherStatus> InstallLauncherWithPagesAsync(LauncherPages? requested, bool includeEsim, CancellationToken ct)
+    {
+        var installed = await MutateAsync(async (identity, token) =>
         {
-            var before = await GetLauncherStatusAsync(ct);
+            var before = await ReadLauncherStatusAsync(identity, ct);
             Check(before.CanInstall && before.Layout is not null && before.Pages is not null, before.Detail ?? "Launcher не поддерживается на этом устройстве.");
             var savedLayout = before.Layout!.Encode();
             var savedPages = before.Pages!;
@@ -176,27 +189,34 @@ public sealed partial class DeviceFeatureService
             }
             finally { if (remoteFinished) await CleanupStageAsync(stage, files.Keys, CancellationToken.None); }
             var after = await GetLauncherStatusAsync(ct);
-            // The launcher process may still be starting after a confirmed install.
-            // Recheck readiness only; never repeat the installation.
-            for (var attempt = 0; attempt < 5 && after.State == "ready" && !after.Running &&
-                after.Layout?.Encode().SequenceEqual(savedLayout) == true; attempt++)
-            {
-                await Task.Delay(TimeSpan.FromSeconds(1), ct);
-                after = await GetLauncherStatusAsync(ct);
-            }
-            Check(after.State == "ready" && after.Running && after.Layout?.Encode().SequenceEqual(savedLayout) == true &&
+            // The watcher attaches only after the operation lock is released.
+            // Validate installation here; runtime attachment is observed on refresh.
+            Check(after.State == "ready" && after.Layout?.Encode().SequenceEqual(savedLayout) == true &&
                 after.Pages is not null && after.Pages.Order.SequenceEqual(desiredPages.Order) &&
                 after.Pages.UsesDefault == (!writePages && savedPages.UsesDefault),
                 "Установка страниц Launcher или сохранение настроек дисплея не подтверждены.");
-            return after;
-        }, ct);
+            return (Status: after, Identity: identity);
+        }, ct, measuredAgentPlatform: true);
+        // The remote watcher can attach now. This is a read, never another apply.
+        try
+        {
+            Check(installed.Identity == await ReadAgentIdentityAsync(ct), "Модем или его загрузка изменились во время операции. Обновите состояние.");
+            var current = await ReadLauncherStatusAsync(installed.Identity, ct);
+            return current.Running ? current : current with { Detail = current.Detail ?? "Файлы страниц установлены. Запуск экрана пока не подтверждён; обновите состояние позже." };
+        }
+        catch (Exception error) when (error is DeviceFeatureException or InvalidDataException or IOException or TimeoutException or OperationCanceledException)
+        {
+            return installed.Status with { Running = false, CanInstall = false, CanApplyLayout = false,
+                Detail = "Файлы страниц установлены, но последующая проверка запуска не завершилась. Обновите состояние перед следующей операцией." };
+        }
+    }
 
     public Task<LauncherStatus> ApplyLauncherLayoutAsync(LauncherLayout layout, CancellationToken ct = default)
     {
         var bytes = layout.Encode();
         return MutateAsync(async (identity, token) =>
         {
-            var before = await GetLauncherStatusAsync(ct);
+            var before = await ReadLauncherStatusAsync(identity, ct);
             Check(before.CanApplyLayout && before.Layout != null, before.Detail ?? "Launcher не готов к настройке.");
             var stage = LauncherRoot + "/.info-layout-" + Guid.NewGuid().ToString("D");
             var path = stage + "/layout";
@@ -212,6 +232,6 @@ public sealed partial class DeviceFeatureService
             var after = await GetLauncherStatusAsync(ct);
             Check(after.Layout?.Encode().SequenceEqual(bytes) == true, "Модем не подтвердил настройку Launcher.");
             return after;
-        }, ct);
+        }, ct, measuredAgentPlatform: true);
     }
 }

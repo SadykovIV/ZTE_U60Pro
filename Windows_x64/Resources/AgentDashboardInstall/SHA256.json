@@ -1,9 +1,9 @@
 {
   "dashboard-html.sh": "f32811011247b3890313bfb483840fb91e7c8df8765dae51eb4beb518d2efb5d",
   "dashboard-uhttpd": "76f021c43a02eab5bb634b01461370fcb8bfb270b1f14e348e5b57acb43b1d12",
-  "dashboard.sh": "1211dee5b854d73079934d871959e0ef72c23d3272824c01639bfdd8353f901c",
-  "dashboard.tar.gz": "6cf9b305908e8780a8d9690fa8ae92010ff26c5a312d478a4ff144e7d046533f",
-  "payload.sha256": "86a546c8252ed1fc80cdfe88bd7c0d321f9eabd9794a21e616c8068d41333842",
+  "dashboard.sh": "bc3323c05fca8ce574352d97f90b9110eb3dfac0b8025d398a31e94b62c51896",
+  "dashboard.tar.gz": "2b2213fc52b4248d35549751cab404330246804f4b844aaf6efd78e42601bb37",
+  "payload.sha256": "91e0d73bd4a26dd6448ffa63ecbe43fa6ddd4ff9397226aec404e88c3712ebf0",
   "preserve-dashboard-assets.sh": "317dcab04ea9cabf2efc6a56e094efb5058f40d5f11a7eaaae3cece1f1e9080c",
   "start-dashboard.sh": "ebd1e6d97b7722c73c4b169904d407ad080d0a91c6cc829a232ee02ee28ed730",
   "stop-owned-listener.sh": "64fa9f52689e78e376185d887206858b1187034285f2f5ad1bfc110f2f0e8248",

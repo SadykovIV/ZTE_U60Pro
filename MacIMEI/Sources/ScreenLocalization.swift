@@ -5,7 +5,7 @@ enum ScreenLocalizationState: String, Sendable {
 }
 
 struct ScreenLocalizationStatus: Sendable {
-    var revision: String = "20260924"
+    var revision: String = "20261006"
     var state: ScreenLocalizationState
     var language: String
     var detail: String = ""
@@ -53,13 +53,14 @@ struct ScreenFontPatch: Decodable {
 /// Runs inside ModemEngine.locked. Only screen resources, its service and language are changed.
 final class ScreenLocalization {
     static let remoteRoot = "/data/zte-imei-screen-ru"
-    static let revision = "20260924"
-    static let legacyManagerHashes = ["20260922": "6aed6654afb7a4fde7792a5f6034aa41e15b0fd77d794ed04d3a12c111c95fd2", "20260923": "586a7727fb24a5701990c7cd82889887220c1c5566261c53ca21f3bb12549bfa"]
+    static let revision = "20261006"
+    static let legacyManagerHashes = ["20260924": "810aae3c07c8019f2d0657f2bad6f1ee38f1dea5f1081210ab144478dd87c7b8", "20260922": "6aed6654afb7a4fde7792a5f6034aa41e15b0fd77d794ed04d3a12c111c95fd2", "20260923": "586a7727fb24a5701990c7cd82889887220c1c5566261c53ca21f3bb12549bfa"]
     static let resourceHashes: [String: String] = [
-        "install.sh": "810aae3c07c8019f2d0657f2bad6f1ee38f1dea5f1081210ab144478dd87c7b8",
+        "install.sh": "0ce40f0d3e4375165f5e4424db023b786f70f9cacf88bfe07c1c893cff12db7d",
         "service.sh": "8b25166707a21bb3b55f77d9af34822a39aa5e8058b5c521431f0379386051e9",
         "English.ini": "d97925e40f9c119e05dd692e8fbce36593b55aa3faf718af373b2cb57075981a",
         "Chinese.ini": "5c4b6e3896593172608f2d8890da56c7ff521667129375d0a52383243bb760df",
+        "font.patch.b28.json": "0f9300f77ea577332256fd34dce3d501be86e1fa00c7ebea41b32d3193954b18",
         "font.patch.json": "f171291a83b269e605e70747a7799eae53f35e1e6488db30a41d37dd87146e18"
     ]
     let engine: ModemEngine
@@ -121,7 +122,7 @@ final class ScreenLocalization {
         try require(manifest.version == 1 && validHash(manifest.inputSHA256) && validHash(manifest.outputSHA256), "Неизвестный формат патча шрифта")
         try require(manifest.inputSize > 0 && manifest.inputSize == original.count && manifest.outputSize == original.count,
                     "Размер экранного интерфейса отличается от проверенного")
-        try require(digest(original) == manifest.inputSHA256, "SHA-256 исходного экранного интерфейса не совпадает с проверенной B31")
+        try require(digest(original) == manifest.inputSHA256, "SHA-256 исходного экранного интерфейса не совпадает с проверенным профилем")
         try require(!manifest.patches.isEmpty && manifest.patches.count <= 1024, "Некорректный список изменений шрифта")
         var result = original, previousEnd = 0
         for edit in manifest.patches {
@@ -137,8 +138,20 @@ final class ScreenLocalization {
         return result
     }
 
+    static func selectFontPatch(_ original: Data, files: [String: Data]) throws -> (Data, ScreenFontPatch) {
+        let inputHash = digest(original)
+        var matches = [(Data, ScreenFontPatch)]()
+        for name in ["font.patch.json", "font.patch.b28.json"] {
+            guard let bytes = files[name] else { throw IMEIError.message("Неполный встроенный комплект русификации") }
+            let manifest = try JSONDecoder().decode(ScreenFontPatch.self, from: bytes)
+            if manifest.inputSHA256 == inputHash && manifest.inputSize == original.count { matches.append((bytes, manifest)) }
+        }
+        try require(matches.count == 1, "SHA-256 исходного экранного интерфейса не совпадает с проверенным профилем")
+        return matches[0]
+    }
+
     private func assets() throws -> [String: Data] {
-        let required = Set(["install.sh", "service.sh", "English.ini", "Chinese.ini", "font.patch.json"])
+        let required = Set(["install.sh", "service.sh", "English.ini", "Chinese.ini", "font.patch.json", "font.patch.b28.json"])
         try require(Set(Self.resourceHashes.keys) == required, "Неполный встроенный комплект русификации")
         var files = [String: Data]()
         for name in required.sorted() {
@@ -163,7 +176,7 @@ final class ScreenLocalization {
         elif test "$(sha256sum /etc/init.d/zte_topsw_devui 2>/dev/null | awk '{print $1}')" != a30da6481637f1fd94e037373d406e574be7e722937a4965325086740be67e35; then state=error; reason=STOCK_INIT_CHANGED; fi
         pid=$(pidof zte_topsw_devui 2>/dev/null | awk '{print $1}' || true)
         case "$pid" in ''|*[!0-9]*) pid=0;; esac
-        printf 'SCREEN_RU_STATUS state=%s language=%s mounted=%s boot=0 pid=%s revision=20260924' "$state" "$language" "$mounted" "$pid"
+        printf 'SCREEN_RU_STATUS state=%s language=%s mounted=%s boot=0 pid=%s revision=20261006' "$state" "$language" "$mounted" "$pid"
         if test -n "$reason"; then printf ' reason=%s' "$reason"; fi
         printf '\n'
     fi
@@ -183,7 +196,13 @@ final class ScreenLocalization {
         let response = try engine.transport.run(command, input: nil, timeout: timeout)
         try savePrivate(response.stdout + response.stderr, engine.logDirectory.appendingPathComponent("screen-localization-" + UUID().uuidString + ".log"))
         let reason = String(decoding: response.stderr, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        try require(response.status == 0, "Русификация остановлена (код \(response.status)). " + String(reason.prefix(500)) + " Проверка покажет текущее состояние.")
+        let failureDetail: String
+        switch reason {
+        case "SCREEN_RU_ERROR FONT_CHANGED": failureDetail = "Шрифт ZTEZhengYuan.ttf отличается от проверенного; метрики русского текста не подтверждены."
+        case "SCREEN_RU_ERROR SCREEN_PROFILE": failureDetail = "Экранный интерфейс или его исходные словари не соответствуют проверенному профилю."
+        default: failureDetail = String(reason.prefix(500))
+        }
+        try require(response.status == 0, "Русификация остановлена (код \(response.status)). " + failureDetail + " Проверка покажет текущее состояние.")
         var result = try Self.parseStatus(String(decoding: response.stdout, as: UTF8.self))
         if result.state == .error && !reason.isEmpty { result.detail = String(reason.prefix(500)) }
         return result
@@ -213,24 +232,25 @@ final class ScreenLocalization {
             return status
         }
         let bundle = try assets()
-        let identity = try engine.identity().0
+        let identity = try engine.measuredIdentity()
         if action != .status { try engine.acquireRemoteLock() }
         let managerHash = Self.resourceHashes["install.sh"]!
-        let current = try inspect(cid: identity.cid, managerHash: managerHash)
+        let current = try inspect(cid: identity.identity.cid, managerHash: managerHash)
         if action == .status { return current }
         if action == .disable && current.state == .absent { return current }
         if current.state != .absent && (current.revision == Self.revision || action == .disable) {
-            try require(try engine.identity().0 == identity, "Перед изменением подключён другой модем")
+            try require(try engine.measuredIdentity() == identity, "Перед изменением подключён другой модем")
             engine.update(action == .enable ? "Включаю русский интерфейс модема" : "Возвращаю штатный интерфейс модема", 0.5)
-            let result = try invoke(Self.managerCommand(action, cid: identity.cid, hash: current.revision == Self.revision ? managerHash : Self.legacyManagerHashes[current.revision]!))
+            let result = try invoke(Self.managerCommand(action, cid: identity.identity.cid, hash: current.revision == Self.revision ? managerHash : Self.legacyManagerHashes[current.revision]!))
             try validateResult(result, action: action)
+            try require(try engine.measuredIdentity() == identity, "После изменения подключён другой модем")
             return result
         }
         engine.update("Читаю исходный экранный интерфейс и проверяю патч шрифта", 0.15)
         let original = try engine.remote(current.state == .absent ? "cat /usr/bin/zte_topsw_devui" : "cat /data/zte-imei-screen-ru/backup/zte_topsw_devui", timeout: 120)
-        let manifest = try JSONDecoder().decode(ScreenFontPatch.self, from: bundle["font.patch.json"]!)
+        let (patchData, manifest) = try Self.selectFontPatch(original, files: bundle)
         let patched = try Self.applyFontPatch(original, manifest: manifest)
-        try require(try engine.identity().0 == identity, "Перед установкой подключён другой модем")
+        try require(try engine.measuredIdentity() == identity, "Перед установкой подключён другой модем")
         let stage = "/tmp/zte-screen-ru-install-" + UUID().uuidString.lowercased()
         _ = try engine.remote("umask 077; mkdir " + shellQuote(stage))
         let names = ["install.sh", "service.sh", "English.ini", "Chinese.ini", "font.patch.json", "zte_topsw_devui"]
@@ -239,6 +259,7 @@ final class ScreenLocalization {
         }
         var payload = bundle
         payload["zte_topsw_devui"] = patched
+        payload["font.patch.json"] = patchData
         for (index, name) in names.enumerated() {
             let path = shellQuote(stage + "/" + name), data = payload[name]!
             let response = String(decoding: try engine.remote("umask 077; cat > " + path + " && sha256sum " + path, input: data, timeout: 120), as: UTF8.self)
@@ -246,10 +267,11 @@ final class ScreenLocalization {
             try require(hashFields.count == 2 && hashFields[0] == Substring(digest(data)) && hashFields[1] == Substring(stage + "/" + name), "При передаче повреждён файл русификации: " + name)
             engine.update("Передаю проверенные файлы русификации", 0.25 + Double(index + 1) / Double(names.count) * 0.45)
         }
-        try require(try engine.identity().0 == identity, "После передачи подключён другой модем")
+        try require(try engine.measuredIdentity() == identity, "После передачи подключён другой модем")
         engine.update("Устанавливаю русский интерфейс с сохранением после перезагрузки", 0.8)
-        let result = try invoke("sh " + shellQuote(stage + "/install.sh") + " install " + shellQuote(stage) + " " + shellQuote(identity.cid))
+        let result = try invoke("sh " + shellQuote(stage + "/install.sh") + " install " + shellQuote(stage) + " " + shellQuote(identity.identity.cid))
         try validateResult(result, action: .enable)
+        try require(try engine.measuredIdentity() == identity, "После изменения подключён другой модем")
         return result
     }
 

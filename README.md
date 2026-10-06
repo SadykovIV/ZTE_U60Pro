@@ -12,15 +12,15 @@ agent **2.9.0-esim.4**. [Changes and verification limits](docs/RELEASE-1.24.9.md
 The release package is in `dist/1.24.9`.
 [Preparation details and limits](docs/PREPARATION-1.24.7.md).
 
-## Local candidate 1.24.11
+## Local candidate 1.24.12
 
-**Collect firmware adaptation data** under **Modem preparation → Diagnostics**
-now combines a fresh SSH survey of application dependencies, screen files,
-optional fonts and sanitized activity in one ZIP. The survey covers agent mode,
-RPC schemas, Launcher, VPN/Wi-Fi, TTL, SIM/eSIM dependencies, applications and backups.
-[Collection instructions and remaining adaptation work](docs/FIRMWARE-ADAPTATION-DATA.md).
-B28 screen and Launcher adaptation still requires validation on that firmware.
-Windows retains the custom Linux ARM64 agent picker added in 1.24.10.
+Exact B31 and FLY B28 profiles are included for Russian screen localization and
+Launcher pages. Windows agent installation and independent SSH tools use the
+actual platform and component requirements. **Collect firmware adaptation data**
+now combines up to 40 component files, 57 fresh probes and sanitized activity.
+[Changes and remaining checks](docs/RELEASE-1.24.12.md) ·
+[Collection instructions](docs/FIRMWARE-ADAPTATION-DATA.md).
+Full B28 operation, including VPN/TTL and modem writes, is not yet verified.
 
 ## Changes since published version 1.23.3
 

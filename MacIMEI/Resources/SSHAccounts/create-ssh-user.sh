@@ -1,5 +1,5 @@
 #!/bin/sh
-# Fixed B31 account transaction. Password is a single line on stdin, never argv.
+# Owned account transaction. Password is a single line on stdin, never argv.
 set -eu
 umask 077
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
@@ -13,10 +13,8 @@ safe_directory() {
     case "$(stat -c %a "$1")" in 700|750|755) ;; *) fail DIRECTORY_MODE;; esac
 }
 identity() {
-    test "$(id -u)" = 0 && test "$(uname -m)" = aarch64 || fail ROOT_ARCH
+    test "$(id -u)" = 0 && test "$(uname -s)" = Linux && test "$(uname -m)" = aarch64 || fail ROOT_ARCH
     test "$(cat /sys/block/mmcblk0/device/cid)" = "$cid" || fail CID_MISMATCH
-    test "$(hash /firmware/image/modem.b16)" = 604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263 || fail FIRMWARE_MISMATCH
-    test "$(hash /usr/bin/diag-router)" = 55c54f74aaa427940254a2f16c36771e675a80a002363e4f10b0dfcb604d9c6f || fail ROUTER_MISMATCH
 }
 test "$#" = 6 || fail ARGUMENTS
 stage=$1; cid=$2; address=$3; user=$4; doas_sha=$5; dropbear_sha=$6

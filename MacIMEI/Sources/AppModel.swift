@@ -456,12 +456,19 @@ import AppKit
                     }
                     return try engine.locked {
                         try target.verify(engine)
-                        for file in ["pending.json", "setup-pending.json"] {
-                            try require(!FileManager.default.fileExists(atPath: root.appendingPathComponent(file).path), "Сначала завершите настройку или смену IMEI")
-                        }
-                        _ = try engine.identity()
-                        if ["package", "ssclash", "start-ssclash"].contains(action) { try engine.acquireRemoteLock() }
                         let manager = ModemApplications(engine: engine)
+                        if action == "inventory" {
+                            return (try manager.inventoryWithManagedApps(), "Список приложений и место для установки обновлены")
+                        }
+                        if ["ssclash", "start-ssclash"].contains(action) {
+                            try manager.prepareSSClashOperation()
+                        } else {
+                            for file in ["pending.json", "setup-pending.json"] {
+                                try require(!FileManager.default.fileExists(atPath: root.appendingPathComponent(file).path), "Сначала завершите настройку или смену IMEI")
+                            }
+                            _ = try engine.identity()
+                            if action == "package" { try engine.acquireRemoteLock() }
+                        }
                         let message: String
                         switch action {
                         case "preview": message = try manager.previewPackage(package)
@@ -470,7 +477,7 @@ import AppKit
                         case "start-ssclash": message = try manager.startSSClash()
                         default: message = "Список приложений и место для установки обновлены"
                         }
-                        return (try action == "inventory" ? manager.inventoryWithManagedApps() : manager.inventory(), message)
+                        return (try manager.inventory(), message)
                     }
                 }.value
                 acceptApplicationInventory(result.0)

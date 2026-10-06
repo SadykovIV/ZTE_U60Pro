@@ -129,10 +129,10 @@ enum VPNRequestFailure: LocalizedError, Equatable {
 /// Both the desktop and agent send private JSON on stdin to the same modem helper.
 final class VPNSettingsManager {
     static let root = "/data/zte-vpn"
-    static let launcherHash = "3e8338319bc2eb3764fdfa4efbbb6966ddce185a951f8b9122c15025804fbd2a"
+    static let launcherHash = "c04c5c1d0cccb0a2964a1500e6fdc3c549c9eac6125fe591b9cdf25d39dff3c2"
     static let agentHash = BundledAgent.sha256
     static let dashboardIndexHash = "c804a8ecced9ed3478ee50021b95d3bcd02394f23ba09f10c5c3691f44cd9546"
-    static let helperHash = "1c0e3e6d308a6c4b161faf896a00437b8e011fe5b7eff7969b9870c85d8d0c5c"
+    static let helperHash = "f5e1c9e627e3e978ff535de79b95ff920d7318e7ea3ce713e5b174efe313ca0c"
     let engine: ModemEngine
     init(engine: ModemEngine) { self.engine = engine }
 

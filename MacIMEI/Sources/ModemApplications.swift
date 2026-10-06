@@ -45,7 +45,7 @@ struct ModemApplicationInventory: Sendable {
     }
 }
 
-/// Caller owns ModemEngine.locked, firmware identity validation and the remote lock.
+/// Caller owns ModemEngine.locked and the remote lock; SSClash checks its measured identity.
 /// This class never changes IMEI, remounts system partitions or edits stock feeds.
 final class ModemApplications {
     static let ssclashVersion = "v6.4.1"
@@ -223,14 +223,24 @@ final class ModemApplications {
         return Data(String(decoding: bytes, as: UTF8.self).replacingOccurrences(of: "__ZTE_LAN_IPV4__", with: engine.connection.host).utf8)
     }
 
+    /// The UI calls this inside engine.locked; device-wide recovery guards remain
+    /// in acquireRemoteLock, while unrelated IMEI/setup journals do not grant or block SSClash.
+    func prepareSSClashOperation() throws {
+        let proof = try engine.measuredIdentity()
+        try engine.acquireRemoteLock()
+        try verifyIdentity(proof)
+    }
+
     func startSSClash() throws -> String {
         try engine.connection.validate()
+        let proof = try engine.measuredIdentity()
         let expectedService = try serviceData()
         let directories = "for dir in /data /data/zte-imei-apps " + Self.remoteRoot + " " + Self.remoteRoot + "/bin " + Self.remoteRoot + "/.ssclash /etc/init.d; do test -d \"$dir\"; test ! -L \"$dir\"; test \"$(stat -c '%u' \"$dir\")\" = 0; mode=$(stat -c '%a' \"$dir\"); test \"$((0$mode & 022))\" = 0; done; "
         let lanCheck = "ip -o -4 addr show | awk -v address=" + shellQuote(engine.connection.host) + " '{split($4, a, \"/\"); if(a[1] == address) found=1} END {exit !found}'; "
         let guards = "set -eu; " + directories + lanCheck + "test ! -L " + Self.remoteRoot + "; test \"$(cat " + Self.remoteRoot + "/.zte-imei-owner)\" = zte-imei-ssclash-v1; test ! -L " + Self.servicePath + "; test ! -L " + Self.remoteRoot + "/bin/ssclash; test -s " + Self.remoteRoot + "/.ssclash/password; test ! -L " + Self.remoteRoot + "/.ssclash/password; grep -q '^pbkdf2[$]' " + Self.remoteRoot + "/.ssclash/password; sha256sum " + Self.remoteRoot + "/bin/ssclash " + Self.servicePath
         let hashes = try engine.text(guards).components(separatedBy: "\n").map { String($0.split(separator: " ").first ?? "") }
         try require(hashes == [Self.ssclashHash, digest(expectedService)], "SSClash или его служба изменены. Автоматический запуск остановлен")
+        try verifyIdentity(proof)
         do {
             _ = try engine.remote(Self.servicePath + " start")
             let address = "http://" + engine.connection.host + ":9091"
@@ -242,9 +252,12 @@ final class ModemApplications {
             try require(ready, "Страница входа SSClash не запустилась")
             let anonymous = try curl(address + "/api/status")
             try require([302, 303, 401, 403].contains(anonymous.status), "SSClash API не требует авторизации")
+            try verifyIdentity(proof)
             return "SSClash запущен: " + address + ". Сохранённые настройки приложения используются без изменения."
         } catch {
-            _ = try? engine.remote(Self.servicePath + " stop", timeout: 30)
+            if (try? engine.measuredIdentity()) == proof {
+                _ = try? engine.remote(Self.servicePath + " stop", timeout: 30)
+            }
             throw error
         }
     }
@@ -252,14 +265,14 @@ final class ModemApplications {
     func installSSClash(password: String) throws -> String {
         try Self.validateSSClashPassword(password: password)
         try engine.connection.validate()
-        let originalIdentity = try engine.identity().0
+        let originalIdentity = try engine.measuredIdentity()
         let state = try inventory()
-        try require(state.release == "23.05.4" && state.architecture == "aarch64_cortex-a53", "Установщик SSClash проверен только для B31 / aarch64_cortex-a53")
+        try require(state.release == "23.05.4" && state.architecture == "aarch64_cortex-a53", "Установщик SSClash требует OpenWrt 23.05.4 / aarch64_cortex-a53")
         try require(!state.ssclashInstalled && !state.ssclashRunning, "SSClash уже установлен или запущен. Существующая установка не перезаписывается")
         try require((state.storage.first { $0.mount == "/data" }?.availableKiB ?? 0) >= 64 * 1024, "На /data требуется не менее 64 MiB свободного места")
         engine.update("Загружаю SSClash-Go v6.4.1 из официального релиза…", 0.1)
         let binary = try assetLoader(Self.ssclashURL); try Self.validateAsset(binary)
-        try require(try engine.identity().0 == originalIdentity, "После проверки SSClash подключён другой модем")
+        try verifyIdentity(originalIdentity)
         let service = try serviceData()
         let token = UUID().uuidString.lowercased(), base = "/data/zte-imei-apps", stage = "/data/zte-imei-apps/.ssclash-" + token
         let journal = engine.logDirectory.appendingPathComponent("ssclash-install.json")
@@ -288,12 +301,15 @@ final class ModemApplications {
             _ = try engine.remote(Self.servicePath + " start")
             engine.update("Проверяю вход в SSClash и выключенное состояние прокси…", 0.8)
             try verifySSClash(password: password)
+            try verifyIdentity(originalIdentity)
             try record("authenticated-ui-verified-proxy-stopped")
             engine.update("SSClash установлен. Пароль проверен, прокси пока выключен.", 1)
             return "SSClash-Go 6.4.1 установлен. Web-панель: http://" + engine.connection.host + ":9091. Вход проверен; ядро Mihomo и proxy-профиль настраиваются в панели. Автозапуск не включён."
         } catch {
-            if serviceCreated { _ = try? engine.remote(Self.servicePath + " stop", timeout: 30) }
-            try? record(promoted ? (serviceCreated ? "needs-inspection-stop-requested" : "needs-inspection-service-not-started") : "staging-incomplete")
+            let canStop = serviceCreated && (try? engine.measuredIdentity()) == originalIdentity
+            if canStop { _ = try? engine.remote(Self.servicePath + " stop", timeout: 30) }
+            let phase = serviceCreated ? (canStop ? "needs-inspection-stop-requested" : "needs-inspection-stop-not-requested") : "needs-inspection-service-not-started"
+            try? record(promoted ? phase : "staging-incomplete")
             throw IMEIError.message("Установка SSClash остановлена: " + error.localizedDescription + ". Файлы и журнал сохранены для проверки; повторная установка не перезаписывает их.")
         }
     }
@@ -303,7 +319,7 @@ final class ModemApplications {
     /// in SSClash so its own routes/firewall can be restored by its normal workflow.
     func removeSSClash() throws -> String {
         try engine.connection.validate()
-        let identity = try engine.identity().0
+        let identity = try engine.measuredIdentity()
         let state = try inventory()
         try require(state.ssclashInstalled && !state.ssclashUnmanaged, "Не найдена установка SSClash, созданная этим приложением")
         try require(!state.ssclashProxyRunning, "Сначала остановите прокси в веб-панели SSClash")
@@ -325,6 +341,7 @@ final class ModemApplications {
         try record("preparing")
         do {
             engine.update("Проверяю SSClash и сохраняю резервную копию…", 0.15)
+            try verifyIdentity(identity)
             let prepared = String(decoding: try engine.remote(command("prepare"), input: script, timeout: 180), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
             let fields = prepared.split(separator: " ").map(String.init)
             try require(fields.count == 3 && fields[0] == "SSCLASH_ARCHIVE" && fields[1].hasPrefix("sha256=") && fields[2].hasPrefix("bytes="), "Не получены сведения о резервной копии SSClash")
@@ -338,10 +355,11 @@ final class ModemApplications {
             try savePrivate(bytes, archive)
             verifiedArchiveHash = archiveHash
             try record("archive-verified-on-mac", hash: archiveHash)
-            try require(try engine.identity().0 == identity, "Перед удалением подключён другой модем")
+            try verifyIdentity(identity)
             engine.update("Удаляю SSClash. Настройки сохранены в резервной копии…", 0.75)
             let result = String(decoding: try engine.remote(command("commit", archiveHash: archiveHash), input: script, timeout: 120), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
             try require(result == "SSCLASH_REMOVED archive=" + remoteArchive, "Удаление SSClash не подтверждено; проверьте состояние приложения")
+            try verifyIdentity(identity)
             try record("removed", hash: archiveHash)
             engine.update("SSClash удалён, резервная копия сохранена.", 1)
             return "SSClash удалён. Резервная копия настроек и приложения: " + archive.path + ". Её копия на модеме: " + remoteArchive + ". Архив на модеме учитывается в занятом месте приложений."
@@ -349,6 +367,10 @@ final class ModemApplications {
             try? record("needs-inspection", hash: verifiedArchiveHash)
             throw IMEIError.message("Удаление SSClash остановлено: " + error.localizedDescription + ". Данные для восстановления сохранены в " + recovery + "; журнал: " + journal.path)
         }
+    }
+
+    private func verifyIdentity(_ proof: DiagnosticDeviceProof) throws {
+        try require(try engine.measuredIdentity() == proof, "Устройство, загрузка или файлы прошивки изменились во время операции SSClash")
     }
 
     private func verifySSClash(password: String) throws {

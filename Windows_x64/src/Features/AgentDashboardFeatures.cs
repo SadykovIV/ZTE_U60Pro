@@ -4,7 +4,7 @@ namespace ZteImeiStudio.Windows.Features;
 
 public sealed partial class DeviceFeatureService
 {
-    private const string DashboardInstallerHash = "1211dee5b854d73079934d871959e0ef72c23d3272824c01639bfdd8353f901c";
+    private const string DashboardInstallerHash = "bc3323c05fca8ce574352d97f90b9110eb3dfac0b8025d398a31e94b62c51896";
     private static readonly string[] DashboardInstallNames = ["dashboard.sh", "dashboard.tar.gz", "dashboard-uhttpd", "start-dashboard.sh", "dashboard-html.sh", "stop-owned-listener.sh", "update-rc-local.sh", "preserve-dashboard-assets.sh", "payload.sha256"];
 
     // Fresh onboarding preserves an existing custom/legacy agent and does not attach a new UI to it.
@@ -15,7 +15,7 @@ public sealed partial class DeviceFeatureService
             if (!status.IsCurrent || !status.Running || status.RecoveryPending) return false;
             await InstallBundledDashboardAsync(identity, token, await LoadBundledDashboardAsync(ct), ct);
             return true;
-        }, ct);
+        }, ct, measuredAgentPlatform: true);
 
     private async Task<Dictionary<string, byte[]>> LoadBundledDashboardAsync(CancellationToken ct)
     {
@@ -32,6 +32,7 @@ public sealed partial class DeviceFeatureService
         {
             var id = stage["/tmp/zte-dashboard-stage-".Length..];
             var command = Guard(identity, token) + "sh " + Quote(stage + "/dashboard.sh") + " " + Quote(stage) + " " + Quote(identity.Cid) + " " + Quote(AgentPackage.Sha256);
+            Check(identity == await ReadAgentIdentityAsync(ct), "Устройство изменилось во время операции с агентом.");
             remoteFinished = false;
             var preflight = await _shell.RunAsync(command + " preflight", timeout: TimeSpan.FromSeconds(60), ct: ct);
             remoteFinished = KnownInstallerExit(preflight.ExitCode);
@@ -39,6 +40,7 @@ public sealed partial class DeviceFeatureService
                 InstallerFailure("dashboard_preflight", preflight));
             // No agent is changed until the dashboard's read-only checks succeed.
             if (installAgent is not null) await installAgent();
+            Check(identity == await ReadAgentIdentityAsync(ct), "Устройство изменилось во время операции с агентом.");
             remoteFinished = false;
             var result = await _shell.RunAsync(command, timeout: TimeSpan.FromSeconds(180), ct: ct);
             remoteFinished = result.ExitCode >= 0 && result.ExitCode != 255;

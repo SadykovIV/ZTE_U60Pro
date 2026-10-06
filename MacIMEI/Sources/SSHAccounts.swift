@@ -38,7 +38,7 @@ final class SSHAccountManager: @unchecked Sendable {
                     "Пароль SSH: 8–128 печатных латинских символов, цифр или знаков без перевода строки.")
     }
     private func checkPending() throws {
-        for name in ["pending.json", "setup-pending.json", "adb-access-pending.json"] {
+        for name in ["adb-access-pending.json"] {
             try require(!FileManager.default.fileExists(atPath: root.appendingPathComponent(name).path),
                         "Сначала завершите текущую настройку или смену IMEI")
         }
@@ -121,8 +121,10 @@ final class SSHAccountManager: @unchecked Sendable {
     }
     func inspect() throws -> SSHAccountState {
         try engine.locked {
-            try checkPending(); _ = try engine.identity()
-            return try readStateUnlocked()
+            let proof = try engine.measuredIdentity()
+            let state = try readStateUnlocked()
+            try require(try engine.measuredIdentity() == proof, "Подключён другой модем")
+            return state
         }
     }
     /// Delete only a managed account. Home contents are archived on the modem;
@@ -136,7 +138,7 @@ final class SSHAccountManager: @unchecked Sendable {
         try require(connection.port == "2222", "Удаление пользователей доступно только через служебный SSH на порту 2222")
         return try engine.locked {
             try checkPending()
-            let (identity, _) = try engine.identity(); try engine.acquireRemoteLock()
+            let proof = try engine.measuredIdentity(), identity = proof.identity; try engine.acquireRemoteLock()
             let before = try readStateUnlocked()
             if let username {
                 try require(!before.recoveryPending, "Сначала восстановите незавершённую операцию SSH")
@@ -155,6 +157,7 @@ final class SSHAccountManager: @unchecked Sendable {
             if let username { arguments.append(shellQuote(username)) }
             arguments.append(shellQuote(engine.remoteLockToken!))
             engine.update(username == nil ? "Восстанавливаю операцию SSH…" : "Сохраняю настройки и архивирую домашнюю папку…", 0.3)
+            try require(try engine.measuredIdentity() == proof, "Подключён другой модем")
             let result = try engine.transport.run(arguments.joined(separator:" "),input:nil,timeout:150)
             try savePrivate(result.stdout + result.stderr,local.appendingPathComponent("result.log"))
             let remoteJournal = "/data/zte-imei-admin/transactions/" + token
@@ -163,6 +166,7 @@ final class SSHAccountManager: @unchecked Sendable {
             }
             try require(result.status == 0, "Удаление или восстановление пользователя остановлено. Журнал и резервная копия сохранены; открытые сеансы пользователя нужно завершить перед удалением.")
             let after = try readStateUnlocked()
+            try require(try engine.measuredIdentity() == proof, "Подключён другой модем")
             try require(!after.recoveryPending && (username == nil || !after.accounts.contains { $0.name == username! }), "Проверка удаления SSH-пользователя не завершилась")
             try saveJSON(["username":username ?? "", "cid":identity.cid, "action":username == nil ? "recover-delete" : "delete", "phase":"complete"],local.appendingPathComponent("operation.json"))
             engine.update(username == nil ? "Исходное состояние SSH восстановлено." : "Пользователь удалён. Домашняя папка сохранена в закрытом архиве на модеме.", 1)
@@ -174,7 +178,7 @@ final class SSHAccountManager: @unchecked Sendable {
         try Self.validate(username: username, password: password)
         return try engine.locked {
             try checkPending()
-            let (identity, _) = try engine.identity(); try engine.acquireRemoteLock()
+            let proof = try engine.measuredIdentity(), identity = proof.identity; try engine.acquireRemoteLock()
             let before = try readStateUnlocked()
             try require(!before.recoveryPending, "На модеме сохранена незавершённая операция SSH. Проверьте её журнал перед созданием пользователя.")
             try require(!before.accounts.contains { $0.name == username }, "Пользователь с таким именем уже создан")
@@ -205,6 +209,7 @@ final class SSHAccountManager: @unchecked Sendable {
                            shellQuote(connection.host), shellQuote(username), shellQuote(hashes["doas"]!), shellQuote(hashes["dropbear"]!)].joined(separator: " ")
             // Transport stores stdin in an isolated 0600 temporary file and removes it
             // on exit. Neither command, transcript, nor operation.json contains it.
+            try require(try engine.measuredIdentity() == proof, "Подключён другой модем")
             let result = try engine.transport.run(command, input: Data((password + "\n").utf8), timeout: 150)
             let transcript = result.stdout + result.stderr
             try savePrivate(transcript, local.appendingPathComponent("result.log"))
@@ -214,6 +219,7 @@ final class SSHAccountManager: @unchecked Sendable {
             }
             try require(result.status == 0, "Создание SSH-пользователя остановлено. Журнал и доступный бэкап сохранены; пароль в них не записывается.")
             let after = try readStateUnlocked()
+            try require(try engine.measuredIdentity() == proof, "Подключён другой модем")
             try require(after.listenerReady && !after.recoveryPending && after.accounts.contains { $0.name == username && $0.administrator },
                         "Пользователь создан, но проверка службы SSH не завершилась. См. журнал операции.")
             try saveJSON(["username": username, "cid": identity.cid, "remoteJournal": remoteJournal, "phase": "complete"], local.appendingPathComponent("operation.json"))

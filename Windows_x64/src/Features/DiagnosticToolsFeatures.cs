@@ -30,13 +30,13 @@ public sealed partial class DeviceFeatureService
     private Task<DiagnosticToolsStatus> InvokeDiagnosticAsync(string action, string? toolId, CancellationToken ct)
     {
         if (action == "inspect") return ReadOnly();
-        return MutateAsync(async (identity, token) => await Invoke(identity, token), ct);
+        return MutateAsync(async (identity, token) => await Invoke(identity, token), ct, measuredAgentPlatform: true);
 
         async Task<DiagnosticToolsStatus> ReadOnly()
         {
-            var identity = await ReadIdentityAsync(requireSupportedFirmware: true, ct);
+            var identity = await ReadAgentIdentityAsync(ct);
             var result = await Invoke(identity, null);
-            await VerifyIdentityAsync(identity, ct);
+            Check(identity == await ReadAgentIdentityAsync(ct), "Модем или его загрузка изменились во время операции. Обновите состояние.");
             return result;
         }
         async Task<DiagnosticToolsStatus> Invoke(DeviceIdentity identity, string? token)

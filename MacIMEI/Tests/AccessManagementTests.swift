@@ -10,11 +10,15 @@ private func report(_ running: Bool = true) -> String {
 }
 private final class Mock: RemoteTransport {
     var commands = [String](), uploaded = [String:Data](), running = true, corrupt = false, failAction = false, deleted = false
-    var accountExists = false, pending = false, actionCount = 0
+    var accountExists = false, pending = false, actionCount = 0, measuredReads = 0, drift = false, platformFailure = false
     func run(_ command: String, input: Data?, timeout: TimeInterval) throws -> CommandResult {
         commands.append(command)
         func output(_ text: String) -> CommandResult { CommandResult(status:0,stdout:Data(text.utf8),stderr:Data()) }
-        if command.hasPrefix("sha256sum /firmware") { return output(ModemEngine.firmwareHash+" /firmware/image/modem.b16\n"+ModemEngine.routerHash+" /usr/bin/diag-router\n"+cid+"\n"+boot+"\n") }
+        if command == AccessIdentity.command {
+            measuredReads += 1
+            if platformFailure { return CommandResult(status:71,stdout:Data(),stderr:Data()) }
+            return output("absent  /firmware/image/modem.b16\nabsent  /usr/bin/diag-router\n"+cid+"\n"+(drift && measuredReads > 1 ? "11111111-1111-1111-1111-111111111111" : boot)+"\n")
+        }
         if command.hasPrefix("sh -s -- status") { try check(input != nil,"Missing read-only script");return output(report(running)) }
         if command.contains("SSH_USERS_SCHEMA") {
             if accountExists && !deleted { return output("SSH_USERS_SCHEMA 1\nSSH_USERS_PENDING \(pending ? "1":"0")\nSSH_ACCOUNT modemadmin 50000 /data/zte-imei-admin/homes/modemadmin 1\nSSH_USERS_LISTENER 1\n") }
@@ -67,6 +71,21 @@ private final class Mock: RemoteTransport {
         }
         try test("Inspect is read-only and reports account state") {
             let mock=Mock();let state=try manager(mock).inspect();try check(state.services.count == 6 && mock.uploaded.isEmpty && mock.actionCount == 0,"Inspect mutation")
+        }
+        try test("Unrelated IMEI/setup journals do not block generic read or service action") {
+            let mock=Mock(),service=try manager(mock)
+            for name in ["pending.json","setup-pending.json"] { try savePrivate(Data("synthetic".utf8),service.engine.root.appendingPathComponent(name)) }
+            _=try service.inspect();_=try service.perform(service:.agent,action:.stop)
+            try check(mock.actionCount == 1 && mock.measuredReads >= 5,"Independent access blocked")
+        }
+        try test("Changed boot invalidates status and stops action before dispatch") {
+            let mock=Mock();mock.drift=true;try reject {_=try manager(mock).inspect()}
+            let other=Mock();other.drift=true;try reject {_=try manager(other).perform(service:.agent,action:.stop)}
+            try check(other.actionCount == 0,"Changed device action")
+        }
+        try test("Unsupported root/platform stops action before staging") {
+            let mock=Mock();mock.platformFailure=true;try reject {_=try manager(mock).perform(service:.agent,action:.stop)}
+            try check(mock.uploaded.isEmpty && mock.actionCount == 0,"Platform writes")
         }
         try test("Protected service rejected before any transport command") {
             let mock=Mock();try reject {_=try manager(mock).perform(service:.managementSSH,action:.stop)};try check(mock.commands.isEmpty,"Protected remote call")

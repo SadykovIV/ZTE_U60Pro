@@ -1,6 +1,6 @@
 {
-  "revision": "20260924",
-  "profile": "CN_ZTE_MU5250V1.0.0B31",
+  "revision": "20261006",
+  "profile": "Exact screen profiles: MU5250 B31 and FLY MU5250 B28",
   "input_sources": {
     "dictionaries": "Device screen language resources, revised locally and accepted on the device",
     "font_patch": "Locally generated AArch64 font-size hook; original executable read from the connected device"
@@ -15,7 +15,30 @@
   "special_spaces_removed": 26,
   "font_scale": 0.85,
   "font_hook_execution_vectors": 44992,
-  "live_visual_confirmation": "accepted",
+  "live_visual_confirmation": "B31 historical only; FLY B28 not yet assessed",
   "vpn_menu_label": "WiFi с VPN / WiFi with VPN",
-  "previous_revision": "20260923"
+  "previous_revision": "20260924",
+  "profiles": [
+    {
+      "id": "b31",
+      "firmware_label": "CN_ZTE_MU5250V1.0.0B31",
+      "patch": "font.patch.json",
+      "stock_ui_sha256": "e3914e78a8488cb736770f0ac9fb8ce10e0e5222fa50285f08e9e8be90d7f1e9",
+      "patched_ui_sha256": "16eb92e27f54b5cf5c6b316a6e7a62b782053a2a609d0d4904a7f08a7bc0afa4",
+      "original_english_sha256": "47348faa9783bc69109743eb9cfcc3bd3888508040e9eca51cb4a6460b7a70ce",
+      "validation": "historical live visual acceptance; new shared-manager host fixtures"
+    },
+    {
+      "id": "fly-b28",
+      "firmware_label": "FLY_CN_MU5250V1.0.0B13 / BD_FLYMODEMMU5250V1.0.0B28",
+      "patch": "font.patch.b28.json",
+      "stock_ui_sha256": "8d2ebbde880934f52195ad9595815d728f7aa4671bb0633d5a5149b09467ae90",
+      "patched_ui_sha256": "d6c3cd409705d5aa9c12185c84074513b159088025f005da7dbf01c51e3c3715",
+      "original_english_sha256": "24a1022bf9380cfadaf4c4a737f1f0ce8ecf1ad025563376f7dd83eb94e6ceae",
+      "validation": "verified private capture; offline AArch64 hook/font tests and host installer fixtures; device execution and visual validation not yet performed"
+    }
+  ],
+  "shared_original_chinese_sha256": "b84c05af9046dd2458b2220633320fb0089e1000e03c45c3dc81dc72df0c44fc",
+  "shared_original_init_sha256": "a30da6481637f1fd94e037373d406e574be7e722937a4965325086740be67e35",
+  "required_cyrillic_font_sha256": "b8b1aca17b0e53c2ea7e840f7fe5d6f05db038f2d549fde95c1308a600665a56"
 }

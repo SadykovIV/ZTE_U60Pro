@@ -324,7 +324,7 @@ pub fn route(
     // Keep this gate in the dispatcher as well: tests and internal callers
     // must not bypass the HTTP entry point.
     if !state.mode.permits(method, path) { return crate::agent_mode::denied(); }
-    match (method, path) {
+    let result = match (method, path) {
         // Auth
         (&Method::Post, "/api/auth/login") => handlers::login(state, body, client_ip, user_agent),
         // Batch — the dashboard's heartbeat; feeds Home, Signal and Modem/Data
@@ -419,7 +419,14 @@ pub fn route(
         (&Method::Get, "/api/logger/connection/status") => connection_logger::status(state),
         // Fallback
         _ => (404, json!({"ok": false, "error": "not found"})),
+    };
+    if state.mode == crate::agent_mode::AgentMode::Discovery && method == &Method::Get
+        && matches!(path, "/api/sim/info" | "/api/sim/imei" | "/api/router/dns" |
+            "/api/router/apn/mode" | "/api/router/apn/profiles" | "/api/device/charger")
+        && result.0 == 200 && !result.1["data"].as_object().is_some_and(|v| !v.is_empty()) {
+        return (503, json!({"ok": false, "state": "not-assessed", "error": "The requested device information is not available"}));
     }
+    result
 }
 
 // --- AT console ---
@@ -543,7 +550,7 @@ mod tests {
         // Dispatch must reject these without invoking external tools or sysfs writes.
         for (method, path) in [(tiny_http::Method::Post,"/api/router/lan/confirm"),
             (tiny_http::Method::Put,"/api/device/charge-control"),
-            (tiny_http::Method::Get,"/api/dashboard"),
+            (tiny_http::Method::Get,"/api/modem/capabilities"),
             (tiny_http::Method::Post,"/api/esim/enable")] {
             let (status,body)=super::route(&method,path,&state,b"{}","127.0.0.1",None);
             assert_eq!(status,403);assert_eq!(body["code"],"CAPABILITY_NOT_ASSESSED");
@@ -551,7 +558,7 @@ mod tests {
         let (status,body)=super::route(&tiny_http::Method::Get,"/api/health",&state,b"","127.0.0.1",None);
         assert_eq!(status,200);assert_eq!(body["data"]["mode"],"discovery");
         let (status,body)=super::route(&tiny_http::Method::Get,"/api/capabilities",&state,b"","127.0.0.1",None);
-        assert_eq!(status,200);assert_eq!(body["data"]["read_only"],true);
+        assert_eq!(status,200);assert_eq!(body["data"]["hardware_read_only"],true);
         state.auth.set_password("fixture-password");
         let (status,body)=super::route(&tiny_http::Method::Post,"/api/auth/login",&state,br#"{"password":"fixture-password"}"#,"127.0.0.1",None);
         assert_eq!(status,200);assert!(body["data"]["token"].as_str().is_some());
@@ -561,6 +568,96 @@ mod tests {
         for path in ["/api/esim/capabilities", "/api/esim/jobs", "/api/esim/jobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"] {
             assert!(super::needs_auth(&tiny_http::Method::Get,path));
             assert!(super::needs_auth(&tiny_http::Method::Post,path));
+        }
+    }
+
+    fn fake_output(body: &str, success: bool) -> std::io::Result<std::process::Output> {
+        use std::os::unix::process::ExitStatusExt;
+        Ok(std::process::Output { status: std::process::ExitStatus::from_raw(if success {0} else {256}),
+            stdout: body.as_bytes().to_vec(), stderr: Vec::new() })
+    }
+    fn read_command(cmd: &std::process::Command) -> std::io::Result<std::process::Output> {
+        let args: Vec<_> = cmd.get_args().map(|v| v.to_str().unwrap()).collect();
+        match cmd.get_program().to_str().unwrap() {
+            "ubus" => {
+                assert_eq!(args[0], "call");
+                let pair = (args[1], args[2]);
+                assert!([("zte_nwinfo_api", "nwinfo_get_netinfo"), ("network.interface.zte_wan", "status"),
+                    ("network.interface.zte_wan6", "status"), ("zwrt_bsp.thermal", "get_cpu_temp"),
+                    ("zwrt_data", "get_wwandst"), ("zwrt_data", "get_wwandst_clearday"),
+                    ("zwrt_bsp.battery", "list"), ("zwrt_bsp.charger", "list"),
+                    ("luci-rpc", "getDHCPLeases"), ("zwrt_wlan", "report"),
+                    ("zwrt_zte_mdm.api", "get_sim_info"), ("zwrt_zte_mdm.api", "get_imei"),
+                    ("zwrt_router.api", "router_get_dns_para"), ("zwrt_apn_object", "get_apn_mode"),
+                    ("zwrt_apn_object", "get_manu_apn_list"), ("zwrt_bsp.usb", "list")].contains(&pair), "unexpected RPC {pair:?}");
+                fake_output(if pair.1 == "getDHCPLeases" {r#"{"dhcp_leases":[]}"#} else {"{}"}, true)
+            },
+            "uci" => {
+                assert!(args[0] == "get" || args[0] == "show");
+                fake_output(if args[0] == "show" {"wireless.wifi0=wifi-device\nwireless.main_2g=wifi-iface\n"} else {"3600"}, true)
+            },
+            "iw" => { assert!(args.ends_with(&["info"]) || args.ends_with(&["station", "dump"])); fake_output("", true) },
+            "bridge" => { assert_eq!(args, ["fdb", "show", "br", "br-lan"]); fake_output("", true) },
+            "ethtool" => fake_output("", true),
+            other => panic!("unexpected command {other}"),
+        }
+    }
+    #[test]
+    fn discovery_read_dispatch_calls_only_audited_read_commands_and_keeps_auth() {
+        crate::process::with_commands(read_command, || {
+            let state = crate::handlers::AppState::with_mode(crate::agent_mode::AgentMode::Discovery);
+            for route in crate::agent_mode::SAFE_READS {
+                let path = format!("/api/{route}");
+                assert!(super::needs_auth(&tiny_http::Method::Get, &path));
+                let (status, body) = super::route(&tiny_http::Method::Get, &path, &state, b"", "127.0.0.1", None);
+                assert_ne!(status, 403, "{path}");
+                assert_ne!(status, 404, "{path}");
+                assert!(status == 200 || status == 503, "{path} {body}");
+            }
+        });
+    }
+    #[test]
+    fn discovery_wifi_sources_and_station_failures_are_not_false_empty_success() {
+        crate::process::with_commands(|_| fake_output("", false), || {
+            let state = crate::handlers::AppState::with_mode(crate::agent_mode::AgentMode::Discovery);
+            let (code, value) = crate::wifi::wifi_status(&state);
+            assert_eq!(code, 503); assert_eq!(value["state"], "not-assessed");
+            let (code, value) = crate::network_ext::network_clients(&state);
+            if std::path::Path::new("/proc/net/arp").is_file() {
+                assert_eq!(code, 200); assert_eq!(value["data"]["state"], "partial");
+                assert_eq!(value["data"]["sources"]["wifi_2g"], false);
+            } else { assert_eq!(code, 503); assert_eq!(value["state"], "not-assessed"); }
+        });
+        crate::process::with_commands(|cmd| {
+            if cmd.get_program() == "iw" { fake_output("", false) } else { read_command(cmd) }
+        }, || {
+            let state = crate::handlers::AppState::with_mode(crate::agent_mode::AgentMode::Discovery);
+            let (code, value) = crate::wifi::wifi_status(&state);
+            assert_eq!(code, 200); assert_eq!(value["data"]["station_counts_state"], "not-assessed");
+            assert!(value["data"]["clients_total"].is_null());
+            assert!(value["data"]["clients_2g"].is_null());
+        });
+    }
+    #[test]
+    fn discovery_vendor_method_failure_remains_an_error_without_any_write_fallback() {
+        crate::process::with_commands(|cmd| {
+            assert_eq!(cmd.get_program(), "ubus");
+            assert_eq!(cmd.get_args().next().unwrap(), "call");
+            fake_output("", false)
+        }, || {
+            let state = crate::handlers::AppState::with_mode(crate::agent_mode::AgentMode::Discovery);
+            for path in ["/api/sim/info", "/api/sim/imei", "/api/router/dns", "/api/router/apn/mode",
+                "/api/router/apn/profiles", "/api/usb/status", "/api/device/charger", "/api/device/battery-info"] {
+                let (code,value) = super::route(&tiny_http::Method::Get, path, &state, b"", "127.0.0.1", None);
+                assert_eq!(code, 503, "{path}"); assert_eq!(value["ok"], false);
+            }
+        });
+        for output in ["", "null", "{}", "[]", "malformed"] {
+            crate::process::with_commands(move |_| fake_output(output, true), || {
+                let state = crate::handlers::AppState::with_mode(crate::agent_mode::AgentMode::Discovery);
+                let (code, value) = super::route(&tiny_http::Method::Get, "/api/sim/info", &state, b"", "127.0.0.1", None);
+                assert_eq!(code, 503); assert_eq!(value["ok"], false);
+            });
         }
     }
 

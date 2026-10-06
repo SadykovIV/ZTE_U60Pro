@@ -15,10 +15,8 @@ safe_dir() {
     case "$(stat -c %a "$1")" in 700|750|755) ;; *) fail DIRECTORY_MODE;; esac
 }
 identity() {
-    test "$(id -u)" = 0 && test "$(uname -m)" = aarch64 || fail ROOT_ARCH
+    test "$(id -u)" = 0 && test "$(uname -s)" = Linux && test "$(uname -m)" = aarch64 || fail ROOT_ARCH
     test "$(cat /sys/block/mmcblk0/device/cid)" = "$cid" || fail CID_MISMATCH
-    test "$(hash /firmware/image/modem.b16)" = 604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263 || fail FIRMWARE_MISMATCH
-    test "$(hash /usr/bin/diag-router)" = 55c54f74aaa427940254a2f16c36771e675a80a002363e4f10b0dfcb604d9c6f || fail ROUTER_MISMATCH
     safe_dir /tmp/zte-imei-app.lock
     plain /tmp/zte-imei-app.lock/owner && test "$(cat /tmp/zte-imei-app.lock/owner)" = "$lock_token" || fail GLOBAL_LOCK
 }

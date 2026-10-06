@@ -35,7 +35,7 @@ class Fixture:
         self.start('exit 0')
         self.write(self.stage/'doas','#!/bin/sh\nexit 0\n')
         self.write(self.stage/'dropbear','#!/bin/sh\nexit 0\n')
-        self.write(self.bin/'uname','#!/bin/sh\necho aarch64\n')
+        self.write(self.bin/'uname','#!/bin/sh\ncase "$1" in -s) echo Linux;; *) echo aarch64;; esac\n')
         self.write(self.bin/'flock','#!/bin/sh\nexit 0\n')
         self.write(self.bin/'sync','#!/bin/sh\nexit 0\n')
         self.write(self.bin/'chmod',f'''#!{shutil.which("python3")}
@@ -80,6 +80,19 @@ class Accounts(unittest.TestCase):
     def tearDown(self):self.f.close()
     def unchanged(self):
         for name,data in self.f.original.items():self.assertEqual((self.f.etc/name).read_bytes(),data,name)
+    def test_unrelated_firmware_files_absent_still_creates_owned_account(self):
+        (self.f.p/'firmware/image/modem.b16').unlink()
+        (self.f.p/'usr/bin/diag-router').unlink()
+        r=self.f.run();self.assertEqual(r.returncode,0,r.stderr.decode())
+        self.assertIn('admin:x:50000:50000:',(self.f.etc/'passwd').read_text())
+    def test_actual_platform_or_cid_mismatch_stops_before_database_writes(self):
+        for command,body in [('uname','#!/bin/sh\ncase "$1" in -s) echo Other;; *) echo aarch64;; esac\n'),('uname','#!/bin/sh\ncase "$1" in -s) echo Linux;; *) echo armv7l;; esac\n'),('id','#!/bin/sh\necho 1000\n')]:
+            self.f.write(self.f.bin/command,body)
+            r=self.f.run();self.assertNotEqual(r.returncode,0);self.unchanged()
+        self.f.write(self.f.bin/'id','#!/bin/sh\necho 0\n')
+        self.f.write(self.f.bin/'uname','#!/bin/sh\ncase "$1" in -s) echo Linux;; *) echo aarch64;; esac\n')
+        (self.f.p/'sys/block/mmcblk0/device/cid').write_text('f'*32)
+        r=self.f.run();self.assertNotEqual(r.returncode,0);self.unchanged()
     def test_complete_account_uses_nonzero_uid_sha512_and_preserves_stock_records(self):
         r=self.f.run();self.assertEqual(r.returncode,0,r.stderr.decode())
         self.assertIn('admin:x:50000:50000:',(self.f.etc/'passwd').read_text())

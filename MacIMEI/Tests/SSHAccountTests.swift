@@ -10,11 +10,15 @@ private let state0 = "SSH_USERS_SCHEMA 1\nSSH_USERS_PENDING 0\nSSH_USERS_LISTENE
 private let state1 = "SSH_USERS_SCHEMA 1\nSSH_USERS_PENDING 0\nSSH_ACCOUNT modemadmin 50000 /data/zte-imei-admin/homes/modemadmin 1\nSSH_USERS_LISTENER 1\n"
 private final class Mock: RemoteTransport {
     var commands = [String](), inputs = [Data?](), uploaded = [String:Data](), created = false
-    var badFirmware = false, wrongUpload = false, commandFails = false, pending = false
+    var platformFailure = false, absentFiles = false, drift = false, measuredReads = 0, firmware = String(repeating: "b", count: 64), wrongUpload = false, commandFails = false, pending = false
     func run(_ command: String, input: Data?, timeout: TimeInterval) throws -> CommandResult {
         commands.append(command); inputs.append(input)
         func output(_ s: String) -> CommandResult { CommandResult(status:0,stdout:Data(s.utf8),stderr:Data()) }
-        if command.hasPrefix("sha256sum /firmware") { return output((badFirmware ? "invalid" : ModemEngine.firmwareHash) + " /firmware/image/modem.b16\n" + ModemEngine.routerHash + " /usr/bin/diag-router\n" + cid + "\n" + boot + "\n") }
+        if command == AccessIdentity.command {
+            measuredReads += 1
+            if platformFailure { return CommandResult(status:71,stdout:Data(),stderr:Data()) }
+            return output((absentFiles ? "absent" : firmware) + "  /firmware/image/modem.b16\n" + (absentFiles ? "absent" : ModemEngine.routerHash) + "  /usr/bin/diag-router\n" + cid + "\n" + (drift && measuredReads > 1 ? "11111111-1111-1111-1111-111111111111" : boot) + "\n")
+        }
         if command.contains("SSH_USERS_SCHEMA") { return output(pending ? state0.replacingOccurrences(of:"PENDING 0",with:"PENDING 1") : (created ? state1 : state0)) }
         if command.hasPrefix("umask 077; cat >") {
             let path = command.components(separatedBy:"'")[1]; uploaded[path] = input!
@@ -62,8 +66,20 @@ private final class Mock: RemoteTransport {
         try test("Read-only inspect never installs anything") {
             let mock=Mock(); let state=try manager(mock).inspect(); try check(!state.listenerReady && mock.uploaded.isEmpty && !mock.created,"Inspect writes")
         }
-        try test("Firmware mismatch stops before upload") {
-            let mock=Mock();mock.badFirmware=true;try reject { _=try manager(mock).create(username:"modemadmin",password:"safe 'password;123") }; try check(mock.uploaded.isEmpty,"Bad firmware upload")
+        try test("Invalid root platform stops before upload") {
+            let mock=Mock();mock.platformFailure=true;try reject { _=try manager(mock).create(username:"modemadmin",password:"safe 'password;123") }; try check(mock.uploaded.isEmpty,"Bad firmware upload")
+        }
+        try test("Unrelated firmware paths and pending IMEI do not block account creation") {
+            let mock=Mock();mock.absentFiles=true;let service=try manager(mock)
+            try savePrivate(Data("synthetic".utf8),service.root.appendingPathComponent("pending.json"))
+            try savePrivate(Data("synthetic".utf8),service.root.appendingPathComponent("setup-pending.json"))
+            _ = try service.create(username:"modemadmin",password:"safe 'password;123")
+            try check(mock.created && mock.measuredReads >= 3,"Measured generic account failed")
+        }
+        try test("Changed boot blocks account write after staging") {
+            let mock=Mock();mock.drift=true
+            try reject { _=try manager(mock).create(username:"modemadmin",password:"safe 'password;123") }
+            try check(!mock.created,"Changed device account write")
         }
         try test("Pending remote transaction stops before upload") {
             let mock=Mock();mock.pending=true;try reject { _=try manager(mock).create(username:"modemadmin",password:"safe 'password;123") }; try check(mock.uploaded.isEmpty,"Pending transaction upload")

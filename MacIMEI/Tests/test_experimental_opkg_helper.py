@@ -26,7 +26,7 @@ class HelperTests(unittest.TestCase):
   src=re.sub(r'TIMEOUT_SHA=[^\n]+','TIMEOUT_SHA='+self.supervisor_hash,src)
   self.script=self.fs/'manager.sh';self.script.write_text(src);self.script.chmod(0o600)
   self.root=self.fs/'data/zte-imei-apps/opkg-private';self.env=dict(os.environ,PATH=str(self.fs/'bin')+os.pathsep+os.environ['PATH'],FIXTURE_ROOT=str(self.fs))
-  self.shell('id','echo 0');self.shell('uname','echo aarch64')
+  self.shell('id','echo 0');self.shell('uname','case "$1" in -s) echo Linux;;*) echo aarch64;;esac')
   self.shell('df','echo "Filesystem 1024-blocks Used Available Capacity Mounted"; echo "fake 9999999 1 ${FAKE_FREE-9999999} 1% /data"')
   self.shell('timeout','echo NATIVE_TIMEOUT_MUST_NOT_RUN >&2; exit 98');self.shell('sync','exit 0')
   self.python('flock','import fcntl,sys;fcntl.flock(int(sys.argv[-1]),fcntl.LOCK_EX|fcntl.LOCK_NB)')
@@ -81,6 +81,29 @@ print('fixture opkg '+str(command))
  def install(self):return self.call('install-adapter',*self.runtime())
  def state(self):return (self.root/'state').read_bytes()
  def active(self):return self.root/'generations'/dict(x.split('=',1) for x in self.state().decode().splitlines())['active']
+ def test_b28_status_and_feeds_do_not_require_firmware_or_mutation_capabilities(self):
+  (self.fs/'firmware/image/modem.b16').write_bytes(b'other firmware')
+  (self.fs/'etc/openwrt_release').write_text("DISTRIB_RELEASE='other'\n")
+  (self.fs/'proc/mounts').write_text(f'/dev/fake {self.fs}/data ext4 ro,noexec 0 0\n')
+  for name in ['chroot','flock','mknod']:(self.fs/'bin'/name).unlink()
+  self.assertEqual(self.call('inspect')['installed'],'0');self.assertFalse(self.root.exists())
+  self.call('install-adapter',*self.runtime(),error='FIRMWARE');self.assertFalse(self.root.exists())
+ def test_read_binding_platform_and_owned_layout_still_required(self):
+  self.shell('id','echo 1000');self.call('inspect',error='ROOT_ARCH');self.shell('id','echo 0')
+  self.shell('uname','case "$1" in -s) echo OtherOS;;*) echo aarch64;;esac');self.call('inspect',error='ROOT_ARCH')
+  self.shell('uname','case "$1" in -s) echo Linux;;*) echo armv7l;;esac');self.call('inspect',error='ROOT_ARCH')
+  self.shell('uname','case "$1" in -s) echo Linux;;*) echo aarch64;;esac')
+  (self.fs/'sys/block/mmcblk0/device/cid').write_text('b'*32);self.call('inspect',error='DEVICE_CHANGED')
+  (self.fs/'sys/block/mmcblk0/device/cid').write_text(CID)
+  base=self.fs/'data/zte-imei-apps';base.mkdir();base.chmod(0o777);self.call('inspect',error='OWNER')
+  self.assertFalse(self.root.exists())
+ def test_b28_owned_feeds_are_read_only_with_seals(self):
+  self.install();old=self.state();self.call('execute','install','demo');old=self.state()
+  (self.fs/'firmware/image/modem.b16').write_bytes(b'other firmware')
+  for name in ['chroot','flock','mknod']:(self.fs/'bin'/name).unlink()
+  loaded=self.call('read-feeds',capture=True);self.assertIn('source=src/gz official_base',loaded)
+  self.assertEqual(self.state(),old);self.assertEqual(self.call('inspect')['package'].split('\t')[0],'demo')
+  (self.active()/'sandbox/bin/opkg').chmod(0o600);self.call('inspect',error='CHANGED_GENERATION')
  def test_inspect_absent_read_only(self):
   self.assertEqual(self.call('inspect')['installed'],'0');self.assertFalse(self.root.exists())
  def cli(self,*args,error=False):

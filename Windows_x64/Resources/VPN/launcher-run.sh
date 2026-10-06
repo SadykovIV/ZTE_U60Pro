@@ -10,11 +10,12 @@ plain() { exec "$stock"; }
 [ "$(cat "$root/owner")" = zte-native-launcher-v1 ] || plain
 [ "$(cat "$root/cid")" = "$(cat /sys/block/mmcblk0/device/cid)" ] || plain
 (cd "$root" && sha256sum -c launcher.sha256 >/dev/null 2>&1) || plain
+[ "$(id -u)" = 0 ] && [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ] || plain
+[ -f "$stock" ] && [ ! -L "$stock" ] || plain
 case "$(sha256sum "$stock" | cut -d' ' -f1)" in
- e3914e78a8488cb736770f0ac9fb8ce10e0e5222fa50285f08e9e8be90d7f1e9|16eb92e27f54b5cf5c6b316a6e7a62b782053a2a609d0d4904a7f08a7bc0afa4) ;;
+ e3914e78a8488cb736770f0ac9fb8ce10e0e5222fa50285f08e9e8be90d7f1e9|16eb92e27f54b5cf5c6b316a6e7a62b782053a2a609d0d4904a7f08a7bc0afa4|8d2ebbde880934f52195ad9595815d728f7aa4671bb0633d5a5149b09467ae90|d6c3cd409705d5aa9c12185c84074513b159088025f005da7dbf01c51e3c3715) ;;
  *) plain;;
 esac
-[ "$(sha256sum /firmware/image/modem.b16 | cut -d' ' -f1)" = 604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263 ] || plain
 [ ! -e /tmp/zte-vpn-screen ] || plain
 state=/tmp/zte-launcher
 if [ ! -e "$state" ]; then mkdir -m 700 "$state"; fi

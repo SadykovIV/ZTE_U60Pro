@@ -14,7 +14,12 @@ for dir in /data /etc /etc/init.d "$stage"; do
  [ -d "$dir" ] && [ ! -L "$dir" ] && [ "$(stat -c %u "$dir")" = 0 ] || exit 67
  perm=$(stat -c %a "$dir");[ "$((0$perm & 022))" = 0 ] || exit 67
 done
-[ "$(sha256sum /firmware/image/modem.b16 | cut -d' ' -f1)" = 604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263 ] || exit 68
+[ "$(id -u)" = 0 ] && [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ] || exit 68
+[ -f /usr/bin/zte_topsw_devui ] && [ ! -L /usr/bin/zte_topsw_devui ] || exit 68
+case "$(sha256sum /usr/bin/zte_topsw_devui | cut -d' ' -f1)" in
+ e3914e78a8488cb736770f0ac9fb8ce10e0e5222fa50285f08e9e8be90d7f1e9|16eb92e27f54b5cf5c6b316a6e7a62b782053a2a609d0d4904a7f08a7bc0afa4|8d2ebbde880934f52195ad9595815d728f7aa4671bb0633d5a5149b09467ae90|d6c3cd409705d5aa9c12185c84074513b159088025f005da7dbf01c51e3c3715) ;;
+ *) exit 68;;
+esac
 case "$(sha256sum /etc/init.d/zte_topsw_devui | cut -d' ' -f1)" in
  a30da6481637f1fd94e037373d406e574be7e722937a4965325086740be67e35|0a462f4021b1306ac5fbf074a674bae9fef952f240436a47468c0126c5d41b50) ;;
  *) exit 69;;
@@ -62,14 +67,14 @@ recover() {
  if [ ! -e "$transaction/started" ] && [ ! -d "$transaction/old" ]; then rm -rf "$transaction";return 0;fi
  (cd "$transaction" && sha256sum -c backup.sha256 >/dev/null) || return 1
  if [ -e "$transaction/started" ] || [ -d "$transaction/old" ]; then
-  /etc/init.d/zte_launcher stop >/dev/null 2>&1 || true
+  if [ -f /etc/init.d/zte_launcher ] && [ ! -L /etc/init.d/zte_launcher ]; then /etc/init.d/zte_launcher stop >/dev/null 2>&1 || true;fi
   if [ -e "$root" ]; then owned_root "$root" || return 1;rm -rf "$root";fi
   if [ -d "$transaction/old" ]; then mv "$transaction/old" "$root";fi
   cp -p "$transaction/rc.local" /etc/rc.local
   if [ -f "$transaction/service" ]; then cp -p "$transaction/service" /etc/init.d/zte_launcher
   else rm -f /etc/init.d/zte_launcher;fi
   /etc/init.d/zte_topsw_devui restart || true
-  if [ -d "$root" ]; then sh "$root/launcher-start.sh" || true;fi
+  if [ -d "$root" ] && [ -f "$transaction/service" ]; then sh "$root/launcher-start.sh" || true;fi
  fi
  rm -rf "$transaction"
 }
@@ -83,10 +88,19 @@ if [ "$mode" = preflight ]; then
 else
  recover || exit 74
 fi
+service_missing=0
 if [ -e "$root" ] || [ -L "$root" ]; then
  owned_root "$root" || exit 73
  (cd "$root" && sha256sum -c launcher.sha256 >/dev/null) || exit 73
- [ -f /etc/init.d/zte_launcher ] && [ ! -L /etc/init.d/zte_launcher ] && cmp -s /etc/init.d/zte_launcher "$root/launcher-service.sh" || exit 73
+ if [ ! -e /etc/init.d/zte_launcher ] && [ ! -L /etc/init.d/zte_launcher ]; then
+  # A reset may remove /etc while preserving this owned, intact /data bundle.
+  # Only the reviewed service from the pinned payload may repair that absence.
+  [ -f "$root/launcher-service.sh" ] && [ ! -L "$root/launcher-service.sh" ] &&
+   cmp -s "$root/launcher-service.sh" "$stage/launcher-service.sh" || exit 73
+  service_missing=1
+ else
+  [ -f /etc/init.d/zte_launcher ] && [ ! -L /etc/init.d/zte_launcher ] && cmp -s /etc/init.d/zte_launcher "$root/launcher-service.sh" || exit 73
+ fi
 else
  [ ! -e /etc/init.d/zte_launcher ] && [ ! -L /etc/init.d/zte_launcher ] || exit 73
 fi
@@ -138,7 +152,10 @@ sh -n "$transaction/rc.new"
 # A complete, verified replacement and backups exist before any running state changes.
 trap 'code=$?;trap - EXIT INT TERM;recover || true;exit "$code"' EXIT
 trap 'exit 75' INT TERM
-if [ -d "$root" ]; then /etc/init.d/zte_launcher stop;mv "$root" "$transaction/old";fi
+if [ -d "$root" ]; then
+ if [ "$service_missing" = 0 ]; then /etc/init.d/zte_launcher stop;fi
+ mv "$root" "$transaction/old"
+fi
 # Recovery also handles interruption immediately after the old-directory rename.
 touch "$transaction/started"
 sync

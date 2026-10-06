@@ -16,12 +16,14 @@ public sealed record SsclashRemovalResult(string LocalArchive, string RemoteArch
 
 public sealed partial class DeviceFeatureService
 {
+    internal Func<CancellationToken, Task<byte[]>>? SsclashAssetLoader { get; init; }
+
     private const string SsclashRoot = "/data/zte-imei-apps/ssclash";
     private const string SsclashService = "/etc/init.d/zte_imei_ssclash";
     private const string SsclashHash = "38ba859187c953d159cdd4f1ff397feb5f29116e0bfc7dc284c45b1a6766c770";
     private const int SsclashBytes = 11_010_232;
     private const string SsclashUrl = "https://github.com/zerolabnet/SSClash-Go/releases/download/v6.4.1/ssclash-linux-arm64";
-    private const string SsclashRemoveHash = "7497bace3fea997bd9b079efe8bb8caa722a53a197784b2bc88d96786be2e5bc";
+    private const string SsclashRemoveHash = "8948d37e3298e0de5a57beee9556056ccc3f86dd0eed6da7a5c1ff796db65ddd";
 
     private static string Section(string output, string start, string end)
     {
@@ -96,8 +98,10 @@ public sealed partial class DeviceFeatureService
         {
             var state = await GetApplicationsAsync(ct);
             Check(state.Release == "23.05.4" && state.Architecture == "aarch64_cortex-a53" && !state.SsclashInstalled && !state.SsclashUnmanaged && state.DataFreeKiB >= 64 * 1024,
-                "SSClash поддерживается только на B31; требуется 64 МиБ и свободное место установки.");
-            var binary = await DownloadSsclashAsync(ct);
+                "Для SSClash нужны OpenWrt 23.05.4 / aarch64_cortex-a53, 64 МиБ и свободное место установки.");
+            var binary = await (SsclashAssetLoader ?? DownloadSsclashAsync)(ct);
+            ValidateSsclashAsset(binary);
+            Check(identity == await ReadAgentIdentityAsync(ct), "Модем или его загрузка изменились во время операции. Обновите состояние.");
             var template = await ResourceAsync("Applications", "ssclash-service.sh", ct);
             var service = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(template).Replace("__ZTE_LAN_IPV4__", lanAddress, StringComparison.Ordinal));
             var stage = "/data/zte-imei-apps/.ssclash-" + Guid.NewGuid().ToString("D");
@@ -141,7 +145,7 @@ public sealed partial class DeviceFeatureService
                     try { await RunAsync(guard + "test -d " + Quote(stage) + " && test ! -L " + Quote(stage) + "; rm -f " + Quote(stage + "/bin/ssclash") + " " + Quote(stage + "/.zte-imei-owner") + " " + Quote(stage + "/.ssclash/password") + "; rmdir " + Quote(stage + "/.ssclash") + " " + Quote(stage + "/bin") + " " + Quote(stage), seconds: 15, ct: CancellationToken.None); } catch { }
                 throw;
             }
-        }, ct);
+        }, ct, measuredAgentPlatform: true);
     }
 
     // Upstream forbids redistribution of this executable. Only an explicit
@@ -165,11 +169,15 @@ public sealed partial class DeviceFeatureService
             output.Write(buffer, 0, count);
         }
         var bytes = output.ToArray();
+        return bytes;
+    }
+
+    private static void ValidateSsclashAsset(byte[] bytes)
+    {
         Check(bytes.Length == SsclashBytes && Sha(bytes) == SsclashHash &&
             bytes.AsSpan(0, 6).SequenceEqual(new byte[] { 0x7f, 0x45, 0x4c, 0x46, 2, 1 }) &&
             bytes[18] == 0xb7 && bytes[19] == 0,
             "Загруженный SSClash не соответствует проверенному Linux ARM64 релизу.");
-        return bytes;
     }
 
     private sealed record SsclashHttpReply(int Status, string Cookie, string Body);
@@ -246,6 +254,7 @@ public sealed partial class DeviceFeatureService
             var remoteArchive = "/data/zte-imei-apps/.removals/" + id + "/archive.tar.gz";
             string Command(string action, string? archiveHash = null) => Guard(identity, token) + "sh -s -- " + string.Join(" ",
                 (archiveHash == null ? new[] { action, id, SsclashHash, serviceHash } : new[] { action, id, SsclashHash, serviceHash, archiveHash }).Select(Quote));
+            Check(identity == await ReadAgentIdentityAsync(ct), "Модем или его загрузка изменились во время операции. Обновите состояние.");
             var response = await RunTextAsync(Command("prepare"), script, 180, ct);
             var match = Regex.Match(response, "^SSCLASH_ARCHIVE sha256=([0-9a-f]{64}) bytes=([0-9]+)$");
             long size = 0;
@@ -261,9 +270,9 @@ public sealed partial class DeviceFeatureService
                 await file.WriteAsync(bytes, ct);
                 file.Flush(true);
             }
-            await VerifyIdentityAsync(identity, ct);
+            Check(identity == await ReadAgentIdentityAsync(ct), "Модем или его загрузка изменились во время операции. Обновите состояние.");
             var removed = await RunTextAsync(Command("commit", hash), script, 120, ct);
             Check(removed == "SSCLASH_REMOVED archive=" + remoteArchive, "Удаление SSClash не подтверждено.");
             return new SsclashRemovalResult(localArchive, remoteArchive, hash);
-        }, ct);
+        }, ct, measuredAgentPlatform: true);
 }

@@ -45,13 +45,13 @@ struct WifiStationInfo {
     connected_secs: Option<u64>,
 }
 
-fn parse_station_dump(iface: &str, band: &str) -> HashMap<String, WifiStationInfo> {
+fn parse_station_dump(iface: &str, band: &str) -> Option<HashMap<String, WifiStationInfo>> {
     let output = match Command::new("iw")
         .args([iface, "station", "dump"])
         .bounded_output()
     {
-        Ok(o) => String::from_utf8_lossy(&o.stdout).to_string(),
-        Err(_) => return HashMap::new(),
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
+        _ => return None,
     };
 
     let mut stations = HashMap::new();
@@ -99,16 +99,16 @@ fn parse_station_dump(iface: &str, band: &str) -> HashMap<String, WifiStationInf
     }
 
     flush(&mut stations, &mut current_mac, &mut current);
-    stations
+    Some(stations)
 }
 
-fn bridge_port_by_mac() -> HashMap<String, String> {
+fn bridge_port_by_mac() -> Option<HashMap<String, String>> {
     let output = match Command::new("bridge")
         .args(["fdb", "show", "br", "br-lan"])
         .bounded_output()
     {
-        Ok(o) => String::from_utf8_lossy(&o.stdout).to_string(),
-        Err(_) => return HashMap::new(),
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
+        _ => return None,
     };
 
     let mut ports = HashMap::new();
@@ -133,14 +133,14 @@ fn bridge_port_by_mac() -> HashMap<String, String> {
             ports.insert(mac, dev.to_string());
         }
     }
-    ports
+    Some(ports)
 }
 
-fn arp_entries() -> Vec<(String, String)> {
+fn arp_entries() -> Option<Vec<(String, String)>> {
     let mut entries = Vec::new();
     let arp = match std::fs::read_to_string("/proc/net/arp") {
         Ok(v) => v,
-        Err(_) => return entries,
+        Err(_) => return None,
     };
 
     for line in arp.lines().skip(1) {
@@ -157,7 +157,7 @@ fn arp_entries() -> Vec<(String, String)> {
         entries.push((mac, ip.to_string()));
     }
 
-    entries
+    Some(entries)
 }
 
 fn medium_for_port(
@@ -202,11 +202,13 @@ fn link_speed_mbps(iface: &str) -> Option<u64> {
     })
 }
 
-pub fn network_clients(_state: &AppState) -> (u16, Value) {
+pub fn network_clients(state: &AppState) -> (u16, Value) {
     // Build hostname lookup from DHCP leases
     let mut hostname_by_mac: HashMap<String, String> = HashMap::new();
+    let mut dhcp_known = false;
     if let Ok(dhcp) = ubus::call("luci-rpc", "getDHCPLeases", Some(r#"{"family":4}"#)) {
         if let Some(leases) = dhcp.get("dhcp_leases").and_then(|v| v.as_array()) {
+            dhcp_known = true;
             for l in leases {
                 if let (Some(mac), Some(host)) = (l["macaddr"].as_str(), l["hostname"].as_str()) {
                     if !host.is_empty() {
@@ -218,10 +220,20 @@ pub fn network_clients(_state: &AppState) -> (u16, Value) {
     }
 
     let arp = arp_entries();
-    let ip_by_mac: HashMap<String, String> = arp.iter().cloned().collect();
     let wifi_2g = parse_station_dump("wlan0", "2.4 GHz");
     let wifi_5g = parse_station_dump("wlan2", "5 GHz");
     let bridge_ports = bridge_port_by_mac();
+    let source_states = [dhcp_known, arp.is_some(), wifi_2g.is_some(), wifi_5g.is_some(), bridge_ports.is_some()];
+    let observed = source_states.iter().any(|v| *v);
+    let sources = json!({"dhcp": dhcp_known, "arp": arp.is_some(), "wifi_2g": wifi_2g.is_some(),
+        "wifi_5g": wifi_5g.is_some(), "bridge": bridge_ports.is_some()});
+    let ip_by_mac: HashMap<String, String> = arp.unwrap_or_default().into_iter().collect();
+    let wifi_2g = wifi_2g.unwrap_or_default();
+    let wifi_5g = wifi_5g.unwrap_or_default();
+    let bridge_ports = bridge_ports.unwrap_or_default();
+    if state.mode == crate::agent_mode::AgentMode::Discovery && !observed {
+        return (503, json!({"ok": false, "state": "not-assessed", "error": "Client information is not available", "sources": sources}));
+    }
 
     let mut all_macs: HashSet<String> = HashSet::new();
     all_macs.extend(ip_by_mac.keys().cloned());
@@ -259,7 +271,12 @@ pub fn network_clients(_state: &AppState) -> (u16, Value) {
         }));
     }
 
-    (200, json!({"ok": true, "data": { "clients": clients }}))
+    if state.mode == crate::agent_mode::AgentMode::Discovery {
+        (200, json!({"ok": true, "data": {"clients": clients, "sources": sources,
+            "state": if source_states.iter().all(|v| *v) { "known" } else { "partial" }}}))
+    } else {
+        (200, json!({"ok": true, "data": { "clients": clients }}))
+    }
 }
 
 pub fn network_battery_ubus(_state: &AppState) -> (u16, Value) {
