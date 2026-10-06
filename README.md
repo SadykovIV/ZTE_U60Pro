@@ -12,6 +12,16 @@ agent **2.9.0-esim.4**. [Changes and verification limits](docs/RELEASE-1.24.9.md
 The release package is in `dist/1.24.9`.
 [Preparation details and limits](docs/PREPARATION-1.24.7.md).
 
+## Local candidate 1.24.10
+
+Adds **Collect firmware adaptation data** under **Modem preparation → Diagnostics**.
+The SSH export includes the screen executable, language files, screen startup
+service and safe agent mode information needed to research B28 and other builds.
+[English/Russian collection instructions](docs/FIRMWARE-ADAPTATION-DATA.md).
+This collects evidence; it does not yet provide a B28 screen adapter.
+Windows also adds a local file picker and installation command for a custom Linux
+ARM64 agent under **Agent installation**.
+
 ## Changes since published version 1.23.3
 
 - Faster SSH control: two short requests on connection; agent, VPN, screen, and

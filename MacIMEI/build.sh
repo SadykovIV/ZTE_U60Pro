@@ -15,6 +15,9 @@ script_pin=re.search(r'static let dashboardInstallerSHA256 = "([a-f0-9]{64})"',s
 if not script_pin: raise SystemExit('Dashboard release pin is not finalized')
 for path,expected in [('Resources/Onboarding/zte-agent',pin),('Resources/Esim/zte-agent-esim',pin),('Resources/AgentDashboardInstall/dashboard.sh',script_pin.group(1))]:
  if hashlib.sha256((root/path).read_bytes()).hexdigest()!=expected: raise SystemExit('Release resource mismatch: '+path)
+support_source=(root/'Sources/FirmwareSupport.swift').read_text()
+support_pin=re.search(r'static let helperSHA256 = "([a-f0-9]{64})"',support_source)
+if not support_pin or hashlib.sha256((root/'Resources/FirmwareSupport/collect.sh').read_bytes()).hexdigest()!=support_pin.group(1): raise SystemExit('Firmware support helper release pin mismatch')
 PIN_CHECK
 /usr/bin/swiftc -module-cache-path "$PWD/.build/module-cache" -swift-version 5 -parse-as-library -debug-prefix-map "${PWD}=MacIMEI" -O -target arm64-apple-macosx13.0 Sources/*.swift -o "$APP/Contents/MacOS/ZTEU60ProManager"
 cp DeviceHelpers/bin/zte_nv DeviceHelpers/bin/zte_config DeviceHelpers/bin/zte_config_read "$APP/Contents/Resources/"
@@ -51,7 +54,7 @@ done
 if [[ -f Resources/ExperimentalOpkg/LICENSES.txt ]]; then cp Resources/ExperimentalOpkg/LICENSES.txt "$APP/Contents/Resources/ExperimentalOpkg/"; fi
 mkdir -p "$APP/Contents/Resources/Terminal"
 cp Resources/Terminal/* "$APP/Contents/Resources/Terminal/"
-for folder in Branding Localization Catalog FirmwareResearch; do
+for folder in Branding Localization Catalog FirmwareResearch FirmwareSupport; do
     mkdir -p "$APP/Contents/Resources/$folder"
     cp -R "Resources/$folder/." "$APP/Contents/Resources/$folder/"
 done
@@ -61,7 +64,7 @@ python3 - "$APP" <<'PY'
 import hashlib,json,pathlib,plistlib,sys
 app=pathlib.Path(sys.argv[1]); res=app/'Contents/Resources'
 (res/'helpers.json').write_text(json.dumps({n:hashlib.sha256((res/n).read_bytes()).hexdigest() for n in ['zte_nv','zte_config','zte_config_read']},indent=2)+'\n')
-info={'CFBundleName':'ZTE U60Pro Manager','CFBundleDisplayName':'ZTE U60Pro Manager','CFBundleIdentifier':'local.zte.imei-studio','CFBundleVersion':'50','CFBundleShortVersionString':'1.24.9','CFBundleExecutable':'ZTEU60ProManager','CFBundlePackageType':'APPL','LSMinimumSystemVersion':'13.0','LSArchitecturePriority':['arm64'],'NSHighResolutionCapable':True,'NSAppTransportSecurity':{'NSAllowsArbitraryLoads':True},'NSPrincipalClass':'NSApplication','NSLocalNetworkUsageDescription':'Подключение к вашему модему для чтения, резервного копирования и настройки устройства.','CFBundleIconFile':'AppIcon'}
+info={'CFBundleName':'ZTE U60Pro Manager','CFBundleDisplayName':'ZTE U60Pro Manager','CFBundleIdentifier':'local.zte.imei-studio','CFBundleVersion':'51','CFBundleShortVersionString':'1.24.10','CFBundleExecutable':'ZTEU60ProManager','CFBundlePackageType':'APPL','LSMinimumSystemVersion':'13.0','LSArchitecturePriority':['arm64'],'NSHighResolutionCapable':True,'NSAppTransportSecurity':{'NSAllowsArbitraryLoads':True},'NSPrincipalClass':'NSApplication','NSLocalNetworkUsageDescription':'Подключение к вашему модему для чтения, резервного копирования и настройки устройства.','CFBundleIconFile':'AppIcon'}
 (app/'Contents/Info.plist').write_bytes(plistlib.dumps(info))
 setup=res/'Onboarding'
 setup_manifest = json.loads((setup/'SHA256.json').read_text())
@@ -70,8 +73,8 @@ PY
 if [[ -f Resources/AppIcon.icns ]]; then cp Resources/AppIcon.icns "$APP/Contents/Resources/"; fi
 /usr/bin/codesign --force --sign - "$APP"
 /usr/bin/codesign --verify --deep --strict "$APP"
-/usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP" "$PWD/dist/ZTE-U60Pro-Manager-1.24.9-arm64.zip"
-(cd dist && /usr/bin/shasum -a 256 "ZTE-U60Pro-Manager-1.24.9-arm64.zip") > "$PWD/dist/SHA256SUMS"
+/usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP" "$PWD/dist/ZTE-U60Pro-Manager-1.24.10-arm64.zip"
+(cd dist && /usr/bin/shasum -a 256 "ZTE-U60Pro-Manager-1.24.10-arm64.zip") > "$PWD/dist/SHA256SUMS"
 python3 - "$APP" <<'PY'
 import datetime, hashlib, json, pathlib, plistlib, re, sys
 app = pathlib.Path(sys.argv[1]); root = pathlib.Path.cwd(); res = app/'Contents/Resources'
@@ -82,7 +85,7 @@ resources = {str(p.relative_to(res)): sha(p) for p in sorted(res.rglob('*')) if 
 for name in resources:
     if pathlib.Path(name).name in {'id_ed25519', 'id_rsa', 'nv0.bin', 'nv1.bin', 'config.bin', 'back_parameter', 'connection.json', 'known_hosts', 'trusted_known_hosts', 'authorized_keys', 'ssclash-linux-arm64'}:
         raise SystemExit('Private device file in application bundle: ' + name)
-for manifest, directory in [('helpers.json', res), ('Onboarding/SHA256.json', res/'Onboarding'), ('SSHAccounts/SHA256.json', res/'SSHAccounts'), ('ScreenLocalization/SHA256.json', res/'ScreenLocalization'), ('TTL/SHA256.json', res/'TTL'), ('VPN/SHA256.json', res/'VPN'), ('Applications/SHA256.json', res/'Applications'), ('DeviceBackups/SHA256.json', res/'DeviceBackups'), ('SystemBackups/SHA256.json', res/'SystemBackups'), ('DiagnosticTools/SHA256.json', res/'DiagnosticTools'), ('ExperimentalOpkg/SHA256.json', res/'ExperimentalOpkg'), ('HostTools/SHA256.json', res/'HostTools'), ('Terminal/SHA256.json', res/'Terminal'), ('AgentDashboard/SHA256.json', res/'AgentDashboard'), ('AgentInstallation/SHA256.json', res/'AgentInstallation'), ('Esim/SHA256.json', res/'Esim'), ('AgentDashboardInstall/SHA256.json', res/'AgentDashboardInstall')]:
+for manifest, directory in [('helpers.json', res), ('Onboarding/SHA256.json', res/'Onboarding'), ('SSHAccounts/SHA256.json', res/'SSHAccounts'), ('ScreenLocalization/SHA256.json', res/'ScreenLocalization'), ('TTL/SHA256.json', res/'TTL'), ('VPN/SHA256.json', res/'VPN'), ('Applications/SHA256.json', res/'Applications'), ('DeviceBackups/SHA256.json', res/'DeviceBackups'), ('SystemBackups/SHA256.json', res/'SystemBackups'), ('DiagnosticTools/SHA256.json', res/'DiagnosticTools'), ('ExperimentalOpkg/SHA256.json', res/'ExperimentalOpkg'), ('HostTools/SHA256.json', res/'HostTools'), ('Terminal/SHA256.json', res/'Terminal'), ('AgentDashboard/SHA256.json', res/'AgentDashboard'), ('AgentInstallation/SHA256.json', res/'AgentInstallation'), ('Esim/SHA256.json', res/'Esim'), ('AgentDashboardInstall/SHA256.json', res/'AgentDashboardInstall'), ('FirmwareSupport/SHA256.json', res/'FirmwareSupport')]:
     for name, expected in json.loads((res/manifest).read_text()).items():
         if sha(directory/name) != expected: raise SystemExit('Resource hash mismatch: ' + name)
 agent_source = (root/'Sources/BundledAgent.swift').read_text()

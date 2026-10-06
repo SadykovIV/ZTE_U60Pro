@@ -11,7 +11,7 @@ WINDOWS = Path(__file__).resolve().parent
 ROOT = WINDOWS.parent
 SOURCE = ROOT / 'MacIMEI/Resources'
 DEST = WINDOWS / 'Resources'
-GROUPS = ('Onboarding', 'VPN', 'AgentDashboard', 'AgentDashboardInstall', 'AgentInstallation', 'Esim')
+GROUPS = ('Onboarding', 'VPN', 'AgentDashboard', 'AgentDashboardInstall', 'AgentInstallation', 'Esim', 'FirmwareSupport')
 PINS = {
     'src/Core/AgentPackage.cs': {'Sha256': 'Onboarding/zte-agent'},
     'src/Features/VpnFeatures.cs': {'VpnHelperHash': 'VPN/vpnctl', 'DashboardHash': 'AgentDashboard/index.html', 'LauncherHash': 'VPN/launcher.so'},
@@ -19,6 +19,7 @@ PINS = {
     'src/Features/AgentDashboardFeatures.cs': {'DashboardInstallerHash': 'AgentDashboardInstall/dashboard.sh'},
     'src/Features/AdminFeatures.cs': {'AgentManagerHash': 'AgentInstallation/manager.sh'},
     'src/Research/FirmwareResearch.cs': {'ExpectedSpecificationSha256': 'FirmwareResearch/probes.json'},
+    'src/Diagnostics/FirmwareSupportCollector.cs': {'ExpectedHelperSha256': 'FirmwareSupport/collect.sh'},
 }
 
 def sha(path):

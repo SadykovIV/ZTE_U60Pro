@@ -79,6 +79,8 @@ import AppKit
     @Published var modemInformation: ModemInformation?
     @Published var diagnosticExportURL: URL?
     @Published var diagnosticExportSummary = ""
+    @Published var firmwareSupportExportURL: URL?
+    @Published var firmwareSupportExportSummary = ""
     @Published var diagnosticReport: DiagnosticReport?
     @Published var selectedDiagnostic = "system.log"
     @Published var diagnosticText = ""

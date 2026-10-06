@@ -302,6 +302,8 @@ public sealed partial class MainWindow : Window
         _forcePreparationCheckBox = null;
         _cleanPreparationCheckBox = null;
         _researchCollectButton = null;
+        _firmwareAdaptationButton = null;
+        _chooseCustomAgentButton = null; _installCustomAgentButton = null;
         _diagnosticAccessButton = null;
         _refreshAdbButton = null;
         _verifyBackupKeyButton = null;
@@ -457,6 +459,7 @@ public sealed partial class MainWindow : Window
                     panel.Children.Add(Muted("После перезагрузки агент и веб-панель остаются на модеме. Восстановление предыдущего агента меняет только его исполняемый файл; ручной откат панели не поддерживается."));
                     panel.Children.Add(ValueLine("Состояние", _snapshot?.Agent));
                 });
+                BuildCustomAgent();
                 break;
             case 3:
                 AddCard("Русский интерфейс", "Пакет русификации экрана устанавливается на модем.", panel =>
@@ -1954,6 +1957,7 @@ public sealed partial class MainWindow : Window
             _ = LoadPageDataAsync();
         UpdateDiagnosticAvailability();
         UpdateEsimAvailability();
+        UpdateCustomAgentAvailability();
     }
 
     private void ClearSecrets(bool discardFields = false, bool preservePreparation = false)
@@ -1961,6 +1965,7 @@ public sealed partial class MainWindow : Window
         ClearEsimSecrets();
         if (!preservePreparation)
         {
+            _customAgent = null; _customAgentContext = null;
             _preparationSecrets.Clear(); InvalidateBackupKeyCheck();
             _form["clean_components"] = "false";
             if (_cleanPreparationCheckBox is not null) _cleanPreparationCheckBox.IsChecked = false;

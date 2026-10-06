@@ -120,6 +120,21 @@ public sealed partial class WindowsModemService
                 _snapshot = _snapshot with { Agent = DescribeAgent(status) };
                 return "Постоянный агент eSIM и веб-панель установлены. " + _snapshot.Agent!;
             }
+            case ModemOperation.InstallCustomAgent:
+            {
+                if (!_snapshot.IsConnected || _snapshot.ConnectionMode != "SSH" ||
+                    Param(p,"host") != _host || Param(p,"port") != _port.ToString(System.Globalization.CultureInfo.InvariantCulture) ||
+                    Param(p,"key_path") != KeyPath || Param(p,"known_hosts_path") != KnownHostsPath)
+                    throw new InvalidOperationException("Настройки подключения изменились. Подключитесь к выбранному модему заново.");
+                if (!long.TryParse(Param(p,"agent_bytes"), System.Globalization.NumberStyles.None,
+                    System.Globalization.CultureInfo.InvariantCulture, out var bytes))
+                    throw new InvalidDataException("Выберите файл агента заново.");
+                var candidate = AgentCandidate.FromSelection(Param(p,"agent_path"), bytes, Param(p,"agent_sha256"));
+                _snapshot = _snapshot with { Agent = null, Vpn = null, VpnPage = null };
+                var status = await _features!.InstallCustomAgentAsync(candidate, ct);
+                _snapshot = _snapshot with { Agent = DescribeAgent(status) };
+                return "Выбранный агент установлен и запущен. Веб-панель, VPN и дополнительные страницы не изменялись.";
+            }
             case ModemOperation.RestoreAgent:
             {
                 var status = await _features!.RestoreAgentAsync(ct);

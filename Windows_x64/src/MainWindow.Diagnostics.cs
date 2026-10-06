@@ -7,6 +7,7 @@ namespace ZteImeiStudio.Windows;
 public sealed partial class MainWindow
 {
     private Button? _researchCollectButton;
+    private Button? _firmwareAdaptationButton;
     private Button? _diagnosticAccessButton;
     private Button? _refreshAdbButton;
     private Button? _verifyBackupKeyButton;
@@ -110,12 +111,23 @@ public sealed partial class MainWindow
     private void BuildDiagnostics()
     {
         BuildFirmwareResearch();
+        AddCard("Данные для адаптации прошивки", "Текущие файлы экранного интерфейса и безопасные сведения об агенте для проверки совместимости.", panel =>
+        {
+            var row = new WrapPanel();
+            _firmwareAdaptationButton = ActionButton("Собрать данные для адаптации прошивки", CollectFirmwareAdaptationAsync, false);
+            _firmwareAdaptationButton.Name = "CollectFirmwareAdaptation";
+            row.Children.Add(_firmwareAdaptationButton);
+            row.Children.Add(OperationInfoButton(OperationHelpContent.FirmwareAdaptation));
+            panel.Children.Add(row);
+            panel.Children.Add(Muted("Только чтение по текущему SSH. Архив сохраняется в выбранное место; неполный сбор отмечается отдельно."));
+        });
         AddCard("Сбор и экспорт", "Сохранённое исследование и действия программы в одном архиве.", panel =>
         {
             panel.Children.Add(Actions(("Сохранить диагностический ZIP", ModemOperation.ExportDiagnostics, null)));
             panel.Children.Add(Muted("Диагностический ZIP включает сохранённое исследование устройства и действия программы. Новое исследование запускается отдельно."));
 
         });
+        UpdateDiagnosticAvailability();
     }
 
     private void UpdateDiagnosticAvailability()
@@ -127,6 +139,7 @@ public sealed partial class MainWindow
             System.Net.IPAddress.TryParse(Get("host"),out var keyCheckHost) && keyCheckHost.AddressFamily==System.Net.Sockets.AddressFamily.InterNetwork &&
             Get("web_password").Length>0 && !Get("web_password").Contains('\0');
         if (_researchCollectButton is not null) _researchCollectButton.IsEnabled = idle;
+        if (_firmwareAdaptationButton is not null) _firmwareAdaptationButton.IsEnabled = idle && ssh;
         if (_diagnosticAccessButton is not null) _diagnosticAccessButton.IsEnabled = idle && ssh;
         if (_refreshAdbButton is not null) _refreshAdbButton.IsEnabled = idle && ssh;
         if (_adbEnabledCheckbox is not null)

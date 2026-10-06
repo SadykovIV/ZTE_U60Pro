@@ -38,6 +38,8 @@ $requiredResources = @(
     'Helpers/helpers.json',
     'Onboarding/SHA256.json',
     'FirmwareResearch/probes.json',
+    'FirmwareSupport/collect.sh',
+    'FirmwareSupport/SHA256.json',
     'Esim/zte-agent-esim',
     'Esim/gsma-rsp-roots.pem',
     'Esim/SHA256.json',

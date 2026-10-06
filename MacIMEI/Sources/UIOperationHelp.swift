@@ -6,10 +6,12 @@ enum OperationHelpTopic: String {
     case preparation
     case diagnosticADB
     case componentCleanup
+    case firmwareSupport
     case imei
 
     var title: String {
         switch self {
+        case .firmwareSupport: return "Данные для адаптации прошивки"
         case .componentCleanup: return "Очистка данных агента, VPN и страниц"
         case .diagnosticADB: return "Как включается и выключается ADB"
         case .preparation: return "Как выполняется подготовка модема"
@@ -19,6 +21,7 @@ enum OperationHelpTopic: String {
 
     var accessibilityLabel: String {
         switch self {
+        case .firmwareSupport: return "Подробно о сборе данных для адаптации"
         case .componentCleanup: return "Подробно об очистке компонентов"
         case .diagnosticADB: return "Подробно о переключении ADB"
         case .preparation: return "Подробно о подготовке модема"
@@ -28,6 +31,7 @@ enum OperationHelpTopic: String {
 
     var introduction: String {
         switch self {
+        case .firmwareSupport: return "Сбор помогает разобраться с другой прошивкой, например когда русификация экрана не поддерживает её бинарник. Он читает выбранный модем через уже настроенное SSH-подключение; агент и проверенный профиль B31 не требуются. Открытие справки и переход в раздел не запускают сбор."
         case .componentCleanup: return "Для повторной установки после заводского сброса: включите флажок рядом с кнопкой подготовки и введите новый пароль агента в параметрах первоначальной подготовки SSH. Приложение переустановит агент и SSH, затем очистит выбранные компоненты программы. Флажок выключен по умолчанию; открытие справки ничего не меняет."
         case .diagnosticADB: return "ADB нужен для первоначальной настройки SSH. Переключатель включает и выключает USB ADB через проверенное SSH-подключение на поддерживаемой конфигурации USB. После изменения приложение проверяет то же устройство и состояние USB. Открытие справки ничего не запускает."
         case .preparation:
@@ -39,12 +43,19 @@ enum OperationHelpTopic: String {
 
     var sections: [OperationHelpSection] {
         switch self {
+        case .firmwareSupport: return Self.firmwareSupportSections
         case .componentCleanup: return Self.componentCleanupSections
         case .diagnosticADB: return Self.diagnosticADBSections
         case .preparation: return Self.preparationSections
         case .imei: return Self.imeiSections
         }
     }
+
+    private static let firmwareSupportSections: [OperationHelpSection] = [
+        .init("Что сохраняется", "Текущие файлы экранного интерфейса: бинарник, English.ini и Chinese.ini, сценарий запуска экрана; при наличии проверенной копии русификации — также сохранённые оригиналы. Версии прошивки и Inner, платформа, размеры и SHA-256 файлов, безопасные сведения о состоянии агента и очищенный журнал программы. Текущие файлы могут уже содержать русификацию. Недоступные файлы отмечаются в отчёте: неполный набор не означает совместимость прошивки."),
+        .init("Что не собирается", "Настройки, пароли, ключи, IMEI, SIM/eSIM-профили, NV и полный образ флеш-памяти не скачиваются. Сценарий запуска агента с паролем не включается. Никакие службы не запускаются и не останавливаются, файлы модема не изменяются."),
+        .init("Как используется архив", "ZIP сохраняется только в выбранный вами файл и автоматически никуда не отправляется. Экранные файлы сохраняются без изменения и могут принадлежать производителю прошивки; передавайте архив лично для диагностики и адаптации, а не публикуйте его как часть приложения. Проверка размеров, контрольных сумм и неизменности SSH-сеанса подтверждает передачу данных, но не разрешает установку на неподдерживаемую прошивку.")
+    ]
 
     private static let componentCleanupSections: [OperationHelpSection] = [
         .init("Архив перед удалением", "Перед заменой сохраняются исходные файлы агента и SSH. Перед очисткой компоненты программы и их настройки скачиваются в архив ComponentBackups на Mac и проверяются по контрольной сумме. После подтверждённого завершения удаляются только принадлежащие приложению временные файлы; незавершённые и неподтверждённые данные сохраняются."),

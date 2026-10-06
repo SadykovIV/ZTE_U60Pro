@@ -26,13 +26,18 @@ public sealed partial class DeviceFeatureService
         => GetAgentInstallationStatusAsync(ct);
     public Task<AgentInstallationStatus> InstallAgentAsync(CancellationToken ct = default)
         => InvokeAgentAsync("install", ct);
+    public Task<AgentInstallationStatus> InstallCustomAgentAsync(AgentCandidate candidate, CancellationToken ct = default)
+        => InvokeAgentAsync("install", ct, candidate);
     public Task<AgentInstallationStatus> RestoreAgentAsync(CancellationToken ct = default)
         => InvokeAgentAsync("restore", ct);
 
-    private Task<AgentInstallationStatus> InvokeAgentAsync(string action, CancellationToken ct)
+    private Task<AgentInstallationStatus> InvokeAgentAsync(string action, CancellationToken ct, AgentCandidate? candidate = null)
     {
+        // Read and validate the selected bytes before the first remote write, and keep
+        // exactly these bytes for the upload even if the local file changes later.
+        var selectedBytes = candidate?.ReadValidatedBytes();
         if (action == "status") return ReadOnly();
-        return MutateAsync(async (identity, token) => await Invoke(identity, token), ct);
+        return MutateAsync(async (identity, token) => await Invoke(identity, token), ct, measuredAgentPlatform: candidate is not null || action == "restore");
 
         async Task<AgentInstallationStatus> ReadOnly()
         {
@@ -53,10 +58,10 @@ public sealed partial class DeviceFeatureService
             Dictionary<string, byte[]>? dashboardFiles = null;
             if (action == "install")
             {
-                var agent = await File.ReadAllBytesAsync(Path.Combine(_resourcesRoot, "Onboarding", "zte-agent"), ct);
-                AgentPackage.VerifyPayload(agent);
+                var agent = selectedBytes ?? await File.ReadAllBytesAsync(Path.Combine(_resourcesRoot, "Onboarding", "zte-agent"), ct);
+                if (candidate is null) AgentPackage.VerifyPayload(agent);
                 files.Add("agent.bin", agent);
-                dashboardFiles = await LoadBundledDashboardAsync(ct);
+                if (candidate is null) dashboardFiles = await LoadBundledDashboardAsync(ct);
             }
             var stage = await StageAsync("zte-agent-stage", files, ct);
             var remoteFinished = true;
@@ -68,6 +73,15 @@ public sealed partial class DeviceFeatureService
                 if (action == "install")
                 {
                     Check(!before.RecoveryPending && before.StartupReady && (before.Hash != "absent" || !before.Running), "Сначала выполните подготовку SSH/агента либо восстановите предыдущую версию.");
+                    if (candidate is not null)
+                    {
+                        if (candidate.Interpreter is { } loader)
+                            Check((await _shell.RunAsync("test -x " + Quote(loader), ct: ct)).Success,
+                                "На модеме нет загрузчика, необходимого выбранному ELF-файлу.");
+                        Check(identity == await ReadAgentIdentityAsync(ct), "Устройство изменилось во время операции с агентом.");
+                        return await InstallAgentBinaryAtStageAsync(identity, token, stage, before, ct,
+                            finished => remoteFinished = finished, candidate.Sha256);
+                    }
                     if (before.Hash == "absent")
                     {
                         await InstallAgentBinaryAtStageAsync(identity, token, stage, before, ct, finished => remoteFinished = finished);
@@ -94,6 +108,7 @@ public sealed partial class DeviceFeatureService
                     return final;
                 }
                 Check(action == "restore" && before.BackupHash != null, "Проверенной копии предыдущего агента нет.");
+                Check(identity == await ReadAgentIdentityAsync(ct), "Устройство изменилось во время операции с агентом.");
                 remoteFinished = false;
                 var restore = await _shell.RunAsync(Guard(identity, token) + "sh " + Quote(stage + "/manager.sh") + " restore", timeout: TimeSpan.FromSeconds(120), ct: ct);
                 remoteFinished = KnownInstallerExit(restore.ExitCode);
@@ -130,16 +145,18 @@ public sealed partial class DeviceFeatureService
         finally { if (cleanup) await CleanupStageAsync(stage, files.Keys, CancellationToken.None); }
     }
 
-    private async Task InstallAgentBinaryAtStageAsync(DeviceIdentity identity, string token, string stage, AgentInstallationStatus before, CancellationToken ct, Action<bool>? completion = null)
+    private async Task<AgentInstallationStatus> InstallAgentBinaryAtStageAsync(DeviceIdentity identity, string token, string stage, AgentInstallationStatus before, CancellationToken ct, Action<bool>? completion = null, string? candidateHash = null)
     {
-        if (before.IsCurrent && before.Running) return;
+        var expectedHash = candidateHash ?? VpnAgentHash;
+        if (before.Hash == expectedHash && before.Running) return before;
         completion?.Invoke(false);
-        var result = await _shell.RunAsync(Guard(identity, token) + "sh " + Quote(stage + "/manager.sh") + " install " + Quote(stage + "/agent.bin") + " " + Quote(VpnAgentHash), timeout: TimeSpan.FromSeconds(120), ct: ct);
+        var result = await _shell.RunAsync(Guard(identity, token) + "sh " + Quote(stage + "/manager.sh") + " install " + Quote(stage + "/agent.bin") + " " + Quote(expectedHash), timeout: TimeSpan.FromSeconds(120), ct: ct);
         completion?.Invoke(KnownInstallerExit(result.ExitCode));
         Check(KnownInstallerExit(result.ExitCode) && result.Success, InstallerFailure("agent_install", result));
         var after = await AgentStatusAtStageAsync(stage, ct);
-        Check(after.IsCurrent && after.Running && after.BackupHash == (before.Hash == "absent" ? null : before.Hash) && !after.RecoveryPending,
+        Check(after.Hash == expectedHash && after.Running && after.BackupHash == (before.Hash == "absent" ? null : before.Hash) && !after.RecoveryPending,
             "Установка агента не подтверждена; проверьте состояние восстановления.");
+        return after;
     }
 
     private async Task<AgentInstallationStatus> AgentStatusAtStageAsync(string stage, CancellationToken ct)

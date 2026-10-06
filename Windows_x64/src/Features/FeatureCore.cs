@@ -97,7 +97,13 @@ public sealed partial class DeviceFeatureService
     internal async Task VerifyIdentityAsync(DeviceIdentity expected, CancellationToken ct)
         => Check(await ReadIdentityAsync(ct: ct) == expected, "Модем или его загрузка изменились во время операции. Обновите состояние.");
 
-    internal async Task<T> MutateAsync<T>(Func<DeviceIdentity, string, Task<T>> work, CancellationToken ct)
+    private async Task<DeviceIdentity> ReadAgentIdentityAsync(CancellationToken ct)
+    {
+        var proof = await Core.AccessIdentity.ReadAsync(_shell, ct);
+        return new DeviceIdentity(proof.Cid, proof.BootId, proof.FirmwareHash, proof.RouterHash);
+    }
+
+    internal async Task<T> MutateAsync<T>(Func<DeviceIdentity, string, Task<T>> work, CancellationToken ct, bool measuredAgentPlatform = false)
     {
         await OperationGate.WaitAsync(ct);
         string? token = null;
@@ -107,12 +113,13 @@ public sealed partial class DeviceFeatureService
             Directory.CreateDirectory(_storageRoot);
             localOperation = new FileStream(Path.Combine(_storageRoot,"operation.lock"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None);
             CheckLocalPending();
-            var identity = await ReadIdentityAsync(requireSupportedFirmware: true, ct);
+            var identity = measuredAgentPlatform ? await ReadAgentIdentityAsync(ct) : await ReadIdentityAsync(requireSupportedFirmware: true, ct);
             token = Guid.NewGuid().ToString("D");
             await RunAsync("set -eu; umask 077; test ! -L /tmp; mkdir " + LockPath + "; printf '%s' " + Quote(token) + " > " + LockPath + "/owner", ct: ct);
             CheckLocalPending();
             var result = await work(identity, token);
-            await VerifyIdentityAsync(identity, ct);
+            if (measuredAgentPlatform) Check(identity == await ReadAgentIdentityAsync(ct), "Устройство изменилось во время операции с агентом.");
+            else await VerifyIdentityAsync(identity, ct);
             return result;
         }
         finally

@@ -76,7 +76,7 @@ public static class DiagnosticsExporter
 
     public static DiagnosticExportResult Export(string root, string destination, DiagnosticSystemSnapshot system,
         IEnumerable<DiagnosticActivity> currentSession, DiagnosticPrivacy privacy, bool journalWriteFailed = false,
-        CancellationToken ct = default)
+        CancellationToken ct = default, bool includeResearch = true)
     {
         ct.ThrowIfCancellationRequested(); SafePath(destination);
         var exportedAt = DateTimeOffset.UtcNow;
@@ -127,7 +127,9 @@ public static class DiagnosticsExporter
             ["operation-traces.jsonl"] = Lines(saved.Where(x => x.Kind == "operation" || x.Message.StartsWith("eSIM[", StringComparison.Ordinal))),
             ["README.txt"] = Encoding.UTF8.GetBytes("Offline diagnostic bundle; no new modem collection or network access.\nreport.json preserves the cached application system-summary format; it is not a fresh modem snapshot.\napplication-journal.jsonl: sanitized saved activity (two bounded 2 MiB segments). Earlier sessions from versions without this journal cannot be recovered.\ncurrent-session.jsonl: latest 2000 in-memory events, may overlap the saved journal.\noperation-traces.jsonl: structured action timing/results and safe eSIM progress; no raw action commands, stdin or responses.\nfirmware-research/: last saved read-only survey, when available, with its own collection times, application/specification versions and sanitized probe transcripts. It may describe a different device/session than the current application summary; no identity match is inferred. Redaction is reapplied during export.\nExisting private keys, trust files, connection settings, backups, VPN profiles and activation codes are never copied. Missing or unsafe inputs are listed in manifest.json.\n")
         };
-        object cachedResearchSource = new { status = "missing", path = "FirmwareResearch/latest.json" };
+        object cachedResearchSource = new { status = includeResearch ? "missing" : "not_requested", path = "FirmwareResearch/latest.json" };
+        if (includeResearch)
+        {
         try
         {
             ct.ThrowIfCancellationRequested();
@@ -167,6 +169,7 @@ public static class DiagnosticsExporter
         {
             omissions.Add("Cached firmware research unavailable, malformed, oversized or unsafe; application activity is still included.");
             cachedResearchSource = new { status = "omitted", path = "FirmwareResearch/latest.json" };
+        }
         }
         if (files.Values.Sum(x => (long)x.Length) > 32 * 1024 * 1024) throw new InvalidDataException("Diagnostic export exceeds its size limit.");
         files["manifest.json"] = JsonSerializer.SerializeToUtf8Bytes(new

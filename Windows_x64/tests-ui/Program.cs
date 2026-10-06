@@ -7,6 +7,7 @@ using Avalonia.Threading;
 using ZteImeiStudio.Windows;
 using System.Reflection;
 using System.Security.Cryptography;
+using ZteImeiStudio.Windows.Core;
 using ZteImeiStudio.Windows.Research;
 var windowsRoot=Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,"../../../../"));
 var lockPath=Path.Combine(windowsRoot,"src","packages.lock.json");
@@ -97,6 +98,33 @@ await session.Dispatch(()=> {
   Check(policyModem.Requests.Last().Operation==ModemOperation.Connect&&policyModem.Requests.Last().Parameters!["skip_firmware_check"]=="true",language+" SSH connection receives the same firmware policy");
   var beforeSection=policyModem.Requests.Count;NamedClick(policyWindow,"Section0-2");
   Check(policyModem.Requests.Count==beforeSection,language+" agent section navigation performs no global hydration");
+  Check(policyWindow.GetLogicalDescendants().OfType<Button>().Any(b=>b.Name=="ChooseCustomAgent") && policyWindow.GetLogicalDescendants().OfType<Button>().Any(b=>b.Name=="InstallCustomAgent"),language+" local custom agent picker and separate install are visible");
+  Check(!FindButton(policyWindow,"Установить выбранный агент").IsEnabled,language+" custom install disabled before file selection");
+  var customPath=Path.Combine(screenshots,"selected-agent-"+language+".elf");File.Copy(Path.Combine(windowsRoot,"Resources/Onboarding/zte-agent"),customPath,true);
+  policyWindow.SelectCustomAgent(customPath);Pump();
+  Check(FindButton(policyWindow,"Установить выбранный агент").IsEnabled,language+" selected valid ELF enables explicit install on active SSH");
+  var selected=AgentCandidate.Inspect(customPath);
+  Check(policyWindow.GetLogicalDescendants().OfType<TextBlock>().Any(t=>t.Text==selected.Sha256)||policyWindow.GetLogicalDescendants().OfType<SelectableTextBlock>().Any(t=>t.Text==selected.Sha256),language+" selected file SHA is shown without executing candidate");
+  using(var frame=policyWindow.CaptureRenderedFrame()??throw new Exception("Missing custom agent frame"))frame.Save(Path.Combine(screenshots,language+"-custom-agent.png"));
+  foreach(var gate in new[]{"busy","terminal","opening","disconnected"})
+  {
+   Set(policyWindow,"_busy",gate=="busy");Set(policyWindow,"_terminal",gate=="terminal"?new FakeTerminal():null);Set(policyWindow,"_terminalOpening",gate=="opening");
+   if(gate=="disconnected")Set(policyWindow,"_snapshot",new DeviceSnapshot(false,"fixture"));Render(policyWindow);
+   var count=policyModem.Requests.Count;NamedClick(policyWindow,"InstallCustomAgent");
+   Check(policyModem.Requests.Count==count&&!FindButton(policyWindow,"Установить выбранный агент").IsEnabled,language+" custom direct callback is inert while "+gate);
+  }
+  Set(policyWindow,"_busy",false);Set(policyWindow,"_terminal",null);Set(policyWindow,"_terminalOpening",false);Set(policyWindow,"_snapshot",policyModem.Snapshot);Render(policyWindow);
+  var customForm=(Dictionary<string,string>)Get(policyWindow,"_form")!;var host=customForm["host"];customForm["host"]="192.0.2.77";
+  policyWindow.SelectCustomAgent(customPath);Pump();var priorCustom=policyModem.Requests.Count;NamedClick(policyWindow,"InstallCustomAgent");
+  Check(policyModem.Requests.Count==priorCustom&&!FindButton(policyWindow,"Установить выбранный агент").IsEnabled,language+" newly chosen file cannot install to stale SSH after target change");
+  customForm["host"]=host;policyWindow.SelectCustomAgent(customPath);Pump();NamedClick(policyWindow,"InstallCustomAgent");
+  var customRequest=policyModem.Requests.Last();
+  Check(customRequest.Operation==ModemOperation.InstallCustomAgent&&customRequest.Parameters!["agent_sha256"]==selected.Sha256&&customRequest.Parameters["agent_bytes"]==selected.Bytes.ToString()&&customRequest.Parameters["host"]==host&&customRequest.Parameters["port"]==policyModem.Settings.Port.ToString(),language+" custom dispatch captures SHA, size and established SSH endpoint");
+  Check(customRequest.Parameters!["skip_firmware_check"]=="true",language+" custom operation retains explicitly selected policy");
+  using(var append=new FileStream(customPath,FileMode.Append))append.WriteByte(0);
+  priorCustom=policyModem.Requests.Count;NamedClick(policyWindow,"InstallCustomAgent");
+  Check(policyModem.Requests.Count==priorCustom&&!FindButton(policyWindow,"Установить выбранный агент").IsEnabled,language+" changed candidate clears selection and refuses dispatch");
+  File.Delete(customPath);
   FindButton(policyWindow,"↻").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();
   Check(policyModem.Requests.Last().Operation==ModemOperation.RefreshAgent,language+" header refresh requests only the selected agent section");
   NamedClick(policyWindow,"Section0-3");FindButton(policyWindow,"↻").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();
@@ -118,6 +146,70 @@ await session.Dispatch(()=> {
   }
   Set(policyWindow,"_terminalOpening",false);Set(policyWindow,"_terminal",null);
   policyWindow.Close();Pump();
+ }
+ // Firmware adaptation is an explicit, read-only Diagnostics action. Keep
+ // these checks on the fake service and never click the enabled save action.
+ foreach(var language in new[]{"ru","en"})
+ {
+  Localization.SetLanguage(language,persist:false);
+  var adaptationModem=new FakeModem();var adaptationWindow=new MainWindow(adaptationModem,persistPreferences:false);adaptationWindow.Show();Pump();
+  Check(!adaptationWindow.GetLogicalDescendants().OfType<Button>().Any(b=>b.Name=="CollectFirmwareAdaptation"),language+" adaptation capture stays outside connection settings");
+  for(var page=0;page<9;page++)
+  {
+   NamedClick(adaptationWindow,"Navigation"+page);
+   var sections=adaptationWindow.GetLogicalDescendants().OfType<Button>().Where(b=>b.Name?.StartsWith("Section"+page+"-",StringComparison.Ordinal)==true).Select(b=>b.Name!).ToArray();
+   if(sections.Length==0)Check(!adaptationWindow.GetLogicalDescendants().OfType<Button>().Any(b=>b.Name=="CollectFirmwareAdaptation"),language+" adaptation capture is absent from page "+page);
+   foreach(var section in sections)
+   {
+    NamedClick(adaptationWindow,section);
+    Check(adaptationWindow.GetLogicalDescendants().OfType<Button>().Count(b=>b.Name=="CollectFirmwareAdaptation")== (section=="Section0-1"?1:0),language+" adaptation capture exists only in Diagnostics: "+section);
+   }
+  }
+  NamedClick(adaptationWindow,"Navigation0");NamedClick(adaptationWindow,"Section0-1");
+  Button AdaptationButton()=>adaptationWindow.GetLogicalDescendants().OfType<Button>().Single(b=>b.Name=="CollectFirmwareAdaptation");
+  Check(AdaptationButton().Content?.ToString()==(language=="en"?"Collect firmware adaptation data":"Собрать данные для адаптации прошивки"),language+" adaptation button label is localized");
+  Check(adaptationWindow.GetLogicalDescendants().OfType<TextBlock>().Any(t=>t.Text==(language=="en"?"Firmware adaptation data":"Данные для адаптации прошивки")),language+" adaptation card title is localized");
+  Check(adaptationWindow.GetLogicalDescendants().OfType<TextBlock>().Any(t=>t.Text==(language=="en"?"Current screen UI files and safe agent information for compatibility analysis.":"Текущие файлы экранного интерфейса и безопасные сведения об агенте для проверки совместимости.")),language+" adaptation card description is localized");
+  Check(adaptationWindow.GetLogicalDescendants().OfType<TextBlock>().Any(t=>t.Text==(language=="en"?"Read-only access over the current SSH connection. The archive is saved to the chosen location; incomplete collection is reported separately.":"Только чтение по текущему SSH. Архив сохраняется в выбранное место; неполный сбор отмечается отдельно.")),language+" adaptation read-only and partial-collection hint is localized");
+  Check(!AdaptationButton().IsEnabled,language+" disconnected adaptation capture is disabled");
+  foreach(var mode in new[]{"ADB","Web"})
+  {
+   Set(adaptationWindow,"_snapshot",new DeviceSnapshot(true,"Synthetic non-SSH",ConnectionMode:mode));Render(adaptationWindow);
+   Check(!AdaptationButton().IsEnabled,language+" adaptation capture requires current SSH rather than "+mode);
+  }
+  var unknownFirmware=new DeviceSnapshot(true,"Synthetic SSH",Firmware:"SYNTHETIC_UNRECOGNIZED_FIRMWARE",ConnectionMode:"SSH",Details:new Dictionary<string,string>());
+  foreach(var firmware in new string?[]{unknownFirmware.Firmware,null})
+  {
+   Set(adaptationWindow,"_snapshot",unknownFirmware with{Firmware=firmware});Render(adaptationWindow);
+   Check(AdaptationButton().IsEnabled,language+" connected adaptation capture allows unknown firmware and missing CID, firmware="+(firmware??"missing"));
+  }
+  foreach(var pending in new[]{unknownFirmware with{PreparationPending=true},unknownFirmware with{AdbActivationPending=true},unknownFirmware with{ComponentCleanupPending=true},unknownFirmware with{PreparationPending=true,AdbActivationPending=true,ComponentCleanupPending=true}})
+  {
+   Set(adaptationWindow,"_snapshot",pending);Render(adaptationWindow);
+   Check(AdaptationButton().IsEnabled,language+" unrelated saved pending operations do not block read-only adaptation capture");
+  }
+  typeof(MainWindow).GetMethod("SetBusy",BindingFlags.NonPublic|BindingFlags.Instance)!.Invoke(adaptationWindow,[true]);
+  Check(!AdaptationButton().IsEnabled,language+" busy adaptation capture is disabled");
+  typeof(MainWindow).GetMethod("SetBusy",BindingFlags.NonPublic|BindingFlags.Instance)!.Invoke(adaptationWindow,[false]);
+  Check(AdaptationButton().IsEnabled,language+" adaptation capture returns when the operation finishes");
+  foreach(var opening in new[]{true,false})
+  {
+   Set(adaptationWindow,"_terminalOpening",opening);Set(adaptationWindow,"_terminal",opening?null:new FakeTerminal());Render(adaptationWindow);
+   typeof(MainWindow).GetMethod("SetBusy",BindingFlags.NonPublic|BindingFlags.Instance)!.Invoke(adaptationWindow,[false]);
+   Check(!AdaptationButton().IsEnabled,language+" terminal ownership blocks adaptation capture after busy clears, opening="+opening);
+  }
+  Set(adaptationWindow,"_terminalOpening",false);Set(adaptationWindow,"_terminal",null);Render(adaptationWindow);
+  var adaptationHelp=adaptationWindow.GetLogicalDescendants().OfType<Button>().Single(b=>ToolTip.GetTip(b)?.ToString()==(language=="en"?"What firmware adaptation data includes":"Что входит в данные для адаптации прошивки"));
+  adaptationHelp.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();var adaptationDialog=adaptationWindow.OwnedWindows.Single();
+  Check(adaptationDialog.Title==(language=="en"?"Collecting firmware adaptation data":"Сбор данных для адаптации прошивки"),language+" adaptation help title is localized");
+  var adaptationHelpText=string.Join('\n',adaptationDialog.GetLogicalDescendants().OfType<TextBlock>().Select(t=>t.Text));
+  Check(adaptationHelpText.Contains(language=="en"?"current screen UI binary":"текущий бинарник экранного интерфейса",StringComparison.Ordinal)&&adaptationHelpText.Contains(language=="en"?"If a verified backup from our screen localization is available":"Если доступна проверенная копия нашей русификации",StringComparison.Ordinal),language+" adaptation help distinguishes current files from optional verified localization originals");
+  Check(adaptationHelpText.Contains(language=="en"?"agent startup script":"сценарий запуска агента",StringComparison.Ordinal)&&adaptationHelpText.Contains(language=="en"?"passwords":"пароли",StringComparison.Ordinal)&&adaptationHelpText.Contains(language=="en"?"full flash image":"полный образ флеш-памяти",StringComparison.Ordinal)&&adaptationHelpText.Contains(language=="en"?"are not collected":"не собираются",StringComparison.Ordinal),language+" adaptation help explicitly excludes agent startup, secrets and full flash");
+  Check(adaptationHelpText.Contains("SHA-256",StringComparison.Ordinal)&&adaptationHelpText.Contains(language=="en"?"incomplete collection":"неполный сбор",StringComparison.Ordinal)&&adaptationHelpText.Contains(language=="en"?"does not authorize":"не разрешает",StringComparison.Ordinal),language+" adaptation help states integrity, partial result and installation boundary");
+  if(language=="en")Check(!adaptationHelpText.Any(c=>c is >= '\u0400' and <= '\u04ff'),"adaptation help is fully translated");
+  adaptationDialog.Close();Pump();
+  Check(adaptationModem.Operations==0&&adaptationModem.Requests.Count==0&&adaptationModem.Events.Count==0,language+" adaptation navigation, rendering and help never invoke collection or modem operations");
+  adaptationWindow.Close();Pump();
  }
  foreach(var language in new[]{"ru","en"}) {
   Localization.SetLanguage(language,persist:false);
@@ -438,6 +530,7 @@ await session.Dispatch(()=> {
  Check(!panel.GetLogicalDescendants().OfType<CheckBox>().Single(c=>c.Name=="AdbEnabled").IsEnabled,"pending preparation blocks runtime ADB toggle");
 
  NamedClick(panel,"Section0-1");
+ Check(panel.GetLogicalDescendants().OfType<Button>().Any(b=>b.Name=="CollectFirmwareAdaptation"&&b.Content?.ToString()=="Собрать данные для адаптации прошивки"),"diagnostics offers an explicit firmware adaptation capture separately from ordinary research");
  NamedClick(panel,"CollectFirmwareResearch");
  Check(diagnostics.ResearchParameters?["host"]=="192.0.2.2"&&diagnostics.ResearchParameters?["mode"]=="SSH","general firmware survey uses SSH only");
  Check(panel.GetLogicalDescendants().OfType<Button>().Count(b=>b.Content?.ToString()=="Сохранить диагностический ZIP")==1&&!panel.GetLogicalDescendants().OfType<Button>().Any(b=>b.Content?.ToString()=="Экспортировать ZIP"),"saved survey uses one common diagnostic ZIP export after disconnected partial read");
@@ -474,7 +567,7 @@ internal sealed class FakeModem:IModemService {
  public ConnectionSettingsSnapshot? PreparedSettings;public Action? OnPrepare;public ConnectionSettingsSnapshot Settings=new(); public ConnectionSettingsSnapshot GetConnectionSettings()=>Settings;
  public int Operations{get;private set;} public bool AllowPreparation,AllowDiagnostics,AllowBackupCheck,BackupCheckSuccess=true,AllowRefresh,ConnectSuccess,ThrowPrepare,PrepareSuccess;public DeviceSnapshot Snapshot=new(false,"Нет подключения");public List<string> Events=[];public List<OperationRequest> Requests=[];public IReadOnlyDictionary<string,string>? ResearchParameters;
  public Task<DeviceSnapshot> GetDeviceSnapshotAsync(CancellationToken ct=default)=>Task.FromResult(Snapshot);
- public Task<OperationResult> RunAsync(OperationRequest request,CancellationToken ct=default){Operations++;Requests.Add(request);if(AllowFirmwarePolicy&&request.Operation is (ModemOperation.InstallAgent or ModemOperation.RefreshAgent or ModemOperation.RefreshLocalization))return Task.FromResult(new OperationResult(true,"Synthetic agent updated"));if(AllowRefresh&&request.Operation is ModemOperation.Connect or ModemOperation.RefreshDevice){if(request.Operation==ModemOperation.Connect&&ConnectSuccess){Snapshot=Snapshot with{IsConnected=true,ConnectionMode="SSH",Status="Synthetic SSH ready"};Settings=Settings with{Host=request.Parameters!["host"],KeyPath=request.Parameters["key_path"],KnownHostsPath=request.Parameters["known_hosts_path"]};}return Task.FromResult(new OperationResult(request.Operation==ModemOperation.RefreshDevice||ConnectSuccess,ConnectSuccess?"Synthetic SSH ready":"Закреплённый SSH host key не найден."));}if(AllowBackupCheck&&request.Operation==ModemOperation.VerifyBackupKey)return Task.FromResult(new OperationResult(BackupCheckSuccess,BackupCheckSuccess?"Ключ и формат бэкапа подтверждены. Это не разрешает восстановление или установку компонентов.":"Не удалось подтвердить ключ или формат архива бэкапа.",Values:BackupCheckSuccess?new Dictionary<string,string>{{"backup_firmware","FLY_CN_MU5250V1.0.0B13"},{"backup_inner","BD_FLYMODEMMU5250V1.0.0B28"},{"backup_entries","1"},{"backup_sha256",new string('a',64)}}:null));if(AllowDiagnostics&&request.Operation is ModemOperation.DiscoverConnections or ModemOperation.EnableDiagnosticAdb or ModemOperation.RefreshAccess or ModemOperation.ExportDiagnostics or ModemOperation.SetAdbEnabled or ModemOperation.RefreshAdbState or ModemOperation.Connect)return Task.FromResult(new OperationResult(false,"Synthetic diagnostic response; no device."));if(AllowPreparation&&request.Operation==ModemOperation.CancelComponentCleanup){Snapshot=Snapshot with{PreparationPending=false,ComponentCleanupPending=false,IsConnected=false};if(PreparedSettings is{} cancelledReady)Settings=cancelledReady;OnPrepare?.Invoke();return Task.FromResult(new OperationResult(true,"Synthetic cancelled"));}if(AllowPreparation&&request.Operation==ModemOperation.PrepareSsh){Events.Add("prepare");Snapshot=Snapshot with{PreparationPending=!PrepareSuccess};if(PreparedSettings is{} ready){Settings=ready;Snapshot=Snapshot with{IsConnected=true,ConnectionMode="SSH",IpAddress=ready.Host};}OnPrepare?.Invoke();if(ThrowPrepare)throw new IOException("Synthetic preparation interruption");return Task.FromResult(new OperationResult(PrepareSuccess,PrepareSuccess?"Synthetic preparation complete":"Synthetic preflight refused; no writes."));}throw new Exception("Unexpected modem operation");}
+ public Task<OperationResult> RunAsync(OperationRequest request,CancellationToken ct=default){Operations++;Requests.Add(request);if(AllowFirmwarePolicy&&request.Operation is (ModemOperation.InstallCustomAgent or ModemOperation.InstallAgent or ModemOperation.RefreshAgent or ModemOperation.RefreshLocalization))return Task.FromResult(new OperationResult(true,"Synthetic agent updated"));if(AllowRefresh&&request.Operation is ModemOperation.Connect or ModemOperation.RefreshDevice){if(request.Operation==ModemOperation.Connect&&ConnectSuccess){Snapshot=Snapshot with{IsConnected=true,ConnectionMode="SSH",Status="Synthetic SSH ready"};Settings=Settings with{Host=request.Parameters!["host"],KeyPath=request.Parameters["key_path"],KnownHostsPath=request.Parameters["known_hosts_path"]};}return Task.FromResult(new OperationResult(request.Operation==ModemOperation.RefreshDevice||ConnectSuccess,ConnectSuccess?"Synthetic SSH ready":"Закреплённый SSH host key не найден."));}if(AllowBackupCheck&&request.Operation==ModemOperation.VerifyBackupKey)return Task.FromResult(new OperationResult(BackupCheckSuccess,BackupCheckSuccess?"Ключ и формат бэкапа подтверждены. Это не разрешает восстановление или установку компонентов.":"Не удалось подтвердить ключ или формат архива бэкапа.",Values:BackupCheckSuccess?new Dictionary<string,string>{{"backup_firmware","FLY_CN_MU5250V1.0.0B13"},{"backup_inner","BD_FLYMODEMMU5250V1.0.0B28"},{"backup_entries","1"},{"backup_sha256",new string('a',64)}}:null));if(AllowDiagnostics&&request.Operation is ModemOperation.DiscoverConnections or ModemOperation.EnableDiagnosticAdb or ModemOperation.RefreshAccess or ModemOperation.ExportDiagnostics or ModemOperation.SetAdbEnabled or ModemOperation.RefreshAdbState or ModemOperation.Connect)return Task.FromResult(new OperationResult(false,"Synthetic diagnostic response; no device."));if(AllowPreparation&&request.Operation==ModemOperation.CancelComponentCleanup){Snapshot=Snapshot with{PreparationPending=false,ComponentCleanupPending=false,IsConnected=false};if(PreparedSettings is{} cancelledReady)Settings=cancelledReady;OnPrepare?.Invoke();return Task.FromResult(new OperationResult(true,"Synthetic cancelled"));}if(AllowPreparation&&request.Operation==ModemOperation.PrepareSsh){Events.Add("prepare");Snapshot=Snapshot with{PreparationPending=!PrepareSuccess};if(PreparedSettings is{} ready){Settings=ready;Snapshot=Snapshot with{IsConnected=true,ConnectionMode="SSH",IpAddress=ready.Host};}OnPrepare?.Invoke();if(ThrowPrepare)throw new IOException("Synthetic preparation interruption");return Task.FromResult(new OperationResult(PrepareSuccess,PrepareSuccess?"Synthetic preparation complete":"Synthetic preflight refused; no writes."));}throw new Exception("Unexpected modem operation");}
  public Task<ResearchReport> CollectFirmwareResearchAsync(IReadOnlyDictionary<string,string> parameters,IProgress<ResearchProgress>? progress,CancellationToken ct=default){if(!AllowPreparation&&!AllowDiagnostics)throw new Exception("Unexpected research");ResearchParameters=parameters;Events.Add("research");return Task.FromResult(new ResearchReport(1,"fixture",DateTimeOffset.UtcNow,DateTimeOffset.UtcNow,"partial","ADB",null,"test",7,[],[],[],BindingStrength:"transport-only"));}
  public Task<ResearchReport> CollectPreparationResearchAsync(IReadOnlyDictionary<string,string> parameters,IProgress<ResearchProgress>? progress,CancellationToken ct=default){ResearchParameters=parameters;Events.Add("bootstrap-research");return Task.FromResult(new ResearchReport(1,"fixture",DateTimeOffset.UtcNow,DateTimeOffset.UtcNow,"partial","ADB",null,"test",7,[],[],[],BindingStrength:"transport-only"));}
  public Task<IReadOnlyList<BackupInfo>> ListBackupsAsync(CancellationToken ct=default)=>Task.FromResult<IReadOnlyList<BackupInfo>>([]);

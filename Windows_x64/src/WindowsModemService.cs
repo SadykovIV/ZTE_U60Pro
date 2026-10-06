@@ -145,7 +145,7 @@ public sealed partial class WindowsModemService : IModemService
             var p = request.Parameters;
             UpdateFirmwarePolicy(p);
             if (File.Exists(Path.Combine(_storage, AdbToggleTransaction.PendingName)) && request.Operation is not
-                (ModemOperation.RefreshAdbState or ModemOperation.Connect or ModemOperation.DiscoverConnections or ModemOperation.ExportDiagnostics or ModemOperation.VerifyBackupKey))
+                (ModemOperation.RefreshAdbState or ModemOperation.Connect or ModemOperation.DiscoverConnections or ModemOperation.ExportDiagnostics or ModemOperation.CollectFirmwareAdaptation or ModemOperation.VerifyBackupKey))
                 throw new InvalidOperationException(AdbToggleTransaction.Unknown);
             string result;
             switch (request.Operation)
@@ -153,6 +153,14 @@ public sealed partial class WindowsModemService : IModemService
                 case ModemOperation.DiscoverConnections: result = await DiscoverAsync(p,cancellationToken); break;
                 case ModemOperation.Connect: result = await ConnectAsync(p,cancellationToken); break;
                 case ModemOperation.VerifyBackupKey: result = await VerifyBackupKeyAsync(p,cancellationToken); break;
+                case ModemOperation.CollectFirmwareAdaptation:
+                {
+                    var capture = await CollectFirmwareAdaptationAsync(p, cancellationToken);
+                    var message = (capture.Complete ? "Данные для адаптации прошивки проверены: " : "Сбор для адаптации прошивки неполный; недоступные файлы указаны в manifest.json: ") + capture.Path;
+                    diagnosticOutcome = capture.Complete ? "completed" : "failed";
+                    Log(capture.Complete ? "ok" : "warning", "CollectFirmwareAdaptation: " + (capture.Complete ? "complete" : "incomplete"));
+                    return new OperationResult(capture.Complete, message, Values: new Dictionary<string,string> { ["capture_outcome"] = capture.Complete ? "complete" : "incomplete", ["capture_path"] = capture.Path });
+                }
                 case ModemOperation.PrepareSsh: result = await PrepareSshAsync(p,cancellationToken); break;
                 case ModemOperation.CancelComponentCleanup:
                 {

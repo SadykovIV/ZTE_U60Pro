@@ -5,7 +5,29 @@ extension ContentView {
     var preparationDiagnosticsPage: some View {
         VStack(alignment: .leading, spacing: 18) {
             firmwareResearchCard
+            firmwareSupportCard
             diagnosticsPage
+        }
+    }
+
+    var firmwareSupportCard: some View {
+        StudioCard {
+            HStack {
+                Text(L10n.text("Данные для адаптации прошивки")).font(.system(size: 18, weight: .semibold))
+                OperationInfoButton(topic: .firmwareSupport)
+                Spacer()
+            }
+            Text(L10n.text("Экранный интерфейс и языковые файлы, безопасные сведения о системе и агенте, журнал программы. Сбор через SSH без изменения модема."))
+                .font(.system(size: 12)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
+            Button(L10n.text("Собрать данные для адаптации прошивки")) { model.collectFirmwareSupport() }
+                .buttonStyle(StudioButtonStyle(prominent: true)).disabled(!model.canCollectFirmwareSupport)
+            if !model.firmwareSupportExportSummary.isEmpty {
+                Text(L10n.text(model.firmwareSupportExportSummary)).font(.system(size: 12)).textSelection(.enabled)
+                if let url = model.firmwareSupportExportURL {
+                    Button(L10n.text("Показать ZIP в Finder")) { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+                        .buttonStyle(StudioButtonStyle())
+                }
+            }
         }
     }
 

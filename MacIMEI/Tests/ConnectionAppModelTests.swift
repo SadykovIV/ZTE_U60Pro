@@ -52,6 +52,25 @@ private func snapshot() -> ConnectionOverviewSnapshot {
             let m = try model()
             try check(!m.connected && m.connectionLabel == "Нет подключения" && !m.canManage && !m.canCollectDiagnostics, "Fresh connection state is misleading")
         }
+        try test("Firmware adaptation collection requires only the selected SSH session and stays passive") {
+            let m = try model(); var reads = 0
+            try check(!m.canCollectFirmwareSupport, "Disconnected collection enabled")
+            let observed = SSHReadProof(uid: "1000", system: "Linux", architecture: "aarch64")
+            let shell = DiagnosticSession(reason: "unknown firmware", proof: observed, readIdentity: { reads += 1; return observed }, execute: { _, _ in reads += 1; throw IMEIError.message("No implicit collection") })
+            let current = ReadOnlyChannelSession(mode: .ssh, summary: ConnectionDeviceSummary(), diagnosticSession: shell, sshEndpoint: ConnectionRouter.sshEndpoint(m.connection), readSummary: { reads += 1; return ConnectionDeviceSummary() })
+            m.acceptChannelSelection(ChannelSelection(requestedMode: .ssh, actualMode: .ssh, statuses: [], session: current, reason: "selected"))
+            m.pendingOperation = true; m.setupPending = true
+            try check(m.canCollectFirmwareSupport && m.agentInstallationStatus == nil && m.modemInformation == nil && reads == 0, "Collection depends on agent, NV, firmware or automatic probes")
+            let expected = m.connection
+            try check(m.firmwareSupportSelectionMatches(expected, session: current), "Selected context refused")
+            m.host = "192.0.2.200"; try check(!m.firmwareSupportSelectionMatches(expected, session: current), "Changed target accepted"); m.host = expected.host
+            m.port = "2200"; try check(!m.firmwareSupportSelectionMatches(expected, session: current), "Changed port accepted"); m.port = expected.port
+            m.keyPath = "/tmp/changed-key"; try check(!m.firmwareSupportSelectionMatches(expected, session: current), "Changed key accepted"); m.keyPath = expected.keyPath
+            m.knownHostsPath = "/tmp/changed-hosts"; try check(!m.firmwareSupportSelectionMatches(expected, session: current), "Changed trust file accepted"); m.knownHostsPath = expected.knownHostsPath
+            m.busy = true; try check(!m.canCollectFirmwareSupport, "Busy collection enabled"); m.busy = false
+            m.terminalActive = true; try check(!m.canCollectFirmwareSupport, "Terminal collection enabled"); m.terminalActive = false
+            m.channelSession = nil; try check(!m.canCollectFirmwareSupport && reads == 0, "Unbound collection enabled")
+        }
         try await testAsync("Connect finishes without refreshing any component or probing other transports") {
             let m = try model(); let chosen = selection(.ssh)
             m.acceptConnectionOverview(snapshot())
