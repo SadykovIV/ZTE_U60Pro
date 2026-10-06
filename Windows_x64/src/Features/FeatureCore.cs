@@ -25,10 +25,12 @@ public sealed partial class DeviceFeatureService
     private readonly IRemoteShell _shell;
     private readonly string _resourcesRoot;
     private readonly string _storageRoot;
+    private readonly bool _skipFirmwareCheck;
 
-    public DeviceFeatureService(IRemoteShell shell, string? resourcesRoot = null, string? storageRoot = null)
+    public DeviceFeatureService(IRemoteShell shell, string? resourcesRoot = null, string? storageRoot = null, bool skipFirmwareCheck = false)
     {
         _shell = shell ?? throw new ArgumentNullException(nameof(shell));
+        _skipFirmwareCheck = skipFirmwareCheck;
         _resourcesRoot = resourcesRoot ?? Path.Combine(AppContext.BaseDirectory, "Resources");
         _storageRoot = storageRoot ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ZTE IMEI Studio");
     }
@@ -69,13 +71,18 @@ public sealed partial class DeviceFeatureService
 
     public async Task<DeviceIdentity> ReadIdentityAsync(bool requireSupportedFirmware = false, CancellationToken ct = default)
     {
+        if (requireSupportedFirmware && _skipFirmwareCheck)
+        {
+            var platform = await RunTextAsync("set -eu; id -u; uname -s; uname -m", ct: ct);
+            Check(platform == "0\nLinux\naarch64", "Для этой операции нужны root, Linux и ARM64.");
+        }
         const string command = "set -eu; sha256sum /firmware/image/modem.b16 /usr/bin/diag-router; cat /sys/block/mmcblk0/device/cid /proc/sys/kernel/random/boot_id";
         var lines = (await RunTextAsync(command, ct: ct)).Split('\n', StringSplitOptions.TrimEntries);
         Check(lines.Length == 4, "Не удалось прочитать идентификаторы модема.");
         var firmware = ParseHashLine(lines[0], "/firmware/image/modem.b16");
         var router = ParseHashLine(lines[1], "/usr/bin/diag-router");
         Check(CidPattern.IsMatch(lines[2]) && Guid.TryParse(lines[3], out _), "Некорректный CID или boot ID модема.");
-        if (requireSupportedFirmware)
+        if (requireSupportedFirmware && !_skipFirmwareCheck)
             Check(firmware == FirmwareHash && router == RouterHash, "Изменения поддерживаются только на проверенной прошивке MU5250 B31.");
         return new DeviceIdentity(lines[2], lines[3], firmware, router);
     }

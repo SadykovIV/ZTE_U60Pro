@@ -133,6 +133,7 @@ private final class MockDisplay: RemoteTransport {
         if command.hasPrefix("test -d /data/zte-vpn &&") {
             return output(vpnPreflightFails ? "incomplete VPN integration" : "", status: vpnPreflightFails ? 1 : 0)
         }
+        if command.hasPrefix("if test ! -e /data/zte-agent && test ! -L /data/zte-agent;") { return output("PRESENT") }
         if command == "sha256sum /data/zte-agent | awk '{print $1}'" { return output(installedAgentHash) }
         throw Failure.check("Unexpected command: " + String(command.prefix(160)))
     }
@@ -309,12 +310,14 @@ private final class MockDisplay: RemoteTransport {
                 try check(mock.launcherPreflightCalls == 1 && mock.installerCalls == 0 && mock.cleaned,"Preflight refusal reached launcher mutation")
             }
         }
-        test("eSIM standalone page prepares agent after preflight and never installs VPN") {
+        test("eSIM standalone page prepares agent after ABI preflight with either firmware policy") {
+            for checked in [true, false] {
             let mock = MockDisplay(hashes:hashes)
-            let manager = try make(mock,updater:{mock.sequence.append("vpn-absent");return false},prepareAgent:{mock.sequence.append("agent")},checkedFirmware:true)
+            let manager = try make(mock,updater:{mock.sequence.append("vpn-absent");return false},prepareAgent:{mock.sequence.append("agent")},checkedFirmware:checked)
             let result = try manager.engine.locked { try manager.installEsimPage() }
             try check(result.state == .ready && mock.sequence == ["preflight","vpn-absent","agent","install"],"eSIM standalone update order")
             try check(mock.layoutCommits == 0 && !mock.commands.contains{$0.contains("upgrade-controller.sh") || $0.contains("/install.sh")},"eSIM page installed VPN or local layout")
+            }
         }
         test("eSIM page existing VPN uses one integration and preserves saved layout") {
             let mock=MockDisplay(hashes:hashes);mock.ready();mock.layoutBytes=try reorderedLayout().encoded()

@@ -403,6 +403,11 @@ struct ContentView: View {
                 StudioField(label: "SSH-ПОРТ", placeholder: "2222", text: Binding(get: { model.port }, set: { model.editConnectionPort($0) }))
                     .frame(width: 100)
             }.disabled(model.busy)
+            Toggle(L10n.text("Не проверять версию прошивки", "Skip firmware version check"), isOn: Binding(get: { model.skipFirmwareCheck }, set: { model.setFirmwareCheckSkipped($0) }))
+                .toggleStyle(.checkbox).font(.system(size: 12, weight: .medium))
+                .disabled(model.busy || model.terminalActive)
+            Text(L10n.text("Отключает сравнение версии прошивки с известным профилем для подготовки и операций по SSH. Проверки устройства, подключения, архитектуры и файлов сохраняются. После изменения подключитесь заново.", "Skips firmware version comparison with the known profile for preparation and SSH operations. Device, connection, architecture and file checks remain active. Reconnect after changing this setting."))
+                .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
             DisclosureGroup(L10n.text("Первоначальная подготовка SSH"), isExpanded: $preparationCredentialsExpanded) {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack(alignment: .top, spacing: 14) {

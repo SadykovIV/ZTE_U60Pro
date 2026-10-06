@@ -112,7 +112,6 @@ final class DiagnosticToolsManager {
         }
         try require(!SystemBackups.hasPendingRestore(root: engine.root), "Сначала завершите восстановление модема")
         let value = try engine.identity()
-        try require(value.0.firmwareHash == ModemEngine.firmwareHash, "Диагностический набор проверяется только для MU5250 B31")
         if mutation { try engine.acquireRemoteLock() }
         return value
     }

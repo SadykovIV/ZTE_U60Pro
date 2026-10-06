@@ -16,7 +16,7 @@ public sealed partial class WindowsModemService
         var webPassword = parameters?.GetValueOrDefault("web_password") ?? "";
         var agentPassword = parameters?.GetValueOrDefault("agent_password") ?? "";
         var backupKeySuffix = parameters?.GetValueOrDefault("backup_key_suffix") ?? "";
-        var skipFirmware = Param(parameters,"skip_firmware_check") == "true";
+        var skipFirmware = _skipFirmwareCheck;
         var onboarding = new OnboardingEngine(host,_storage,_resources,_adb,skipFirmware,
             progress: message => Log("info","Подготовка: " + message)) {
                 ExistingKeyPath = key, ExistingKnownHostsPath = knownHosts, ExistingPort = _port,
@@ -95,7 +95,7 @@ public sealed partial class WindowsModemService
         var resuming = File.Exists(Path.Combine(_storage,"adb-access-pending.json"));
         if (string.IsNullOrEmpty(password) && !resuming) throw new ArgumentException("Для включения диагностического ADB введите пароль Web. Пароль агента не нужен.");
         var onboarding = new OnboardingEngine(host, _storage, _resources, _adb,
-            Param(parameters,"skip_firmware_check") == "true", message => Log("info", "Подготовка: " + message));
+            _skipFirmwareCheck, message => Log("info", "Подготовка: " + message));
         var result = await onboarding.EnableDiagnosticAdbAsync(password, backupKeySuffix, null, null, ct);
         ClearAdbState(); // USB bootstrap proof is not a runtime capability grant.
         return result.AlreadyAvailable ? "Диагностический ADB уже доступен; модем не изменялся." : "Диагностический ADB включён и проверен. Для обычной работы используется SSH.";

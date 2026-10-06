@@ -267,11 +267,10 @@ public sealed partial class ImeiEngine
 
     private async Task<DeviceIdentity> IdentityForWriteAsync(CancellationToken ct)
     {
-        // "Skip firmware check" permits only connection and read-only work.
-        // Both binaries must match the reviewed B31 pair before every write or
-        // resume step, including after a reboot.
+        // An explicit version override does not waive the NV helper's pinned
+        // diag-router ABI. Recheck it before every write and resume step.
         var identity = await IdentityAsync(ct);
-        if (identity.FirmwareHash != FirmwareHash)
+        if (!skipFirmwareCheck && identity.FirmwareHash != FirmwareHash)
             throw new InvalidDataException("Запись IMEI разрешена только на проверенной прошивке MU5250 B31.");
         var routerLine = await Text("sha256sum /usr/bin/diag-router", ct);
         var fields = routerLine.Split(' ', StringSplitOptions.RemoveEmptyEntries);

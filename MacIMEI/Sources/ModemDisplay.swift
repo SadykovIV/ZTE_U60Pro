@@ -274,7 +274,7 @@ final class ModemDisplayManager {
     /// Existing VPN installations need their pinned controller upgraded together
     /// with the agent; an absent VPN is never installed by this action.
     func installEsimPage() throws -> ModemDisplayInspection {
-        try require(engine.lockFD >= 0 && !engine.connection.skipFirmwareCheck, "Страница eSIM требует SSH и включённой проверки прошивки")
+        try require(engine.lockFD >= 0, "Страница eSIM требует блокировки операции SSH")
         try engine.connection.validate()
         for name in ["pending.json", "setup-pending.json", "adb-access-pending.json"] {
             try require(!FileManager.default.fileExists(atPath: engine.root.appendingPathComponent(name).path), "Сначала завершите настройку или смену IMEI")

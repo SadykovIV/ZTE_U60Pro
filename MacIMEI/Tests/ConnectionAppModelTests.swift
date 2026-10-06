@@ -238,6 +238,44 @@ private func snapshot() -> ConnectionOverviewSnapshot {
             m.forcePreparation=false;try check(!m.canPrepareModem,"Ordinary preparation no longer reuses SSH")
             m.forcePreparation=true;m.editConnectionHost("192.0.2.12");try check(!m.forcePreparation,"Force intent leaked to changed target")
         }
+        try test("Firmware policy cannot change during an operation or active terminal") {
+            let m = try model(); m.acceptChannelSelection(selection(.ssh))
+            let selected = m.channelSession
+            m.busy = true; m.setFirmwareCheckSkipped(true)
+            try check(!m.skipFirmwareCheck && m.channelSession === selected, "Busy operation changed firmware policy or session")
+            m.busy = false; m.terminalActive = true; m.setFirmwareCheckSkipped(true)
+            try check(!m.skipFirmwareCheck && m.channelSession === selected && m.terminalActive, "Firmware policy interrupted an active terminal")
+        }
+        try test("Explicit firmware override reaches preparation while preserving target and pending intent") {
+            let m = try model(); m.acceptChannelSelection(selection(.ssh))
+            try check(!m.skipFirmwareCheck && !m.connection.skipFirmwareCheck, "Override is enabled by default")
+            m.webPassword = "policy-web-canary"; m.agentPassword = "policy-agent-canary"; m.backupSuffix = "policy-suffix-canary"
+            let pending = Data("{\"test\":\"pending intent must remain unchanged\"}".utf8)
+            try FileManager.default.createDirectory(at: m.storage, withIntermediateDirectories: true)
+            let path = m.storage.appendingPathComponent("setup-pending.json"); try pending.write(to: path)
+            m.setFirmwareCheckSkipped(true)
+            try check(m.connection.skipFirmwareCheck && !m.connected && m.channelSession == nil && !m.canManage, "Old policy session remained usable")
+            try check(m.connectedIdentity == identity && m.connectedIMEI == imei, "Override discarded device binding")
+            try check(m.webPassword == "policy-web-canary" && m.agentPassword == "policy-agent-canary" && m.backupSuffix == "policy-suffix-canary", "Override consumed preparation credentials")
+            let manager = try OnboardingEngine(root: m.storage, resources: m.resources, connection: m.connection)
+            try check(manager.currentConnection.skipFirmwareCheck, "Preparation did not receive the explicit override")
+            let unchanged = try Data(contentsOf: path)
+            try check(unchanged == pending && m.operationTask == nil, "Policy toggle dispatched an action or modified pending intent")
+            m.setFirmwareCheckSkipped(false)
+            try check(!m.connection.skipFirmwareCheck && m.operationTask == nil, "Firmware check cannot be re-enabled without an operation")
+        }
+        try test("Firmware override permits eSIM page installation after a fresh compatible SSH session") {
+            let m = try model(); m.setFirmwareCheckSkipped(true)
+            try check(!m.canInstallEsimDisplay, "Override alone authorizes page installation")
+            m.acceptChannelSelection(selection(.ssh))
+            try check(m.canInstallEsimDisplay, "Firmware override blocks a compatible connected device")
+            m.esimPreview = true; try check(!m.canInstallEsimDisplay, "Preview can install pages"); m.esimPreview = false
+            m.busy = true; try check(!m.canInstallEsimDisplay, "Busy state can install pages"); m.busy = false
+            m.terminalActive = true; try check(!m.canInstallEsimDisplay, "Active terminal can install pages"); m.terminalActive = false
+            m.setupPending = true; try check(!m.canInstallEsimDisplay, "Pending setup can install pages"); m.setupPending = false
+            m.setFirmwareCheckSkipped(false)
+            try check(!m.canInstallEsimDisplay, "Re-enabled firmware policy reuses the previous session")
+        }
         try test("Existing SSH disables new preparation even with firmware override") {
             let m = try model()
             m.connectionsChecked = true

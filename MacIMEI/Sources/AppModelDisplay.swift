@@ -68,7 +68,7 @@ import Foundation
     func installEsimDisplay() { performDisplay(.installEsim) }
     func applyDisplayLayout() { performDisplay(.apply) }
     func applyDisplayPages() { performDisplay(.applyPages) }
-    var canInstallEsimDisplay: Bool { canManage && !skipFirmwareCheck && !esimPreview }
+    var canInstallEsimDisplay: Bool { canManage && !esimPreview }
 
     private enum DisplayOperation { case inspect, install, installEsim, apply, applyPages }
     private func performDisplay(_ operation: DisplayOperation) {

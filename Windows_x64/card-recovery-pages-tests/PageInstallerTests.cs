@@ -14,6 +14,50 @@ static class PageInstallerTests
   async Task Reject(Func<Task> action,string label){try{await action();}catch(Exception e){check(!e.Message.Contains("PRIVATE"),"installer errors remain fixed: "+label);check(true,label);return;}throw new Exception("accepted "+label);}
   try
   {
+   var b28=new FakeShell{FirmwareIdentity=new string('b',64),RouterIdentity=new string('c',64),FreshVpn=true};
+   var serviceStorage=Path.Combine(storage,"firmware-policy");
+   Directory.CreateDirectory(Path.Combine(serviceStorage,"SSH"));
+   File.WriteAllText(Path.Combine(serviceStorage,"SSH/id_ed25519"),"synthetic-unusable-private-key");
+   var hostKey=new byte[51];hostKey[3]=11;"ssh-ed25519"u8.CopyTo(hostKey.AsSpan(4));hostKey[18]=32;
+   File.WriteAllText(Path.Combine(serviceStorage,"SSH/known_hosts"),"[192.0.2.1]:2222 ssh-ed25519 "+Convert.ToBase64String(hostKey)+"\n");
+   var policyService=new ZteImeiStudio.Windows.WindowsModemService(serviceStorage,Path.Combine(root,"Resources")){SshFactory=()=>b28};
+   var connected=await policyService.RunAsync(new(ZteImeiStudio.Windows.ModemOperation.Connect,new Dictionary<string,string>{{"host","192.0.2.1"}}));
+   check(connected.Success,"unlisted B28-like firmware can connect through verified SSH before operation-specific checks");
+   var defaultDenied=await policyService.RunAsync(new(ZteImeiStudio.Windows.ModemOperation.InstallAgent));
+   check(!defaultDenied.Success&&b28.Events.Count==0,"default firmware policy rejects unlisted agent install before staging or mutation");
+   var skipInstall=await policyService.RunAsync(new(ZteImeiStudio.Windows.ModemOperation.InstallAgent,new Dictionary<string,string>{{"skip_firmware_check","true"}}));
+   check(skipInstall.Success&&b28.Hash==AgentPackage.Sha256,"explicit skip reaches actual agent installation on B28-like firmware and different router");
+   check(b28.Events.SequenceEqual(new[]{"dashboard_preflight","agent_install","dashboard_install"})&&!b28.Events.Contains("vpn_components"),"skip preserves the complete agent/dashboard flow without enabling unrelated VPN");
+   check((await policyService.RunAsync(new(ZteImeiStudio.Windows.ModemOperation.RefreshAgent))).Success,"explicit policy persists across sequential SSH actions without reconnect");
+   var resetPolicy=await policyService.RunAsync(new(ZteImeiStudio.Windows.ModemOperation.RefreshAgent,new Dictionary<string,string>{{"skip_firmware_check","false"}}));
+   check(!resetPolicy.Success,"turning the shared checkbox off restores default firmware refusal");
+   check((await policyService.RunAsync(new(ZteImeiStudio.Windows.ModemOperation.Connect,new Dictionary<string,string>{{"host","192.0.2.1"},{"skip_firmware_check","true"}}))).Success,"new SSH session accepts explicitly selected version policy");
+   var reused=await policyService.RunAsync(new(ZteImeiStudio.Windows.ModemOperation.PrepareSsh));
+   check(reused.Success,"preparation reuses verified unlisted SSH without requiring credentials or changing policy");
+   check((await policyService.RunAsync(new(ZteImeiStudio.Windows.ModemOperation.InstallAgent))).Success,"Connect and Prepare preserve override in all newly created feature managers");
+   foreach(var platform in new[]{"1000\nLinux\naarch64","0\nOtherOS\naarch64","0\nLinux\narmv7l","0\nLinux\naarch64\nextra"})
+   {
+    var unsupported=new FakeShell{FirmwareIdentity=new string('b',64),FreshVpn=true,PlatformReply=platform};
+    await Reject(()=>new DeviceFeatureService(unsupported,Path.Combine(root,"Resources"),storage,skipFirmwareCheck:true).InstallAgentAsync(),"override refuses unsupported platform "+platform.Replace('\n','/'));
+    check(unsupported.Events.Count==0&&!unsupported.Commands.Any(c=>c.Contains("cat > ")||c.Contains("mkdir /tmp/zte-imei-app.lock")),"runtime platform refusal happens before staging and lock");
+   }
+   foreach(var invalid in new[]{"cid","drift","pending","preflight"})
+   {
+    var guarded=new FakeShell{FirmwareIdentity=new string('b',64),RouterIdentity=new string('c',64),FreshVpn=true,MalformedIdentity=invalid=="cid",ChangeBootOnAnyUpload=invalid=="drift",AgentPending=invalid=="pending",FailPhase=invalid=="preflight"?"dashboard_preflight":""};
+    await Reject(()=>new DeviceFeatureService(guarded,Path.Combine(root,"Resources"),storage,skipFirmwareCheck:true).InstallAgentAsync(),"skip retains actual agent guard "+invalid);
+    check(!guarded.Events.Contains("agent_install"),"explicit firmware skip cannot bypass agent mutation guard: "+invalid);
+   }
+   async Task<ZteImeiStudio.Windows.Core.DeviceIdentity> NvIdentity(FakeShell shell,bool skip)
+   {
+    var engine=new ImeiEngine(shell,storage,Path.Combine(root,"Resources"),skip);
+    return await (Task<ZteImeiStudio.Windows.Core.DeviceIdentity>)typeof(ImeiEngine).GetMethod("IdentityForWriteAsync",System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!.Invoke(engine,[CancellationToken.None])!;
+   }
+   var nvVersion=new FakeShell{FirmwareIdentity=new string('b',64)};
+   await Reject(()=>NvIdentity(nvVersion,false),"default NV firmware guard still requires B31");
+   check((await NvIdentity(nvVersion,true)).FirmwareHash==new string('b',64),"explicit NV firmware override preserves the measured firmware identity");
+   var wrongNvAbi=new FakeShell{FirmwareIdentity=new string('b',64),RouterIdentity=new string('c',64)};
+   await Reject(()=>NvIdentity(wrongNvAbi,true),"explicit firmware override cannot waive the pinned NV router ABI");
+   check(nvVersion.Events.Count==0&&wrongNvAbi.Events.Count==0,"NV policy fixture performs identity reads only");
    foreach(var noVpn in new[]{true,false})
    {
     var missing=new FakeShell{Hash="absent",AgentRunning=false,FreshVpn=noVpn};
@@ -240,6 +284,7 @@ static class PageInstallerTests
     {
         const string Cid="0123456789abcdef0123456789abcdef"; string Boot="01234567-89ab-cdef-0123-456789abcdef";
         public byte[]? Pages; public bool UnsafePages,CorruptPageReadback,ChangeBootOnUpload,UnknownPageWrite,ChangePagesOnUpload;public int PageWrites,StagedPages;readonly Dictionary<string,byte[]> Uploads=[];
+        public string FirmwareIdentity=DeviceFeatureService.FirmwareHash,RouterIdentity=DeviceFeatureService.RouterHash;public bool MalformedIdentity,ChangeBootOnAnyUpload;public string PlatformReply="0\nLinux\naarch64";
         public string Hash=AgentPackage.LegacyVpnSha256;public string? BackupHash;public bool AgentRunning=true,AgentStartup=true,AgentPending;
         public string FailPhase="",Failure="";public string? FailureStderr;public bool FreshVpn;public bool LauncherApplied,ChangeLayout,Stopped;public string LauncherService="service-ok";public bool LauncherAbsent,BadLauncherIntegrity,WrongLauncherCid,LauncherPending;public byte[] Layout=new LauncherLayout("tiles",LauncherLayout.MetricIds.Reverse().Select((id,i)=>new LauncherMetric(id,i<4)).ToArray()).Encode();
         public int StartAfterProbes, RunningProbes; public List<string> Events=[],Commands=[],Cleanup=[],Requests=[]; public string VpnStatusHash="missing";
@@ -258,6 +303,12 @@ static class PageInstallerTests
         public Task<RemoteResult> RunAsync(string command,byte[]? stdin=null,TimeSpan? timeout=null,CancellationToken ct=default)
         {
             Commands.Add(command);
+            if(command=="set -eu; id -u; uname -s; uname -m")return Task.FromResult(Reply(PlatformReply));
+            if(command.Contains("test \"$(cat /proc/sys/kernel/random/boot_id)\" = ")&&!command.Contains("= '"+Boot+"'"))return Task.FromResult(new RemoteResult(73,[],[]));
+            if(command=="sha256sum /usr/bin/diag-router")return Task.FromResult(Reply(RouterIdentity+"  /usr/bin/diag-router\n"));
+            if(command==SshReadProof.Command)return Task.FromResult(Reply("ZTE_SSH_READ_V1\n0\nLinux\naarch64\n"+Cid+"\n"+Boot+"\n"+FirmwareIdentity+"\n"+RouterIdentity+"\n"));
+            if(command=="ubus call system board")return Task.FromResult(Reply("{\"model\":\"Synthetic B28-like fixture\"}"));
+            if(command=="uname -s; uname -r; uname -m")return Task.FromResult(Reply("Linux\nfixture-kernel\naarch64\n"));
             if(command == "set -eu; if test ! -e /data/zte-agent && test ! -L /data/zte-agent; then echo absent; else test -f /data/zte-agent && test ! -L /data/zte-agent || exit 73; sha256sum /data/zte-agent | cut -d ' ' -f1; fi") return Task.FromResult(Reply(Hash));
             if(command.StartsWith("set -eu; uname -m; id -u; sha256sum /usr/bin/zte_topsw_devui"))
             {
@@ -269,8 +320,8 @@ static class PageInstallerTests
             if(command.StartsWith("set -eu; f=/data/zte-launcher/info-layout.conf"))return Task.FromResult(Reply("data\n"+Convert.ToBase64String(Layout)));
             if(command.StartsWith("if test -f /tmp/zte-launcher/ready"))return Task.FromResult(Reply(Stopped||(LauncherApplied&&++RunningProbes<StartAfterProbes)?"stopped":"running"));
             if(command=="if test -e /data/zte-vpn || test -L /data/zte-vpn; then echo present; else echo absent; fi")return Task.FromResult(Reply(FreshVpn?"absent":"present"));
-            if(command.Contains("sha256sum /firmware/image/modem.b16 /usr/bin/diag-router"))return Task.FromResult(Reply("604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263  /firmware/image/modem.b16\n55c54f74aaa427940254a2f16c36771e675a80a002363e4f10b0dfcb604d9c6f  /usr/bin/diag-router\n"+Cid+"\n"+Boot));
-            if(stdin is not null&&command.Contains("cat > ")){var path=Regex.Match(command,"cat > '([^']+)'").Groups[1].Value;Uploads[path]=stdin.ToArray();if(path.EndsWith("page-layout.conf"))StagedPages++;if(path.Contains("/.page-layout-")&&ChangePagesOnUpload)Pages=new LauncherPages(new[]{"esim"}).Encode();if(path.Contains("/.page-layout-")&&ChangeBootOnUpload)Boot="11234567-89ab-cdef-0123-456789abcdef";return Task.FromResult(Reply(Convert.ToHexStringLower(SHA256.HashData(stdin))+"  "+path));}
+            if(command.Contains("sha256sum /firmware/image/modem.b16 /usr/bin/diag-router"))return Task.FromResult(Reply(FirmwareIdentity+"  /firmware/image/modem.b16\n"+RouterIdentity+"  /usr/bin/diag-router\n"+(MalformedIdentity?"missing":Cid)+"\n"+Boot));
+            if(stdin is not null&&command.Contains("cat > ")){var path=Regex.Match(command,"cat > '([^']+)'").Groups[1].Value;Uploads[path]=stdin.ToArray();if(ChangeBootOnAnyUpload)Boot="11234567-89ab-cdef-0123-456789abcdef";if(path.EndsWith("page-layout.conf"))StagedPages++;if(path.Contains("/.page-layout-")&&ChangePagesOnUpload)Pages=new LauncherPages(new[]{"esim"}).Encode();if(path.Contains("/.page-layout-")&&ChangeBootOnUpload)Boot="11234567-89ab-cdef-0123-456789abcdef";return Task.FromResult(Reply(Convert.ToHexStringLower(SHA256.HashData(stdin))+"  "+path));}
             if(command.Contains("/manager.sh' status"))return Task.FromResult(Reply("AGENT_SHA "+Hash+"\nAGENT_RUNNING "+(AgentRunning?"yes":"no")+"\nAGENT_STARTUP "+(AgentStartup?"yes":"no")+"\n"+(AgentPending?"AGENT_PENDING yes\n":"")+(BackupHash is null?"":"AGENT_BACKUP "+BackupHash+"\n")));
             if(command.Contains("/manager.sh' install ")){var r=Step("agent_install");if(r.Success){BackupHash=Hash=="absent"?null:Hash;Hash=AgentPackage.Sha256;AgentRunning=true;}return Task.FromResult(r);}
             if(command.Contains("; sh '/tmp/zte-dashboard-stage-")){var id=Regex.Match(command,@"/tmp/zte-dashboard-stage-([0-9a-f-]{36})/").Groups[1].Value;return Task.FromResult(command.EndsWith(" preflight")?Step("dashboard_preflight","DASHBOARD_PREFLIGHT "+id):Step("dashboard_install","DASHBOARD_INSTALLED "+id));}

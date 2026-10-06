@@ -142,6 +142,7 @@ public sealed partial class WindowsModemService : IModemService
             TraceDiagnosticOperation(request.Operation, "started");
             _operationValues = null;
             var p = request.Parameters;
+            UpdateFirmwarePolicy(p);
             if (File.Exists(Path.Combine(_storage, AdbToggleTransaction.PendingName)) && request.Operation is not
                 (ModemOperation.RefreshAdbState or ModemOperation.Connect or ModemOperation.DiscoverConnections or ModemOperation.ExportDiagnostics or ModemOperation.VerifyBackupKey))
                 throw new InvalidOperationException(AdbToggleTransaction.Unknown);
@@ -328,6 +329,21 @@ public sealed partial class WindowsModemService : IModemService
         return string.Join(" · ",status);
     }
 
+    private void UpdateFirmwarePolicy(IReadOnlyDictionary<string,string>? values)
+    {
+        if (values?.TryGetValue("skip_firmware_check", out var requested) != true) return;
+        var skip = requested == "true";
+        if (_skipFirmwareCheck == skip) return;
+        _skipFirmwareCheck = skip;
+        // Apply only the explicit version policy to the existing selected SSH
+        // session. Identity, payload and component-specific checks stay in place.
+        if ((_sshRead ?? _ssh) is { } shell)
+        {
+            _imei = new ImeiEngine(shell, _storage, _resources, skip);
+            _features = new DeviceFeatureService(shell, _resources, _storage, skip);
+        }
+    }
+
     private async Task<string> ConnectAsync(IReadOnlyDictionary<string,string>? values,CancellationToken ct)
     {
         var host = Param(values,"host",_host);
@@ -335,17 +351,17 @@ public sealed partial class WindowsModemService : IModemService
         _host = host;
         if (!string.IsNullOrWhiteSpace(Param(values,"key_path"))) _keyPath = Param(values,"key_path");
         if (!string.IsNullOrWhiteSpace(Param(values,"known_hosts_path"))) _knownHostsPath = Param(values,"known_hosts_path");
-        _skipFirmwareCheck = Param(values,"skip_firmware_check").Equals("true",StringComparison.OrdinalIgnoreCase);
+        UpdateFirmwarePolicy(values);
         // The application's working channel is SSH. USB ADB remains available
         // independently for preparing SSH access.
         _ssh = null; _sshRead = null; _imei = null; _features = null;
         _snapshot = new DeviceSnapshot(false, "SSH не подключён; проверьте доступ или выполните предварительную подготовку.", IpAddress: host);
         var transport = new SshTransport(host,_port,KeyPath,KnownHostsPath);
         IRemoteShell ssh = SshFactory?.Invoke() ?? transport;
-        var imei = new ImeiEngine(ssh,_storage,_resources);
+        var imei = new ImeiEngine(ssh,_storage,_resources,_skipFirmwareCheck);
         var identity = await SshReadProof.ReadAsync(ssh,ct);
         identity.Verify(await SshReadProof.ReadAsync(ssh,ct));
-        _ssh = transport; _sshRead = ssh; _imei = imei; _features = new DeviceFeatureService(ssh,_resources,_storage);
+        _ssh = transport; _sshRead = ssh; _imei = imei; _features = new DeviceFeatureService(ssh,_resources,_storage,_skipFirmwareCheck);
         var supported = identity.Uid == "0" && identity.System == "Linux" && identity.Architecture == "aarch64" && identity.Cid is not null && identity.BootId is not null && identity.FirmwareHash == ImeiEngine.FirmwareHash && identity.RouterHash == ImeiEngine.RouterHash;
         _snapshot = new DeviceSnapshot(true,supported ? "Подключено по SSH" : "Подключено по SSH · доступ подтверждён; функции проверяются отдельно",
             IpAddress:host,ConnectionMode:"SSH",Serial:identity.Cid);

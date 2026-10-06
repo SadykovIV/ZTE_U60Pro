@@ -66,12 +66,12 @@ private final class Remote: RemoteTransport {
 }
 private final class Fixture {
     let root: URL, resources: URL, remote: Remote, engine: ModemEngine
-    init() throws {
+    init(skipFirmwareCheck: Bool = false) throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent("zte-diag-tools-test-" + UUID().uuidString)
         try secureDirectory(root)
         resources = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("Resources")
         remote = Remote(try DiagnosticToolsManager.bundle(resources: resources))
-        engine = try ModemEngine(root: root, resources: resources, connection: Connection(host: "192.0.2.1", port: "2222", keyPath: "/fixture/key", knownHostsPath: "/fixture/hosts"), transport: remote)
+        engine = try ModemEngine(root: root, resources: resources, connection: Connection(host: "192.0.2.1", port: "2222", keyPath: "/fixture/key", knownHostsPath: "/fixture/hosts", skipFirmwareCheck: skipFirmwareCheck), transport: remote)
     }
     deinit { try? FileManager.default.removeItem(at: root) }
 }
@@ -248,6 +248,19 @@ private final class Fixture {
                 try rejects { _ = try f.engine.locked { try DiagnosticToolsManager(engine: f.engine).prepare() } }
                 try check(f.remote.archiveUploads == 0, "Blocked prepare uploaded archive")
             }
+        }
+        try test("Explicit firmware override reaches package checks and preserves their refusal") {
+            let f = try Fixture(skipFirmwareCheck: true)
+            f.remote.firmware = String(repeating: "b", count: 64)
+            let manager = DiagnosticToolsManager(engine: f.engine)
+            let plan = try f.engine.locked { try manager.prepare(toolID: "htop") }
+            let installed = try f.engine.locked { try manager.install(plan) }
+            try check(installed.selected == ["htop"] && f.remote.archiveUploads == 1, "Override failed on compatible packages")
+            let refused = try Fixture(skipFirmwareCheck: true)
+            refused.remote.firmware = String(repeating: "b", count: 64)
+            refused.remote.inspectError = "UNSUPPORTED_PLATFORM"
+            try rejects { _ = try refused.engine.locked { try DiagnosticToolsManager(engine: refused.engine).prepare(toolID: "htop") } }
+            try check(refused.remote.archiveUploads == 0 && !refused.remote.installed, "Override bypassed package ABI refusal")
         }
         print("DiagnosticToolsTests: \(count) passed")
     }

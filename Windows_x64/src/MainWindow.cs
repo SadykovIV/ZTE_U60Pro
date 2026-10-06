@@ -74,6 +74,7 @@ public sealed partial class MainWindow : Window
     private Button? _refreshButton;
     private Button? _preparationButton;
     private Button? _cancelCleanupButton;
+    private CheckBox? _skipFirmwareCheckBox;
     private CheckBox? _forcePreparationCheckBox;
     private CheckBox? _cleanPreparationCheckBox;
     private readonly Dictionary<string, string> _form = new(StringComparer.Ordinal);
@@ -297,6 +298,7 @@ public sealed partial class MainWindow : Window
         _actionButtons.Clear();
         _preparationButton = null;
         _cancelCleanupButton = null;
+        _skipFirmwareCheckBox = null;
         _forcePreparationCheckBox = null;
         _cleanPreparationCheckBox = null;
         _researchCollectButton = null;
@@ -364,7 +366,21 @@ public sealed partial class MainWindow : Window
                     panel.Children.Add(FieldPair(Field("Адрес модема", "host", "192.168.0.1"), Field("Пользователь SSH", "username", "root")));
                     panel.Children.Add(FileField("Приватный ключ SSH", "key_path", "Использовать локальный ключ"));
                     panel.Children.Add(FileField("Файл known_hosts", "known_hosts_path", "Использовать локальный known_hosts"));
-                    panel.Children.Add(Actions(("Подключиться", ModemOperation.Connect, ["host", "username", "key_path", "known_hosts_path"])));
+                    var skipFirmware = new CheckBox
+                    {
+                        Name = "SkipFirmwareCheck", IsChecked = Get("skip_firmware_check") == "true",
+                        Content = Localization.Translate("Не проверять версию прошивки"), Foreground = Foreground,
+                        IsEnabled = !_busy && _terminal?.IsConnected != true && !_terminalOpening,
+                    };
+                    _skipFirmwareCheckBox = skipFirmware;
+                    skipFirmware.IsCheckedChanged += (_, _) =>
+                    {
+                        if (!ReferenceEquals(_skipFirmwareCheckBox, skipFirmware) || _busy || _terminal?.IsConnected == true || _terminalOpening) return;
+                        _form["skip_firmware_check"] = skipFirmware.IsChecked == true ? "true" : "false";
+                    };
+                    panel.Children.Add(skipFirmware);
+                    panel.Children.Add(Muted("Снимает общую сверку прошивки с B31 для подготовки и операций по SSH. Проверки устройства, подключения, архитектуры и файлов сохраняются; специальные требования компонентов остаются."));
+                    panel.Children.Add(Actions(("Подключиться", ModemOperation.Connect, ["host", "username", "key_path", "known_hosts_path", "skip_firmware_check"])));
                     BuildConnectionMethods(panel);
                     var force = new CheckBox
                     {
@@ -1707,6 +1723,8 @@ public sealed partial class MainWindow : Window
     private async Task ExecuteAsync(ModemOperation operation, IReadOnlyDictionary<string, string>? parameters)
     {
         if (_busy) return;
+        parameters = parameters is null ? new Dictionary<string,string>() : new Dictionary<string,string>(parameters);
+        ((Dictionary<string,string>)parameters)["skip_firmware_check"] = Get("skip_firmware_check") == "true" ? "true" : "false";
         if (operation == ModemOperation.PrepareSsh && _snapshot?.ComponentCleanupPending != true && _lastResearchInput != ResearchInputKey())
         {
             await CollectFirmwareResearchAsync(forPreparation: true);
@@ -1816,12 +1834,12 @@ public sealed partial class MainWindow : Window
             {
                 // An explicit refresh can retry selected SSH access; it never replays preparation.
                 var connected = await _service.RunAsync(new OperationRequest(ModemOperation.Connect,
-                    new[] { "host", "username", "key_path", "known_hosts_path" }.ToDictionary(key => key, Get)), _lifetime.Token);
+                    new[] { "host", "username", "key_path", "known_hosts_path", "skip_firmware_check" }.ToDictionary(key => key, Get)), _lifetime.Token);
                 if (!connected.Success) refreshError = connected.Message;
             }
             else if (connectedSsh && !selectedConnectionChanged)
             {
-                var refreshed = await _service.RunAsync(new OperationRequest(ModemOperation.RefreshDevice), _lifetime.Token);
+                var refreshed = await _service.RunAsync(new OperationRequest(ModemOperation.RefreshDevice, new Dictionary<string,string> { ["skip_firmware_check"] = Get("skip_firmware_check") == "true" ? "true" : "false" }), _lifetime.Token);
                 if (!refreshed.Success) refreshError = refreshed.Message;
             }
             else if (connectedSsh && selectedConnectionChanged)
@@ -1923,6 +1941,7 @@ public sealed partial class MainWindow : Window
         if (_preparationButton is not null)
             _preparationButton.IsEnabled = CanPrepare();
         if (_cancelCleanupButton is not null) _cancelCleanupButton.IsEnabled = CanPrepare();
+        if (_skipFirmwareCheckBox is not null) _skipFirmwareCheckBox.IsEnabled = !busy && _terminal?.IsConnected != true && !_terminalOpening;
         if (_forcePreparationCheckBox is not null) _forcePreparationCheckBox.IsEnabled = CanChangePreparationMode();
         if (_cleanPreparationCheckBox is not null) _cleanPreparationCheckBox.IsEnabled = CanChangePreparationMode();
         if (!busy && _page == 5 && _sections[5] == 2 && !_terminalAutoAttempted)

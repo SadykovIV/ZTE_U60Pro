@@ -211,7 +211,7 @@ import AppKit
     }
     var connection: Connection { Connection(host: host.trimmingCharacters(in: .whitespacesAndNewlines), port: port, keyPath: keyPath, knownHostsPath: knownHostsPath, skipFirmwareCheck: skipFirmwareCheck) }
     func setFirmwareCheckSkipped(_ enabled: Bool) {
-        guard !busy, enabled != skipFirmwareCheck else { return }
+        guard !busy, !terminalActive, enabled != skipFirmwareCheck else { return }
         let statuses = channelStatuses, checked = connectionsChecked
         skipFirmwareCheck = enabled
         // A policy change invalidates the session, not reachability or entered

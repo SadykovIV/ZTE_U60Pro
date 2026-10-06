@@ -83,6 +83,36 @@ Check(MainWindow.ConnectionBrowserUri("192.0.2.2",false).AbsoluteUri=="http://19
 try{_=MainWindow.ConnectionBrowserUri("192.0.2.2/secret?x=1",true);Check(false,"invalid browser host rejected");}catch(ArgumentException){Check(true,"invalid browser host rejected");}
 using var session=HeadlessUnitTestSession.StartNew(typeof(TestApp));
 await session.Dispatch(()=> {
+ foreach(var language in new[]{"ru","en"})
+ {
+  Localization.SetLanguage(language,persist:false);
+  var policyModem=new FakeModem{AllowPreparation=true,AllowRefresh=true,AllowFirmwarePolicy=true,ConnectSuccess=true};
+  var policyWindow=new MainWindow(policyModem,persistPreferences:false);policyWindow.Show();Pump();
+  var policy=policyWindow.GetLogicalDescendants().OfType<CheckBox>().Single(c=>c.Name=="SkipFirmwareCheck");
+  var beforePolicy=policyModem.Requests.Count;policy.IsChecked=true;Pump();
+  Check(policyModem.Requests.Count==beforePolicy,language+" changing firmware policy performs no operation");
+  FindButton(policyWindow,"Выполнить предварительную подготовку модема").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();
+  Check(policyModem.Requests.Last().Operation==ModemOperation.PrepareSsh&&policyModem.Requests.Last().Parameters!["skip_firmware_check"]=="true",language+" preparation receives explicit firmware override");
+  FindButton(policyWindow,"Подключиться").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();
+  Check(policyModem.Requests.Last().Operation==ModemOperation.Connect&&policyModem.Requests.Last().Parameters!["skip_firmware_check"]=="true",language+" SSH connection receives the same firmware policy");
+  NamedClick(policyWindow,"Section0-2");FindButton(policyWindow,"Установить / обновить").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();
+  Check(policyModem.Requests.Last().Operation==ModemOperation.InstallAgent&&policyModem.Requests.Last().Parameters!["skip_firmware_check"]=="true",language+" later agent installation receives common policy across tabs");
+  NamedClick(policyWindow,"Section0-0");policy=policyWindow.GetLogicalDescendants().OfType<CheckBox>().Single(c=>c.Name=="SkipFirmwareCheck");
+  Check(policy.IsChecked==true,language+" rerender preserves the current firmware policy");
+  typeof(MainWindow).GetMethod("SetBusy",BindingFlags.NonPublic|BindingFlags.Instance)!.Invoke(policyWindow,[true]);Check(!policy.IsEnabled,language+" firmware policy cannot change during an operation");
+  typeof(MainWindow).GetMethod("SetBusy",BindingFlags.NonPublic|BindingFlags.Instance)!.Invoke(policyWindow,[false]);
+  policy.IsChecked=false;FindButton(policyWindow,"↻").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();
+  Check(policyModem.Requests.Last().Parameters!["skip_firmware_check"]=="false",language+" explicit refresh carries the restored strict policy");
+  foreach(var terminalOpening in new[]{false,true})
+  {
+   Set(policyWindow,"_terminalOpening",terminalOpening);Set(policyWindow,"_terminal",terminalOpening?null:new FakeTerminal());Render(policyWindow);
+   var blocked=policyWindow.GetLogicalDescendants().OfType<CheckBox>().Single(c=>c.Name=="SkipFirmwareCheck");
+   blocked.IsChecked=true;Pump();
+   Check(!blocked.IsEnabled&&((Dictionary<string,string>)Get(policyWindow,"_form")!)["skip_firmware_check"]=="false",language+" terminal ownership rejects even a direct firmware checkbox callback, opening="+terminalOpening);
+  }
+  Set(policyWindow,"_terminalOpening",false);Set(policyWindow,"_terminal",null);
+  policyWindow.Close();Pump();
+ }
  foreach(var language in new[]{"ru","en"}) {
   Localization.SetLanguage(language,persist:false);
   var modem=new FakeModem();var window=new MainWindow(modem,persistPreferences:false);window.Show();Pump();
@@ -93,7 +123,8 @@ await session.Dispatch(()=> {
   Check(!window.GetLogicalDescendants().OfType<ComboBox>().Any(b=>b.Name=="ConnectionMode"),language+" normal connection exposes no ADB or Web management mode");
   Check(!FindButton(window,"Выполнить предварительную подготовку модема").IsEnabled,language+" new preparation disabled on working SSH");
   Check(!window.GetLogicalDescendants().OfType<Button>().Any(b=>b.Name=="EnableDiagnosticAdb"),language+" ADB has one checkbox and no legacy force button");
-  Check(!window.GetLogicalDescendants().OfType<CheckBox>().Any(c=>c.Content?.ToString()==Localization.Translate("Пропустить проверку прошивки")),language+" universal initial access has no firmware-skip checkbox");
+  var firmwareCheck=window.GetLogicalDescendants().OfType<CheckBox>().SingleOrDefault(c=>c.Name=="SkipFirmwareCheck");
+  Check(firmwareCheck is not null&&firmwareCheck.IsChecked==false&&firmwareCheck.Content?.ToString()==Localization.Translate("Не проверять версию прошивки"),language+" common firmware version checkbox is visible and defaults off");
   using(var frame=window.CaptureRenderedFrame()??throw new Exception("Missing diagnostic frame"))frame.Save(Path.Combine(screenshots,language+"-diagnostic-connection.png"));
   var methods=window.GetLogicalDescendants().OfType<Expander>().Single(e=>e.Name=="ConnectionMethods");methods.IsExpanded=true;Pump();
   using(var frame=window.CaptureRenderedFrame()??throw new Exception("Missing methods frame"))frame.Save(Path.Combine(screenshots,language+"-connection-methods-expanded.png"));
@@ -188,7 +219,7 @@ await session.Dispatch(()=> {
   Set(checkWindow,"_snapshot",new DeviceSnapshot(false,"Нет подключения"));
   NamedClick(checkWindow,"VerifyBackupKey");
   var request=checkModem.Requests.Single();
-  Check(request.Operation==ModemOperation.VerifyBackupKey&&request.Parameters!.Keys.Order().SequenceEqual(new[]{"backup_key_suffix","host","web_password"}),language+" key check dispatches only its dedicated read-only request");
+  Check(request.Operation==ModemOperation.VerifyBackupKey&&request.Parameters!.Keys.Order().SequenceEqual(new[]{"backup_key_suffix","host","skip_firmware_check","web_password"}),language+" key check dispatches only its dedicated read-only request");
   Check(checkModem.Events.Count==0&&!((DeviceSnapshot)Get(checkWindow,"_snapshot")!).IsConnected,language+" key success creates no research/preparation/connection readiness");
   var checkStatus=checkWindow.GetLogicalDescendants().OfType<TextBlock>().Single(t=>t.Name=="BackupKeyCheckStatus").Text!;
   Check(checkStatus.Contains("FLY_CN_MU5250V1.0.0B13")&&checkStatus.Contains("BD_FLYMODEMMU5250V1.0.0B28")&&checkStatus.Contains(language=="en"?"does not authorize":"не разрешает"),language+" separate result shows observed versions and write boundary");
@@ -431,10 +462,11 @@ internal sealed class FakeTerminal:ITerminalSession {
  public ValueTask DisposeAsync()=>ValueTask.CompletedTask;
 }
 internal sealed class FakeModem:IModemService {
+ public bool AllowFirmwarePolicy;
  public ConnectionSettingsSnapshot? PreparedSettings;public Action? OnPrepare;public ConnectionSettingsSnapshot Settings=new(); public ConnectionSettingsSnapshot GetConnectionSettings()=>Settings;
  public int Operations{get;private set;} public bool AllowPreparation,AllowDiagnostics,AllowBackupCheck,BackupCheckSuccess=true,AllowRefresh,ConnectSuccess,ThrowPrepare,PrepareSuccess;public DeviceSnapshot Snapshot=new(false,"Нет подключения");public List<string> Events=[];public List<OperationRequest> Requests=[];public IReadOnlyDictionary<string,string>? ResearchParameters;
  public Task<DeviceSnapshot> GetDeviceSnapshotAsync(CancellationToken ct=default)=>Task.FromResult(Snapshot);
- public Task<OperationResult> RunAsync(OperationRequest request,CancellationToken ct=default){Operations++;Requests.Add(request);if(AllowRefresh&&request.Operation is ModemOperation.Connect or ModemOperation.RefreshDevice){if(request.Operation==ModemOperation.Connect&&ConnectSuccess){Snapshot=Snapshot with{IsConnected=true,ConnectionMode="SSH",Status="Synthetic SSH ready"};Settings=Settings with{Host=request.Parameters!["host"],KeyPath=request.Parameters["key_path"],KnownHostsPath=request.Parameters["known_hosts_path"]};}return Task.FromResult(new OperationResult(request.Operation==ModemOperation.RefreshDevice||ConnectSuccess,ConnectSuccess?"Synthetic SSH ready":"Закреплённый SSH host key не найден."));}if(AllowBackupCheck&&request.Operation==ModemOperation.VerifyBackupKey)return Task.FromResult(new OperationResult(BackupCheckSuccess,BackupCheckSuccess?"Ключ и формат бэкапа подтверждены. Это не разрешает восстановление или установку компонентов.":"Не удалось подтвердить ключ или формат архива бэкапа.",Values:BackupCheckSuccess?new Dictionary<string,string>{{"backup_firmware","FLY_CN_MU5250V1.0.0B13"},{"backup_inner","BD_FLYMODEMMU5250V1.0.0B28"},{"backup_entries","1"},{"backup_sha256",new string('a',64)}}:null));if(AllowDiagnostics&&request.Operation is ModemOperation.DiscoverConnections or ModemOperation.EnableDiagnosticAdb or ModemOperation.RefreshAccess or ModemOperation.ExportDiagnostics or ModemOperation.SetAdbEnabled or ModemOperation.RefreshAdbState or ModemOperation.Connect)return Task.FromResult(new OperationResult(false,"Synthetic diagnostic response; no device."));if(AllowPreparation&&request.Operation==ModemOperation.CancelComponentCleanup){Snapshot=Snapshot with{PreparationPending=false,ComponentCleanupPending=false,IsConnected=false};if(PreparedSettings is{} cancelledReady)Settings=cancelledReady;OnPrepare?.Invoke();return Task.FromResult(new OperationResult(true,"Synthetic cancelled"));}if(AllowPreparation&&request.Operation==ModemOperation.PrepareSsh){Events.Add("prepare");Snapshot=Snapshot with{PreparationPending=!PrepareSuccess};if(PreparedSettings is{} ready){Settings=ready;Snapshot=Snapshot with{IsConnected=true,ConnectionMode="SSH",IpAddress=ready.Host};}OnPrepare?.Invoke();if(ThrowPrepare)throw new IOException("Synthetic preparation interruption");return Task.FromResult(new OperationResult(PrepareSuccess,PrepareSuccess?"Synthetic preparation complete":"Synthetic preflight refused; no writes."));}throw new Exception("Unexpected modem operation");}
+ public Task<OperationResult> RunAsync(OperationRequest request,CancellationToken ct=default){Operations++;Requests.Add(request);if(AllowFirmwarePolicy&&request.Operation==ModemOperation.InstallAgent)return Task.FromResult(new OperationResult(true,"Synthetic agent updated"));if(AllowRefresh&&request.Operation is ModemOperation.Connect or ModemOperation.RefreshDevice){if(request.Operation==ModemOperation.Connect&&ConnectSuccess){Snapshot=Snapshot with{IsConnected=true,ConnectionMode="SSH",Status="Synthetic SSH ready"};Settings=Settings with{Host=request.Parameters!["host"],KeyPath=request.Parameters["key_path"],KnownHostsPath=request.Parameters["known_hosts_path"]};}return Task.FromResult(new OperationResult(request.Operation==ModemOperation.RefreshDevice||ConnectSuccess,ConnectSuccess?"Synthetic SSH ready":"Закреплённый SSH host key не найден."));}if(AllowBackupCheck&&request.Operation==ModemOperation.VerifyBackupKey)return Task.FromResult(new OperationResult(BackupCheckSuccess,BackupCheckSuccess?"Ключ и формат бэкапа подтверждены. Это не разрешает восстановление или установку компонентов.":"Не удалось подтвердить ключ или формат архива бэкапа.",Values:BackupCheckSuccess?new Dictionary<string,string>{{"backup_firmware","FLY_CN_MU5250V1.0.0B13"},{"backup_inner","BD_FLYMODEMMU5250V1.0.0B28"},{"backup_entries","1"},{"backup_sha256",new string('a',64)}}:null));if(AllowDiagnostics&&request.Operation is ModemOperation.DiscoverConnections or ModemOperation.EnableDiagnosticAdb or ModemOperation.RefreshAccess or ModemOperation.ExportDiagnostics or ModemOperation.SetAdbEnabled or ModemOperation.RefreshAdbState or ModemOperation.Connect)return Task.FromResult(new OperationResult(false,"Synthetic diagnostic response; no device."));if(AllowPreparation&&request.Operation==ModemOperation.CancelComponentCleanup){Snapshot=Snapshot with{PreparationPending=false,ComponentCleanupPending=false,IsConnected=false};if(PreparedSettings is{} cancelledReady)Settings=cancelledReady;OnPrepare?.Invoke();return Task.FromResult(new OperationResult(true,"Synthetic cancelled"));}if(AllowPreparation&&request.Operation==ModemOperation.PrepareSsh){Events.Add("prepare");Snapshot=Snapshot with{PreparationPending=!PrepareSuccess};if(PreparedSettings is{} ready){Settings=ready;Snapshot=Snapshot with{IsConnected=true,ConnectionMode="SSH",IpAddress=ready.Host};}OnPrepare?.Invoke();if(ThrowPrepare)throw new IOException("Synthetic preparation interruption");return Task.FromResult(new OperationResult(PrepareSuccess,PrepareSuccess?"Synthetic preparation complete":"Synthetic preflight refused; no writes."));}throw new Exception("Unexpected modem operation");}
  public Task<ResearchReport> CollectFirmwareResearchAsync(IReadOnlyDictionary<string,string> parameters,IProgress<ResearchProgress>? progress,CancellationToken ct=default){if(!AllowPreparation&&!AllowDiagnostics)throw new Exception("Unexpected research");ResearchParameters=parameters;Events.Add("research");return Task.FromResult(new ResearchReport(1,"fixture",DateTimeOffset.UtcNow,DateTimeOffset.UtcNow,"partial","ADB",null,"test",7,[],[],[],BindingStrength:"transport-only"));}
  public Task<ResearchReport> CollectPreparationResearchAsync(IReadOnlyDictionary<string,string> parameters,IProgress<ResearchProgress>? progress,CancellationToken ct=default){ResearchParameters=parameters;Events.Add("bootstrap-research");return Task.FromResult(new ResearchReport(1,"fixture",DateTimeOffset.UtcNow,DateTimeOffset.UtcNow,"partial","ADB",null,"test",7,[],[],[],BindingStrength:"transport-only"));}
  public Task<IReadOnlyList<BackupInfo>> ListBackupsAsync(CancellationToken ct=default)=>Task.FromResult<IReadOnlyList<BackupInfo>>([]);
