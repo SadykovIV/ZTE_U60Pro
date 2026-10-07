@@ -2,7 +2,7 @@
 
 ## English
 
-In **ZTE U60Pro Manager 1.24.12**, connect through SSH, then open **Modem preparation → Diagnostics → Collect firmware adaptation data** and choose a ZIP destination. One archive contains a **fresh technical survey** and the available fixed firmware files. You do not need a separate research export. The ZIP is saved locally and is not uploaded automatically.
+In **ZTE U60Pro Manager 1.24.13**, connect through SSH, then open **Modem preparation → Diagnostics → Collect firmware adaptation data** and choose a ZIP destination. One archive contains a **fresh technical survey** and the available fixed firmware files. You do not need a separate research export. The ZIP is saved locally and is not uploaded automatically.
 
 ### What the ZIP contains
 
@@ -20,7 +20,7 @@ Current screen files may already be patched or mounted. Unknown bytes are not la
 
 | Component | Collected evidence | What still needs separate validation |
 |---|---|---|
-| SSH, preparation, agent | Platform, tools, private installation paths, startup metadata, process/disk agreement, selected agent mode, HTTP status codes | Authentication, installation/rollback and each hardware operation. `discovery` is an intentional restricted mode; `401` means authentication is required. Neither proves a broken agent. |
+| SSH, preparation, agent | Platform, tools, private installation paths, startup metadata, process/disk agreement, selected agent mode, HTTP status codes | Authentication, installation/rollback and each hardware operation. Older agents used a restricted `discovery` mode; the current agent ignores it. `401` means authentication is required. |
 | Screen localization | Current/original ELF and language resources, init script, available fonts, hashes and mount metadata | Exact patch ABI, glyph coverage and a real install/restore/display check |
 | Launcher pages | OEM ABI hashes, installed service state, mapped library/ready-process agreement, fixed failure codes and VPN process metadata | Hook addresses, object layouts, rendering, gestures, sleep/wake and recovery |
 | VPN and Wi-Fi | Component/service hashes and pending state, guest timers and selected UCI fields, hostapd state, TUN/modules, reserved routing occupancy, RPC input schemas | Actual core/profile validity, network setup, traffic isolation and enable/disable behavior. Installed files are not proof that VPN works. |
@@ -33,11 +33,11 @@ The capture does **not** run eSIM list/SELECT/APDU, switch SIM slots, power-cycl
 
 The examined files identify **Firmware `FLY_CN_MU5250V1.0.0B13` / Inner `BD_FLYMODEMMU5250V1.0.0B28`**. Its Chinese dictionary and screen init match the compared B31 files; its English dictionary lacks four keys, and its screen ELF differs. A font-patch candidate passed **offline checks only**. The supplied fonts match B31 byte for byte. Both exact patch profiles and installer recovery passed local tests. An on-device B28 install/restore/render check is still required.
 
-The B28 Launcher adapter now has an exact profile for 34 called functions, hook slots and globals, validated against captured stock and localized binaries. Function lengths, object offsets and address-only instruction differences were checked. This static proof and the installer tests do not replace a hardware rendering, gesture, sleep/wake and recovery test. Observed `discovery` mode explains restricted API responses such as `403`; `401` alone is an authentication result. Do not install a B31 binary patch on B28 by bypassing its ABI check.
+The B28 Launcher adapter now has an exact profile for 34 called functions, hook slots and globals, validated against captured stock and localized binaries. Function lengths, object offsets and address-only instruction differences were checked. This static proof and the installer tests do not replace a hardware rendering, gesture, sleep/wake and recovery test. Older agents in `discovery` mode could return a general `403`; that mode has been removed. `401` alone is an authentication result. Do not install a B31 binary patch on B28 by bypassing its ABI check.
 
 ## Русский
 
-В **ZTE U60Pro Manager 1.24.12** подключитесь по SSH, откройте **«Подготовка модема → Диагностика → Собрать данные для адаптации прошивки»** и выберите место для ZIP. В один архив входят **свежее техническое исследование** и доступные файлы прошивки из фиксированного списка. Отдельно экспортировать исследование не нужно. ZIP сохраняется на компьютере и автоматически никуда не отправляется.
+В **ZTE U60Pro Manager 1.24.13** подключитесь по SSH, откройте **«Подготовка модема → Диагностика → Собрать данные для адаптации прошивки»** и выберите место для ZIP. В один архив входят **свежее техническое исследование** и доступные файлы прошивки из фиксированного списка. Отдельно экспортировать исследование не нужно. ZIP сохраняется на компьютере и автоматически никуда не отправляется.
 
 ### Что входит в архив
 
@@ -55,7 +55,7 @@ The B28 Launcher adapter now has an exact profile for 34 called functions, hook 
 
 | Компонент | Что собирается | Что требует отдельной проверки |
 |---|---|---|
-| SSH, подготовка, агент | Платформа, инструменты, приватные пути установки, метаданные startup, совпадение процесса и файла, выбранный режим агента, HTTP-коды | Авторизация, установка/откат и каждая аппаратная операция. `discovery` — предусмотренный ограниченный режим; `401` требует авторизации. Это не доказательства поломки агента. |
+| SSH, подготовка, агент | Платформа, инструменты, приватные пути установки, метаданные startup, совпадение процесса и файла, выбранный режим агента, HTTP-коды | Авторизация, установка/откат и каждая аппаратная операция. В старых агентах `discovery` ограничивал API; текущий агент игнорирует этот режим. `401` требует авторизации. |
 | Русификация экрана | Текущие/исходные ELF и словари, init, доступные шрифты, хэши и метаданные монтирования | Точный ABI патча, наличие глифов, реальная установка/восстановление и отображение |
 | Дополнительные страницы | ABI-хэши штатного экрана, состояние службы, загруженная библиотека и готовность процесса, фиксированные ошибки и метаданные VPN-процесса | Адреса хуков, структура объектов, отрисовка, жесты, сон/пробуждение и восстановление |
 | VPN и Wi-Fi | Хэши компонентов/службы, незавершённые изменения, таймеры и выбранные поля UCI, hostapd, TUN/модули, занятость служебной маршрутизации, входные схемы RPC | Работа ядра/профиля, настройка сети, изоляция трафика, включение/выключение. Наличие файлов не доказывает работу VPN. |
@@ -68,4 +68,4 @@ The B28 Launcher adapter now has an exact profile for 34 called functions, hook 
 
 Исследована связка **Firmware `FLY_CN_MU5250V1.0.0B13` / Inner `BD_FLYMODEMMU5250V1.0.0B28`**. Китайский словарь и init экрана совпадают со сравниваемыми файлами B31; в английском словаре отсутствуют четыре ключа, а экранный ELF отличается. Кандидат шрифтового патча прошёл **только офлайн-проверки**. Присланные шрифты побайтно совпадают с B31. Оба точных профиля патча и восстановление установщика прошли локальные проверки. Установка, восстановление и отображение на самом B28 ещё требуют проверки.
 
-Для Launcher подготовлен точный профиль B28: 34 вызываемые функции, слоты хуков и глобальные данные сверены со штатным и русифицированным бинарниками. Проверены длины функций, смещения полей объектов и изменения адресных инструкций. Статические проверки и тесты установщика не заменяют проверку отрисовки, жестов, сна/пробуждения и восстановления на модеме. Наблюдаемый режим `discovery` объясняет ограничения API, включая `403`; сам по себе `401` означает необходимость авторизации. Не устанавливайте бинарный патч B31 на B28 через обход проверки ABI.
+Для Launcher подготовлен точный профиль B28: 34 вызываемые функции, слоты хуков и глобальные данные сверены со штатным и русифицированным бинарниками. Проверены длины функций, смещения полей объектов и изменения адресных инструкций. Статические проверки и тесты установщика не заменяют проверку отрисовки, жестов, сна/пробуждения и восстановления на модеме. Старый агент в режиме `discovery` мог возвращать общий запрет `403`; этот режим удалён. Сам по себе `401` означает необходимость авторизации. Не устанавливайте бинарный патч B31 на B28 через обход проверки ABI.

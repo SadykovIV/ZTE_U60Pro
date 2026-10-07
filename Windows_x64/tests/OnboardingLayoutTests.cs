@@ -183,9 +183,8 @@ internal static class OnboardingLayoutTests
         {
             if(command.Contains("observed_hash()"))return Task.FromResult(new RemoteResult(0,Encoding.UTF8.GetBytes(proof),[]));
             if(command.Contains("AGENT_ACCESS_PROOF"))return Task.FromResult(new RemoteResult(0,Encoding.UTF8.GetBytes("AGENT_ACCESS_PROOF "+AgentPackage.Sha256+" 100 200\n"),[]));
-            if(command.Contains("AGENT_DISCOVERY_READY"))return Task.FromResult(new RemoteResult(0,"AGENT_DISCOVERY_READY"u8.ToArray(),[]));
             if(command.Contains("'--commit'")){Commits++;return Task.FromResult(new RemoteResult(0,Encoding.UTF8.GetBytes("INSTALL_COMMITTED /data/zte-imei-studio/installations/11111111-1111-1111-1111-111111111111\n"),[]));}
-            if(command.Contains("/api/auth/login")&&stdin is not null){AuthCalls++;return Task.FromResult(new RemoteResult(22,[],[]));}
+            if(command.Contains("/api/auth/login")&&stdin is not null){if(!command.Contains("http://192.0.2.1:9090/api/auth/login"))throw new Exception("Login did not use the selected address");AuthCalls++;return Task.FromResult(new RemoteResult(22,[],[]));}
             throw new Exception("Unexpected post-install action before credential proof");
         }
         public Task UploadAsync(string path,byte[] data,TimeSpan? timeout=null,CancellationToken ct=default){Writes++;throw new Exception("Unexpected upload");}

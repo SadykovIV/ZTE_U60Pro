@@ -44,19 +44,20 @@ static class PageInstallerTests
  {
   foreach(var profile in new[]{"b28","absent","b31"})
   {
-   var fake=new FakeShell{FreshVpn=true,AgentMode=profile=="b31"?"normal":"discovery",FirmwareIdentity=profile=="b31"?DeviceFeatureService.FirmwareHash:profile=="absent"?"absent":new string('b',64),RouterIdentity=profile=="b31"?DeviceFeatureService.RouterHash:profile=="absent"?"absent":new string('c',64)};
+   var fake=new FakeShell{FreshVpn=true,FirmwareIdentity=profile=="b31"?DeviceFeatureService.FirmwareHash:profile=="absent"?"absent":new string('b',64),RouterIdentity=profile=="b31"?DeviceFeatureService.RouterHash:profile=="absent"?"absent":new string('c',64)};
    var service=new DeviceFeatureService(fake,resources,storage);
    var result=await service.InstallAgentAsync();
-   check(result.IsCurrent&&result.Running&&result.BackupHash==AgentPackage.LegacyVpnSha256&&result.Mode==fake.AgentMode,"bundled install uses measured platform with default policy: "+profile);
+   check(result.IsCurrent&&result.Running&&result.BackupHash==AgentPackage.LegacyVpnSha256,"bundled install uses measured platform with default policy: "+profile);
    check(fake.Events.SequenceEqual(new[]{"dashboard_preflight","agent_install","dashboard_install"}),"bundled install keeps exact agent/dashboard sequence: "+profile);
    fake.Events.Clear();check(await service.InstallDashboardForCurrentAgentAsync(),"dashboard accepts measured current agent: "+profile);
    check(fake.Events.SequenceEqual(new[]{"dashboard_preflight","dashboard_install"}),"dashboard does not reinstall agent or enable other components: "+profile);
   }
-  foreach(var mode in new[]{"normal","default","unknown","ambiguous","not_assessed"})
+  foreach(var hash in new[]{AgentPackage.LegacyVpnSha256,AgentPackage.Sha256})
   {
-   var fake=new FakeShell{FreshVpn=true,FirmwareIdentity=new string('b',64),RouterIdentity="absent",AgentMode=mode};
+   var fake=new FakeShell{FreshVpn=true,FirmwareIdentity=new string('b',64),RouterIdentity="absent",Hash=hash};
    var result=await new DeviceFeatureService(fake,resources,storage).InstallAgentAsync();
-   check(result.Mode==mode&&!fake.Uploads.Keys.Any(x=>x.Contains("start_zte_agent")),"bundled binary update reports and preserves existing startup mode: "+mode);
+   check(result.IsCurrent&&result.Running&&!fake.Uploads.Keys.Any(x=>x.Contains("start_zte_agent")),"bundled binary update preserves existing startup: "+hash[..8]);
+   check(fake.Commands.All(x=>!x.Contains("AGENT_MODE")&&!x.Contains("environ")),"bundled status does not inspect process environment: "+hash[..8]);
   }
   foreach(var fault in new[]{"nonroot","arch","os","cid","read-error","drift","pending","preflight"})
   {
@@ -65,27 +66,17 @@ static class PageInstallerTests
    catch(Exception error) when(error is DeviceFeatureException or InvalidDataException) {check(!fake.Events.Contains("agent_install")&&!fake.Events.Contains("dashboard_install"),"bundled measured install retains actual guard: "+fault);}
   }
   var parser=typeof(DeviceFeatureService).GetMethod("ParseAgentStatus",System.Reflection.BindingFlags.Static|System.Reflection.BindingFlags.NonPublic)!;
-  try {parser.Invoke(null,["AGENT_SHA "+AgentPackage.Sha256+"\nAGENT_MODE PRIVATE\n"]);throw new Exception("private mode accepted");}
-  catch(System.Reflection.TargetInvocationException e) {check(!e.InnerException!.Message.Contains("PRIVATE"),"unknown mode metadata rejected without echoing raw content");}
+  try {parser.Invoke(null,["AGENT_SHA "+AgentPackage.Sha256+"\nAGENT_UNEXPECTED PRIVATE\n"]);throw new Exception("unexpected metadata accepted");}
+  catch(System.Reflection.TargetInvocationException e) {check(!e.InnerException!.Message.Contains("PRIVATE"),"unexpected status metadata rejected without echoing raw content");}
   var describe=typeof(ZteImeiStudio.Windows.WindowsModemService).GetMethod("DescribeAgent",System.Reflection.BindingFlags.Static|System.Reflection.BindingFlags.NonPublic)!;
   foreach(var hash in new[]{AgentPackage.Sha256,AgentPackage.LegacyVpnSha256,new string('f',64)})
   foreach(var running in new[]{true,false})
   {
-   var message=(string)describe.Invoke(null,[new AgentInstallationStatus(hash,running,true,false,null,Mode:"discovery")])!;
+   var message=(string)describe.Invoke(null,[new AgentInstallationStatus(hash,running,true,false,null)])!;
    ZteImeiStudio.Windows.Localization.SetLanguage("en",persist:false);
    var english=ZteImeiStudio.Windows.Localization.Translate(message);
-   check(!english.Any(c=>c>='\u0400'&&c<='\u04ff')&&english.Contains("discovery"),"agent status and actual mode are fully translated: "+hash[..8]+"/"+running);
+   check(!english.Any(c=>c>='\u0400'&&c<='\u04ff')&&!english.Contains("mode")&&!english.Contains("discovery"),"agent status is fully translated without an artificial mode: "+hash[..8]+"/"+running);
    ZteImeiStudio.Windows.Localization.SetLanguage("ru",persist:false);
-  }
-  var probe=Path.Combine(storage,"mode-probe");Directory.CreateDirectory(probe);
-  var proc=Path.Combine(probe,"123");Directory.CreateDirectory(proc);File.CreateSymbolicLink(Path.Combine(proc,"exe"),"/data/zte-agent");
-  foreach(var mode in new[]{"discovery","normal","default","unknown","ambiguous","not_assessed"})
-  {
-   var environment=mode switch {"default"=>"PATH=/bin\0PRIVATE_PASSWORD=never-export\0","unknown"=>"ZTE_AGENT_MODE=PRIVATE\0","ambiguous"=>"ZTE_AGENT_MODE=normal\0ZTE_AGENT_MODE=discovery\0","not_assessed"=>"",_=>"ZTE_AGENT_MODE="+mode+"\0PRIVATE_PASSWORD=never-export\0"};
-   File.WriteAllBytes(Path.Combine(proc,"environ"),Encoding.UTF8.GetBytes(environment));
-   var start=new System.Diagnostics.ProcessStartInfo("/bin/sh"){RedirectStandardOutput=true,RedirectStandardError=true};start.ArgumentList.Add("-c");start.ArgumentList.Add(DeviceFeatureService.AgentModeProbe.Replace("/proc/",probe+"/",StringComparison.Ordinal));
-   using var process=System.Diagnostics.Process.Start(start)!;var output=await process.StandardOutput.ReadToEndAsync();var error=await process.StandardError.ReadToEndAsync();await process.WaitForExitAsync();
-   check(process.ExitCode==0&&output=="AGENT_MODE "+mode+"\n"&&error=="","actual shell exposes only fixed mode, no environment: "+mode);
   }
 
  }
@@ -439,7 +430,7 @@ static class PageInstallerTests
         public byte[]? Pages; public bool UnsafePages,CorruptPageReadback,ChangeBootOnUpload,UnknownPageWrite,ChangePagesOnUpload;public int PageWrites,StagedPages;public readonly Dictionary<string,byte[]> Uploads=[];
         public string UiIdentity="e3914e78a8488cb736770f0ac9fb8ce10e0e5222fa50285f08e9e8be90d7f1e9",UiInitIdentity="a30da6481637f1fd94e037373d406e574be7e722937a4965325086740be67e35";
         public string FirmwareIdentity=DeviceFeatureService.FirmwareHash,RouterIdentity=DeviceFeatureService.RouterHash;public bool MalformedIdentity,ChangeBootOnAnyUpload;public string PlatformReply="0\nLinux\naarch64";
-        public bool AccessReadError,AccessProofDrift;public int AccessProofReads;public bool CustomBadPost;public string Hash=AgentPackage.LegacyVpnSha256;public string? BackupHash;public bool AgentRunning=true,AgentStartup=true,AgentPending;public string AgentMode="discovery";
+        public bool AccessReadError,AccessProofDrift;public int AccessProofReads;public bool CustomBadPost;public string Hash=AgentPackage.LegacyVpnSha256;public string? BackupHash;public bool AgentRunning=true,AgentStartup=true,AgentPending;
         public string FailPhase="",Failure="";public string? FailureStderr;public bool FreshVpn;public bool LauncherApplied,ChangeLayout,Stopped;public string LauncherService="service-ok";public bool LauncherAbsent,BadLauncherIntegrity,WrongLauncherCid,LauncherPending;public byte[] Layout=new LauncherLayout("tiles",LauncherLayout.MetricIds.Reverse().Select((id,i)=>new LauncherMetric(id,i<4)).ToArray()).Encode();
         public bool WatchWaitsForLock,RemoteLock,FailAfterReleaseStatus;public int StartAfterProbes, RunningProbes; public List<string> Events=[],Commands=[],Cleanup=[],Requests=[]; public string VpnStatusHash="missing";
         static RemoteResult Reply(string s="")=>new(0,Encoding.UTF8.GetBytes(s),[]);
@@ -485,7 +476,7 @@ static class PageInstallerTests
             if(command=="if test -e /data/zte-vpn || test -L /data/zte-vpn; then echo present; else echo absent; fi")return Task.FromResult(Reply(FreshVpn?"absent":"present"));
             if(command.Contains("sha256sum /firmware/image/modem.b16 /usr/bin/diag-router"))return Task.FromResult(Reply(FirmwareIdentity+"  /firmware/image/modem.b16\n"+RouterIdentity+"  /usr/bin/diag-router\n"+(MalformedIdentity?"missing":Cid)+"\n"+Boot));
             if(stdin is not null&&command.Contains("cat > ")){var path=Regex.Match(command,"cat > '([^']+)'").Groups[1].Value;Uploads[path]=stdin.ToArray();if(ChangeBootOnAnyUpload)Boot="11234567-89ab-cdef-0123-456789abcdef";if(path.EndsWith("page-layout.conf"))StagedPages++;if(path.Contains("/.page-layout-")&&ChangePagesOnUpload)Pages=new LauncherPages(new[]{"esim"}).Encode();if(path.Contains("/.page-layout-")&&ChangeBootOnUpload)Boot="11234567-89ab-cdef-0123-456789abcdef";return Task.FromResult(Reply(Convert.ToHexStringLower(SHA256.HashData(stdin))+"  "+path));}
-            if(command.Contains("/manager.sh' status")||command=="unset ZTE_AGENT_TEST_ROOT; sh -s -- status")return Task.FromResult(Reply("AGENT_SHA "+Hash+"\nAGENT_MODE "+AgentMode+"\nAGENT_RUNNING "+(AgentRunning?"yes":"no")+"\nAGENT_STARTUP "+(AgentStartup?"yes":"no")+"\n"+(AgentPending?"AGENT_PENDING yes\n":"")+(BackupHash is null?"":"AGENT_BACKUP "+BackupHash+"\n")));
+            if(command.Contains("/manager.sh' status")||command=="unset ZTE_AGENT_TEST_ROOT; sh -s -- status")return Task.FromResult(Reply("AGENT_SHA "+Hash+"\nAGENT_RUNNING "+(AgentRunning?"yes":"no")+"\nAGENT_STARTUP "+(AgentStartup?"yes":"no")+"\n"+(AgentPending?"AGENT_PENDING yes\n":"")+(BackupHash is null?"":"AGENT_BACKUP "+BackupHash+"\n")));
             if(command.Contains("/manager.sh' install ")){var r=Step("agent_install");if(r.Success){BackupHash=Hash=="absent"?null:Hash;Hash=CustomBadPost?new string('e',64):Regex.Match(command,"'([0-9a-f]{64})'$",RegexOptions.CultureInvariant).Groups[1].Value;AgentRunning=true;}return Task.FromResult(r);}
             if(command.EndsWith("/manager.sh' restore")){var r=Step("agent_restore");if(r.Success){Hash=BackupHash!;BackupHash=null;AgentRunning=true;}return Task.FromResult(r);}
             if(command.StartsWith("test -x '/lib"))return Task.FromResult(Reply());

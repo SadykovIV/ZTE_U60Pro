@@ -202,7 +202,7 @@ fn link_speed_mbps(iface: &str) -> Option<u64> {
     })
 }
 
-pub fn network_clients(state: &AppState) -> (u16, Value) {
+pub fn network_clients(_state: &AppState) -> (u16, Value) {
     // Build hostname lookup from DHCP leases
     let mut hostname_by_mac: HashMap<String, String> = HashMap::new();
     let mut dhcp_known = false;
@@ -231,7 +231,7 @@ pub fn network_clients(state: &AppState) -> (u16, Value) {
     let wifi_2g = wifi_2g.unwrap_or_default();
     let wifi_5g = wifi_5g.unwrap_or_default();
     let bridge_ports = bridge_ports.unwrap_or_default();
-    if state.mode == crate::agent_mode::AgentMode::Discovery && !observed {
+    if !observed {
         return (503, json!({"ok": false, "state": "not-assessed", "error": "Client information is not available", "sources": sources}));
     }
 
@@ -271,12 +271,8 @@ pub fn network_clients(state: &AppState) -> (u16, Value) {
         }));
     }
 
-    if state.mode == crate::agent_mode::AgentMode::Discovery {
-        (200, json!({"ok": true, "data": {"clients": clients, "sources": sources,
-            "state": if source_states.iter().all(|v| *v) { "known" } else { "partial" }}}))
-    } else {
-        (200, json!({"ok": true, "data": { "clients": clients }}))
-    }
+    (200, json!({"ok": true, "data": {"clients": clients, "sources": sources,
+        "state": if source_states.iter().all(|v| *v) { "known" } else { "partial" }}}))
 }
 
 pub fn network_battery_ubus(_state: &AppState) -> (u16, Value) {

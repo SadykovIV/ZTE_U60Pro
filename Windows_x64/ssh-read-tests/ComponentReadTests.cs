@@ -18,8 +18,16 @@ static class ComponentReadTests
             Need(status.Hash=="absent"&&!status.Running&&!status.StartupReady,"factory reset agent absence is readable");
             Need(shell.Uploads==0&&!shell.Commands.Any(c=>c.Contains("mkdir")||c.Contains("rm -f")),"agent status never creates a remote stage or uploads a file");
             Need(shell.Commands.Count==3&&shell.Commands.All(c=>!c.Contains("sha256sum /firmware")),"agent status uses session proofs and one scoped manager call");
-            Need(shell.Inputs.Single().AsSpan().SequenceEqual(File.ReadAllBytes(Path.Combine(resources,"AgentInstallation/manager.sh")).Concat(Encoding.UTF8.GetBytes("\n"+DeviceFeatureService.AgentModeProbe)).ToArray()),"agent status sends pinned manager plus fixed mode projection through stdin");
+            Need(shell.Inputs.Single().AsSpan().SequenceEqual(File.ReadAllBytes(Path.Combine(resources,"AgentInstallation/manager.sh"))),"agent status sends only the pinned manager without a separate process environment probe");
             Need(shell.Commands.Contains("unset ZTE_AGENT_TEST_ROOT; sh -s -- status"),"agent status clears the test-root environment before running the pinned helper");
+            foreach(var hash in new[]{AgentPackage.Sha256,AgentPackage.LegacyVpnSha256})
+            foreach(var running in new[]{true,false})
+            {
+                var installed=new ReadShell{AgentOutput="AGENT_SHA "+hash+"\nAGENT_RUNNING "+(running?"yes":"no")+"\nAGENT_STARTUP yes\nAGENT_PENDING no\n"};
+                var observed=await new DeviceFeatureService(installed,resources,root).GetAgentStatusAsync();
+                Need(observed.Hash==hash&&observed.Running==running&&observed.StartupReady&&!observed.RecoveryPending,"current and previous agent status need no mode metadata: "+hash[..8]+"/"+running);
+                Need(installed.Commands.Count==3&&installed.Inputs.Single().AsSpan().SequenceEqual(File.ReadAllBytes(Path.Combine(resources,"AgentInstallation/manager.sh"))),"agent status uses one pinned helper for current and previous builds: "+hash[..8]+"/"+running);
+            }
             var owner=new ReadShell{AgentOutput="AGENT_SHA absent\nAGENT_PENDING yes\nAGENT_WARNING OWNER\n"};
             var warning=await new DeviceFeatureService(owner,resources,root).GetAgentStatusAsync();
             Need(warning.Warning=="OWNER"&&warning.RecoveryPending&&owner.Uploads==0,"unsafe installer ownership remains a visible warning without preventing read-only status");

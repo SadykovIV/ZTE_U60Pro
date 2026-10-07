@@ -275,8 +275,7 @@ public sealed partial class WindowsModemService
             status.Hash == "absent" ? "Агент не установлен" :
             status.Version is null ? (status.Running ? "Неизвестная сборка агента · запущен" : "Неизвестная сборка агента · не запущен") :
             status.IsCurrent ? (status.Running ? $"Агент {status.Version} · запущен" : $"Агент {status.Version} · не запущен") :
-            status.Running ? $"Агент {status.Version} · предыдущая сборка · запущен" : $"Агент {status.Version} · предыдущая сборка · не запущен") +
-           (status.Hash == "absent" ? "" : " · режим агента: " + status.Mode);
+            status.Running ? $"Агент {status.Version} · предыдущая сборка · запущен" : $"Агент {status.Version} · предыдущая сборка · не запущен");
     private static string DescribeLocalization(ScreenLocalizationStatus status)
         => status.State switch {
             "enabled" => "Русификация включена (" + status.Language + ").",

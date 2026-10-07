@@ -213,6 +213,13 @@ net.write_text(net.read_text()+'0: 00000000:2382 00000000:0000 0A 0 0 0 0 0 700\
         self.launcher.write_text(self.launcher.read_text().replace('unset ZTE_AGENT_PIN',"export ZTE_AGENT_MODE='discovery'\nexport ZTE_AGENT_BIND='192.168.0.1:9090'\nunset ZTE_AGENT_PIN"))
         r=self.run_service();self.assertEqual(r.returncode,0,r.stderr.decode());self.assertIn(b'ACCESS_SERVICE agent stopped control',r.stdout)
         r=self.run_service('agent','start');self.assertEqual(r.returncode,0,r.stderr.decode());self.assertNotIn(b'hidden',r.stdout+r.stderr)
+    def test_current_binding_and_legacy_cleared_startups_remain_controllable(self):
+        original=self.launcher.read_text()
+        for extra in ["export ZTE_AGENT_BIND='192.168.0.1:9090'\n", "unset ZTE_AGENT_MODE\nunset ZTE_AGENT_BIND\n", "unset ZTE_AGENT_MODE\nunset ZTE_AGENT_BIND\nexport ZTE_AGENT_MODE='discovery'\nexport ZTE_AGENT_BIND='192.168.0.1:9090'\n"]:
+            self.launcher.write_text(original.replace('unset ZTE_AGENT_PIN',extra+'unset ZTE_AGENT_PIN'))
+            r=self.run_service();self.assertEqual(r.returncode,0,r.stderr.decode());self.assertIn(b'ACCESS_SERVICE agent stopped control',r.stdout)
+            self.assertNotIn(b'hidden',r.stdout+r.stderr)
+
     def test_malformed_discovery_or_unknown_environment_is_not_executed(self):
         original=self.launcher.read_text()
         extra="export ZTE_AGENT_MODE='discovery'\nexport ZTE_AGENT_BIND='192.168.0.1:9090'\n"

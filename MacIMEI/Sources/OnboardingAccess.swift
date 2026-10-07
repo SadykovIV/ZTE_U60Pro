@@ -351,7 +351,7 @@ extension OnboardingEngine {
                 return SetupResult(connection: connection, state: nil, identity: proof.identity, firmware: proof.webIdentity?.firmware ?? "unknown", suffix: "")
             }
         }
-        let startupData = try Self.agentStartup(password: agentPassword, discovery: profile == "linux-arm64-access", discoveryHost: host)
+        let startupData = try Self.agentStartup(password: agentPassword, bindHost: profile == "linux-arm64-access" ? host : nil)
         // A fresh bounded inventory is evidence only. The installer still repeats
         // its exact structural preflight; saved or imported reports grant nothing.
         if saved == nil {
@@ -463,10 +463,10 @@ extension OnboardingEngine {
     @discardableResult
     func verifyAccessAgent(_ ssh: RemoteTransport, proof: DiagnosticDeviceProof, profile: String, expectedHash: String, password: String, reuseExisting: Bool = false) throws -> String {
         let allowed = AccessAgentReusePolicy.allowedHashes(latest: expectedHash, proof: proof, profile: profile, reuseExisting: reuseExisting)
-        let command = AccessAgentProcessProof.command(discovery: profile == "linux-arm64-access", host: host)
+        let command = AccessAgentProcessProof.command()
         func processProof() throws -> AccessAgentProcessProof {
             let result = try ssh.run(command, input: nil, timeout: 15)
-            try require(result.status == 0, "Не подтверждён процесс установленного агента или режим discovery")
+            try require(result.status == 0, "Не подтверждён процесс установленного агента")
             return try AccessAgentProcessProof.parse(result.stdout, allowedHashes: allowed)
         }
         let before = try processProof()

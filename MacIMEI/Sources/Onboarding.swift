@@ -444,16 +444,15 @@ final class OnboardingEngine: @unchecked Sendable {
         if let match = try pollADB(adb, expected: expected, attempts: adbWaitAttempts, enforceInstallerPolicy: enforceInstallerPolicy) { return match }
         throw IMEIError.message("Работающий ADB модема не подтверждён. " + lastADBFailure + " Повторное восстановление бэкапа автоматически не запускается.")
     }
-    static func agentStartup(password: String, discovery: Bool = false, discoveryHost: String? = nil) throws -> Data {
+    static func agentStartup(password: String, bindHost: String? = nil) throws -> Data {
         try require(!password.isEmpty && !password.contains("\0"), "Неверный пароль")
-        var mode = ""
-        if discovery {
-            guard let host = discoveryHost else { throw IMEIError.message("Для discovery нужен выбранный IPv4-адрес") }
+        var binding = ""
+        if let host = bindHost {
             let parts = host.split(separator: ".", omittingEmptySubsequences: false)
-            try require(parts.count == 4 && parts.allSatisfy { p in guard let n = UInt8(p) else { return false }; return String(n) == p } && host != "0.0.0.0" && host != "255.255.255.255", "Некорректный адрес discovery")
-            mode = "export ZTE_AGENT_MODE='discovery'\nexport ZTE_AGENT_BIND=" + shellQuote(host + ":9090") + "\n"
+            try require(parts.count == 4 && parts.allSatisfy { p in guard let n = UInt8(p) else { return false }; return String(n) == p } && host != "0.0.0.0" && host != "255.255.255.255", "Некорректный адрес агента")
+            binding = "export ZTE_AGENT_BIND=" + shellQuote(host + ":9090") + "\n"
         }
-        return Data(("#!/bin/sh\nexport ZTE_AGENT_PASSWORD=" + shellQuote(password) + "\n" + mode + "unset ZTE_AGENT_PIN\ntrap '' HUP\nnohup sh -c '/data/zte-agent 2>&1 | logger -t zte-agent' >/dev/null 2>&1 </dev/null &\n").utf8)
+        return Data(("#!/bin/sh\nexport ZTE_AGENT_PASSWORD=" + shellQuote(password) + "\n" + binding + "unset ZTE_AGENT_PIN\ntrap '' HUP\nnohup sh -c '/data/zte-agent 2>&1 | logger -t zte-agent' >/dev/null 2>&1 </dev/null &\n").utf8)
     }
     func prepare(password: String, expectedIMEI: String? = nil) throws -> (WebIdentity, BackupPatch.Result, URL) {
         let (identity, encrypted, directory) = try prepareRawBackup(password: password, expectedIMEI: expectedIMEI)

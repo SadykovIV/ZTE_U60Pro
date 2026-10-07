@@ -21,28 +21,23 @@ pub struct Binding {
 impl Binding {
     pub fn new() -> Self {
         let explicit = std::env::var("ZTE_AGENT_BIND").ok();
-        let fixed = explicit.is_some();
-        let address = explicit.unwrap_or_else(|| {
-            format!(
-                "{}:9090",
-                configured_ip().unwrap_or_else(|| "192.168.0.1".into())
-            )
-        });
-        Self {
-            address: Mutex::new(address),
-            generation: AtomicU64::new(0),
-            fixed,
-        }
+        let configured = if explicit.as_deref().is_none_or(is_lan_bind) {
+            configured_ip()
+        } else { None };
+        Self::from_addresses(explicit, configured)
     }
-    /// Avoid vendor UCI queries on an unassessed device. The installer provides
-    /// an explicit LAN bind address when available.
-    pub fn discovery() -> Self {
-        Self {
-            address: Mutex::new(std::env::var("ZTE_AGENT_BIND")
-                .unwrap_or_else(|_| "192.168.0.1:9090".into())),
-            generation: AtomicU64::new(0),
-            fixed: true,
-        }
+    fn from_addresses(explicit: Option<String>, configured: Option<String>) -> Self {
+        // A private IPv4:9090 saved by preparation is a bootstrap LAN address.
+        // Prefer the current device LAN after a prior address change. Explicit
+        // loopback, wildcard and nonstandard ports remain fixed overrides.
+        let fixed = explicit.as_deref().is_some_and(|value| !is_lan_bind(value));
+        let address = if fixed {
+            explicit.unwrap()
+        } else {
+            configured.map(|ip| format!("{ip}:9090"))
+                .or(explicit).unwrap_or_else(|| "192.168.0.1:9090".into())
+        };
+        Self { address: Mutex::new(address), generation: AtomicU64::new(0), fixed }
     }
     pub fn address(&self) -> String {
         self.address.safe_lock().clone()
@@ -58,6 +53,10 @@ impl Binding {
             self.generation.fetch_add(1, Ordering::Release);
         }
     }
+}
+fn is_lan_bind(value: &str) -> bool {
+    value.parse::<std::net::SocketAddrV4>()
+        .is_ok_and(|address| address.ip().is_private() && address.port() == 9090)
 }
 fn configured_ip() -> Option<String> {
     ubus::uci_get("zwrt_router.network.lan_ipaddr")
@@ -335,6 +334,31 @@ impl LanManager {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn prepared_lan_address_tracks_current_settings_and_subsequent_changes() {
+        let binding = super::Binding::from_addresses(Some("192.168.0.1:9090".into()), Some("192.168.8.1".into()));
+        assert_eq!(binding.address(), "192.168.8.1:9090");
+        binding.set("192.168.9.1");
+        assert_eq!(binding.address(), "192.168.9.1:9090");
+        assert_eq!(binding.generation.load(std::sync::atomic::Ordering::Acquire), 1);
+    }
+    #[test]
+    fn prepared_lan_address_is_the_fallback_when_uci_is_unavailable() {
+        let binding = super::Binding::from_addresses(Some("192.168.8.1:9090".into()), None);
+        assert_eq!(binding.address(), "192.168.8.1:9090");
+        assert!(!binding.fixed);
+        assert_eq!(super::Binding::from_addresses(None, None).address(), "192.168.0.1:9090");
+    }
+    #[test]
+    fn loopback_wildcard_and_nonstandard_port_overrides_remain_fixed() {
+        for address in ["127.0.0.1:19090", "127.0.0.1:9090", "0.0.0.0:9090", "192.168.8.1:19090"] {
+            let binding = super::Binding::from_addresses(Some(address.into()), Some("192.168.9.1".into()));
+            assert!(binding.fixed);
+            binding.set("192.168.10.1");
+            assert_eq!(binding.address(), address);
+        }
+    }
+
     use super::*;
     #[derive(Default)]
     struct Faults {

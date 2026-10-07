@@ -314,6 +314,7 @@ private final class UnavailableSSH: RemoteTransport {
         if command.hasPrefix("/usr/bin/curl ") {
             let body=try JSONSerialization.jsonObject(with:input!) as! [String:Any]
             try check(body["password"] as? String == expectedAgentPassword && !command.contains(expectedAgentPassword),"Agent credentials passed only through stdin")
+            try check(command.contains("http://192.0.2.1:9090/api/auth/login"), "Agent login must use the selected modem address")
             authenticationCalls += 1
             return output(authenticationAccepted ? "{\"ok\":true,\"data\":{\"token\":\"synthetic-token\"}}" : "{\"ok\":false}")
         }
@@ -945,7 +946,7 @@ private struct Fixture {
             let result=try f.engine.run(password:testPassword)
             try check(result.identity?.firmwareHash==f.host.identityFirmware && result.state==nil && f.web.restoreCount==1 && f.host.installerCalls==1,"Verified fallback did not reach generic installation")
             let startup=String(decoding:f.host.uploads[f.host.stage+"/start-agent.sh"]!,as:UTF8.self)
-            try check(startup.contains("ZTE_AGENT_MODE='discovery'") && !FileManager.default.fileExists(atPath:f.engine.pending.path),"Generic state or transaction completion lost")
+            try check(!startup.contains("ZTE_AGENT_MODE") && !FileManager.default.fileExists(atPath:f.engine.pending.path),"Generic state or transaction completion lost")
         }
         run("Generic handoff preserves restore intent through preflight failure and missing ADB") {
             let f=try Fixture();defer {f.remove()}
@@ -1585,7 +1586,7 @@ private struct Fixture {
                 let result = try f.engine.run(webPassword: "", agentPassword: testPassword)
                 try check(result.state == nil && result.identity?.firmwareHash == f.host.identityFirmware && f.host.installerCalls == 1 && f.ssh.commitCalls == 1, "Unknown access installation incomplete")
                 let startup = String(decoding: f.host.uploads[f.host.stage + "/start-agent.sh"]!, as: UTF8.self)
-                try check(startup.contains("export ZTE_AGENT_MODE='discovery'") && startup.contains("export ZTE_AGENT_BIND='192.0.2.1:9090'"), "Generic agent not constrained to discovery and selected address")
+                try check(!startup.contains("ZTE_AGENT_MODE") && startup.contains("export ZTE_AGENT_BIND='192.0.2.1:9090'"), "Generic agent must use the selected address without a global mode")
                 try check(f.web.requests.isEmpty && f.web.backupCount == 0 && f.web.restoreCount == 0 && !f.ssh.calls.contains { $0.contains("zte_nv") || $0.contains("--snapshot") || $0.contains("get_imei") }, "Unknown access called Web activation or NV")
                 let deploy = f.host.calls.map { $0.joined(separator: " ") }.first { $0.contains("(sh '") && $0.contains("/setup-agent.sh'") }!
                 try check(deploy.contains("'linux-arm64-access'") && deploy.contains("'01234567-89ab-4cde-8f01-23456789abcd'"), "Generic installer lost boot binding")
@@ -1610,9 +1611,9 @@ private struct Fixture {
                 try check(f.web.requests.isEmpty && f.host.pushCount == 0 && f.host.installerCalls == 0, "Unproven root USB led to activation or installation")
             }
         }
-        run("Discovery startup rejects missing noncanonical or injected IPv4") {
-            for host in [nil, "0.0.0.0", "255.255.255.255", "192.168.00.1", "192.0.2.1;id", "example.com", "::1"] as [String?] {
-                try rejects { _ = try OnboardingEngine.agentStartup(password: testPassword, discovery: true, discoveryHost: host) }
+        run("Explicit agent binding rejects noncanonical or injected IPv4") {
+            for host in ["0.0.0.0", "255.255.255.255", "192.168.00.1", "192.0.2.1;id", "example.com", "::1"] as [String?] {
+                try rejects { _ = try OnboardingEngine.agentStartup(password: testPassword, bindHost: host) }
             }
             let normal = String(decoding: try OnboardingEngine.agentStartup(password: testPassword), as: UTF8.self)
             try check(!normal.contains("ZTE_AGENT_MODE") && !normal.contains("ZTE_AGENT_BIND"), "Legacy startup was changed")

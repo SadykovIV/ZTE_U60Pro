@@ -14,7 +14,7 @@ public sealed partial class DeviceFeatureService
 {
     private static readonly string[] AccessServiceIds = ["stockWeb", "dashboard", "agent", "managementSSH", "userSSH", "adb"];
     private static readonly HashSet<string> ControllableServices = ["dashboard", "agent", "userSSH"];
-    private const string AccessScriptHash = "66346448554d622c52daaef3150dd99318549c4c70f92274364ecba87f24e7c4";
+    private const string AccessScriptHash = "260e06d377fa59c46c17655f9e16ff2e2996d9d9afb64cea5e645c9534fb9b97";
 
     private static void ValidateLanAddress(string value)
         => Check(IPAddress.TryParse(value, out var address) && address.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(address), "Укажите IPv4-адрес модема.");

@@ -34,7 +34,6 @@ pub struct DashboardCache {
 }
 
 pub struct AppState {
-    pub mode: crate::agent_mode::AgentMode,
     #[cfg(feature = "esim")]
     pub esim_jobs: Arc<crate::esim::web::Jobs>,
     pub binding: Arc<crate::lan::Binding>,
@@ -53,20 +52,12 @@ pub struct AppState {
 
 impl AppState {
     pub fn new() -> Self {
-        Self::with_mode(crate::agent_mode::AgentMode::Normal)
-    }
-    pub fn with_mode(mode: crate::agent_mode::AgentMode) -> Self {
-        let binding = Arc::new(if mode == crate::agent_mode::AgentMode::Discovery {
-            crate::lan::Binding::discovery()
-        } else { crate::lan::Binding::new() });
+        let binding = Arc::new(crate::lan::Binding::new());
         let lan = Arc::new(crate::lan::LanManager::new(binding.clone()));
         Self {
-            mode,
             binding,
             lan,
-            auth: if mode == crate::agent_mode::AgentMode::Discovery {
-                AuthState::ephemeral()
-            } else { AuthState::new() },
+            auth: AuthState::new(),
             #[cfg(feature = "esim")]
             esim_jobs: Arc::new(crate::esim::web::Jobs::default()),
             cpu: CpuTracker::new(),
@@ -160,7 +151,7 @@ pub fn device(state: &AppState) -> (u16, Value) {
 /// GET /api/cpu
 pub fn cpu(state: &AppState) -> (u16, Value) {
     let usage = state.cpu.sample();
-    if state.mode == crate::agent_mode::AgentMode::Discovery && usage.cores.is_empty() {
+    if usage.cores.is_empty() {
         return (503,json!({"ok":false,"state":"not-assessed","error":"CPU statistics are not available"}));
     }
     (200, json!({"ok": true, "data": usage}))
@@ -297,12 +288,10 @@ fn number_value(value: Option<&Value>) -> Option<Value> {
 
 /// GET /api/system/top
 pub fn system_top(state: &AppState) -> (u16, Value) {
-    if state.mode == crate::agent_mode::AgentMode::Discovery && std::fs::read_dir("/proc").is_err() {
+    if std::fs::read_dir("/proc").is_err() {
         return (503,json!({"ok":false,"state":"not-assessed","error":"Process statistics are not available"}));
     }
-    let result = if state.mode == crate::agent_mode::AgentMode::Discovery {
-        state.proc_tracker.sample_readonly()
-    } else { state.proc_tracker.sample() };
+    let result = state.proc_tracker.sample();
     (200, json!({"ok": true, "data": result}))
 }
 

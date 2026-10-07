@@ -88,7 +88,7 @@ internal static class AccessAgentReuseTests
                 try{await engine.PrepareAsync("pw","agent","");throw new Exception("Unexpected early ready");}catch(IOException){Need(sshCalls==0&&adbCalls==1&&wire.Backups==0&&File.Exists(Path.Combine(storage,"setup-pending.json")));}
             });
             if(!OperatingSystem.IsWindows())
-                foreach(var state in new[]{"good","mapped-different","unknown-disk","duplicate"})
+                foreach(var state in new[]{"good","mapped-different","unknown-disk","duplicate","bound","bound-legacy-mode","bound-missing","bound-wrong","bound-duplicate"})
                     await Test("Actual shell proof enforces disk/mapped PID "+state,async()=>
                     {
                         var directory=Path.Combine(root,"shell-"+state);Directory.CreateDirectory(directory);var agent=Path.Combine(directory,"agent");File.WriteAllText(agent,"synthetic");
@@ -96,10 +96,16 @@ internal static class AccessAgentReuseTests
                         string Q(string value)=>"'"+value.Replace("'","'\\''",StringComparison.Ordinal)+"'";
                         var disk=state=="unknown-disk"?new string('f',64):AccessAgentReusePolicy.PreviousB31Sha256;var mapped=state=="mapped-different"?AgentPackage.Sha256:disk;
                         var functions="pidof() { printf '%s\\n' '"+(state=="duplicate"?"42 43":"42")+"'; }; sha256sum() { case \"$1\" in */proc/*) printf '%s  file\\n' "+Q(mapped)+";; *) printf '%s  file\\n' "+Q(disk)+";; esac; };\n";
+                        var address=state=="bound-wrong"?"192.0.2.2":"192.0.2.1";
+                        var environment=state=="bound-missing"?"":"ZTE_AGENT_BIND="+address+":9090\0";
+                        if(state=="bound-legacy-mode")environment+="ZTE_AGENT_MODE=discovery\0";
+                        if(state=="bound-duplicate")environment+=environment;
+                        File.WriteAllText(Path.Combine(directory,"proc","42","environ"),environment+"SYNTHETIC_SECRET=never-output\0");
                         var body=AccessAgentReusePolicy.Command(true).Replace("/data/zte-agent",agent,StringComparison.Ordinal).Replace("/proc/",directory+"/proc/",StringComparison.Ordinal);
                         var start=new ProcessStartInfo("/bin/sh"){UseShellExecute=false,RedirectStandardOutput=true,RedirectStandardError=true};start.ArgumentList.Add("-c");start.ArgumentList.Add(functions+body);
                         using var process=Process.Start(start)!;var output=await process.StandardOutput.ReadToEndAsync();await process.WaitForExitAsync();
-                        Need(state=="good"?process.ExitCode==0&&output=="AGENT_ACCESS_PROOF "+disk+" 42 456\n":process.ExitCode==71&&output=="");
+                        Need(state is "good" or "bound" or "bound-legacy-mode" or "bound-missing" or "bound-wrong" or "bound-duplicate"?process.ExitCode==0&&output=="AGENT_ACCESS_PROOF "+disk+" 42 456\n":process.ExitCode==71&&output=="");
+                        Need(!output.Contains("never-output",StringComparison.Ordinal));
                     });
             await Test("Generic, resumed and new setup policies reject historical agent",async()=>
             {

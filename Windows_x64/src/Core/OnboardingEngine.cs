@@ -855,7 +855,7 @@ public sealed partial class OnboardingEngine
     {
         WebTransport.ValidateIpv4(host);
         var text = "#!/bin/sh\nexport ZTE_AGENT_PASSWORD=" + Quote(password) +
-            (profile == "linux-arm64-access" ? "\nexport ZTE_AGENT_MODE='discovery'\nexport ZTE_AGENT_BIND=" + Quote(host + ":9090") : "\nunset ZTE_AGENT_MODE\nunset ZTE_AGENT_BIND") +
+            (profile == "linux-arm64-access" ? "\nexport ZTE_AGENT_BIND=" + Quote(host + ":9090") : "") +
             "\nunset ZTE_AGENT_PIN\ntrap '' HUP\n" +
             "nohup sh -c '/data/zte-agent 2>&1 | logger -t zte-agent' >/dev/null 2>&1 </dev/null &\n";
         return Encoding.UTF8.GetBytes(text);
@@ -1061,8 +1061,7 @@ public sealed partial class OnboardingEngine
             .ConfigureAwait(false);
         if (!reply.Success || (web is null ? AccessIdentity.Parse(reply.Stdout) : ParseIdentity(reply.Stdout, web, requireInstallerRouter: false)) != device)
             throw new InvalidDataException("SSH подключён к другому устройству после установки.");
-        await VerifyAgentReadyAsync(ssh, ct).ConfigureAwait(false);
-        if (InstallerProfile(web,device)=="linux-arm64-access") await VerifyDiscoveryAgentAsync(ssh,ct).ConfigureAwait(false);
+        await AccessAgentReusePolicy.ReadAsync(ssh, allowPrevious: false, ct).ConfigureAwait(false);
         await AuthenticateAgentAsync(ssh, agentPassword, ct).ConfigureAwait(false);
         return device;
     }
@@ -1083,39 +1082,6 @@ public sealed partial class OnboardingEngine
                 data.AsSpan(15, 4).SequenceEqual(new byte[] { 0, 0, 0, 32 });
         }
         catch (FormatException) { return false; }
-    }
-
-    internal string DiscoveryAgentCommand() => """
-        set -eu
-        test "$(sha256sum /data/zte-agent | cut -d ' ' -f1)" = EXPECTED_AGENT
-        found=0
-        for p in $(pidof zte-agent); do
-          case "$p" in ''|*[!0-9]*) exit 71;; esac
-          if test "$(readlink /proc/$p/exe)" = /data/zte-agent; then
-            test "$(sha256sum /proc/$p/exe | cut -d ' ' -f1)" = EXPECTED_AGENT
-            test "$(tr '\000' '\n' < /proc/$p/environ | sed -n '/^ZTE_AGENT_MODE=/p')" = ZTE_AGENT_MODE=discovery
-            test "$(tr '\000' '\n' < /proc/$p/environ | sed -n '/^ZTE_AGENT_BIND=/p')" = EXPECTED_BIND
-            found=$((found+1))
-          fi
-        done
-        test "$found" = 1
-        printf AGENT_DISCOVERY_READY
-        """.Replace("EXPECTED_AGENT",Quote(AgentPackage.Sha256),StringComparison.Ordinal)
-            .Replace("EXPECTED_BIND",Quote("ZTE_AGENT_BIND="+_host+":9090"),StringComparison.Ordinal);
-
-    private async Task VerifyDiscoveryAgentAsync(IRemoteShell ssh,CancellationToken ct)
-    {
-        // Health is authenticated. Prove the running process mode without an
-        // unauthenticated request; the separate login still verifies readiness.
-        var reply=await ssh.RunAsync(DiscoveryAgentCommand(),timeout:TimeSpan.FromSeconds(20),ct:ct).ConfigureAwait(false);
-        if(!reply.Success || !reply.Stdout.AsSpan().SequenceEqual("AGENT_DISCOVERY_READY"u8))
-            throw new InvalidDataException("Пассивный режим агента не подтверждён; автоматическое продолжение запрещено.");
-    }
-
-    private static async Task VerifyAgentReadyAsync(IRemoteShell ssh, CancellationToken ct)
-    {
-        // Newly installed or resumed setups never inherit historical-build reuse.
-        await AccessAgentReusePolicy.ReadAsync(ssh, allowPrevious: false, ct).ConfigureAwait(false);
     }
 
     private async Task FinishPriorReadyForReinstallAsync(OnboardingPending pending, CancellationToken ct)

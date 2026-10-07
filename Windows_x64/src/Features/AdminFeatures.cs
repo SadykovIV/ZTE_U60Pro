@@ -5,7 +5,7 @@ using ZteImeiStudio.Windows.Core;
 
 namespace ZteImeiStudio.Windows.Features;
 
-public sealed record AgentInstallationStatus(string Hash, bool Running, bool StartupReady, bool RecoveryPending, string? BackupHash, string? Warning = null, string Mode = "not_assessed")
+public sealed record AgentInstallationStatus(string Hash, bool Running, bool StartupReady, bool RecoveryPending, string? BackupHash, string? Warning = null)
 {
     public string? Version => AgentPackage.VersionForHash(Hash);
     public bool IsCurrent => Hash == AgentPackage.Sha256;
@@ -45,7 +45,7 @@ public sealed partial class DeviceFeatureService
             var manager = await ResourceAsync("AgentInstallation", "manager.sh", ct);
             Check(Sha(manager) == AgentManagerHash, "Несовместимый установщик агента.");
             var session = await SshReadProof.ReadSessionAsync(_shell, ct);
-            var result = await _shell.RunAsync("unset ZTE_AGENT_TEST_ROOT; sh -s -- status", manager.Concat(Encoding.UTF8.GetBytes("\n" + AgentModeProbe)).ToArray(), TimeSpan.FromSeconds(30), ct);
+            var result = await _shell.RunAsync("unset ZTE_AGENT_TEST_ROOT; sh -s -- status", manager, TimeSpan.FromSeconds(30), ct);
             Check(result.Success, AgentStatusFailure(result));
             var status = ParseAgentStatus(Text(result.Stdout));
             session.Verify(await SshReadProof.ReadSessionAsync(_shell, ct));
@@ -163,26 +163,9 @@ public sealed partial class DeviceFeatureService
 
     private async Task<AgentInstallationStatus> AgentStatusAtStageAsync(string stage, CancellationToken ct)
     {
-        var output = await RunTextAsync("set -eu; test \"$(sha256sum " + Quote(stage + "/manager.sh") + " | cut -d ' ' -f1)\" = " + Quote(AgentManagerHash) + "; sh " + Quote(stage + "/manager.sh") + " status;\n" + AgentModeProbe, ct: ct);
+        var output = await RunTextAsync("set -eu; test \"$(sha256sum " + Quote(stage + "/manager.sh") + " | cut -d ' ' -f1)\" = " + Quote(AgentManagerHash) + "; sh " + Quote(stage + "/manager.sh") + " status", ct: ct);
         return ParseAgentStatus(output);
     }
-
-    // Only the fixed mode projection is returned; process environments never leave the modem.
-    internal const string AgentModeProbe = """
-        mode=not_assessed; count=0
-        if command -v readlink >/dev/null 2>&1 && command -v tr >/dev/null 2>&1 && command -v awk >/dev/null 2>&1; then
-          for exe in /proc/[0-9]*/exe; do
-            test "$(readlink "$exe" 2>/dev/null || true)" = /data/zte-agent || continue
-            count=$((count+1)); envfile=${exe%/exe}/environ
-            if test "$count" != 1; then mode=ambiguous; continue; fi
-            if test -r "$envfile"; then
-              mode=$(tr '\000' '\n' < "$envfile" 2>/dev/null | awk 'index($0,"ZTE_AGENT_MODE=")==1 {n++;v=substr($0,16)} END {if(NR==0)print "not_assessed";else if(n==0)print "default";else if(n!=1)print "ambiguous";else if(v=="normal"||v=="discovery")print v;else print "unknown"}')
-            fi
-          done
-        fi
-        case "$mode" in normal|discovery|default|unknown|ambiguous|not_assessed) ;; *) mode=not_assessed;; esac
-        printf 'AGENT_MODE %s\n' "$mode"
-        """;
 
     private static string AgentStatusFailure(ZteImeiStudio.Transport.RemoteResult result)
     {
@@ -210,16 +193,14 @@ public sealed partial class DeviceFeatureService
             Check(pair.Length == 2 && values.TryAdd(pair[0], pair[1]), "Повреждён ответ проверки агента.");
         }
         Check(values.TryGetValue("AGENT_SHA", out var hash) && (hash == "absent" || Regex.IsMatch(hash, "^[0-9a-f]{64}$")), "Нет контрольной суммы установленного агента.");
-        Check(values.Keys.All(key => key is "AGENT_SHA" or "AGENT_RUNNING" or "AGENT_STARTUP" or "AGENT_PENDING" or "AGENT_BACKUP" or "AGENT_WARNING" or "AGENT_MODE") &&
+        Check(values.Keys.All(key => key is "AGENT_SHA" or "AGENT_RUNNING" or "AGENT_STARTUP" or "AGENT_PENDING" or "AGENT_BACKUP" or "AGENT_WARNING") &&
               new[] { "AGENT_RUNNING", "AGENT_STARTUP", "AGENT_PENDING" }.All(key => !values.TryGetValue(key, out var flag) || flag is "yes" or "no"),
               "Повреждён ответ проверки агента.");
         Check(!values.TryGetValue("AGENT_WARNING", out var warning) || warning == "OWNER", "Повреждён ответ проверки агента.");
-        var mode = values.GetValueOrDefault("AGENT_MODE", "not_assessed");
-        Check(mode is "normal" or "discovery" or "default" or "unknown" or "ambiguous" or "not_assessed", "Повреждён ответ проверки агента.");
         string? backup = values.GetValueOrDefault("AGENT_BACKUP");
         Check(backup == null || Regex.IsMatch(backup, "^[0-9a-f]{64}$"), "Повреждён бэкап агента.");
         return new AgentInstallationStatus(hash!, values.GetValueOrDefault("AGENT_RUNNING") == "yes",
-            values.GetValueOrDefault("AGENT_STARTUP") == "yes", values.GetValueOrDefault("AGENT_PENDING") == "yes", backup, warning, mode);
+            values.GetValueOrDefault("AGENT_STARTUP") == "yes", values.GetValueOrDefault("AGENT_PENDING") == "yes", backup, warning);
     }
 
     public async Task<ScreenLocalizationStatus> GetScreenLocalizationStatusAsync(CancellationToken ct = default)

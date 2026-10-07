@@ -89,7 +89,8 @@ internal static class UniversalDiscoveryTests
         Check(OnboardingEngine.InstallerPolicy(measured,"linux-arm64-access").SequenceEqual(new[]{cid,"linux-arm64-access",measured.FirmwareHash,measured.RouterHash,boot}),"generic policy includes observed hashes and boot last");
         Check(OnboardingEngine.InstallerPolicy(measured,"b31").Length==4,"legacy CLI arity remains unchanged");
         var startup=Encoding.UTF8.GetString(OnboardingEngine.AgentStartup("synthetic-secret","linux-arm64-access"));
-        Check(startup.Contains("export ZTE_AGENT_MODE='discovery'") && !Encoding.UTF8.GetString(OnboardingEngine.AgentStartup("synthetic-secret")).Contains("export ZTE_AGENT_MODE='discovery'"),"only generic startup sets passive discovery mode");
+        Check(!startup.Contains("ZTE_AGENT_MODE") && !Encoding.UTF8.GetString(OnboardingEngine.AgentStartup("synthetic-secret")).Contains("ZTE_AGENT_MODE"),"neither generic nor B31 startup configures a global agent mode");
+        Check(!Encoding.UTF8.GetString(OnboardingEngine.AgentStartup("synthetic-secret")).Contains("ZTE_AGENT_BIND"),"B31 keeps automatic LAN binding");
         Check(Encoding.UTF8.GetString(OnboardingEngine.AgentStartup("synthetic-secret","linux-arm64-access","192.168.5.1")).Contains("export ZTE_AGENT_BIND='192.168.5.1:9090'"),"generic agent binds explicitly selected modem IPv4");
         try {OnboardingEngine.AgentStartup("synthetic-secret","linux-arm64-access","1.2.3.4;bad");Check(false,"invalid agent bind refused");}catch(ArgumentException) {Check(true,"invalid agent bind refused");}
         var observations=FirmwareResearchEngine.Observe(spec with {Observations=[new("root",text,"identity","root"),new("absent",text,"identity","absent"),new("bad",text,"tools","tool")]},[

@@ -302,7 +302,7 @@ esac
         self.env['MOCK_ROUTER']='b'*64
         self.write('/proc/sys/kernel/random/boot_id',BOOT+'\n')
         self.write('/proc/1/comm','procd\n')
-        self.write('/proc/1234/environ','ZTE_AGENT_MODE=discovery\0')
+        self.write('/proc/1234/environ','ZTE_AGENT_BIND=192.168.0.1:9090\0')
         self.write('/etc/init.d/done',f'#!/bin/sh\nsh {self.root}/etc/rc.local\n',0o700)
         # Mock only the ELF header inspection and pinned Dropbear's -V entry.
         self.command('od','#!/bin/sh\necho 7f454c460201010000000000000000000200b700\n')
@@ -312,12 +312,29 @@ esac
         # validates their type, identity and ELF header.
         (self.stage/'dropbear').chmod(0o600)
         (self.stage/'zte-agent').chmod(0o600)
-        (self.stage/'start-agent.sh').write_text("#!/bin/sh\nexport ZTE_AGENT_MODE='discovery'\ntouch \"$MOCK_ROOT/running\"\n")
+        (self.stage/'start-agent.sh').write_text("#!/bin/sh\nexport ZTE_AGENT_BIND='192.168.0.1:9090'\ntouch \"$MOCK_ROOT/running\"\n")
         if absent:
             (self.root/'usr/bin/diag-router').unlink()
         router='absent' if absent else 'b'*64
         self.owner('linux-arm64-access','a'*64,router,BOOT)
         return dict(profile='linux-arm64-access',firmware='a'*64,router=router,boot=BOOT)
+
+    def test_generated_and_legacy_startup_grammars_are_accepted_without_execution(self):
+        source=(RES/'setup-agent.sh').read_text()
+        validator=source[source.index('agent_launcher_valid() {'):source.index('mount_access() {')]
+        tail="unset ZTE_AGENT_PIN\ntrap '' HUP\nnohup sh -c '/data/zte-agent 2>&1 | logger -t zte-agent' >/dev/null 2>&1 </dev/null &\n"
+        clear="unset ZTE_AGENT_MODE\nunset ZTE_AGENT_BIND\n"
+        bind="export ZTE_AGENT_BIND='192.168.0.1:9090'\n"
+        legacy="export ZTE_AGENT_MODE='discovery'\n"+bind
+        path=self.root/'literal-startup.sh'
+        for extra in ['',bind,clear,legacy,clear+legacy]:
+            body="#!/bin/sh\nexport ZTE_AGENT_PASSWORD='never-output'\n"+extra+tail
+            path.write_text(body)
+            result=subprocess.run(['/bin/sh','-c',validator+'\nagent_launcher_valid "$1"','--',str(path)],capture_output=True,text=True)
+            self.assertEqual(result.returncode,0,result.stderr);self.assertNotIn('never-output',result.stdout+result.stderr)
+            path.write_text(body+'touch /tmp/never-executed\n')
+            result=subprocess.run(['/bin/sh','-c',validator+'\nagent_launcher_valid "$1"','--',str(path)],capture_output=True,text=True)
+            self.assertNotEqual(result.returncode,0);self.assertNotIn('never-output',result.stdout+result.stderr)
 
     def test_generic_fresh_layout_without_local_dirs_and_sticky_tmp_preflights(self):
         args=self.generic()
@@ -386,13 +403,13 @@ esac
                 if helper.exists() or helper.is_symlink():helper.unlink()
                 (self.stage/'linked-timeout').unlink(missing_ok=True)
 
-    def test_generic_unknown_firmware_installs_discovery_transaction(self):
+    def test_generic_unknown_firmware_installs_without_agent_mode(self):
         args=self.generic()
         self.assert_success(self.preflight(**args))
         self.assertFalse(self.journal.parent.exists())
         self.assert_success(self.run_setup(**args))
         self.assertEqual((self.journal/'profile.identity').read_text(),f"linux-arm64-access {'a'*64} {'b'*64} {BOOT}\n")
-        self.assertIn("export ZTE_AGENT_MODE='discovery'",(self.root/'data/zte-imei-studio/start_zte_agent.sh').read_text())
+        self.assertNotIn("ZTE_AGENT_MODE",(self.root/'data/zte-imei-studio/start_zte_agent.sh').read_text())
         self.assert_success(self.commit(**args))
 
     def test_generic_no_diag_router_can_install_access_only(self):
@@ -422,23 +439,22 @@ esac
         self.assertIn('STARTUP_NOT_ASSESSED',self.preflight(**args).stderr)
         self.assertFalse(self.journal.parent.exists())
 
-    def test_generic_existing_normal_agent_requires_review(self):
+    def test_generic_existing_agent_without_mode_is_reused(self):
         args=self.generic()
-        agent=self.write('/data/zte-agent','original',0o700)
-        self.write('/data/zte-imei-studio/start_zte_agent.sh','#!/bin/sh\n# normal\n',0o700)
-        result=self.run_setup(**args)
-        self.assertIn('DISCOVERY_STARTUP_REQUIRED',result.stderr)
-        self.assertEqual(agent.read_text(),'original')
-        self.assertFalse(self.journal.parent.exists())
+        self.write('/data/zte-agent',(self.stage/'zte-agent').read_text(),0o700)
+        self.write('/data/zte-imei-studio/start_zte_agent.sh',(self.stage/'start-agent.sh').read_text(),0o700)
+        self.assert_success(self.run_setup(**args))
+        self.assert_success(self.commit(**args))
 
-    def test_generic_running_normal_agent_is_not_started_or_replaced(self):
+    def test_generic_running_agent_accepts_absent_and_legacy_mode(self):
         args=self.generic()
         self.write('/data/zte-agent',(self.stage/'zte-agent').read_text(),0o700)
         self.write('/data/zte-imei-studio/start_zte_agent.sh',(self.stage/'start-agent.sh').read_text(),0o700)
         self.write('/running','yes')
         self.write('/proc/1234/environ','ZTE_AGENT_MODE=normal\0')
-        self.assertIn('EXISTING_AGENT_REVIEW_REQUIRED',self.run_setup(**args).stderr)
-        self.assertFalse(self.journal.parent.exists())
+        self.assert_success(self.run_setup(**args))
+        self.write('/proc/1234/environ','')
+        self.assert_success(self.commit(**args))
 
     def test_generic_unpinned_preserved_helper_blocks_before_mutation(self):
         args=self.generic()

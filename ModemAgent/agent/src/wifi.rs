@@ -132,11 +132,11 @@ fn bandwidth_options(hwmode: &str, standards: &str, is_5g: bool) -> Vec<String> 
 // GET /api/wifi/status
 // ---------------------------------------------------------------------------
 
-pub fn wifi_status(state: &AppState) -> (u16, Value) {
+pub fn wifi_status(_state: &AppState) -> (u16, Value) {
     let mut result = serde_json::Map::new();
     let report = ubus::call("zwrt_wlan", "report", Some("{}")).ok();
     let cfg = WifiConfig::load();
-    if state.mode == crate::agent_mode::AgentMode::Discovery && cfg.wireless.is_empty() {
+    if cfg.wireless.is_empty() {
         return (503, json!({"ok": false, "state": "not-assessed", "error": "Wi-Fi configuration is not available"}));
     }
 
@@ -225,16 +225,10 @@ pub fn wifi_status(state: &AppState) -> (u16, Value) {
     // Client counts
     let c2g = station_count("wlan0");
     let c5g = station_count("wlan2");
-    if state.mode == crate::agent_mode::AgentMode::Discovery {
-        result.insert("clients_2g".into(), json!(c2g));
-        result.insert("clients_5g".into(), json!(c5g));
-        result.insert("clients_total".into(), json!(c2g.zip(c5g).map(|(a,b)| a+b)));
-        result.insert("station_counts_state".into(), json!(if c2g.is_some() && c5g.is_some() { "known" } else { "not-assessed" }));
-    } else {
-        result.insert("clients_2g".into(), json!(c2g.unwrap_or(0)));
-        result.insert("clients_5g".into(), json!(c5g.unwrap_or(0)));
-        result.insert("clients_total".into(), json!(c2g.unwrap_or(0) + c5g.unwrap_or(0)));
-    }
+    result.insert("clients_2g".into(), json!(c2g));
+    result.insert("clients_5g".into(), json!(c5g));
+    result.insert("clients_total".into(), json!(c2g.zip(c5g).map(|(a,b)| a+b)));
+    result.insert("station_counts_state".into(), json!(if c2g.is_some() && c5g.is_some() { "known" } else { "not-assessed" }));
 
     // Guest WiFi summary
     result.insert(

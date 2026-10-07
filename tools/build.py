@@ -37,7 +37,7 @@ def main():
  # The corresponding modem-source archive has no desktop application sources.
  if (ROOT/'Windows_x64/src/Core/AgentPackage.cs').is_file():
   run([sys.executable,'Windows_x64/sync_public_resources.py'])
- receipt={'agent_version':'2.9.0-esim.5','public_source_rebuild':True,'hardware_tested':False,'agent_sha256':agent_sha,'vpnctl_sha256':helper,'launcher_sha256':sha(RES/'VPN/launcher.so'),'dashboard_installer_sha256':sha(RES/'AgentInstallation/dashboard.sh'),'dashboard_index_sha256':sha(RES/'AgentDashboard/index.html'),'esim_manifest_sha256':sha(RES/'Esim/SHA256.json')}
+ receipt={'agent_version':'2.9.0-esim.6','public_source_rebuild':True,'hardware_tested':False,'agent_sha256':agent_sha,'vpnctl_sha256':helper,'launcher_sha256':sha(RES/'VPN/launcher.so'),'dashboard_installer_sha256':sha(RES/'AgentInstallation/dashboard.sh'),'dashboard_index_sha256':sha(RES/'AgentDashboard/index.html'),'esim_manifest_sha256':sha(RES/'Esim/SHA256.json')}
  (logs/'public-modem-build.json').write_text(json.dumps(receipt,indent=2)+'\n');print(json.dumps(receipt,indent=2))
  if not args.modem_only:
   run([sys.executable,'MacIMEI/DeviceHelpers/build.py'])

@@ -192,7 +192,11 @@ impl ChargeLimitEnforcer {
 
     fn reconcile(&self, unplugged: bool) {
         let mut state = self.inner.safe_lock();
-        if !unplugged && (!state.policy.enabled || state.manual_override) {
+        // An unplug event may clear our own manual stop, but must not take
+        // control of charging when no policy or manual command is active.
+        if (!state.policy.enabled && !state.manual_override)
+            || (!unplugged && state.manual_override)
+        {
             return;
         }
         let result = (|| {
@@ -387,6 +391,27 @@ mod tests {
         snapshot.lock().unwrap().capacity = 78;
         enforcer.reconcile(false);
         assert!(!snapshot.lock().unwrap().stopped);
+    }
+    #[test]
+    fn inactive_policy_does_not_touch_charger_on_boot_or_unplug() {
+        let (enforcer, snapshot) = fixture(false, false);
+        enforcer.inner.lock().unwrap().policy.enabled = false;
+        snapshot.lock().unwrap().stopped = true;
+        enforcer.reconcile(false);
+        assert!(snapshot.lock().unwrap().stopped);
+        enforcer.reconcile(true);
+        assert!(snapshot.lock().unwrap().stopped);
+    }
+    #[test]
+    fn explicit_manual_stop_is_cleared_on_unplug_without_enabling_policy() {
+        let (enforcer, snapshot) = fixture(false, false);
+        enforcer.inner.lock().unwrap().policy.enabled = false;
+        enforcer.update(ChargeUpdate { charging_stopped: Some(true), ..Default::default() }).unwrap();
+        assert!(snapshot.lock().unwrap().stopped);
+        enforcer.reconcile(true);
+        assert!(!snapshot.lock().unwrap().stopped);
+        assert!(!enforcer.get().0);
+        assert!(!enforcer.get().3);
     }
     #[test]
     fn invalid_or_overflowing_updates_are_rejected() {

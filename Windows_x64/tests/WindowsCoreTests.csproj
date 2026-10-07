@@ -8,8 +8,9 @@
     <NuGetAudit>false</NuGetAudit>
   </PropertyGroup>
   <ItemGroup>
-    <!-- Standalone export fixture is compiled by its dedicated source-linked harness. -->
+    <!-- Standalone component fixtures use their dedicated run_*.py source-linked harnesses. -->
     <Compile Remove="DiagnosticExportTests.cs" />
+    <Compile Remove="FirmwareSupportTests.cs;AppReadTests.cs;CustomAgentTests.cs;GenericLinuxFeaturesTests.cs;LauncherProfileTests.cs;ScreenLocalizationTests.cs" />
     <PackageReference Include="SSH.NET" Version="2025.0.0" />
     <Compile Include="../src/Research/*.cs" Link="Research/%(Filename)%(Extension)" />
     <Compile Include="../src/Transport/*.cs" Link="Transport/%(Filename)%(Extension)" />

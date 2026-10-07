@@ -35,7 +35,7 @@ def main():
     if sha(args.agent)!=args.sha256:raise SystemExit('Agent SHA mismatch')
     swift_path=ROOT/'MacIMEI/Sources/BundledAgent.swift'
     swift_source=retain_previous_agent_hash(swift_path.read_text(),args.sha256)
-    version='2.9.0-esim.5';mac=ROOT/'MacIMEI/Resources';win=ROOT/'Windows_x64/Resources';dist=ROOT/'ModemAgent/web-app/dist'
+    version='2.9.0-esim.6';mac=ROOT/'MacIMEI/Resources';win=ROOT/'Windows_x64/Resources';dist=ROOT/'ModemAgent/web-app/dist'
     if not (dist/'index.html').is_file():raise SystemExit('Build dashboard first')
     helper=ROOT/'ModemAgent/target/aarch64-unknown-linux-musl/release/zte-vpnctl'
     shutil.copy2(helper,mac/'VPN/vpnctl')

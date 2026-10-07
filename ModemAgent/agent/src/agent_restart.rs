@@ -17,7 +17,6 @@ const LAUNCH: &str = "nohup sh -c '/data/zte-agent 2>&1 | logger -t zte-agent' >
 #[derive(PartialEq, Eq)]
 struct Settings {
     password: String,
-    discovery: bool,
     bind: Option<String>,
 }
 
@@ -52,21 +51,28 @@ fn settings(bytes: &[u8]) -> Result<Settings, ()> {
     let lines: Vec<_> = text.lines()
         .filter(|line| !line.trim_matches([' ', '\t']).is_empty() && !line.starts_with('#'))
         .collect();
-    if lines.len() != 4 && lines.len() != 6 { return Err(()); }
+    if ![4, 5, 6, 8].contains(&lines.len()) { return Err(()); }
     let password = quoted(lines[0].strip_prefix("export ZTE_AGENT_PASSWORD=").ok_or(())?)?;
-    let discovery = lines.len() == 6;
-    let mut bind = None;
-    if discovery {
-        if lines[1] != "export ZTE_AGENT_MODE='discovery'" { return Err(()); }
-        let address = quoted(lines[2].strip_prefix("export ZTE_AGENT_BIND=").ok_or(())?)?;
+    let tail = lines.len() - 3;
+    if lines[tail..] != ["unset ZTE_AGENT_PIN", "trap '' HUP", LAUNCH] { return Err(()); }
+    let exports = &lines[1..tail];
+    let exports = exports.strip_prefix(&["unset ZTE_AGENT_MODE", "unset ZTE_AGENT_BIND"]).unwrap_or(exports);
+    let address_line = match exports {
+        [] => None,
+        [bind] => Some(*bind),
+        // Historical startup is accepted as data. The obsolete mode export
+        // has no effect on this executable or the restarted process.
+        ["export ZTE_AGENT_MODE='discovery'", bind] => Some(*bind),
+        _ => return Err(()),
+    };
+    let bind = address_line.map(|line| {
+        let address = quoted(line.strip_prefix("export ZTE_AGENT_BIND=").ok_or(())?)?;
         let ip = address.strip_suffix(":9090").ok_or(())?;
         let parsed: std::net::Ipv4Addr = ip.parse().map_err(|_| ())?;
         if parsed.to_string() != ip { return Err(()); }
-        bind = Some(address);
-    }
-    let rest = &lines[if discovery { 3 } else { 1 }..];
-    if rest != ["unset ZTE_AGENT_PIN", "trap '' HUP", LAUNCH] { return Err(()); }
-    Ok(Settings { password, discovery, bind })
+        Ok::<_, ()>(address)
+    }).transpose()?;
+    Ok(Settings { password, bind })
 }
 
 struct Paths {
@@ -130,7 +136,7 @@ fn read_regular(path: &Path, uid: u32, startup: bool) -> Result<(Vec<u8>, Stamp)
 
 #[derive(PartialEq, Eq)]
 struct Proof { startup: PathBuf, startup_stamp: Stamp, startup_hash: [u8; 32], binary_stamp: Stamp, binary_hash: [u8; 32], settings: Settings }
-fn proof(paths: &Paths, uid: u32, discovery: bool) -> Result<Proof, ()> {
+fn proof(paths: &Paths, uid: u32) -> Result<Proof, ()> {
     directory(&paths.data, uid, false, false)?;
     for path in &paths.pending { if !absent(path)? { return Err(()); } }
     let current = paths.anchor.join("start_zte_agent.sh");
@@ -146,7 +152,6 @@ fn proof(paths: &Paths, uid: u32, discovery: bool) -> Result<Proof, ()> {
     };
     let (body, startup_stamp) = read_regular(&startup, uid, true)?;
     let settings = settings(&body)?;
-    if settings.discovery != discovery { return Err(()); }
     if fs::read_link(&paths.mapped).map_err(|_| ())? != paths.binary { return Err(()); }
     let (binary, binary_stamp) = read_regular(&paths.binary, uid, false)?;
     let binary_hash: [u8; 32] = Sha256::digest(&binary).into();
@@ -162,16 +167,17 @@ fn proof(paths: &Paths, uid: u32, discovery: bool) -> Result<Proof, ()> {
 fn restart_command(executable: &Path, settings: &Settings) -> Command {
     let mut command = Command::new(executable);
     command.env("ZTE_AGENT_PASSWORD", &settings.password).env_remove("ZTE_AGENT_PIN")
-        .env("ZTE_AGENT_MODE", if settings.discovery { "discovery" } else { "normal" });
+        .env_remove("ZTE_AGENT_MODE");
     if let Some(bind) = &settings.bind { command.env("ZTE_AGENT_BIND", bind); }
+    else { command.env_remove("ZTE_AGENT_BIND"); }
     command
 }
 
-pub(super) fn schedule(discovery: bool) -> Result<(), &'static str> {
+pub(super) fn schedule() -> Result<(), &'static str> {
     if !cfg!(target_os = "linux") || unsafe { libc::geteuid() } != 0 { return Err("AGENT_RESTART_PLATFORM"); }
     if RESTARTING.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() { return Err("AGENT_RESTART_BUSY"); }
     let paths = Paths::system();
-    let original = match proof(&paths, 0, discovery) {
+    let original = match proof(&paths, 0) {
         Ok(value) => value,
         Err(_) => { RESTARTING.store(false, Ordering::Release); return Err("AGENT_RESTART_UNSAFE"); }
     };
@@ -179,7 +185,7 @@ pub(super) fn schedule(discovery: bool) -> Result<(), &'static str> {
         // Keep the HTTP response-before-restart contract. Recheck everything
         // after the delay; changed/pending state leaves this process running.
         std::thread::sleep(std::time::Duration::from_secs(1));
-        if proof(&paths, 0, discovery).is_ok_and(|current| current == original) {
+        if proof(&paths, 0).is_ok_and(|current| current == original) {
             let mut command = restart_command(Path::new("/proc/self/exe"), &original.settings);
             // Replace our own image/PID, preserving stdout/logger and inherited
             // descriptors. No name-based kill, PID-reuse race or shell eval.
@@ -218,23 +224,29 @@ mod tests {
             fs::write(&p, body).unwrap(); fs::set_permissions(p, fs::Permissions::from_mode(0o700)).unwrap();
         }
         fn current(&self) -> PathBuf { self.paths.anchor.join("start_zte_agent.sh") }
-        fn valid(&self) -> Result<Proof, ()> { proof(&self.paths, self.uid, false) }
+        fn valid(&self) -> Result<Proof, ()> { proof(&self.paths, self.uid) }
     }
     impl Drop for Fixture { fn drop(&mut self) { let _ = fs::remove_dir_all(&self.root); } }
     fn normal() -> String { format!("#!/bin/sh\nexport ZTE_AGENT_PASSWORD='synthetic$literal'\nunset ZTE_AGENT_PIN\ntrap '' HUP\n{LAUNCH}\n") }
 
     #[test]
-    fn accepts_generated_normal_and_discovery_without_evaluating_secret() {
+    fn accepts_current_and_legacy_startup_without_evaluating_secret() {
         let a = settings(normal().as_bytes()).unwrap();
-        assert_eq!(a.password, "synthetic$literal"); assert!(!a.discovery);
+        assert_eq!(a.password, "synthetic$literal"); assert!(a.bind.is_none());
         let body = normal().replace("unset ZTE_AGENT_PIN", "export ZTE_AGENT_MODE='discovery'\nexport ZTE_AGENT_BIND='192.168.0.1:9090'\nunset ZTE_AGENT_PIN");
-        let a = settings(body.as_bytes()).unwrap(); assert!(a.discovery); assert_eq!(a.bind.as_deref(), Some("192.168.0.1:9090"));
+        let a = settings(body.as_bytes()).unwrap(); assert_eq!(a.bind.as_deref(), Some("192.168.0.1:9090"));
+        let body = normal().replace("unset ZTE_AGENT_PIN", "export ZTE_AGENT_BIND='192.168.0.1:9090'\nunset ZTE_AGENT_PIN");
+        assert_eq!(settings(body.as_bytes()).unwrap().bind.as_deref(), Some("192.168.0.1:9090"));
+        let body = normal().replace("unset ZTE_AGENT_PIN", "unset ZTE_AGENT_MODE\nunset ZTE_AGENT_BIND\nunset ZTE_AGENT_PIN");
+        assert!(settings(body.as_bytes()).unwrap().bind.is_none());
+        let body = normal().replace("unset ZTE_AGENT_PIN", "unset ZTE_AGENT_MODE\nunset ZTE_AGENT_BIND\nexport ZTE_AGENT_MODE='discovery'\nexport ZTE_AGENT_BIND='192.168.0.1:9090'\nunset ZTE_AGENT_PIN");
+        assert_eq!(settings(body.as_bytes()).unwrap().bind.as_deref(), Some("192.168.0.1:9090"));
         assert_eq!(quoted("'literal'\\''quote$(ignored)'"), Ok("literal'quote$(ignored)".into()));
         assert_eq!(quoted("'a'\\'''"), Ok("a'".into()));
     }
     #[test]
     fn restart_environment_uses_literal_settings_and_keeps_other_environment() {
-        let settings = Settings { password: "synthetic'$(never-execute)".into(), discovery: true,
+        let settings = Settings { password: "synthetic'$(never-execute)".into(),
             bind: Some("192.168.0.1:9090".into()) };
         let mut command = restart_command(Path::new("/bin/sh"), &settings);
         assert_eq!(command.get_program(), "/bin/sh");
@@ -244,13 +256,32 @@ mod tests {
         assert!(!env.contains_key(std::ffi::OsStr::new("PATH")));
         // Execute only the host shell, never an agent or startup. Its stdout
         // and inherited environment remain available; secret text is data.
-        let output = command.args(["-c", "test -n \"$PATH\" && test \"$ZTE_AGENT_MODE\" = discovery && test \"$ZTE_AGENT_BIND\" = 192.168.0.1:9090 && test -z \"${ZTE_AGENT_PIN+x}\" && printf '%s' \"$ZTE_AGENT_PASSWORD\""]).output().unwrap();
+        let output = command.args(["-c", "test -n \"$PATH\" && test -z \"${ZTE_AGENT_MODE+x}\" && test \"$ZTE_AGENT_BIND\" = 192.168.0.1:9090 && test -z \"${ZTE_AGENT_PIN+x}\" && printf '%s' \"$ZTE_AGENT_PASSWORD\""]).output().unwrap();
         assert!(output.status.success());
         assert_eq!(output.stdout, settings.password.as_bytes());
         assert!(output.stderr.is_empty());
         let normal = super::settings(normal().as_bytes()).unwrap();
         let command = restart_command(Path::new("/bin/sh"), &normal);
-        assert!(!command.get_envs().any(|(key,_)| key == "ZTE_AGENT_BIND"));
+        assert!(command.get_envs().any(|(key, value)| key == "ZTE_AGENT_BIND" && value.is_none()));
+    }
+    #[test]
+    fn restart_clears_inherited_bind_without_saved_override() {
+        const CHILD: &str = "ZTE_TEST_RESTART_BIND_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            assert_eq!(std::env::var("ZTE_AGENT_BIND").unwrap(), "127.0.0.1:19090");
+            let saved = settings(normal().as_bytes()).unwrap();
+            let output = restart_command(Path::new("/bin/sh"), &saved)
+                .args(["-c", "test -z \"${ZTE_AGENT_BIND+x}\""]).output().unwrap();
+            assert!(output.status.success());
+        } else {
+            // Give a child test process an inherited override, without changing
+            // the environment of other tests running in this process.
+            let status = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "device_ext::agent_restart::tests::restart_clears_inherited_bind_without_saved_override"])
+                .env(CHILD, "1").env("ZTE_AGENT_BIND", "127.0.0.1:19090")
+                .status().unwrap();
+            assert!(status.success());
+        }
     }
     #[test]
     fn refuses_malformed_ambiguous_or_executable_startup_additions() {
@@ -269,9 +300,15 @@ mod tests {
         ] { assert!(settings(text.as_bytes()).is_err()); }
     }
     #[test]
-    fn refuses_discovery_mode_bind_variants_and_duplicates() {
+    fn refuses_unsupported_legacy_exports_bind_variants_and_duplicates() {
         let body = normal().replace("unset ZTE_AGENT_PIN", "export ZTE_AGENT_MODE='discovery'\nexport ZTE_AGENT_BIND='192.168.0.1:9090'\nunset ZTE_AGENT_PIN");
         for bad in [body.replace("discovery", "normal"), body.replace(":9090", ":8080"), body.replace("192.168.0.1", "192.168.000.1"), body.replace("192.168.0.1", "256.1.2.3"), format!("{body}export ZTE_AGENT_MODE='discovery'\n")] { assert!(settings(bad.as_bytes()).is_err()); }
+    }
+    #[test]
+    fn legacy_mode_does_not_prevent_owned_installation_proof() {
+        let f = Fixture::new();
+        f.startup(false, normal().replace("unset ZTE_AGENT_PIN", "export ZTE_AGENT_MODE='discovery'\nexport ZTE_AGENT_BIND='192.168.0.1:9090'\nunset ZTE_AGENT_PIN"));
+        assert!(f.valid().is_ok());
     }
     #[test]
     fn current_anchor_is_selected_and_legacy_is_only_absence_fallback() {
@@ -291,7 +328,7 @@ mod tests {
     }
     #[test]
     fn private_anchor_and_root_owner_are_required() {
-        let f = Fixture::new(); assert!(proof(&f.paths, f.uid.wrapping_add(1), false).is_err());
+        let f = Fixture::new(); assert!(proof(&f.paths, f.uid.wrapping_add(1)).is_err());
         fs::set_permissions(&f.paths.anchor, fs::Permissions::from_mode(0o755)).unwrap(); assert!(f.valid().is_err());
         fs::set_permissions(&f.paths.anchor, fs::Permissions::from_mode(0o700)).unwrap();
         fs::set_permissions(&f.paths.data, fs::Permissions::from_mode(0o777)).unwrap(); assert!(f.valid().is_err());
@@ -316,9 +353,9 @@ mod tests {
         assert!(f.valid().is_ok_and(|v| v != before));
     }
     #[test]
-    fn pending_or_dangling_intents_and_mode_change_refuse_restart() {
+    fn pending_or_dangling_intents_refuse_restart() {
         let f = Fixture::new(); fs::write(&f.paths.pending[0], b"pending").unwrap(); assert!(f.valid().is_err());
         fs::remove_file(&f.paths.pending[0]).unwrap(); symlink(f.root.join("missing"), &f.paths.pending[0]).unwrap(); assert!(f.valid().is_err());
-        fs::remove_file(&f.paths.pending[0]).unwrap(); assert!(proof(&f.paths, f.uid, true).is_err());
+        fs::remove_file(&f.paths.pending[0]).unwrap(); assert!(proof(&f.paths, f.uid).is_ok());
     }
 }

@@ -10,8 +10,8 @@
   "dropbear-LICENSE.txt": "a99ce657d790b761c132ee7e0de18edb437ae6361e536d991c6a12f36e770445",
   "dropbear-libtomcrypt-LICENSE.txt": "8f196cb13afd271f5e267fd29543fc454596382ad580e7592709492843996ac8",
   "dropbear-libtommath-LICENSE.txt": "2fa64b163659f41965c9815882a8296d3d03ff546b76153e11445f9bdecf955a",
-  "provenance.json": "fbe4deeb8138149822ccc8bb670a3ec52ab152cba72e99d24baea102009f9bea",
-  "setup-agent.sh": "2b0b3eba4347c64327e6dc62a02ab4ee2e9195409a68504df9cc9fd3e3bd280b",
+  "provenance.json": "2c1709086666acf93274d764bd616c4207957b92faf51e01055f6e7f0157276d",
+  "setup-agent.sh": "ff61bfd3bb30bcd61559c4b76ff51a1591099ee80db0a75680697c32d84030b2",
   "start_zte_imei_studio.sh": "81bd888f9eef0bb02f294b185f99029fbc54f5e29bd2a8f8c6ea0357f8884659",
-  "zte-agent": "43ecb851c163a0575cdcb0e21561ae5097bb52026daac33cb46c85deba6a278d"
+  "zte-agent": "076824a90eec46702744ae0f383872841d3c4704216ae32de4725f906f86a550"
 }

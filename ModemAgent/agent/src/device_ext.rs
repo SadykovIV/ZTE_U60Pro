@@ -8,63 +8,51 @@ use crate::ubus;
 #[path = "agent_restart.rs"]
 mod agent_restart;
 
-/// GET /api/device/thermal/all — read all useful thermal zones from sysfs
-pub fn device_thermal_all(state: &AppState) -> (u16, Value) {
-    if state.mode == crate::agent_mode::AgentMode::Discovery {
-        // Zone numbers and sensor names differ by firmware. Keep the kernel's
-        // type and zone name instead of applying a model-specific mapping.
-        let mut zones = Vec::new();
-        if let Ok(entries) = fs::read_dir("/sys/class/thermal") {
-            for entry in entries.flatten().take(128) {
-                let name = entry.file_name().to_string_lossy().into_owned();
-                if !name.strip_prefix("thermal_zone").is_some_and(|v| !v.is_empty() && v.bytes().all(|c| c.is_ascii_digit())) { continue; }
-                let read = |leaf: &str| -> Option<String> {
-                    use std::io::Read;
-                    let mut bytes = Vec::new();
-                    fs::File::open(entry.path().join(leaf)).ok()?.take(128).read_to_end(&mut bytes).ok()?;
-                    String::from_utf8(bytes).ok().map(|s| s.trim().to_string())
-                };
-                let value = read("temp").and_then(|s|s.parse::<i64>().ok());
-                let kind = read("type").filter(|s| !s.is_empty() && s.len() <= 64 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"_-.".contains(&b)));
-                zones.push(json!({"zone": name, "type": kind, "millidegrees": value,
-                    "state": if value.is_some() { "known" } else { "not-assessed" }}));
-            }
-        }
-        zones.sort_by_key(|v|v["zone"].as_str().unwrap_or_default().to_string());
-        return (200,json!({"ok":true,"data":{"mode":"discovery","state":if zones.is_empty() {"not-assessed"} else {"known"},"zones":zones}}));
+/// GET /api/device/thermal/all — identify sensors by type, not firmware-specific
+/// zone indices. Named fields retain the web API while `zones` includes sensors
+/// with no known display label.
+pub fn device_thermal_all(_state: &AppState) -> (u16, Value) {
+    let data = thermal_data(std::path::Path::new("/sys/class/thermal"));
+    if data["available"] != true {
+        return (503, json!({"ok": false, "error": "Thermal sensors are not available", "data": data}));
     }
-    let zones: &[(&str, &str)] = &[
-        ("cpu_0", "/sys/class/thermal/thermal_zone16/temp"),
-        ("cpu_1", "/sys/class/thermal/thermal_zone17/temp"),
-        ("cpu_2", "/sys/class/thermal/thermal_zone18/temp"),
-        ("cpu_3", "/sys/class/thermal/thermal_zone19/temp"),
-        ("modem", "/sys/class/thermal/thermal_zone22/temp"), // mdmq6-0
-        ("modem_ss0", "/sys/class/thermal/thermal_zone24/temp"), // mdmss-0
-        ("modem_ss1", "/sys/class/thermal/thermal_zone25/temp"), // mdmss-1
-        ("modem_ss2", "/sys/class/thermal/thermal_zone26/temp"), // mdmss-2
-        ("battery", "/sys/class/thermal/thermal_zone39/temp"),
-        ("usb", "/sys/class/thermal/thermal_zone38/temp"),
-        ("eth_phy", "/sys/class/thermal/thermal_zone20/temp"), // ethphy-0
-        ("pmic", "/sys/class/thermal/thermal_zone28/temp"),    // pmx75_tz
-        ("xo_therm", "/sys/class/thermal/thermal_zone35/temp"), // crystal osc (ambient proxy)
-        ("pa", "/sys/class/thermal/thermal_zone0/temp"),       // sdr0_pa
-        ("sdr", "/sys/class/thermal/thermal_zone1/temp"),      // sdr0
-    ];
-
-    let mut data = serde_json::Map::new();
-    for (name, path) in zones {
-        if let Ok(s) = fs::read_to_string(path) {
-            if let Ok(millideg) = s.trim().parse::<i64>() {
-                // Skip invalid readings: -273000 = sensor offline, valid range -40°C to +150°C
-                if millideg > -40_000 && millideg < 150_000 {
-                    let temp_c = millideg as f64 / 1000.0;
-                    data.insert(name.to_string(), json!(temp_c));
-                }
-            }
-        }
-    }
-    data.insert("available".to_string(), json!(!data.is_empty()));
     (200, json!({"ok": true, "data": data}))
+}
+
+fn thermal_data(root: &std::path::Path) -> Value {
+    let mut data = serde_json::Map::new();
+    let mut zones = Vec::new();
+    if let Ok(entries) = fs::read_dir(root) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.strip_prefix("thermal_zone").is_some_and(|value| !value.is_empty() && value.bytes().all(|c| c.is_ascii_digit())) { continue; }
+            let read = |leaf: &str| -> Option<String> {
+                use std::io::Read;
+                let mut bytes = Vec::new();
+                fs::File::open(entry.path().join(leaf)).ok()?.take(128).read_to_end(&mut bytes).ok()?;
+                String::from_utf8(bytes).ok().map(|value| value.trim().to_string())
+            };
+            let kind = read("type").filter(|value| !value.is_empty() && value.len() <= 64 && value.bytes().all(|b| b.is_ascii_alphanumeric() || b"_-.".contains(&b)));
+            let temperature = read("temp").and_then(|value| value.parse::<i64>().ok())
+                .filter(|value| *value > -40_000 && *value < 150_000).map(|value| value as f64 / 1000.0);
+            let label = match kind.as_deref() {
+                Some("cpuss-0") => Some("cpu_0"), Some("cpuss-1") => Some("cpu_1"),
+                Some("cpuss-2") => Some("cpu_2"), Some("cpuss-3") => Some("cpu_3"),
+                Some("mdmq6-0") => Some("modem"), Some("mdmss-0") => Some("modem_ss0"),
+                Some("mdmss-1") => Some("modem_ss1"), Some("mdmss-2") => Some("modem_ss2"),
+                Some("ethphy-0") => Some("eth_phy"), Some("pmx75_tz") => Some("pmic"),
+                Some("xo-therm") => Some("xo_therm"), Some("sdr0_pa") => Some("pa"),
+                Some("sdr0") => Some("sdr"), Some("battery") => Some("battery"),
+                Some("usb") => Some("usb"), _ => None,
+            };
+            if let (Some(label), Some(value)) = (label, temperature) { data.insert(label.into(), json!(value)); }
+            zones.push(json!({"zone": name, "type": kind, "temperature_c": temperature}));
+        }
+    }
+    zones.sort_by_key(|value| value["zone"].as_str().unwrap_or_default().to_string());
+    data.insert("available".into(), json!(zones.iter().any(|zone| zone["temperature_c"].is_number())));
+    data.insert("zones".into(), json!(zones));
+    Value::Object(data)
 }
 
 /// GET /api/device/battery/detail — extended battery stats from sysfs
@@ -149,8 +137,8 @@ pub fn device_shutdown(_state: &AppState) -> (u16, Value) {
     }
 }
 
-pub fn agent_restart(state: &AppState) -> (u16, Value) {
-    match agent_restart::schedule(state.mode == crate::agent_mode::AgentMode::Discovery) {
+pub fn agent_restart(_state: &AppState) -> (u16, Value) {
+    match agent_restart::schedule() {
         Ok(_) => (
             200,
             json!({"ok": true, "message": "Agent restarting in ~2 seconds"}),
@@ -223,4 +211,34 @@ pub fn charge_control_set(state: &AppState, body: &[u8]) -> (u16, Value) {
         return (503, json!({"ok": false, "error": error}));
     }
     charge_control_get(state)
+}
+
+#[cfg(test)]
+mod thermal_tests {
+    use super::*;
+    #[test]
+    fn sensor_types_survive_reordered_zones_and_unknown_values_are_explicit() {
+        let root = std::env::temp_dir().join(format!("zte-thermal-{}", std::process::id()));
+        fs::create_dir(&root).unwrap();
+        for (index, kind, temp) in [(1, "cpuss-0", "42000"), (16, "unknown-sensor", "37000"),
+            (22, "mdmq6-0", "-273000"), (28, "pmx75_tz", "bad")] {
+            let zone = root.join(format!("thermal_zone{index}"));
+            fs::create_dir(&zone).unwrap();
+            fs::write(zone.join("type"), kind).unwrap();
+            fs::write(zone.join("temp"), temp).unwrap();
+        }
+        let value = thermal_data(&root);
+        assert_eq!(value["cpu_0"], 42.0);
+        assert!(value.get("modem").is_none());
+        assert!(value.get("pmic").is_none());
+        assert_eq!(value["zones"].as_array().unwrap().len(), 4);
+        assert_eq!(value["available"], true);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn missing_thermal_source_is_unavailable() {
+        let value = thermal_data(std::path::Path::new("/path-not-existing-zte-thermal"));
+        assert_eq!(value["available"], false);
+        assert_eq!(value["zones"], json!([]));
+    }
 }

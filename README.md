@@ -12,13 +12,17 @@ agent **2.9.0-esim.4**. [Changes and verification limits](docs/RELEASE-1.24.9.md
 The release package is in `dist/1.24.9`.
 [Preparation details and limits](docs/PREPARATION-1.24.7.md).
 
-## Local candidate 1.24.12
+## Local candidate 1.24.13
+
+The global agent diagnostic mode and its extra installation/status checks have
+been removed. Firmware research runs in the desktop application over SSH.
+Agent operations validate their own requirements.
 
 Exact B31 and FLY B28 profiles are included for Russian screen localization and
 Launcher pages. Windows agent installation and independent SSH tools use the
 actual platform and component requirements. **Collect firmware adaptation data**
 now combines up to 40 component files, 57 fresh probes and sanitized activity.
-[Changes and remaining checks](docs/RELEASE-1.24.12.md) ·
+[Changes and remaining checks](docs/RELEASE-1.24.13.md) ·
 [Collection instructions](docs/FIRMWARE-ADAPTATION-DATA.md).
 Full B28 operation, including VPN/TTL and modem writes, is not yet verified.
 
@@ -27,8 +31,7 @@ Full B28 operation, including VPN/TTL and modem writes, is not yet verified.
 - Faster SSH control: two short requests on connection; agent, VPN, screen, and
   other components are checked on demand.
 - Preparation uses observed device capabilities, with fixes for legacy ADB
-  responses and long commands. Unfamiliar firmware retains the agent's
-  diagnostic discovery mode.
+  responses and long commands. Each operation checks the components it needs.
 - **Clean installation after a factory reset** beside the preparation button:
   reinstall the agent and SSH with a new password, back up components, and verify
   the downloaded archive before cleanup. The **ⓘ** button explains its scope.
@@ -201,13 +204,14 @@ ADB and an internal device survey before installation. Its selected USB device
 and identity checks remain in place; ordinary diagnostics do not bypass them.
 
 Access installation rechecks the current device. With working root USB ADB,
-SSH and a diagnostic agent can be prepared without the stock web API. This
+SSH and the agent can be prepared without the stock web API. This
 installer supports an observed Linux ARM64 environment with a verified `/data`
 layout, Dropbear, and startup through procd/rc.local. Other environments can still
-be surveyed but need an appropriate installer. On unknown firmware, the agent
-runs in `discovery` mode: local information and authentication are available,
-while automatic configuration and modem control are disabled. IMEI, eSIM,
-Launcher, VPN, and restore compatibility are checked separately.
+be surveyed but need an appropriate installer. Firmware research belongs to the
+desktop application over SSH. The agent provides information and controls for
+its web panel and modem pages. Each operation checks its required components;
+there is no global diagnostic mode. IMEI, eSIM, Launcher, VPN, and restore
+compatibility are checked separately.
 [Contract and verification limits](docs/DEVICE-DISCOVERY-CONTRACT.md).
 
 General diagnostic actions share one **Diagnostics** page without additional

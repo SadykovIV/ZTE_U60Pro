@@ -1,5 +1,4 @@
 use crate::process::BoundedCommand;
-mod agent_mode;
 mod at_cmd;
 mod auth;
 mod cache;
@@ -33,7 +32,7 @@ mod vpn;
 mod esim;
 
 #[cfg(feature = "esim")]
-const AGENT_VERSION: &str = "2.9.0-esim.5";
+const AGENT_VERSION: &str = "2.9.0-esim.6";
 #[cfg(not(feature = "esim"))]
 const AGENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -46,14 +45,6 @@ const DEFAULT_THREADS: usize = 4;
 const STARTUP_SCRIPT: &str = "/data/local/tmp/start_zte_agent.sh";
 
 fn main() {
-    let mode_value = std::env::var("ZTE_AGENT_MODE").ok()
-        .or_else(|| read_startup_export("ZTE_AGENT_MODE"));
-    let mode = agent_mode::AgentMode::from_value(mode_value.as_deref());
-    #[cfg(feature = "esim")]
-    if mode == agent_mode::AgentMode::Discovery && std::env::args().len() > 1 {
-        eprintln!("Agent CLI operations require an assessed device adapter.");
-        std::process::exit(2);
-    }
     #[cfg(feature = "esim")]
     if let Some(code) = esim::early_entry() {
         std::process::exit(code);
@@ -64,10 +55,8 @@ fn main() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(DEFAULT_THREADS);
 
-    if mode == agent_mode::AgentMode::Normal {
-        migrate_drop_removed_features();
-    }
-    let state = Arc::new(AppState::with_mode(mode));
+    migrate_drop_removed_features();
+    let state = Arc::new(AppState::new());
 
     // Set password from environment if provided
     if let Ok(pw) = std::env::var("ZTE_AGENT_PASSWORD") {
@@ -86,15 +75,14 @@ fn main() {
         }
     }
 
-    if mode == agent_mode::AgentMode::Normal {
-        // Firmware-specific background controls run only in the assessed mode.
-        let event_bus = EventBus::new();
-        let charger_rx = event_bus.subscribe("BSP_CHARGER_EVENT");
-        event_bus.start();
-        state.charge_limit.start(charger_rx);
-        usb::enforce_usb_mode_on_boot();
-        state.lan.recover();
-    }
+    // Each background control is tied to its own saved user request and checks
+    // its device interface before applying a change.
+    let event_bus = EventBus::new();
+    let charger_rx = event_bus.subscribe("BSP_CHARGER_EVENT");
+    event_bus.start();
+    state.charge_limit.start(charger_rx);
+    usb::enforce_usb_mode_on_boot();
+    state.lan.recover();
     server::start(threads.clamp(1, 16), state);
 }
 
@@ -119,19 +107,26 @@ fn read_startup_export(key: &str) -> Option<String> {
 fn migrate_drop_removed_features() {
     const DOH_CONFIG: &str = "/data/local/tmp/doh_config.json";
 
-    if std::path::Path::new(DOH_CONFIG).exists() {
+    if std::path::Path::new(DOH_CONFIG).is_file()
+        && legacy_doh_redirect(
+            ubus::uci_get("dhcp.lan_dns.server").ok().as_deref(),
+            ubus::uci_get("dhcp.lan_dns.noresolv").ok().as_deref(),
+        )
+    {
         eprintln!("[migrate] DoH was configured on this device — restoring dnsmasq defaults");
-        let _ = std::process::Command::new("sh")
+        let result = std::process::Command::new("sh")
             .args([
                 "-c",
-                "rm -f /tmp/dnsmasq.d/doh.conf; \
-                 uci delete dhcp.lan_dns.server 2>/dev/null; \
-                 uci delete dhcp.lan_dns.noresolv 2>/dev/null; \
-                 uci commit dhcp; \
+                "rm -f /tmp/dnsmasq.d/doh.conf && \
+                 uci delete dhcp.lan_dns.server && \
+                 uci delete dhcp.lan_dns.noresolv && \
+                 uci commit dhcp && \
                  /etc/init.d/dnsmasq restart",
             ])
             .bounded_output();
-        let _ = std::fs::remove_file(DOH_CONFIG);
+        if result.is_ok_and(|output| output.status.success()) {
+            let _ = std::fs::remove_file(DOH_CONFIG);
+        }
     }
 
     for orphan in [
@@ -140,5 +135,23 @@ fn migrate_drop_removed_features() {
         "/data/local/tmp/scheduler.json",
     ] {
         let _ = std::fs::remove_file(orphan);
+    }
+}
+
+// A leftover legacy settings file does not authorise resetting unrelated DNS.
+fn legacy_doh_redirect(server: Option<&str>, noresolv: Option<&str>) -> bool {
+    matches!(server, Some("127.0.0.1#5353") | Some("127.0.0.1:5353")) && noresolv == Some("1")
+}
+
+#[cfg(test)]
+mod startup_tests {
+    #[test]
+    fn removed_doh_cleanup_requires_its_exact_active_redirect() {
+        assert!(super::legacy_doh_redirect(Some("127.0.0.1#5353"), Some("1")));
+        for server in [None, Some("8.8.8.8"), Some("127.0.0.1#5353 8.8.8.8"), Some("127.0.0.1#53")] {
+            assert!(!super::legacy_doh_redirect(server, Some("1")));
+        }
+        assert!(!super::legacy_doh_redirect(Some("127.0.0.1#5353"), None));
+        assert!(!super::legacy_doh_redirect(Some("127.0.0.1#5353"), Some("0")));
     }
 }

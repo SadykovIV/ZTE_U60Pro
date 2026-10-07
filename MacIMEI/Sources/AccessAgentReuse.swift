@@ -32,13 +32,7 @@ struct AccessAgentProcessProof: Equatable {
                     "Не подтверждена разрешённая сборка файла и работающего процесса агента")
         return .init(pid: fields[1], startTime: fields[2], diskHash: fields[3], mappedHash: fields[4])
     }
-    static func command(discovery: Bool, host: String) -> String {
-        let environment = discovery ? """
-        mode=$(tr '\\000' '\\n' < /proc/$p/environ | grep '^ZTE_AGENT_MODE=') || exit 72
-        test "$mode" = 'ZTE_AGENT_MODE=discovery' || exit 72
-        binding=$(tr '\\000' '\\n' < /proc/$p/environ | grep '^ZTE_AGENT_BIND=') || exit 72
-        test "$binding" = \(shellQuote("ZTE_AGENT_BIND=" + host + ":9090")) || exit 72
-        """ : ""
+    static func command() -> String {
         return """
         set -eu
         test -f /data/zte-agent && test ! -L /data/zte-agent || exit 72
@@ -49,7 +43,6 @@ struct AccessAgentProcessProof: Equatable {
           if test "$(readlink /proc/$p/exe)" = /data/zte-agent; then
             mapped=$(sha256sum /proc/$p/exe); mapped=${mapped%% *}
             test "$disk" = "$mapped" || exit 72
-            \(environment)
             state=$(cat /proc/$p/stat)
             case "$state" in "$p (zte-agent) "*) ;; *) exit 72;; esac
             rest=${state#*) }; set -- $rest

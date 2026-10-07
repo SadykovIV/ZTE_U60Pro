@@ -21,6 +21,11 @@ radio/SIM changes, screen/launcher patches, VPN integration and restore adapters
 retain their operation-specific requirements. Discovery never activates ADB,
 enrolls an SSH key, uploads a helper, remounts a filesystem, or starts a service.
 
+Firmware research runs in the desktop application over SSH. It does not require
+an agent diagnostic mode. The agent handles information and control requests
+with authentication and operation-specific checks. The collector still records
+legacy `agent_mode` metadata to interpret reports from older installations.
+
 ## Facts and observations
 
 Commands retain the `FR_FACT key=value` protocol. Keys use lower-case letters,
