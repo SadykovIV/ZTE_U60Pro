@@ -1,8 +1,8 @@
-# ZTE Agent 2.9.0-esim.4
+# ZTE Agent 2.9.0-esim.6
 
-This agent runs on the **ZTE U60 Pro / MU5250 modem**, on Linux ARM64. Install it with **ZTE U60Pro Manager 1.24.9**. The desktop application prepares SSH, installs the matching agent and dashboard, and checks the result.
+This agent runs on the **ZTE U60 Pro / MU5250 modem**, on Linux ARM64. Install it with **ZTE U60Pro Manager 1.24.14**. The desktop application prepares SSH, installs the matching agent and dashboard, and checks the result.
 
-Hardware tests for this release used **Firmware `CN_ZTE_MU5250V1.0.0B31`**, **Inner `BD_CNMU5250V1.0.0B31`**. Other firmware versions require their own checks. The separate agent archive is intended for developers and prepared devices; it is not a modem firmware image or a standalone factory-reset installer.
+Previous hardware tests used **Firmware `CN_ZTE_MU5250V1.0.0B31`**, **Inner `BD_CNMU5250V1.0.0B31`**. This release was checked locally; no new agent installation on a modem was performed. Full B28 operation remains unverified. The separate agent archive is intended for developers and prepared devices; it is not a modem firmware image or a standalone factory-reset installer.
 
 ## Contents
 
@@ -16,4 +16,4 @@ The local agent API uses port **9090** and the installed dashboard uses **8080**
 
 eSIM management requires a **physical removable eUICC in the SIM slot**. Built-in ZTE eSIM is not supported. The web dashboard downloads profiles using the modem's internet connection; the desktop application can use the computer's internet connection.
 
-[Download the desktop application](https://github.com/SadykovIV/ZTE_U60Pro/releases/tag/v1.24.9) · [Agent documentation](https://github.com/SadykovIV/ZTE_U60Pro/blob/v1.24.9/docs/AGENT.md) · [eSIM documentation](https://github.com/SadykovIV/ZTE_U60Pro/blob/v1.24.9/docs/ESIM-DESKTOP.md) · [Repository](https://github.com/SadykovIV/ZTE_U60Pro)
+[Download the desktop application](https://github.com/SadykovIV/ZTE_U60Pro/releases/tag/v1.24.14) · [Agent documentation](https://github.com/SadykovIV/ZTE_U60Pro/blob/v1.24.14/docs/AGENT.md) · [eSIM documentation](https://github.com/SadykovIV/ZTE_U60Pro/blob/v1.24.14/docs/ESIM-DESKTOP.md) · [Repository](https://github.com/SadykovIV/ZTE_U60Pro)

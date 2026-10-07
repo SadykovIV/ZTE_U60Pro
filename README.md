@@ -6,13 +6,14 @@ Manage the **ZTE U60 Pro / MU5250**: access preparation, backups, IMEI, TTL,
 Russian screen localization, VPN over a separate Wi-Fi network, removable
 physical eUICC cards, and diagnostics.
 
-Version **1.24.9** (macOS build **50**, Windows FileVersion **1.24.9.0**),
-agent **2.9.0-esim.4**. [Changes and verification limits](docs/RELEASE-1.24.9.md).
+Version **1.24.14** (macOS build **55**, Windows FileVersion **1.24.14.0**),
+agent **2.9.0-esim.6**. [Changes and verification limits](docs/RELEASE-1.24.14.md).
 
-The release package is in `dist/1.24.9`.
+[Download 1.24.14](https://github.com/SadykovIV/ZTE_U60Pro/releases/tag/v1.24.14):
+macOS and Windows applications, separate agent, build dependencies and corresponding sources.
 [Preparation details and limits](docs/PREPARATION-1.24.7.md).
 
-## Local candidate 1.24.14
+## What changed in 1.24.14
 
 Diagnostics now has two actions: **Logs and journals** and **Firmware adaptation
 data**. Logs include preparation, connections, application operations and available
@@ -30,7 +31,7 @@ including VPN/TTL and modem writes, still needs hardware verification.
 [Operation requirements](docs/OPERATION-DEPENDENCIES.md) ·
 [Collect firmware adaptation data](docs/FIRMWARE-ADAPTATION-DATA.md).
 
-## Changes since published version 1.23.3
+## Earlier preparation improvements
 
 - Faster SSH control: two short requests on connection; agent, VPN, screen, and
   other components are checked on demand.
@@ -45,9 +46,8 @@ including VPN/TTL and modem writes, still needs hardware verification.
 - Ordinary SIM and physical eUICC classification uses a verified card read;
   an error alone does not identify an ordinary SIM. Card checks stay on the
   dedicated eSIM page. The built-in ZTE eSIM is not supported.
-- Unified diagnostics under Preparation: a single ZIP includes the saved device
-  report and redacted application activity. **Skip firmware version check** is
-  available again; each operation retains its own checks.
+- Diagnostics is grouped under Preparation. **Skip firmware version check** is
+  available; each operation retains its own checks.
 
 ## Overview
 
@@ -196,12 +196,11 @@ extension compatibility checks remain enabled.
 
 ## Check the device before installation
 
-After connecting over SSH, open **Modem preparation → Diagnostics → Check device**.
-Normal firmware research and fresh diagnostics use SSH. A connection failure does
-not trigger a fallback to ADB, the web interface, or the agent API. Unknown
-firmware alone does not prevent reading. The report includes technical facts,
-sources, missing observations, and failure reasons, and can be exported as ZIP.
-Incomplete identification is marked separately and does not authorize installation.
+After connecting over SSH, use **Modem preparation → Diagnostics → Firmware
+adaptation data**. One ZIP contains a fresh device survey and available firmware
+files. Detailed checks, missing inputs and failure reasons stay in the archive.
+Unknown firmware does not prevent reading; each later write operation checks its
+own requirements. Firmware research uses SSH without the permanent agent.
 
 If SSH is not yet available, the separate access preparation flow uses root USB
 ADB and an internal device survey before installation. Its selected USB device
@@ -225,11 +224,12 @@ activity log remains under Administration alongside access and backups, and the
 global log shortcut still opens it. Diagnostic utilities remain under
 Applications. eSIM card checks and VPN actions stay on their own pages.
 
-On Windows, **Save diagnostic ZIP** exports saved device information, application
-actions, and redacted traces. Start a fresh device survey separately with
-**Check device**. The persistent Windows journal starts with 1.24.4; actions from
-closed sessions of older versions cannot be recovered.
-[Build checks and limits](docs/RELEASE-1.24.4.md#проверки-и-границы).
+**Logs and journals** exports preparation, connection and operation logs. When
+SSH is connected, available modem logs are included. Without SSH, it saves local
+logs and the reason modem logs could not be read. **Firmware adaptation data**
+collects the technical survey and component files. The persistent Windows journal
+starts with 1.24.4; earlier closed sessions cannot be recovered.
+[Collection details](docs/FIRMWARE-ADAPTATION-DATA.md).
 
 ### USB ADB checkbox
 
@@ -245,9 +245,9 @@ universal ADB switching on every firmware version.
 ## Quick start
 
 1. Download the ZIP for your OS from Releases. On Mac, open the `.app`. On Windows, extract the entire archive and run `ZTE U60Pro Manager.exe`, keeping the `Resources` folder alongside it. No separate .NET installation is needed; USB ADB may require a modem driver.
-2. Open **Modem preparation → Connection** and connect over SSH. If SSH is not configured, use the separate preparation action: working root USB ADB first; otherwise, stock USB debug through the web interface, followed by the verified backup method. Web methods require the stock web password; the manual backup key is optional. The SSH key is created on the computer, and device binding is checked over USB. Working SSH does not require preparation again. All ordinary application operations use SSH; Web and Agent buttons open a browser. Once connected, save a device survey through **Diagnostics → Check device**. [Methods, commands, and recovery after interruption](docs/ADB-PREPARATION.md).
+2. Open **Modem preparation → Connection** and connect over SSH. If SSH is not configured, use the separate preparation action: working root USB ADB first; otherwise, stock USB debug through the web interface, followed by the verified backup method. Web methods require the stock web password; the manual backup key is optional. The SSH key is created on the computer, and device binding is checked over USB. Working SSH does not require preparation again. All ordinary application operations use SSH; Web and Agent buttons open a browser. For firmware adaptation, use **Diagnostics → Firmware adaptation data** after connecting. [Methods, commands, and recovery after interruption](docs/ADB-PREPARATION.md).
 3. Save a backup before making changes. IMEI operations create their mandatory backup automatically.
-4. Install the components you need. Use **VPN** for VPN components and enter profiles **in the agent web dashboard**. Install and configure screen pages in **Launcher**. The verified catalog includes htop and experimental opkg; its list is updated separately from GitHub. Terminal opens an SSH session automatically. Installed applications outside the catalog can also be removed.
+4. Install the components you need. Use **VPN** to install its components and manage profiles directly in the application or the agent web dashboard. Install and configure screen pages in **Launcher**. The verified catalog includes htop and experimental opkg; its list is updated separately from GitHub. Terminal opens an SSH session automatically. Installed applications outside the catalog can also be removed.
 5. For eSIM, insert a physical eUICC, select the physical SIM slot, and request profiles on the **eSIM** page. Profile downloads through the desktop app use the computer's internet connection; downloads through the web dashboard use the modem's connection. [Details and limitations](docs/ESIM-DESKTOP.md).
 6. Open the agent with the application's button or at `http://192.168.0.1:8080`. The API uses port **9090**. Set the agent password during preparation; the build has no shared agent password.
 

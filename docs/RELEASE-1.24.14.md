@@ -2,9 +2,17 @@
 
 **English** · [Русский](#русский)
 
-Local candidate: macOS build **55**, Windows FileVersion **1.24.14.0**.
+macOS build **55**, Windows FileVersion **1.24.14.0**.
 The modem agent remains **2.9.0-esim.6**; its binary and VPN runtime are unchanged.
-Changes from [1.24.13](RELEASE-1.24.13.md):
+## Since the published 1.24.9
+
+This release includes the local 1.24.10–1.24.14 changes: two diagnostic exports,
+expanded firmware capture, exact B31/FLY B28 screen and Launcher profiles,
+custom-agent installation on Windows, removal of the global agent diagnostic
+mode, and desktop VPN profile management. Independent operations no longer
+install or block one another through unrelated components.
+
+## Changes from local 1.24.13
 
 - Diagnostics has two actions: **Logs and journals** and **Firmware adaptation
   data**. The first exports preparation, connections, operation errors and available
@@ -31,7 +39,7 @@ cover profile dispatch, installers, terminal, diagnostics export and RU/EN UI.
 Package checks verify versions, compiled source identity, bundled resources,
 English catalogs and ZIP contents. Tests use simulated modem responses.
 
-No modem was changed during this work. Native Windows execution and full B28
+No modem was changed during the 1.24.14 desktop refactor and packaging. Native Windows execution and full B28
 hardware operation remain unverified. Existing hardware-specific requirements
 remain in TTL, VPN and radio switching; removing agent dependencies does not
 remove those requirements. See [operation requirements](OPERATION-DEPENDENCIES.md).
@@ -43,9 +51,16 @@ BD_CNMU5250V1.0.0B31**. The supplied B28 materials identify as
 
 ## Русский
 
-Локальный кандидат: macOS build **55**, Windows FileVersion **1.24.14.0**.
+macOS build **55**, Windows FileVersion **1.24.14.0**.
 Агент остаётся **2.9.0-esim.6**; его бинарник и компоненты VPN не пересобирались.
-Изменения относительно 1.24.13:
+### Относительно опубликованной 1.24.9
+
+Включены изменения локальных 1.24.10–1.24.14: два диагностических экспорта,
+расширенный сбор прошивки, точные профили экрана и Launcher для B31/FLY B28,
+установка своего агента в Windows, удаление общего диагностического режима
+агента и управление VPN-профилями из программы. Независимые операции разделены.
+
+### Изменения относительно локальной 1.24.13
 
 - В диагностике два действия: **«Логи и журналы»** и **«Данные для адаптации
   прошивки»**. Первый ZIP содержит подготовку, подключения, ошибки операций
