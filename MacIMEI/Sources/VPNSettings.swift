@@ -7,6 +7,59 @@ struct VPNProfile: Decodable, Identifiable, Sendable {
     var warnings: [String]
     var active: Bool
 }
+/// Profile credentials exist only in the request body sent through SSH stdin.
+enum VPNOperation: Sendable {
+    case importProfile(uri: String, name: String)
+    case activate(String)
+    case rename(String, String)
+    case delete(String)
+    case setEnabled(Bool)
+
+    var request: [String: Any] {
+        switch self {
+        case .importProfile(let uri, let name):
+            var value: [String: Any] = ["action": "import", "uri": uri.trimmingCharacters(in: .whitespacesAndNewlines)]
+            if !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { value["name"] = name.trimmingCharacters(in: .whitespacesAndNewlines) }
+            return value
+        case .activate(let id): return ["action": "activate", "id": id]
+        case .rename(let id, let name): return ["action": "rename", "id": id, "name": name.trimmingCharacters(in: .whitespacesAndNewlines)]
+        case .delete(let id): return ["action": "delete", "id": id]
+        case .setEnabled(let enabled): return ["action": "set_enabled", "enabled": enabled]
+        }
+    }
+    var message: String {
+        switch self {
+        case .importProfile: return "Профиль VPN импортирован"
+        case .activate: return "Активный профиль VPN изменён"
+        case .rename: return "Название профиля VPN сохранено"
+        case .delete: return "Профиль VPN удалён"
+        case .setEnabled(let enabled): return enabled ? "Wi-Fi с VPN включён" : "Wi-Fi с VPN выключен"
+        }
+    }
+    func validate() throws {
+        let value = request
+        if let id = value["id"] as? String { try require(id.utf8.count == 36 && UUID(uuidString: id) != nil, "Недопустимый идентификатор VPN-профиля.") }
+        if let name = value["name"] as? String {
+            try require(!name.isEmpty && name.unicodeScalars.count <= 64 && !name.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }), VPNSettingsManager.message("VPN_INVALID_NAME"))
+        }
+        if let uri = value["uri"] as? String {
+            try require(uri.hasPrefix("vless://") && uri.utf8.count <= 32768 && !uri.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }), "Нужна одна ссылка vless:// длиной не больше 32 КиБ.")
+        }
+    }
+    func verify(before: VPNStatus, after: VPNStatus) throws {
+        let confirmed: Bool
+        switch self {
+        case .importProfile:
+            confirmed = after.profiles.count == before.profiles.count + 1 && after.profiles.filter { profile in !before.profiles.contains { $0.id == profile.id } }.count == 1
+        case .activate(let id): confirmed = after.activeProfile == id && after.profiles.contains { $0.id == id && $0.active }
+        case .rename(let id, let name): confirmed = after.profiles.contains { $0.id == id && $0.name == name.trimmingCharacters(in: .whitespacesAndNewlines) }
+        case .delete(let id): confirmed = !after.profiles.contains { $0.id == id }
+        case .setEnabled(let enabled): confirmed = after.enabled == enabled
+        }
+        try require(confirmed, "Модем не подтвердил изменение VPN. Обновите состояние перед повтором.")
+    }
+}
+
 struct VPNStatus: Decodable, Sendable {
     var schemaVersion = 1
     var installed = false
@@ -197,17 +250,19 @@ final class VPNSettingsManager {
     true
     """#
     func inspect() throws -> VPNInspection {
-        _ = try engine.identity()
-        let probe = try engine.text("for c in lua nft iptables ip6tables ebtables dnsmasq ip ubus flock jsonfilter; do command -v \"$c\" >/dev/null 2>&1 || printf 'MISSING:%s\\n' \"$c\"; done; test -c /dev/net/tun || echo MISSING:TUN; test ! -e /data/zte-imei-apps/ssclash/bin/ssclash || echo SSCLASH; test ! -e /data/zte-vpn || echo VPN; test ! -e /data/zte-vpn/controller-upgrade || echo UPGRADE_PENDING; sha256sum /data/zte-vpn/vpnctl 2>/dev/null | awk '{print \"HELPER:\" $1}'; sha256sum /data/zte-agent 2>/dev/null | awk '{print \"AGENT:\" $1}'; sha256sum /data/zte-dashboard-runtime/current/index.html 2>/dev/null | awk '{print \"DASHBOARD:\" $1}'; " + Self.helperReadinessCommand)
-        let launcherProbe = try engine.text("test -d /data/zte-launcher && test ! -L /data/zte-launcher && test \"$(stat -c %u:%a /data/zte-launcher)\" = 0:700 && test -f /data/zte-launcher/enabled && test ! -e /data/zte-launcher/failed && test ! -e /data/zte-launcher-update && (cd /data/zte-launcher && sha256sum -c launcher.sha256 >/dev/null 2>&1) && cmp -s /etc/init.d/zte_launcher /data/zte-launcher/launcher-service.sh && sha256sum /data/zte-launcher/launcher.so | awk '{print $1}'; true")
+        _ = try engine.diagnosticIdentity()
+        let probe = try engine.text("for c in lua nft iptables ip6tables ebtables dnsmasq ip ubus flock jsonfilter; do command -v \"$c\" >/dev/null 2>&1 || printf 'MISSING:%s\\n' \"$c\"; done; test -c /dev/net/tun || echo MISSING:TUN; test ! -e /data/zte-imei-apps/ssclash/bin/ssclash || echo SSCLASH; test ! -e /data/zte-vpn || echo VPN; test ! -e /data/zte-vpn/controller-upgrade || echo UPGRADE_PENDING; sha256sum /data/zte-vpn/vpnctl 2>/dev/null | awk '{print \"HELPER:\" $1}'; " + Self.helperReadinessCommand)
         let lines = probe.split(separator: "\n").map(String.init)
         var status = VPNStatus()
         if lines.contains("UPGRADE_PENDING") { status.installed = true }
         else if lines.contains("VPN") { status = try request(["action": "status"]) }
-        return VPNInspection(status: status, missingCapabilities: lines.filter { $0.hasPrefix("MISSING:") }.map { String($0.dropFirst(8)) }, ssclashInstalled: lines.contains("SSCLASH"), helperReady: lines.contains("HELPER:" + Self.helperHash) && lines.contains("HELPER_LAYOUT_READY") && !lines.contains("UPGRADE_PENDING"), agentReady: lines.contains("AGENT:" + Self.agentHash), dashboardReady: lines.contains("DASHBOARD:" + Self.dashboardIndexHash), launcherReady: launcherProbe.trimmingCharacters(in: .whitespacesAndNewlines) == Self.launcherHash)
+        return VPNInspection(status: status,
+            missingCapabilities: lines.filter { $0.hasPrefix("MISSING:") }.map { String($0.dropFirst(8)) },
+            ssclashInstalled: lines.contains("SSCLASH"),
+            helperReady: lines.contains("HELPER:" + Self.helperHash) && lines.contains("HELPER_LAYOUT_READY") && !lines.contains("UPGRADE_PENDING"))
     }
     func request(_ value: [String: Any], expectedTarget: (Identity, String)? = nil) throws -> VPNStatus {
-        let current = try engine.identity()
+        let current = try engine.diagnosticIdentity()
         if let expectedTarget { try require(current.0 == expectedTarget.0 && current.1 == expectedTarget.1, "Модем изменился или перезагрузился. Проверьте подключение заново.") }
         let data = try JSONSerialization.data(withJSONObject: value)
         try require(data.count <= 65536, "Ссылка профиля слишком длинная")
@@ -248,6 +303,22 @@ final class VPNSettingsManager {
         try require(status.schemaVersion == 1 && status.profiles.count <= 32, "Неизвестный формат состояния VPN")
         return status
     }
+    func perform(_ operation: VPNOperation) throws -> VPNInspection {
+        try operation.validate()
+        try require(engine.lockFD >= 0, "Операция VPN требует локальной блокировки")
+        let target = try engine.diagnosticIdentity()
+        var result = try inspect()
+        try require(result.helperReady, "Сначала установите или обновите компоненты VPN.")
+        // vpnctl owns the shared modem lock for profile operations. Acquiring
+        // that lock here too would make every request fail with VPN_BUSY.
+        let after = try request(operation.request, expectedTarget: target)
+        let current = try engine.diagnosticIdentity()
+        try require(current.0 == target.0 && current.1 == target.1, "Модем изменился или перезагрузился. Обновите состояние VPN.")
+        try operation.verify(before: result.status, after: after)
+        result.status = after
+        return result
+    }
+
     func configureWiFi(_ configuration: VPNWiFiConfiguration) throws -> VPNInspection {
         try require(engine.lockFD >= 0, "Настройка Wi-Fi требует блокировки операции")
         let target = try engine.identity()
@@ -273,109 +344,76 @@ final class VPNSettingsManager {
         try require(before.missingCapabilities.isEmpty, "В прошивке отсутствуют необходимые компоненты: " + before.missingCapabilities.joined(separator: ", "))
         try engine.acquireRemoteLock()
         if before.status.installed {
-            if !before.helperReady || !before.agentReady || !before.dashboardReady || !before.launcherReady { try updateAgent() }
-            return try inspect()
+            if !before.helperReady { try upgradeController() }
+            else { try verifyInstalledComponents() }
+        } else {
+            try installComponents()
         }
-        let directory = engine.resources.appendingPathComponent("VPN")
-        let manifest = try readJSON([String:String].self, directory.appendingPathComponent("SHA256.json"))
-        let names = ["install.sh", "manager.sh", "firewall.sh", "configure.lua", "nft-guard.nft", "dnsmasq.conf", "service.sh", "vpnctl", "mihomo"]
-        try require(manifest["vpnctl"] == Self.helperHash, "Повреждён комплект VPN")
-        let stage = "/tmp/zte-vpn-install-" + UUID().uuidString.lowercased()
-        _ = try engine.remote("umask 077; mkdir " + shellQuote(stage))
-        defer { _ = try? engine.remote("rm -f " + names.map { shellQuote(stage + "/" + $0) }.joined(separator: " ") + "; rmdir " + shellQuote(stage), timeout: 15) }
-        for (i, name) in names.enumerated() {
-            let bytes = try Data(contentsOf: directory.appendingPathComponent(name))
-            try require(digest(bytes) == manifest[name], "Повреждён компонент VPN: " + name)
-            engine.update("Устанавливаю компоненты VPN: \(i + 1) из \(names.count)", Double(i + 1) / Double(names.count + 1))
-            let target = shellQuote(stage + "/" + name)
-            let result = try engine.remote("umask 077; cat > " + target + " && chmod 700 " + target + " && sha256sum " + target, input: bytes, timeout: 180)
-            try require(String(decoding: result, as: UTF8.self).split(separator: " ").first == Substring(digest(bytes)), "Компонент VPN повреждён при передаче")
-        }
-        // Stage both payloads first; reject incompatible dashboard conditions
-        // before the initial VPN component installation changes the modem.
-        try updateAgent {
-            _ = try self.engine.remote("sh " + shellQuote(stage + "/install.sh") + " " + shellQuote(stage), timeout: 120)
-        }
-        return try inspect()
-    }
-    /// The controller pins the display library and the agent pins the controller.
-    /// Upgrade that existing chain together; never configure or enable a VPN here.
-    func updateDisplayIntegrationIfNeeded() throws -> Bool {
-        try require(engine.lockFD >= 0 && engine.remoteLockToken != nil, "Обновление дисплея требует блокировки операции")
-        let presence = try engine.text("if test -e /data/zte-vpn || test -L /data/zte-vpn; then printf PRESENT; else printf ABSENT; fi")
-        if presence == "ABSENT" { return false }
-        try require(presence == "PRESENT", "Не удалось определить состояние компонентов VPN")
-        _ = try engine.remote("test -d /data/zte-vpn && test ! -L /data/zte-vpn && test -f /data/zte-vpn/vpnctl && test ! -L /data/zte-vpn/vpnctl && test ! -e /data/zte-vpn/transaction")
-        // Reject a custom agent before replacing its controller: the existing
-        // update script would reject it later, leaving mismatched components.
-        let bundle = engine.resources.appendingPathComponent("VPN")
-        let manifest = try readJSON([String: String].self, bundle.appendingPathComponent("SHA256.json"))
-        let script = try Data(contentsOf: bundle.appendingPathComponent("update-agent.sh"))
-        try require(digest(script) == manifest["update-agent.sh"], "Повреждён установщик компонентов дисплея")
-        let installed = try installedAgentHash()
-        try require(BundledAgent.supportedUpgradeHashes.contains(installed), "Установлен сторонний агент. Обновление дисплея остановлено до изменения компонентов VPN; требуется проверка совместимости этого агента.")
-        engine.update("Обновляю связь дисплея с установленными компонентами VPN", 0.2)
-        try updateAgent()
-        return true
-    }
-    private func updateAgent(beforeUpdate: (() throws -> Void)? = nil) throws {
-        let installed = try installedAgentHash()
-        try require(BundledAgent.supportedUpgradeHashes.contains(installed), "Установлен сторонний агент. Обновление дисплея остановлено до изменения компонентов VPN; требуется проверка совместимости этого агента.")
-        let root = engine.resources.appendingPathComponent("VPN")
-        let manifest = try readJSON([String:String].self, root.appendingPathComponent("SHA256.json"))
-        let files = ["upgrade-controller.sh", "vpnctl", "manager.sh", "configure.lua", "update-agent.sh", "dashboard-install.sh", "payload.sha256", "dashboard.tar.gz", "dashboard-uhttpd", "start-dashboard.sh", "dashboard-html.sh", "preserve-dashboard-assets.sh", "stop-owned-listener.sh", "update-rc-local.sh", "launcher.so", "launcher-run.sh", "launcher-watch.sh", "launcher-service.sh", "launcher-start.sh", "launcher.sha256", "install-launcher.sh"]
-        let stage = "/tmp/zte-vpn-agent-" + UUID().uuidString.lowercased()
-        _ = try engine.remote("umask 077; mkdir " + shellQuote(stage))
-        var cleanupSafe = true
-        defer { if cleanupSafe { _ = try? engine.remote("rm -f " + (files + ["zte-agent"]).map { shellQuote(stage + "/" + $0) }.joined(separator: " ") + "; rmdir " + shellQuote(stage)) } }
-        for name in files + ["zte-agent"] {
-            let file = name == "zte-agent" ? engine.resources.appendingPathComponent("Onboarding/zte-agent") : root.appendingPathComponent(name)
-            let data = try Data(contentsOf: file)
-            let expected = name == "zte-agent" ? Self.agentHash : manifest[name]
-            try require(digest(data) == expected, "Повреждён компонент агента: " + name)
-            let remote = shellQuote(stage + "/" + name)
-            let proof = try engine.remote("umask 077; cat > " + remote + " && chmod 700 " + remote + " && sha256sum " + remote, input: data, timeout: 120)
-            try require(String(decoding: proof, as: UTF8.self).split(separator: " ").first == Substring(digest(data)), "Компонент агента повреждён при передаче")
-        }
-        engine.update("Проверяю условия обновления агента до изменения компонентов VPN", 0.85)
-        let preflight = try engine.text("sh " + shellQuote(stage + "/update-agent.sh") + " " + shellQuote(stage) + " preflight")
-        try require(preflight == "VPN_AGENT_PREFLIGHT_OK", "Проверка обновления агента не подтверждена; компоненты VPN не менялись")
-        try beforeUpdate?()
-        func executeUpdate(_ name: String, timeout: TimeInterval) throws {
-            cleanupSafe = false
-            let result = try engine.transport.run("sh " + shellQuote(stage + "/" + name) + " " + shellQuote(stage), input: nil, timeout: timeout)
-            cleanupSafe = result.status >= 0 && result.status < 255
-            if result.status != 0, let refusal = Self.upgradeFailure(result) {
-                throw IMEIError.message(refusal)
-            }
-            try require(result.status == 0, "Обновление компонента " + name + " не подтверждено (exit " + String(result.status) + "). Подробности — в журнале. При потере связи временные средства восстановления сохранены.")
-            if name == "update-agent.sh" {
-                try require(String(decoding: result.stdout, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) == "VPN_AGENT_UPDATED",
-                            "Обновление веб-панели не подтверждено. Обновите состояние перед повтором.")
-            }
-        }
-        engine.update("Проверяю и обновляю общий агент перед компонентами VPN", 0.88)
-        let agent = try AgentCandidate.inspect(engine.resources.appendingPathComponent("Onboarding/zte-agent"))
-        try require(agent.sha256 == Self.agentHash, "Повреждён встроенный агент")
-        _ = try AgentInstallationManager(engine: engine).install(agent)
-        engine.update("Обновляю агент и его веб-панель с сохранением учётных данных", 0.9)
-        try executeUpdate("upgrade-controller.sh", timeout: 120)
-        try executeUpdate("update-agent.sh", timeout: 180)
-        engine.update("Добавляю страницы в штатный лаунчер модема", 0.97)
-        try executeUpdate("install-launcher.sh", timeout: 120)
+        let after = try inspect()
+        try require(after.status.installed && after.helperReady, "Установка компонентов VPN не подтверждена. Обновите состояние; подробности — в журнале.")
+        return after
     }
 
-    private func installedAgentHash() throws -> String {
-        let presence = try engine.text("if test ! -e /data/zte-agent && test ! -L /data/zte-agent; then printf ABSENT; elif test -f /data/zte-agent && test ! -L /data/zte-agent; then printf PRESENT; else printf UNSAFE; fi")
-        try require(presence == "ABSENT" || presence == "PRESENT", "Не удалось определить состояние агента")
-        if presence == "ABSENT" {
-            // Restore a missing binary only through the existing transaction,
-            // which verifies the saved startup and records the original absence.
-            let candidate = try AgentCandidate.inspect(engine.resources.appendingPathComponent("Onboarding/zte-agent"))
-            try require(candidate.sha256 == Self.agentHash, "Повреждён встроенный агент")
-            _ = try AgentInstallationManager(engine: engine).install(candidate)
+    /// Only an explicit install checks the already installed core checksum.
+    /// Routine status refreshes keep using the lightweight status request.
+    private func verifyInstalledComponents() throws {
+        let command = "set -eu; test -d /data/zte-vpn && test ! -L /data/zte-vpn && test \"$(stat -c '%u:%a' /data/zte-vpn)\" = 0:700; test -f /data/zte-vpn/vpnctl && test ! -L /data/zte-vpn/vpnctl; test \"$(sha256sum /data/zte-vpn/vpnctl | cut -d ' ' -f1)\" = " + shellQuote(Self.helperHash) + "; exec /data/zte-vpn/vpnctl integrity"
+        let result = try engine.transport.run(command, input: nil, timeout: 60)
+        let reply = try? JSONSerialization.jsonObject(with: result.stdout) as? [String: Any]
+        if result.status != 0 {
+            let known = ["VPN_NOT_INSTALLED", "VPN_FILE_UNAVAILABLE", "VPN_UNSAFE_FILE", "VPN_INTEGRITY", "VPN_DEVICE_CHANGED", "VPN_CORE_INTEGRITY", "VPN_UNSUPPORTED_FIRMWARE"]
+            if reply?["ok"] as? Bool == false, let code = reply?["code"] as? String, known.contains(code) {
+                throw IMEIError.message(Self.message(code == "VPN_CORE_INTEGRITY" ? code : "VPN_INTEGRITY") + " (" + code + ")")
+            }
+            throw VPNRequestFailure.commandFailed(result.status)
         }
-        return try engine.text("sha256sum /data/zte-agent | awk '{print $1}'")
+        guard reply?["ok"] as? Bool == true, let data = reply?["data"] as? [String: Any], data["verified"] as? Bool == true else {
+            throw VPNRequestFailure.invalidResponse
+        }
+    }
+
+    private func installComponents() throws {
+        let names = ["install.sh", "manager.sh", "firewall.sh", "configure.lua", "nft-guard.nft", "dnsmasq.conf", "service.sh", "vpnctl", "mihomo"]
+        try runInstaller(names: names, prefix: "zte-vpn-install", script: "install.sh", receipt: "VPN_COMPONENTS_INSTALLED")
+    }
+
+    private func upgradeController() throws {
+        let names = ["upgrade-controller.sh", "vpnctl", "manager.sh", "configure.lua"]
+        try runInstaller(names: names, prefix: "zte-vpn-agent", script: "upgrade-controller.sh", receipt: "VPN_CONTROLLER_UPDATED")
+    }
+
+    /// Install only the controller/core. Agent, dashboard and display have their
+    /// own installers; none is a prerequisite for desktop VPN management.
+    private func runInstaller(names: [String], prefix: String, script: String, receipt: String) throws {
+        let target = try engine.diagnosticIdentity()
+        let directory = engine.resources.appendingPathComponent("VPN")
+        let manifest = try readJSON([String:String].self, directory.appendingPathComponent("SHA256.json"))
+        try require(manifest["vpnctl"] == Self.helperHash, "Повреждён комплект VPN")
+        let stage = "/tmp/" + prefix + "-" + UUID().uuidString.lowercased()
+        _ = try engine.remote("umask 077; mkdir " + shellQuote(stage))
+        var cleanupSafe = true
+        defer {
+            if cleanupSafe { _ = try? engine.remote("rm -f " + names.map { shellQuote(stage + "/" + $0) }.joined(separator: " ") + "; rmdir " + shellQuote(stage), timeout: 15) }
+        }
+        for (index, name) in names.enumerated() {
+            let bytes = try Data(contentsOf: directory.appendingPathComponent(name))
+            try require(digest(bytes) == manifest[name], "Повреждён компонент VPN: " + name)
+            engine.update("Устанавливаю компоненты VPN: \(index + 1) из \(names.count)", Double(index + 1) / Double(names.count + 1))
+            let remote = shellQuote(stage + "/" + name)
+            let output = try engine.remote("umask 077; cat > " + remote + " && chmod 700 " + remote + " && sha256sum " + remote, input: bytes, timeout: 180)
+            try require(String(decoding: output, as: UTF8.self).split(separator: " ").first == Substring(digest(bytes)), "Компонент VPN повреждён при передаче")
+        }
+        let current = try engine.diagnosticIdentity()
+        try require(current.0 == target.0 && current.1 == target.1, "Модем изменился или перезагрузился. Проверьте подключение заново.")
+        guard let lockToken = engine.remoteLockToken else { throw IMEIError.message("Установка VPN требует блокировки операции") }
+        cleanupSafe = false
+        let result = try engine.transport.run("set -eu; test \"$(cat /tmp/zte-imei-app.lock/owner)\" = " + shellQuote(lockToken) + "; test \"$(cat /sys/block/mmcblk0/device/cid)\" = " + shellQuote(target.0.cid) + "; test \"$(cat /proc/sys/kernel/random/boot_id)\" = " + shellQuote(target.1) + "; sh " + shellQuote(stage + "/" + script) + " " + shellQuote(stage), input: nil, timeout: 180)
+        cleanupSafe = result.status >= 0 && result.status < 255
+        if result.status != 0, let refusal = Self.upgradeFailure(result) { throw IMEIError.message(refusal) }
+        try require(result.status == 0 && String(decoding: result.stdout, as: UTF8.self).split(separator: "\n").contains(Substring(receipt)),
+                    "Установка компонентов VPN не подтверждена (exit \(result.status)). Подробности — в журнале. При потере связи файлы восстановления сохранены.")
+        let confirmed = try engine.diagnosticIdentity()
+        try require(confirmed.0 == target.0 && confirmed.1 == target.1, "Модем изменился или перезагрузился. Обновите состояние VPN.")
     }
 
     /// A verified script emits a finite error catalog. Arbitrary stderr remains

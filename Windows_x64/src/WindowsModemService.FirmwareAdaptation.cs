@@ -35,7 +35,7 @@ public sealed partial class WindowsModemService
         try
         {
             DiagnosticsExporter.Export(_storage, activityZip, new("SSH",null,null,version),
-                logs.Select(x=>new DiagnosticActivity(x.Timestamp,x.Level,x.Message)), _diagnosticPrivacy, _diagnosticJournalWriteFailed, ct, includeResearch:false);
+                logs.Select(x=>new DiagnosticActivity(x.Timestamp,x.Level,x.Message)), _diagnosticPrivacy, _diagnosticJournalWriteFailed, ct);
             using(var zip=ZipFile.OpenRead(activityZip))
                 foreach(var name in new[]{"application-journal.jsonl","current-session.jsonl","operation-traces.jsonl"})
                 {

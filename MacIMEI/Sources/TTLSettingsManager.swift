@@ -49,9 +49,7 @@ final class TTLSettingsManager {
     func perform(configuration: TTLConfiguration?) throws -> TTLStatus {
         try engine.connection.validate()
         try configuration?.validate()
-        for name in ["pending.json", "setup-pending.json", "adb-access-pending.json"] {
-            try require(!FileManager.default.fileExists(atPath: engine.root.appendingPathComponent(name).path), "Сначала завершите настройку или смену IMEI")
-        }
+        try require(!FileManager.default.fileExists(atPath: engine.root.appendingPathComponent("adb-access-pending.json").path), "Сначала завершите включение ADB")
         let bundle = try assets()
         let identity = try engine.identity().0
         if configuration != nil { try engine.acquireRemoteLock() }

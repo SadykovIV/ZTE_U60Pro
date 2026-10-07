@@ -288,14 +288,17 @@ public sealed partial class WindowsModemService
     {
         var directory = Path.Combine(_storage,"Diagnostics");
         var path = Path.Combine(directory,"report-" + DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N") + ".zip");
+        var modemLogs = _snapshot.IsConnected && _snapshot.ConnectionMode == "SSH" && (_sshRead ?? _ssh) is { } shell && _connectionProof is { } proof
+            ? await ModemLogCollector.CollectAsync(shell, proof, ct)
+            : ModemLogCollection.Skipped("Нет активного SSH-подключения; сохранены локальные журналы.");
         var logs = await GetLogsAsync(ct);
         var system = new DiagnosticSystemSnapshot(_snapshot.ConnectionMode, _snapshot.Model, _snapshot.Firmware,
             typeof(WindowsModemService).Assembly.GetName().Version?.ToString() ?? "unknown");
         var result = DiagnosticsExporter.Export(_storage, path, system,
             logs.Select(x => new DiagnosticActivity(x.Timestamp, x.Level, x.Message)),
-            _diagnosticPrivacy, _diagnosticJournalWriteFailed, ct);
-        return "Диагностический ZIP приложения сохранён: " + result.Path +
-            ". Включены действия программы, очищенные трассировки и доступное сохранённое исследование модема. Свежий сбор с модема не выполнялся." +
+            _diagnosticPrivacy, _diagnosticJournalWriteFailed, ct, modemLogs);
+        return "Логи и журналы сохранены: " + result.Path +
+            (modemLogs.Status == "complete" ? ". Добавлены свежие журналы модема." : ". Доступные локальные журналы сохранены; результат чтения журналов модема указан в manifest.json.") +
             (result.Omissions == 0 ? "" : " Часть сохранённых данных пропущена; причины указаны в manifest.json.");
     }
 }

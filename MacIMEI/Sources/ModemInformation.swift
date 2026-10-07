@@ -206,8 +206,9 @@ final class ModemInformationManager {
         ("thermal.txt", "Температуры", "for p in /sys/class/thermal/thermal_zone*; do printf '%s ' \"${p##*/}\"; cat \"$p/type\" \"$p/temp\" 2>/dev/null || true; done"),
         ("processes.txt", "Процессы", "for p in /proc/[0-9]*/status; do test -r \"$p\" || continue; awk '/^(Name|Pid|PPid|State|VmRSS|Threads):/ {print}' \"$p\" 2>/dev/null || continue; printf '\\n'; done; :"),
         ("listeners.txt", "Сетевые службы", "cat /proc/net/tcp /proc/net/tcp6 /proc/net/udp /proc/net/udp6"),
-        ("services.txt", "Агент и службы", "found=0; for p in /tmp/zte-agent.log /tmp/dashboard-uhttpd.log; do if test -f \"$p\" && test ! -L \"$p\" && test \"$(stat -c %u \"$p\")\" = 0; then printf '%s\\n' \"$p\"; tail -c 131072 \"$p\"; found=1; fi; done; if test \"$found\" = 0; then printf 'Отдельные файлы журналов служб отсутствуют; агент может использовать системный журнал.\\n'; exit 3; fi"),
+        ("services.txt", "Агент и службы", "found=0; for p in /tmp/zte-agent.log /tmp/dashboard-uhttpd.log /data/zte-vpn/last-validation.log; do if test -f \"$p\" && test ! -L \"$p\" && test \"$(stat -c %u \"$p\")\" = 0; then printf '%s\\n' \"$p\"; tail -c 131072 \"$p\"; found=1; fi; done; if test \"$found\" = 0; then printf 'Отдельные файлы журналов служб отсутствуют; агент может использовать системный журнал.\\n'; exit 3; fi"),
     ]
+    static let logCommands = diagnosticCommands.filter { ["system.log", "kernel.log", "services.txt"].contains($0.0) }
     static let diagnosticByteLimit = 512 * 1024
     /// Footer status belongs to the producer only when SSH/the wrapper succeeded.
     /// Cap bytes before decoding, redact before export, and preserve UTF-8 boundaries.
@@ -253,7 +254,7 @@ final class ModemInformationManager {
             return result
         }
     }
-    func collectDiagnostics(expectedIdentity: Identity? = nil, expectedWebIdentity: WebIdentity? = nil, expectedIMEI: String? = nil, adb: ADBClient? = nil, preferredSession: DiagnosticSession? = nil) throws -> DiagnosticReport {
+    func collectDiagnostics(expectedIdentity: Identity? = nil, expectedWebIdentity: WebIdentity? = nil, expectedIMEI: String? = nil, adb: ADBClient? = nil, preferredSession: DiagnosticSession? = nil, logsOnly: Bool = false) throws -> DiagnosticReport {
         try require(engine.lockFD >= 0, "Диагностика требует блокировки операции")
         try require(preferredSession == nil || preferredSession?.transport == "ssh", "Диагностика модема доступна только через SSH")
         var warnings = [String](), selectionError: String?
@@ -272,14 +273,15 @@ final class ModemInformationManager {
             selectionError = ActivityJournal.sanitize(error.localizedDescription)
             warnings.append("Сбор не начат: " + selectionError!)
         }
-        if let session, session.readProof.firmwareHash != ModemEngine.firmwareHash {
+        if !logsOnly, let session, session.readProof.firmwareHash != ModemEngine.firmwareHash {
             warnings.append("Прошивка отличается от B31. Выполнено только чтение диагностики; разрешение на запись не изменено.")
         }
         let id = UUID().uuidString.lowercased(), directory = engine.root.appendingPathComponent("Diagnostics/" + id)
         try secureDirectory(directory)
         var files: [DiagnosticFile] = [], connectionFailures = 0
-        for (index, item) in Self.diagnosticCommands.enumerated() {
-            engine.update("Диагностика: " + item.1, Double(index) / Double(Self.diagnosticCommands.count + 1))
+        let commands = logsOnly ? Self.logCommands : Self.diagnosticCommands
+        for (index, item) in commands.enumerated() {
+            engine.update("Диагностика: " + item.1, Double(index) / Double(commands.count + 1))
             let body: Data, status: Int32, truncated: Bool, outcome: DiagnosticOutcome
             if session == nil || connectionFailures >= 3 {
                 body = Data((session == nil ? "Раздел не запрашивался: " + (selectionError ?? "транспорт недоступен") : "Раздел не запрашивался после трёх ошибок подключения").utf8)

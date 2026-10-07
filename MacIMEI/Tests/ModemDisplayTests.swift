@@ -25,7 +25,7 @@ private final class MockDisplay: RemoteTransport {
     var launcherPreflightFails = false, launcherPreflightWrongReceipt = false, launcherPreflightCalls = 0
     var sequence = [String]()
     var vpnPresence = "ABSENT", vpnPreflightFails = false
-    var installedAgentHash = String(repeating: "0", count: 64)
+    var installedAgentHash = BundledAgent.sha256, agentExecutable = true
     var libraryHash: String, manifestHash: String
     var layoutBytes: Data?, stagedLayout: Data?, layoutStage = "", layoutCommits = 0
     var unsafeLayout = false, oversizedLayout = false, badLayoutUpload = false, layoutCommitFails = false, badLayoutReadback = false
@@ -41,6 +41,10 @@ private final class MockDisplay: RemoteTransport {
     }
     func run(_ command: String, input: Data?, timeout: TimeInterval) throws -> CommandResult {
         commands.append(command)
+        if command.hasPrefix("set -eu; test -f /data/zte-agent") {
+            try check(command.contains("test -x") && command.contains("0$mode & 022") && !command.contains("environ"), "eSIM helper validation")
+            return output(installedAgentHash, status: agentExecutable ? 0 : 1)
+        }
         if command == AccessIdentity.command {
             if identityReadError { return output("read failed", status: 1) }
             identityCalls += 1
@@ -151,11 +155,11 @@ private final class MockDisplay: RemoteTransport {
         let key = temp.appendingPathComponent("key"), hosts = temp.appendingPathComponent("known_hosts")
         try savePrivate(Data("fixture".utf8), key); try savePrivate(Data("fixture".utf8), hosts)
         var mocks = [MockDisplay]()
-        func make(_ mock: MockDisplay, resources custom: URL? = nil, updater: (() throws -> Bool)? = { false }, prepareAgent: (() throws -> Void)? = nil, checkedFirmware: Bool = false) throws -> ModemDisplayManager {
+        func make(_ mock: MockDisplay, resources custom: URL? = nil, prepareAgent: (() throws -> Void)? = nil, checkedFirmware: Bool = false) throws -> ModemDisplayManager {
             mocks.append(mock)
             let connection = Connection(host: "192.168.0.1", port: "2222", keyPath: key.path, knownHostsPath: hosts.path, skipFirmwareCheck: !checkedFirmware)
             let engine = try ModemEngine(root: temp.appendingPathComponent(UUID().uuidString), resources: custom ?? resources, connection: connection, transport: mock)
-            return ModemDisplayManager(engine: engine, updateVPNIntegration: updater, prepareEsimAgent: prepareAgent)
+            return ModemDisplayManager(engine: engine, checkEsimHelper: prepareAgent)
         }
         func install(_ manager: ModemDisplayManager) throws -> ModemDisplayInspection { try manager.engine.locked { try manager.install() } }
         func apply(_ manager: ModemDisplayManager, _ layout: ModemDisplayLayout) throws -> ModemDisplayInspection {
@@ -175,20 +179,6 @@ private final class MockDisplay: RemoteTransport {
                 try FileManager.default.copyItem(at: resources.appendingPathComponent("VPN/" + name), to: directory.appendingPathComponent(name))
             }
             return root
-        }
-        func integrationResources(script: String, corrupt: Bool = false) throws -> URL {
-            let root = temp.appendingPathComponent(UUID().uuidString), directory = root.appendingPathComponent("VPN")
-            try secureDirectory(directory)
-            let data = Data(script.utf8)
-            try savePrivate(data, directory.appendingPathComponent("update-agent.sh"))
-            try saveJSON(["update-agent.sh": corrupt ? String(repeating: "0", count: 64) : digest(data)], directory.appendingPathComponent("SHA256.json"))
-            return root
-        }
-        func updateIntegration(_ value: ModemDisplayManager) throws -> Bool {
-            try value.engine.locked {
-                try value.engine.acquireRemoteLock()
-                return try VPNSettingsManager(engine: value.engine).updateDisplayIntegrationIfNeeded()
-            }
         }
         var passed = 0, failed = 0
         func test(_ name: String, _ work: () throws -> Void) {
@@ -303,7 +293,7 @@ private final class MockDisplay: RemoteTransport {
             try check(mock.commands.isEmpty, "Unsafe payload manifest used")
         }
         test("standalone install uploads exactly seven launcher files under both locks") {
-            let mock = MockDisplay(hashes: hashes), value = try make(mock, updater: nil)
+            let mock = MockDisplay(hashes: hashes), value = try make(mock)
             let result = try install(value)
             try check(result.state == .ready && !result.running && mock.cleaned && mock.installerCalls == 1 && !mock.locked, "Incomplete standalone install")
             try check(Set(mock.inputs.keys) == Set(ModemDisplayManager.fileNames) && mock.identityCalls == 8, "Unrelated files or missing target checks")
@@ -311,13 +301,24 @@ private final class MockDisplay: RemoteTransport {
         }
         test("already current running display requires no upload or integration update") {
             let mock = MockDisplay(hashes: hashes); mock.ready()
-            let value = try make(mock, updater: { throw Failure.check("Redundant VPN update") })
+            let value = try make(mock)
             try check(install(value).running && mock.inputs.isEmpty && mock.installerCalls == 0, "Current installation overwritten")
+        }
+        test("eSIM page requires only its current executable, not a permanent process or dashboard") {
+            let mock = MockDisplay(hashes: hashes), manager = try make(mock)
+            _ = try manager.engine.locked { try manager.installEsimPage() }
+            try check(mock.commands.contains{$0.hasPrefix("set -eu; test -f /data/zte-agent")} && !mock.commands.contains{$0.contains("/manager.sh") || $0.contains("dashboard") || $0.contains("/proc/") && $0.contains("environ")}, "Page checked daemon or installed other components")
+            for executable in [false, true] {
+                let bad = MockDisplay(hashes: hashes); bad.agentExecutable=executable; bad.installedAgentHash=String(repeating:"f",count:64)
+                let rejected=try make(bad)
+                try rejects("актуальный компонент eSIM") { _ = try rejected.engine.locked { try rejected.installEsimPage() } }
+                try check(bad.installerCalls == 0 && bad.pagesCommits == 0, "Invalid helper reached page write")
+            }
         }
         test("eSIM page preflight failure or wrong receipt prevents component updates") {
             for wrongReceipt in [false,true] {
                 let mock = MockDisplay(hashes:hashes); mock.launcherPreflightFails = !wrongReceipt; mock.launcherPreflightWrongReceipt = wrongReceipt
-                let manager = try make(mock,updater:{throw Failure.check("Preflight failure updated VPN")},prepareAgent:{throw Failure.check("Preflight failure updated agent")},checkedFirmware:true)
+                let manager = try make(mock,prepareAgent:{throw Failure.check("Preflight failure updated agent")},checkedFirmware:true)
                 try rejects(wrongReceipt ? "Предварительная проверка" : "LAUNCHER_PREFLIGHT_OK") { _ = try manager.engine.locked { try manager.installEsimPage() } }
                 try check(mock.launcherPreflightCalls == 1 && mock.installerCalls == 0 && mock.cleaned,"Preflight refusal reached launcher mutation")
             }
@@ -325,31 +326,33 @@ private final class MockDisplay: RemoteTransport {
         test("eSIM standalone page prepares agent after ABI preflight with either firmware policy") {
             for checked in [true, false] {
             let mock = MockDisplay(hashes:hashes)
-            let manager = try make(mock,updater:{mock.sequence.append("vpn-absent");return false},prepareAgent:{mock.sequence.append("agent")},checkedFirmware:checked)
+            let manager = try make(mock,prepareAgent:{mock.sequence.append("agent")},checkedFirmware:checked)
             let result = try manager.engine.locked { try manager.installEsimPage() }
-            try check(result.state == .ready && mock.sequence == ["preflight","vpn-absent","agent","install"],"eSIM standalone update order")
+            try check(result.state == .ready && mock.sequence == ["preflight","agent","install"],"eSIM standalone update order")
             try check(mock.layoutCommits == 0 && !mock.commands.contains{$0.contains("upgrade-controller.sh") || $0.contains("/install.sh")},"eSIM page installed VPN or local layout")
             }
         }
-        test("eSIM page existing VPN uses one integration and preserves saved layout") {
-            let mock=MockDisplay(hashes:hashes);mock.ready();mock.layoutBytes=try reorderedLayout().encoded()
-            let manager=try make(mock,updater:{mock.sequence.append("vpn-existing");return true},prepareAgent:{throw Failure.check("Duplicate agent update")},checkedFirmware:true)
+        test("eSIM page checks its helper while preserving existing VPN and saved layout") {
+            let mock=MockDisplay(hashes:hashes);mock.ready();mock.layoutBytes=try reorderedLayout().encoded();mock.vpnPresence="PRESENT"
+            let manager=try make(mock,prepareAgent:{mock.sequence.append("agent")},checkedFirmware:true)
             let result=try manager.engine.locked { try manager.installEsimPage() }
-            try check(result.layout == reorderedLayout() && mock.sequence == ["preflight","vpn-existing"] && mock.installerCalls == 0 && mock.layoutCommits == 0,"eSIM page duplicated integration or changed layout")
+            try check(result.layout == reorderedLayout() && mock.sequence == ["preflight","agent"] && mock.installerCalls == 0 && mock.layoutCommits == 0,"eSIM page changed unrelated components or layout")
+            try check(!mock.commands.contains{$0.contains("/data/zte-vpn") || $0.contains("update-agent.sh")},"eSIM touched VPN")
         }
-        test("eSIM page refuses malformed layout and detects changed layout after integration") {
+        test("eSIM page refuses malformed layout and detects changed layout after helper check") {
             let invalid=MockDisplay(hashes:hashes);invalid.ready();invalid.layoutBytes=Data("invalid".utf8)
-            let a=try make(invalid,updater:{throw Failure.check("Invalid layout updated components")},checkedFirmware:true)
+            let a=try make(invalid,checkedFirmware:true)
             try rejects("настройка дисплея повреждена") { _ = try a.engine.locked { try a.installEsimPage() } }
             try check(invalid.inputs.isEmpty,"Malformed layout reached stage")
             let changed=MockDisplay(hashes:hashes);changed.ready();changed.layoutBytes=try reorderedLayout().encoded()
-            let b=try make(changed,updater:{changed.layoutBytes=nil;return true},checkedFirmware:true)
-            try rejects("сохранение раскладки не подтверждено") { _ = try b.engine.locked { try b.installEsimPage() } }
+            let b=try make(changed,prepareAgent:{changed.layoutBytes=nil},checkedFirmware:true)
+            try rejects("раскладка изменились") { _ = try b.engine.locked { try b.installEsimPage() } }
         }
-        test("existing VPN integration completes under common lock and is rechecked") {
-            let mock = MockDisplay(hashes: hashes)
-            let value = try make(mock, updater: { try check(mock.locked, "Integration update unlocked"); mock.ready(running: false); return true })
-            try check(install(value).state == .ready && mock.stage.isEmpty && mock.identityCalls == 6, "Integration result not independently checked")
+        test("standalone information page never reads or updates VPN or agent") {
+            let mock = MockDisplay(hashes: hashes); mock.vpnPresence="PRESENT"; mock.vpnPreflightFails=true
+            let value = try make(mock, prepareAgent: { throw Failure.check("Info page prepared agent") })
+            try check(install(value).state == .ready && mock.installerCalls == 1, "Standalone launcher install failed")
+            try check(!mock.commands.contains{$0.contains("/data/zte-agent") || $0.contains("/data/zte-vpn") || $0.contains("dashboard")}, "Info page accessed unrelated runtime")
         }
         test("CID change during status or before staging stops writes") {
             for index in [2, 3] {
@@ -377,54 +380,12 @@ private final class MockDisplay: RemoteTransport {
             let mock = MockDisplay(hashes: hashes); mock.falseSuccess = true
             try rejects("не подтвердил ожидаемое") { _ = try install(make(mock)) }
         }
-        test("local operation lock and pending transactions block writes") {
+        test("active operation lock is required but unrelated IMEI and setup journals are preserved") {
             let mock = MockDisplay(hashes: hashes), value = try make(mock)
             try rejects("общей блокировки") { _ = try value.install() }
-            try savePrivate(Data(), value.engine.root.appendingPathComponent("setup-pending.json"))
-            try rejects("Сначала завершите") { _ = try install(value) }
-            try check(mock.commands.isEmpty, "Pending setup reached modem")
-        }
-        test("VPN integration helper requires both locks and absent VPN is read only") {
-            let mock = MockDisplay(hashes: hashes), value = try make(mock), vpn = VPNSettingsManager(engine: value.engine)
-            try rejects("блокировки") { _ = try vpn.updateDisplayIntegrationIfNeeded() }
-            try value.engine.locked {
-                try rejects("блокировки") { _ = try vpn.updateDisplayIntegrationIfNeeded() }
-                try value.engine.acquireRemoteLock()
-                try check(vpn.updateDisplayIntegrationIfNeeded() == false, "Absent VPN upgraded")
-            }
-            try check(mock.inputs.isEmpty && mock.stage.isEmpty, "Absent VPN mutated")
-        }
-        test("incomplete VPN dependencies stop before stage") {
-            let mock = MockDisplay(hashes: hashes); mock.vpnPresence = "PRESENT"; mock.vpnPreflightFails = true
-            let value = try make(mock, updater: nil)
-            try rejects("incomplete VPN integration") { _ = try install(value) }
-            try check(mock.inputs.isEmpty && mock.stage.isEmpty, "Broken VPN integration overwritten")
-        }
-        test("unknown installed agent stops before controller replacement or payload staging") {
-            let script = "#!/bin/sh\ncase \"$(hash /data/zte-agent)\" in " + String(repeating: "1", count: 64) + "|\"$agent_sha\") ;; *) exit 1;; esac\n"
-            let fixture = try integrationResources(script: script)
-            let mock = MockDisplay(hashes: hashes); mock.vpnPresence = "PRESENT"
-            let value = try make(mock, resources: fixture, updater: nil)
-            try rejects("Установлен сторонний агент") { _ = try updateIntegration(value) }
-            try check(mock.commands.contains("sha256sum /data/zte-agent | awk '{print $1}'"), "Installed agent was not checked")
-            try check(mock.stage.isEmpty && mock.inputs.isEmpty && mock.installerCalls == 0 && !mock.locked, "Unknown agent reached mutation or retained lock")
-        }
-        test("corrupt integration installer fails before installed-agent read or any payload") {
-            let fixture = try integrationResources(script: "#!/bin/sh\nexit 0\n", corrupt: true)
-            let mock = MockDisplay(hashes: hashes); mock.vpnPresence = "PRESENT"
-            let value = try make(mock, resources: fixture, updater: nil)
-            try rejects("Повреждён установщик компонентов дисплея") { _ = try updateIntegration(value) }
-            try check(!mock.commands.contains("sha256sum /data/zte-agent | awk '{print $1}'") && mock.stage.isEmpty && mock.inputs.isEmpty && mock.installerCalls == 0, "Corrupt installer affected integration")
-        }
-        test("compiled agent policy cannot be expanded by shell formatting or wildcard") {
-            for script in ["#!/bin/sh\nexit 0\n", "#!/bin/sh\ncase anything in *) exit 0;; esac\n"] {
-                let fixture = try integrationResources(script: script)
-                let mock = MockDisplay(hashes: hashes); mock.vpnPresence = "PRESENT"
-                let value = try make(mock, resources: fixture, updater: nil)
-                try rejects("Установлен сторонний агент") { _ = try updateIntegration(value) }
-                try check(mock.commands.contains("sha256sum /data/zte-agent | awk '{print $1}'") && mock.stage.isEmpty && mock.inputs.isEmpty, "Unknown binary escaped compiled policy")
-            }
-            try check(BundledAgent.supportedUpgradeHashes.contains(BundledAgent.sha256) && !BundledAgent.supportedUpgradeHashes.contains(String(repeating:"0",count:64)), "Compiled policy boundary")
+            for name in ["pending.json", "setup-pending.json"] { try savePrivate(Data("preserved".utf8), value.engine.root.appendingPathComponent(name)) }
+            try check(install(value).state == .ready, "Unrelated journals blocked launcher")
+            for name in ["pending.json", "setup-pending.json"] { try check(Data(contentsOf:value.engine.root.appendingPathComponent(name)) == Data("preserved".utf8),"Launcher modified journal") }
         }
         test("layout default contains twelve IDs with exactly the original first six enabled") {
             let value = ModemDisplayLayout.defaultLayout
@@ -513,7 +474,7 @@ private final class MockDisplay: RemoteTransport {
         }
         test("configuration-only save verifies atomic replacement without service or VPN update") {
             let mock = MockDisplay(hashes: hashes); mock.ready()
-            let manager = try make(mock, updater: { throw Failure.check("Configuration updated VPN") })
+            let manager = try make(mock)
             let result = try apply(manager, reorderedLayout())
             try check(result.layout == reorderedLayout() && mock.layoutCommits == 1 && mock.installerCalls == 0 && mock.inputs.isEmpty && mock.stagedLayout == nil && !mock.locked, "Configuration workflow mutated unrelated components")
             try check(!mock.commands.contains { $0.contains("/install-launcher.sh") || $0.contains(" restart") || $0.contains("update-agent.sh") }, "Configuration restarted/reinstalled services")
@@ -523,7 +484,7 @@ private final class MockDisplay: RemoteTransport {
             let original = ModemDisplayLayout.defaultLayout
             mock.layoutBytes = try original.encoded()
             var tiles = original; tiles.style = .tiles
-            let manager = try make(mock, updater: { throw Failure.check("Style change updated VPN") })
+            let manager = try make(mock)
             let result = try apply(manager, tiles)
             try check(result.layout == tiles && result.layout?.style == .tiles && mock.layoutCommits == 1 && mock.installerCalls == 0, "Selected native style was not saved")
         }
@@ -534,7 +495,7 @@ private final class MockDisplay: RemoteTransport {
         }
         test("install on current running launcher applies selected layout without reinstall") {
             let mock = MockDisplay(hashes: hashes); mock.ready()
-            let manager = try make(mock, updater: { throw Failure.check("Current display updated VPN") })
+            let manager = try make(mock)
             let result = try manager.engine.locked { try manager.install(layout: reorderedLayout()) }
             try check(result.layout == reorderedLayout() && mock.layoutCommits == 1 && mock.installerCalls == 0, "Running launcher ignored configuration")
         }
@@ -605,7 +566,7 @@ private final class MockDisplay: RemoteTransport {
         }
         test("pages save is atomic and does not reinstall restart or call agent") {
             let mock = MockDisplay(hashes: hashes); mock.ready()
-            let manager = try make(mock, updater: { throw Failure.check("Pages updated VPN") })
+            let manager = try make(mock)
             let pages = ModemLauncherPages(pages: [.vpn, .info])
             let result = try manager.engine.locked { try manager.applyPages(pages) }
             try check(result.pages == pages && mock.pagesCommits == 1 && mock.stagedPages == nil && !mock.locked, "Pages were not verified and cleaned")
@@ -638,7 +599,7 @@ private final class MockDisplay: RemoteTransport {
         test("dedicated eSIM preserves saved order and appends only when absent") {
             for original in [[.vpn, .info], [.esim, .info], []] as [[ModemLauncherPage]] {
                 let mock = MockDisplay(hashes: hashes); mock.ready(); mock.pagesBytes = try ModemLauncherPages(pages: original).encoded()
-                let manager = try make(mock, updater: { true }, checkedFirmware: true)
+                let manager = try make(mock, prepareAgent: {}, checkedFirmware: true)
                 let result = try manager.engine.locked { try manager.installEsimPage() }
                 try check(result.pages?.pages == (original.contains(.esim) ? original : original + [.esim]), "eSIM disturbed existing selection")
                 try check(mock.pagesCommits == (original.contains(.esim) ? 0 : 1) && mock.layoutCommits == 0, "eSIM changed info layout or rewrote unchanged pages")
@@ -652,10 +613,10 @@ private final class MockDisplay: RemoteTransport {
         }
         test("generic selected eSIM prepares agent once and applies exact selected order") {
             let mock = MockDisplay(hashes: hashes)
-            let manager = try make(mock, updater: { mock.sequence.append("vpn-absent"); return false }, prepareAgent: { mock.sequence.append("agent") }, checkedFirmware: true)
+            let manager = try make(mock, prepareAgent: { mock.sequence.append("agent") }, checkedFirmware: true)
             let pages = ModemLauncherPages(pages: [.esim, .info])
             let result = try manager.engine.locked { try manager.install(pages: pages) }
-            try check(result.pages == pages && mock.sequence == ["preflight", "vpn-absent", "agent", "install"] && mock.installerCalls == 1 && mock.pagesCommits == 1, "Generic eSIM install missed prerequisites or recursed")
+            try check(result.pages == pages && mock.sequence == ["preflight", "agent", "install"] && mock.installerCalls == 1 && mock.pagesCommits == 1, "Generic eSIM install missed prerequisites or recursed")
         }
         test("page configuration target drift refuses commit and preserves prior bytes") {
             for reboot in [false, true] {

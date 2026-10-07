@@ -64,7 +64,7 @@ python3 - "$APP" <<'PY'
 import hashlib,json,pathlib,plistlib,sys
 app=pathlib.Path(sys.argv[1]); res=app/'Contents/Resources'
 (res/'helpers.json').write_text(json.dumps({n:hashlib.sha256((res/n).read_bytes()).hexdigest() for n in ['zte_nv','zte_config','zte_config_read']},indent=2)+'\n')
-info={'CFBundleName':'ZTE U60Pro Manager','CFBundleDisplayName':'ZTE U60Pro Manager','CFBundleIdentifier':'local.zte.imei-studio','CFBundleVersion':'54','CFBundleShortVersionString':'1.24.13','CFBundleExecutable':'ZTEU60ProManager','CFBundlePackageType':'APPL','LSMinimumSystemVersion':'13.0','LSArchitecturePriority':['arm64'],'NSHighResolutionCapable':True,'NSAppTransportSecurity':{'NSAllowsArbitraryLoads':True},'NSPrincipalClass':'NSApplication','NSLocalNetworkUsageDescription':'Подключение к вашему модему для чтения, резервного копирования и настройки устройства.','CFBundleIconFile':'AppIcon'}
+info={'CFBundleName':'ZTE U60Pro Manager','CFBundleDisplayName':'ZTE U60Pro Manager','CFBundleIdentifier':'local.zte.imei-studio','CFBundleVersion':'55','CFBundleShortVersionString':'1.24.14','CFBundleExecutable':'ZTEU60ProManager','CFBundlePackageType':'APPL','LSMinimumSystemVersion':'13.0','LSArchitecturePriority':['arm64'],'NSHighResolutionCapable':True,'NSAppTransportSecurity':{'NSAllowsArbitraryLoads':True},'NSPrincipalClass':'NSApplication','NSLocalNetworkUsageDescription':'Подключение к вашему модему для чтения, резервного копирования и настройки устройства.','CFBundleIconFile':'AppIcon'}
 (app/'Contents/Info.plist').write_bytes(plistlib.dumps(info))
 setup=res/'Onboarding'
 setup_manifest = json.loads((setup/'SHA256.json').read_text())
@@ -73,8 +73,8 @@ PY
 if [[ -f Resources/AppIcon.icns ]]; then cp Resources/AppIcon.icns "$APP/Contents/Resources/"; fi
 /usr/bin/codesign --force --sign - "$APP"
 /usr/bin/codesign --verify --deep --strict "$APP"
-/usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP" "$PWD/dist/ZTE-U60Pro-Manager-1.24.13-arm64.zip"
-(cd dist && /usr/bin/shasum -a 256 "ZTE-U60Pro-Manager-1.24.13-arm64.zip") > "$PWD/dist/SHA256SUMS"
+/usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP" "$PWD/dist/ZTE-U60Pro-Manager-1.24.14-arm64.zip"
+(cd dist && /usr/bin/shasum -a 256 "ZTE-U60Pro-Manager-1.24.14-arm64.zip") > "$PWD/dist/SHA256SUMS"
 python3 - "$APP" <<'PY'
 import datetime, hashlib, json, pathlib, plistlib, re, sys
 app = pathlib.Path(sys.argv[1]); root = pathlib.Path.cwd(); res = app/'Contents/Resources'

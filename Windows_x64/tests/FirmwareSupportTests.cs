@@ -94,7 +94,7 @@ static class FirmwareSupportTests
         var noResearch=Path.Combine(root,"no-old-research");Directory.CreateDirectory(Path.Combine(noResearch,"FirmwareResearch"));
         File.WriteAllText(Path.Combine(noResearch,"FirmwareResearch/latest.json"),"PRIVATE_OLD_RESEARCH");
         var activityZip=Path.Combine(root,"activity-only.zip");
-        DiagnosticsExporter.Export(noResearch,activityZip,new("SSH",null,null,"1.24.10"),[new(DateTimeOffset.UtcNow,"info","Safe action")],new DiagnosticPrivacy(),includeResearch:false);
+        DiagnosticsExporter.Export(noResearch,activityZip,new("SSH",null,null,"1.24.10"),[new(DateTimeOffset.UtcNow,"info","Safe action")],new DiagnosticPrivacy());
         using(var zip=ZipFile.OpenRead(activityZip))Check(!zip.Entries.Any(e=>e.FullName.StartsWith("firmware-research/"))&&!Text(zip,"manifest.json").Contains("malformed"),"activity reuse explicitly skips cached research parsing");
         if(args.Contains("--resources"))
         {

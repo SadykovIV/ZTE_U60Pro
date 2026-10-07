@@ -1,3 +1,4 @@
+using ZteImeiStudio.Windows.Core;
 using System.IO.Compression;
 using System.Reflection;
 using System.Security.Cryptography;
@@ -103,53 +104,54 @@ internal static class DiagnosticExportTests
         var research=new ResearchReport(1,"synthetic-report",eventTime,eventTime,"complete","none",null,"test",7,[],[],[]);
         await restarted.ExportFirmwareResearchAsync(research,Path.Combine(root,"synthetic-research.zip"));
         Check((await restarted.GetLogsAsync()).Any(x=>x.Message=="Firmware research export: completed"),"research export action recorded without destination data");
-        var combinedRoot=Path.Combine(root,"combined");
+        var combinedRoot=Path.Combine(root,"logs-only");
         var cachedPath=Path.Combine(combinedRoot,"FirmwareResearch","latest.json");
-        var cachedTime=new DateTimeOffset(2026,9,1,1,2,3,TimeSpan.Zero);
-        var factualHash=new string('a',64);
-        var cachedReport=new ResearchReport(1,"cached-synthetic-report",cachedTime,cachedTime.AddMinutes(1),"complete","SSH",null,"1.24.5.0",7,
-            [new("identity",new("Система","System"),"platform","uname -s","success",0,"Linux\npassword="+secret+"\nLPA:1$example.com$CACHE_ACTIVATION_PRIVATE\nFR_FACT firmware_sha256="+factualHash,"",12,cachedTime,false,new Dictionary<string,string>{{"firmware_sha256",factualHash},{"os","Linux"},{"detail",secret},{"activation_code","UNKNOWN_CACHED_ACTIVATION_PRIVATE"},{"token_hash",new string('b',64)},{"activation_code_sha256",new string('c',64)},{"password_sha256",new string('d',64)},{"secret_hash",new string('e',64)}})],[],[],factualHash);
-        ResearchReportFiles.Save(cachedReport,cachedPath);
-        DiagnosticsExporter.Append(combinedRoot,new(eventTime,"info","Combined program action"),privacy);
-        var combined=DiagnosticsExporter.Export(combinedRoot,Path.Combine(root,"combined.zip"),new("SSH","Current cached model","Current cached firmware","1.24.test"),[],privacy);
+        Directory.CreateDirectory(Path.GetDirectoryName(cachedPath)!);File.WriteAllText(cachedPath,"RESEARCH-MUST-NOT-BE-EXPORTED");
+        var setupId=Guid.NewGuid().ToString();var setup=Path.Combine(combinedRoot,"SetupBackups",setupId,"installation.log");
+        Directory.CreateDirectory(Path.GetDirectoryName(setup)!);File.WriteAllText(setup,"Installer failure detail\npassword="+secret);
+        DiagnosticsExporter.Append(combinedRoot,new(eventTime,"info","Preparation failure survives export"),privacy);
+        var combined=DiagnosticsExporter.Export(combinedRoot,Path.Combine(root,"logs-only.zip"),new(null,null,null,"test"),[],privacy);
         var combinedFiles=ReadZip(combined.Path);
-        Check(combinedFiles.ContainsKey("firmware-research/report.json") && combinedFiles.ContainsKey("firmware-research/probes/identity.txt") && Encoding.UTF8.GetString(combinedFiles["application-journal.jsonl"]).Contains("Combined program action"),"one offline ZIP includes program actions and cached modem probes");
+        Check(combined.Omissions==0&&!combinedFiles.Keys.Any(x=>x.StartsWith("firmware-research/")),"logs export never reads or depends on research cache");
         var combinedText=string.Join('\n',combinedFiles.Values.Select(Encoding.UTF8.GetString));
-        Check(!combinedText.Contains(secret) && !combinedText.Contains("CACHE_ACTIVATION_PRIVATE") && !combinedText.Contains("UNKNOWN_CACHED_ACTIVATION_PRIVATE") && !combinedText.Contains("PEM_CACHED_PRIVATE_BODY") && !combinedText.Contains("PEM_TRUNCATED_PRIVATE_BODY") && !new[]{'b','c','d','e'}.Any(ch=>combinedText.Contains(new string(ch,64))),"cached probe transcripts and facts are redacted again on common export");
-        using(var cachedVersion=JsonDocument.Parse(combinedFiles["firmware-research/report.json"]))
-            Check(cachedVersion.RootElement.GetProperty("applicationVersion").GetString()=="1.24.5.0","cached structured application version is preserved inside the research report");
-        using(var cachedJson=JsonDocument.Parse(combinedFiles["firmware-research/report.json"]))
-            Check(cachedJson.RootElement.GetProperty("probes")[0].GetProperty("facts").GetProperty("firmware_sha256").GetString()==factualHash && cachedJson.RootElement.GetProperty("specificationSHA256").GetString()==factualHash,"factual SHA256 values remain exact after redaction");
-        using(var manifest=JsonDocument.Parse(combinedFiles["manifest.json"]))
+        Check(combinedText.Contains("Installer failure detail")&&combinedText.Contains("Preparation failure survives export")&&!combinedText.Contains(secret)&&!combinedText.Contains("RESEARCH-MUST-NOT-BE-EXPORTED"),"logs ZIP includes sanitized installation transcript and app errors without firmware data");
+        var manyRoot=Path.Combine(root,"many-installations");
+        var line="Installer transcript: step completed; more details follow.\n";
+        var large=string.Concat(Enumerable.Repeat(line,DiagnosticsExporter.SegmentLimit/line.Length));
+        var oldestSetup="";var newestSetup="";
+        for(var i=0;i<17;i++)
         {
-            var origin=manifest.RootElement.GetProperty("sources").GetProperty("firmwareResearch");
-            Check(origin.GetProperty("collectionStartedAt").GetDateTimeOffset()==cachedTime && origin.GetProperty("applicationVersion").GetString()=="1.24.5.0" && origin.GetProperty("relationToCurrentConnection").GetString()=="not-assessed" && origin.GetProperty("sourceSha256").GetString()==Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(cachedPath))),"cached report timestamps/version/source hash remain separate from current settings");
-            Check(manifest.RootElement.GetProperty("files").EnumerateArray().All(e=>e.GetProperty("sha256").GetString()==Convert.ToHexStringLower(SHA256.HashData(combinedFiles[e.GetProperty("path").GetString()!]))),"merged ZIP hashes cover research files and original application files");
-            Check(combinedFiles.Values.Sum(x=>(long)x.Length)<=32*1024*1024,"combined payload respects the total byte limit");
+            var id=Guid.NewGuid().ToString();if(i==0)oldestSetup=id;if(i==16)newestSetup=id;
+            var directory=Path.Combine(manyRoot,"SetupBackups",id);Directory.CreateDirectory(directory);
+            File.WriteAllText(Path.Combine(directory,"installation.log"),large);
+            Directory.SetLastWriteTimeUtc(directory,new DateTime(2026,1,1,0,0,0,DateTimeKind.Utc).AddMinutes(i));
         }
-        var missRoot=Path.Combine(root,"missing-research");
-        DiagnosticsExporter.Append(missRoot,new(eventTime,"info","Retained when research unavailable"),privacy);
-        var missing=DiagnosticsExporter.Export(missRoot,Path.Combine(root,"research-missing.zip"),new(null,null,null,"test"),[],privacy);
-        Check(missing.Omissions==1 && !ReadZip(missing.Path).Keys.Any(x=>x.StartsWith("firmware-research/")) && Encoding.UTF8.GetString(ReadZip(missing.Path)["application-journal.jsonl"]).Contains("Retained when research unavailable"),"missing cache produces omission while retaining actions");
-        void OmittedCache(string name,Action<string> create)
+        var many=DiagnosticsExporter.Export(manyRoot,Path.Combine(root,"many-installations.zip"),new(null,null,null,"test"),
+            [new(eventTime,"error","CURRENT-ERROR-MUST-SURVIVE")],privacy);
+        var manyFiles=ReadZip(many.Path);
+        Check(many.Omissions>0&&manyFiles.Keys.Any(x=>x=="preparation/"+newestSetup+"/installation.log")&&!manyFiles.Keys.Any(x=>x=="preparation/"+oldestSetup+"/installation.log"),"oversized installation history omits oldest transcripts and preserves newest");
+        Check(Encoding.UTF8.GetString(manyFiles["current-session.jsonl"]).Contains("CURRENT-ERROR-MUST-SURVIVE")&&Encoding.UTF8.GetString(manyFiles["manifest.json"]).Contains("archive size limit"),"installation history cannot prevent local error export; omission is explicit");
+        Check(manyFiles.Values.Sum(x=>(long)x.Length)<=32*1024*1024,"optional transcript budget includes final manifest bytes");
+        foreach(var kind in new[]{"complete","command-failure","offline","changed"})
         {
-            var cacheRoot=Path.Combine(root,"cache-"+name);Directory.CreateDirectory(cacheRoot);
-            var cache=Path.Combine(cacheRoot,"FirmwareResearch","latest.json");Directory.CreateDirectory(Path.GetDirectoryName(cache)!);create(cache);
-            var export=DiagnosticsExporter.Export(cacheRoot,Path.Combine(root,"cache-"+name+".zip"),new(null,null,null,"test"),[new(eventTime,"info","Action survives invalid cache")],privacy);
-            var entries=ReadZip(export.Path);
-            Check(export.Omissions>=1 && !entries.Keys.Any(x=>x.StartsWith("firmware-research/")) && Encoding.UTF8.GetString(entries["current-session.jsonl"]).Contains("Action survives invalid cache"),"unsafe cached research omitted: "+name);
+            var shell=new LogShell{Kind=kind};
+            var collected=await ModemLogCollector.CollectAsync(shell,LogShell.Proof,CancellationToken.None);
+            Check(shell.Commands.All(c=>c==SshReadProof.SessionCommand||ModemLogCollector.Commands.Any(x=>c==ModemLogCollector.Wrap(x.Command))),"log collection sends only session proof and three known reads: "+kind);
+            Check(collected.Status==(kind=="complete"?"complete":"partial"),"modem log outcome preserves failures: "+kind);
+            Check(kind!="changed"||collected.Files.Count==0,"changed device discards remote logs");
+            var target=Path.Combine(root,"logs-"+kind+".zip");
+            var exportedLogs=DiagnosticsExporter.Export(combinedRoot,target,new("SSH",null,null,"test"),[],privacy,modemLogs:collected);
+            var payload=ReadZip(exportedLogs.Path);var body=string.Join('\n',payload.Values.Select(Encoding.UTF8.GetString));
+            Check(body.Contains("Preparation failure survives export")&&!body.Contains("REMOTE-SECRET-CANARY"),"local logs survive remote failure and remote secrets are hidden: "+kind);
+            Check(kind!="complete"||payload.Keys.Count(x=>x.StartsWith("modem/"))==3,"connected collection contains all modem logs");
         }
-        OmittedCache("corrupt",p=>File.WriteAllText(p,"PRIVATE_CORRUPT_CANARY"));
-        OmittedCache("null-fields",p=>File.WriteAllText(p,"{\"schemaVersion\":1}"));
-        OmittedCache("oversized",p=>{using var stream=File.Create(p);stream.SetLength(FirmwareResearchEngine.TotalLimit+1);});
-        OmittedCache("unsafe-probe-path",p=>ResearchReportFiles.Save(cachedReport with {Probes=[cachedReport.Probes[0] with {Id="../../private"}]},p));
-        OmittedCache("duplicate-probe-path",p=>ResearchReportFiles.Save(cachedReport with {Probes=[cachedReport.Probes[0],cachedReport.Probes[0]]},p));
-        OmittedCache("expanded-payload",p=>ResearchReportFiles.Save(cachedReport with {Probes=[cachedReport.Probes[0] with {Stdout=string.Concat(Enumerable.Repeat(string.Concat(Enumerable.Repeat("safe detail. ",200))+"\n",3900))}]},p));
-        OmittedCache("leaf-link",p=>File.CreateSymbolicLink(p,cachedPath));
-        OmittedCache("broken-link",p=>File.CreateSymbolicLink(p,Path.Combine(root,"nonexistent-private-cache")));
-        var ancestorRoot=Path.Combine(root,"linked-ancestor");Directory.CreateSymbolicLink(ancestorRoot,combinedRoot);
-        var ancestor=DiagnosticsExporter.Export(ancestorRoot,Path.Combine(root,"cache-ancestor.zip"),new(null,null,null,"test"),[],privacy);
-        Check(ancestor.Omissions>=1 && !ReadZip(ancestor.Path).Keys.Any(x=>x.StartsWith("firmware-research/")),"linked ancestor cannot supply a cached research report");
+        var connectedRoot=Path.Combine(root,"connected-logs");var connected=new WindowsModemService(connectedRoot,Path.Combine(root,"no-agent-resources"));
+        typeof(WindowsModemService).GetField("_sshRead",BindingFlags.NonPublic|BindingFlags.Instance)!.SetValue(connected,new LogShell());
+        typeof(WindowsModemService).GetField("_connectionProof",BindingFlags.NonPublic|BindingFlags.Instance)!.SetValue(connected,LogShell.Proof);
+        typeof(WindowsModemService).GetField("_snapshot",BindingFlags.NonPublic|BindingFlags.Instance)!.SetValue(connected,new DeviceSnapshot(true,"Synthetic SSH",ConnectionMode:"SSH"));
+        Check((await connected.RunAsync(new(ModemOperation.ExportDiagnostics))).Success,"real export dispatcher reads selected SSH without installed agent or feature engine");
+        var connectedFiles=ReadZip(Directory.GetFiles(Path.Combine(connectedRoot,"Diagnostics"),"*.zip").Single());
+        Check(connectedFiles.Keys.Count(x=>x.StartsWith("modem/"))==3,"real export dispatcher adds fresh modem logs to ZIP");
         using(var during=new CancellationTokenSource())
         {
             IEnumerable<DiagnosticActivity> CancelDuring(){during.Cancel();yield return new(eventTime,"info","synthetic cancellation");}
@@ -157,12 +159,26 @@ internal static class DiagnosticExportTests
             try {DiagnosticsExporter.Export(combinedRoot,target,new(null,null,null,"test"),CancelDuring(),privacy,ct:during.Token);Check(false,"mid-export cancellation honored");}
             catch(OperationCanceledException){Check(!File.Exists(target) && !Directory.GetFiles(root,"cancelled-mid-export.zip.*.tmp").Any(),"mid-export cancellation leaves no partial ZIP");}
         }
-        ResearchReportFiles.Save(cachedReport,Path.Combine(serviceRoot,"FirmwareResearch","latest.json"));
-        var existingZips=Directory.GetFiles(Path.Combine(serviceRoot,"Diagnostics"),"*.zip").ToHashSet();
-        Check((await restarted.RunAsync(new(ModemOperation.ExportDiagnostics))).Success,"actual common export dispatcher includes cache without transport/resources");
-        var mergedService=ReadZip(Directory.GetFiles(Path.Combine(serviceRoot,"Diagnostics"),"*.zip").Single(p=>!existingZips.Contains(p)));
-        Check(mergedService.ContainsKey("firmware-research/probes/identity.txt") && mergedService.ContainsKey("operation-traces.jsonl"),"real service path exports actions and research together");
         Check(!Directory.EnumerateFiles(root,"*.tmp",SearchOption.AllDirectories).Any(),"all export temporary files cleaned");
         Console.WriteLine($"Diagnostic export: {passed} PASS");
     }
+}
+
+internal sealed class LogShell : ZteImeiStudio.Transport.IRemoteShell
+{
+    public string Kind="complete";public List<string> Commands=[];private int proofs;
+    internal static SshReadProof Proof => new("0","Linux","aarch64",new string('a',32),"2a2fb1c5-1bbf-4d3b-92a8-3daaf5510601",null,null);
+    public Task<ZteImeiStudio.Transport.RemoteResult> RunAsync(string command,byte[]? stdin=null,TimeSpan? timeout=null,CancellationToken ct=default)
+    {
+        Commands.Add(command);if(Kind=="offline")throw new IOException("Synthetic SSH lost");
+        if(command==SshReadProof.SessionCommand)
+        {
+            proofs++;var boot=Kind=="changed"&&proofs>1?"3a2fb1c5-1bbf-4d3b-92a8-3daaf5510601":Proof.BootId;
+            return Task.FromResult(new ZteImeiStudio.Transport.RemoteResult(0,Encoding.UTF8.GetBytes("ZTE_SSH_READ_V1\n0\nLinux\naarch64\n"+Proof.Cid+"\n"+boot+"\n?\n?\n"),[]));
+        }
+        var exit=Kind=="command-failure"?3:0;
+        return Task.FromResult(new ZteImeiStudio.Transport.RemoteResult(0,Encoding.UTF8.GetBytes("Useful modem failure\npassword=REMOTE-SECRET-CANARY\n__DIAGNOSTIC_RESULT__"+exit+"\n"),[]));
+    }
+    public Task UploadAsync(string p,byte[] b,TimeSpan? timeout=null,CancellationToken ct=default)=>throw new Exception("Unexpected upload");
+    public Task<byte[]> DownloadAsync(string p,TimeSpan? timeout=null,CancellationToken ct=default)=>throw new Exception("Unexpected download");
 }

@@ -41,7 +41,7 @@ public sealed partial class MainWindow : Window
         new("Launcher", "Экран модема и его плитки", "▣", ["Информация о модеме", "Управление VPN"]),
         new("IMEI", "Чтение, смена и резервные копии", "◈", ["Смена IMEI", "Бэкапы IMEI"]),
         new("TTL", "Правила исходящего и входящего TTL", "⇄", ["Настройки TTL"]),
-        new("VPN", "Компоненты VPN на модеме", "◇", ["Состояние VPN"]),
+        new("VPN", "Профили и Wi-Fi с VPN", "◇", ["Управление VPN"]),
         new("Приложения", "Установленные пакеты и каталог", "▦", ["Установлено", "Каталог", "Terminal"]),
         new("Администрирование", "Доступы, бэкапы и журнал", "⚙", ["Доступы", "Бэкапы", "Журнал действий"]),
         new("О модеме", "Устройство и память", "ⓘ", ["Об устройстве", "Память"]),
@@ -219,7 +219,7 @@ public sealed partial class MainWindow : Window
         RenderPage();
         UpdateConnectionLabels();
         VerifiedCatalogStore.Shared.Changed += CatalogChanged;
-        Opened += async (_, _) => { _researchReport = await _service.GetFirmwareResearchAsync(_lifetime.Token); await RefreshAsync(); };
+        Opened += async (_, _) => await RefreshAsync();
         Closed += async (_, _) => await ShutdownAsync();
     }
 
@@ -301,7 +301,6 @@ public sealed partial class MainWindow : Window
         _skipFirmwareCheckBox = null;
         _forcePreparationCheckBox = null;
         _cleanPreparationCheckBox = null;
-        _researchCollectButton = null;
         _firmwareAdaptationButton = null;
         _chooseCustomAgentButton = null; _installCustomAgentButton = null;
         _diagnosticAccessButton = null;
@@ -311,7 +310,6 @@ public sealed partial class MainWindow : Window
         _adbEnabledCheckbox = null;
         _diagnosticConnectionStatus = null;
         _diagnosticAccessStatus = null;
-        _researchProgress = null;
         if (_refreshButton is not null) _actionButtons.Add(_refreshButton);
         var page = Pages[_page];
         _pageTitle.Text = Localization.Translate(page.Title);
@@ -558,7 +556,7 @@ public sealed partial class MainWindow : Window
                 status.Children.Add(ValueLine("Активный профиль", vpn.ActiveProfile));
         }
         status.Children.Add(Actions(("Обновить состояние VPN", ModemOperation.RefreshVpn, null)));
-        status.Children.Add(Muted("Импорт и параметры профилей задаются в панели агента модема. На экране появятся те же профили."));
+        status.Children.Add(Muted("Профили добавляются в разделе VPN программы или в агенте. На экране появятся те же профили."));
         columns.Children.Add(status);
 
         var previewColumn = new StackPanel { Spacing = 9, Margin = new Thickness(18, 0, 0, 0) };
@@ -1021,17 +1019,6 @@ public sealed partial class MainWindow : Window
             panel.Children.Add(Actions(
                 ("Проверить TTL", ModemOperation.RefreshTtl, null),
                 ("Применить", ModemOperation.ApplyTtl, ["outbound_ttl", "incoming_delta"])));
-        });
-    }
-
-    private void BuildVpn()
-    {
-        AddCard("VPN на модеме", "Проверка и установка компонентов VPN.", panel =>
-        {
-            panel.Children.Add(ValueLine("Состояние", _snapshot?.Vpn));
-            panel.Children.Add(Actions(
-                ("Проверить VPN", ModemOperation.RefreshVpn, null),
-                ("Установить / обновить", ModemOperation.InstallVpn, null)));
         });
     }
 
@@ -1731,7 +1718,7 @@ public sealed partial class MainWindow : Window
         ((Dictionary<string,string>)parameters)["skip_firmware_check"] = Get("skip_firmware_check") == "true" ? "true" : "false";
         if (operation == ModemOperation.PrepareSsh && _snapshot?.ComponentCleanupPending != true && _lastResearchInput != ResearchInputKey())
         {
-            await CollectFirmwareResearchAsync(forPreparation: true);
+            await CollectPreparationResearchAsync();
             if (_lastResearchInput != ResearchInputKey()) return;
         }
         if (operation == ModemOperation.EnableDiagnosticAdb && (_snapshot?.IsConnected == true && _snapshot.ConnectionMode == "SSH"))
@@ -1957,6 +1944,7 @@ public sealed partial class MainWindow : Window
             _ = LoadPageDataAsync();
         UpdateDiagnosticAvailability();
         UpdateEsimAvailability();
+        UpdateVpnAvailability();
         UpdateCustomAgentAvailability();
     }
 

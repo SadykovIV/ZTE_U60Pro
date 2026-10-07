@@ -251,6 +251,31 @@ public sealed partial class WindowsModemService : IModemService
                     _snapshot = _snapshot with { Vpn = VpnSummary(vpn), VpnPage = VpnPage(vpn),
                         VpnSsid = vpn.Ssid, VpnPasswordMode = vpn.PasswordMode?.ToString().ToLowerInvariant() };
                     result = _snapshot.Vpn!; break;
+                case ModemOperation.ImportVpnProfile:
+                case ModemOperation.ActivateVpnProfile:
+                case ModemOperation.RenameVpnProfile:
+                case ModemOperation.DeleteVpnProfile:
+                case ModemOperation.SetVpnEnabled:
+                    RequireSsh();
+                    vpn = request.Operation switch
+                    {
+                        ModemOperation.ImportVpnProfile => await _features!.ImportVpnProfileAsync(Param(p,"vpn_secret_uri"), p?.GetValueOrDefault("vpn_profile_name"), cancellationToken),
+                        ModemOperation.ActivateVpnProfile => await _features!.ActivateVpnProfileAsync(Param(p,"vpn_profile_id"), cancellationToken),
+                        ModemOperation.RenameVpnProfile => await _features!.RenameVpnProfileAsync(Param(p,"vpn_profile_id"), Param(p,"vpn_profile_name"), cancellationToken),
+                        ModemOperation.DeleteVpnProfile => await _features!.DeleteVpnProfileAsync(Param(p,"vpn_profile_id"), cancellationToken),
+                        _ => await _features!.SetVpnEnabledAsync(Param(p,"vpn_enabled") == "true", cancellationToken),
+                    };
+                    _snapshot = _snapshot with { Vpn = VpnSummary(vpn), VpnPage = VpnPage(vpn),
+                        VpnSsid = vpn.DesiredSsid ?? vpn.Ssid, VpnPasswordMode = vpn.PasswordMode };
+                    result = request.Operation switch
+                    {
+                        ModemOperation.ImportVpnProfile => "Профиль VPN импортирован",
+                        ModemOperation.ActivateVpnProfile => "Активный профиль VPN изменён",
+                        ModemOperation.RenameVpnProfile => "Название профиля VPN сохранено",
+                        ModemOperation.DeleteVpnProfile => "Профиль VPN удалён",
+                        _ => vpn.Enabled ? "Wi-Fi с VPN включён" : "Wi-Fi с VPN выключен",
+                    };
+                    break;
                 case ModemOperation.InstallVpn:
                     RequireSsh(); vpn = await _features!.InstallVpnAsync(cancellationToken);
                     _snapshot = _snapshot with { Vpn = VpnSummary(vpn), VpnPage = VpnPage(vpn),
@@ -269,7 +294,7 @@ public sealed partial class WindowsModemService : IModemService
                     RequireSsh(); vpn = await _features!.GetVpnStatusAsync(cancellationToken);
                     _snapshot = _snapshot with { Vpn = VpnSummary(vpn), VpnPage = VpnPage(vpn),
                         VpnSsid = vpn.Ssid, VpnPasswordMode = vpn.PasswordMode?.ToString().ToLowerInvariant() };
-                    _operationValues = new Dictionary<string,string> { ["ssid"] = vpn.Ssid ?? "", ["password_mode"] = vpn.PasswordMode?.ToString().ToLowerInvariant() ?? "main" };
+                    _operationValues = new Dictionary<string,string> { ["ssid"] = vpn.DesiredSsid ?? vpn.Ssid ?? "", ["password_mode"] = vpn.PasswordMode?.ToString().ToLowerInvariant() ?? "main" };
                     result = "Guest SSID: " + vpn.Ssid; break;
                 case ModemOperation.RefreshApplications: result = "Приложения обновлены: " + (await ListApplicationsCoreAsync(cancellationToken)).Count; break;
                 default: result = await RunExtendedAsync(request,cancellationToken); break;
@@ -414,9 +439,10 @@ public sealed partial class WindowsModemService : IModemService
         var active = status.Profiles.FirstOrDefault(profile =>
             profile.Active || (status.ActiveProfile.Length > 0 && profile.Id == status.ActiveProfile))?.Name;
         return new VpnPageSnapshot(status.Installed,
-            status.HelperReady && status.AgentReady && status.DashboardReady && status.LauncherReady,
+            status.HelperReady,
             status.Configured, status.Enabled,
-            status.CoreRunning, status.Ssid, status.Profiles.Select(profile => profile.Name).ToArray(), active);
+            status.CoreRunning, status.Ssid, status.Profiles.Select(profile => profile.Name).ToArray(), active,
+            status.Profiles.Select(p => new VpnProfileSnapshot(p.Id, p.Name, p.Transport, p.Active)).ToArray(), status.SettingsSupported);
     }
     private async Task<IReadOnlyList<ModemAppInfo>> ListApplicationsCoreAsync(CancellationToken ct)
     {

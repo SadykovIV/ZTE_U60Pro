@@ -529,7 +529,7 @@ struct ContentView: View {
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
                     Button(action: model.apply) {
-                        Label(L10n.text(model.connected ? "Записать оба IMEI" : "Настроить и записать IMEI"), systemImage: "arrow.up.right")
+                        Label(L10n.text("Записать оба IMEI"), systemImage: "arrow.up.right")
                     }
                     .buttonStyle(StudioButtonStyle(prominent: true))
                     .disabled(!model.canApply || model.busy)
@@ -538,7 +538,7 @@ struct ContentView: View {
             }
 
             if !model.connected {
-                StudioNote(symbol: "network", text: "Выберите SSH или автоматическое подключение и заполните пароли Web и агента в разделе «Подготовка модема». Кнопка «Настроить и записать IMEI» выполнит первоначальную настройку, прочитает текущую пару и создаст бэкап перед записью.")
+                StudioNote(symbol: "network", text: "Сначала подключитесь к модему по SSH. Если SSH ещё не настроен, выполните подготовку в разделе «Подготовка модема». Смена IMEI выполняется отдельно и сохраняет резервную копию перед записью.")
             }
         }
     }

@@ -117,7 +117,7 @@ private final class Probe: RemoteTransport {
             let manifest = try JSONSerialization.jsonObject(with: Data(contentsOf: folder.appendingPathComponent("manifest.json"))) as! [String: Any]
             let entries = manifest["files"] as! [[String: String]]
             try check(entries.count + 1 == result.fileCount, "Manifest missing files")
-            try check(entries.contains { $0["path"] == "Diagnostics/" + id + "/device.json" } && entries.contains { $0["path"]?.hasSuffix("/system.log") == true } && entries.contains { $0["path"]?.hasSuffix(".jsonl") == true }, "Ordinary diagnostic files were omitted: " + String(describing: manifest))
+            try check(!entries.contains { $0["path"] == "Diagnostics/" + id + "/device.json" } && entries.contains { $0["path"]?.hasSuffix("/system.log") == true } && entries.contains { $0["path"]?.hasSuffix(".jsonl") == true }, "Ordinary diagnostic files were omitted: " + String(describing: manifest))
             for entry in entries {
                 let path = entry["path"]!, bytes = try Data(contentsOf: folder.appendingPathComponent(entry["path"]!))
                 try check(digest(bytes) == entry["sha256"], "Archive hash mismatch")
@@ -142,103 +142,37 @@ private final class Probe: RemoteTransport {
             let listed = try HostProcessRunner().run(URL(fileURLWithPath: "/usr/bin/unzip"), ["-p", zip.path, "ZTE-Diagnostics/Activity/" + file.lastPathComponent], timeout: 20)
             try check(String(decoding: listed.stdout, as: UTF8.self).contains("LATEST-EVENT"), "Recent event lost")
         }
-        func researchReport() -> FirmwareResearchReport {
-            var report = FirmwareResearchReport(startedAt: "2026-10-05T09:00:00Z", specificationRevision: 8, application: ["version": "fixture", "password": "CACHE-SECRET"])
-            report.warnings = ["-----BEGIN PRIVATE KEY-----\nPRIVATE-PEM-BODY\n-----END PRIVATE KEY-----", "https://example.invalid/private-subscription"]
-            report.finishedAt = "2026-10-05T09:00:02Z"; report.transport = "ssh"; report.outcome = "partial"
-            report.probes = [.init(id: "identity", title: .init(ru: "Устройство", en: "Device"), category: "identity", command: "id", outcome: "success", exitCode: 0,
-                stdout: "aarch64\npassword=CACHE-SECRET\n867123456789017\n0123456789abcdef0123456789abcdef\n", stderr: "", durationSeconds: 0.1, facts: ["architecture": "aarch64", "iccid": "867123456789017"], localExitCode: 0, remoteExitCode: 0)]
-            return report
+        try test("Logs-only collection reads three log sources without firmware survey or component operations") {
+            let probe = Probe()
+            let actual = try engine(probe)
+            let report = try actual.locked { try ModemInformationManager(engine: actual).collectDiagnostics(logsOnly: true) }
+            try check(report.files.map(\.name) == ["system.log", "kernel.log", "services.txt"], "Log collection included firmware survey")
+            try check(!probe.calls.contains { $0.contains("ubus -v list") || $0.contains("opkg list") || $0.contains("iptables-save") || $0.contains("zte_nv") }, "Unrelated operation was executed")
         }
-        func archive(_ root: URL) throws -> (DiagnosticArchiveResult, URL, [String: Any]) {
-            let zip = temp.appendingPathComponent(UUID().uuidString + ".zip")
-            let result = try DiagnosticArchive(root: root).export(to: zip, context: ["version": "fixture"])
-            let output = temp.appendingPathComponent(UUID().uuidString)
+        try test("Logs ZIP ignores saved firmware research and includes installer errors while hashes remain valid") {
+            let root = temp.appendingPathComponent("logs-only"), id = UUID().uuidString.lowercased()
+            try ActivityJournal(root: root).record(operationID: "prepare", category: "operation", title: "PREPARATION-FAILED", result: "failed")
+            let research = root.appendingPathComponent("FirmwareResearch/latest.json")
+            try secureDirectory(research.deletingLastPathComponent())
+            try savePrivate(Data("MUST-NOT-EXPORT-FIRMWARE-RESEARCH".utf8), research)
+            let setup = root.appendingPathComponent("SetupBackups/" + id + "/installation.log")
+            try secureDirectory(setup.deletingLastPathComponent())
+            try savePrivate(Data("INSTALL-FAILED\npassword=TOP-SECRET\n".utf8), setup)
+            let zip = temp.appendingPathComponent("logs-only.zip")
+            let result = try DiagnosticArchive(root: root).export(to: zip, context: ["modemLogsSkipped": "SSH unavailable"])
+            let output = temp.appendingPathComponent("logs-only-extracted")
             try check(try HostProcessRunner().run(URL(fileURLWithPath: "/usr/bin/ditto"), ["-x", "-k", zip.path, output.path], timeout: 20).status == 0, "ZIP extraction failed")
             let folder = output.appendingPathComponent("ZTE-Diagnostics")
             let manifest = try JSONSerialization.jsonObject(with: Data(contentsOf: folder.appendingPathComponent("manifest.json"))) as! [String: Any]
-            return (result, folder, manifest)
-        }
-        try test("Common ZIP contains cached research, probe evidence, timestamps and application activity with fresh hashes and redaction") {
-            let root = temp.appendingPathComponent("combined"), report = researchReport()
-            let journal = try ActivityJournal(root: root)
-            try journal.record(operationID: "combined", category: "test", title: "APPLICATION-ACTION", result: "completed")
-            _ = try FirmwareResearchArchive.save(report, root: root)
-            try savePrivate(Data("NEIGHBOUR-SECRET".utf8), root.appendingPathComponent("FirmwareResearch/unlisted.txt"))
-            let (_, folder, manifest) = try archive(root)
-            let entries = manifest["files"] as! [[String: String]], prefix = "FirmwareResearch/" + report.id + "/"
-            for file in ["report.json", "application.json", "REPORT.md", "probes/identity.json", "manifest-sha256.json"] {
-                try check(entries.contains { $0["path"] == prefix + file }, "Cached research omitted from common ZIP: " + file)
-            }
-            var combined = ""
-            for entry in entries {
-                let data = try Data(contentsOf: folder.appendingPathComponent(entry["path"]!))
-                try check(digest(data) == entry["sha256"], "Common manifest digest mismatch")
-                combined += String(decoding: data, as: UTF8.self)
-            }
-            try check(combined.contains("APPLICATION-ACTION") && combined.contains(report.startedAt) && combined.contains(report.finishedAt) && combined.contains("aarch64"), "Saved evidence or application action lost")
-            for secret in ["CACHE-SECRET", "NEIGHBOUR-SECRET", "PRIVATE-PEM-BODY", "private-subscription", "867123456789017", "0123456789abcdef0123456789abcdef"] { try check(!combined.contains(secret), "Cached research leaked " + secret) }
-            let nested = try JSONDecoder().decode([[String: String]].self, from: Data(contentsOf: folder.appendingPathComponent(prefix + "manifest-sha256.json")))
-            for entry in nested { try check(try digest(Data(contentsOf: folder.appendingPathComponent(prefix + entry["path"]!))) == entry["sha256"], "Research manifest digest mismatch") }
-        }
-        try test("Common cached export redacts activation and matching credentials while preserving firmware SHA evidence") {
-            let root = temp.appendingPathComponent("activation-privacy")
-            var report = researchReport()
-            let benign = String(repeating: "a", count: 64)
-            report.application["activationCode"] = "SHORT-ACTIVATION"
-            report.application["matchingID"] = "SHORT-MATCHING"
-            report.application["smdpAddress"] = "PRIVATE-SMDP-HOST"
-            let p = report.probes[0]
-            report.probes = [.init(id: p.id, title: p.title, category: p.category, command: p.command, outcome: p.outcome, exitCode: p.exitCode,
-                stdout: "LPA:1$example.invalid$SHORT-LPA-CODE\nmatchingID=TEXT-MATCHING\nactivation_code=TEXT-ACTIVATION\nSM-DP+ Address: PRIVATE-SMDP-TEXT\nfirmware_sha256=" + benign + "\nFR_FACT activation_code_hash=" + String(repeating: "f", count: 64),
-                stderr: "", durationSeconds: p.durationSeconds,
-                facts: ["firmware_sha256": benign, "activation_code_hash": String(repeating: "b", count: 64), "matching_id_hash": String(repeating: "c", count: 64), "confirmation_code_hash": String(repeating: "d", count: 64)])]
-            report.observations = [.init(id: "private-fact", title: .init(ru: "Факт", en: "Fact"), probe: p.id, fact: "activation_code_hash", state: "known", value: String(repeating: "e", count: 64))]
-            _ = try FirmwareResearchArchive.save(report, root: root)
-            let (_, folder, manifest) = try archive(root)
             let entries = manifest["files"] as! [[String: String]]
-            let text = try entries.map { String(decoding: try Data(contentsOf: folder.appendingPathComponent($0["path"]!)), as: UTF8.self) }.joined(separator: "\n")
-            let canaries = ["SHORT-ACTIVATION", "SHORT-MATCHING", "PRIVATE-SMDP-HOST", "SHORT-LPA-CODE", "TEXT-MATCHING", "TEXT-ACTIVATION", "PRIVATE-SMDP-TEXT"] + ["b", "c", "d", "e", "f"].map { String(repeating: $0, count: 64) }
-            try check(!canaries.contains(where: text.contains), "Cached activation/matching/SM-DP credential leaked")
-            let saved = try JSONDecoder().decode(FirmwareResearchReport.self, from: Data(contentsOf: folder.appendingPathComponent("FirmwareResearch/" + report.id + "/report.json")))
-            try check(saved.probes[0].facts["firmware_sha256"] == benign, "Benign firmware SHA evidence was removed")
-        }
-        try test("Missing, malformed, unsafe and oversized cached research is omitted without losing the common ZIP") {
-            for kind in ["missing", "pointer-json", "pointer-path", "pointer-oversize", "pointer-symlink", "report-symlink", "parent-symlink", "report-hardlink", "report-fifo", "report-oversize", "identity-mismatch", "probe-path", "duplicate-probe"] {
-                let root = temp.appendingPathComponent("omission-" + kind), report = researchReport()
-                let journal = try ActivityJournal(root: root)
-                try journal.record(operationID: "offline", category: "test", title: "APPLICATION-ACTION", result: "completed")
-                let base = root.appendingPathComponent("FirmwareResearch"), pointer = base.appendingPathComponent("latest.json"), file = base.appendingPathComponent(report.id + "/report.json")
-                if kind != "missing" { _ = try FirmwareResearchArchive.save(report, root: root) }
-                switch kind {
-                case "pointer-json": try savePrivate(Data("not-json CACHE-SECRET".utf8), pointer)
-                case "pointer-path": try saveJSON(["id": "../CACHE-SECRET"], pointer)
-                case "pointer-oversize": try savePrivate(Data(repeating: 32, count: 4097), pointer)
-                case "pointer-symlink", "report-symlink":
-                    let path = kind == "pointer-symlink" ? pointer : file
-                    let outside = temp.appendingPathComponent(UUID().uuidString); try savePrivate(Data("CACHE-SECRET".utf8), outside)
-                    try fm.removeItem(at: path); try fm.createSymbolicLink(at: path, withDestinationURL: outside)
-                case "parent-symlink":
-                    let outside = temp.appendingPathComponent(UUID().uuidString); try fm.moveItem(at: base, to: outside)
-                    try fm.createSymbolicLink(at: base, withDestinationURL: outside)
-                case "report-hardlink": try fm.linkItem(at: file, to: temp.appendingPathComponent(UUID().uuidString))
-                case "report-fifo": try fm.removeItem(at: file); try check(mkfifo(file.path, 0o600) == 0, "FIFO fixture")
-                case "report-oversize":
-                    let handle = try FileHandle(forWritingTo: file); try handle.truncate(atOffset: 32 * 1024 * 1024 + 1); try handle.close()
-                case "identity-mismatch": var wrong = report; wrong.id = UUID().uuidString.lowercased(); try saveJSON(wrong, file)
-                case "probe-path":
-                    var wrong = report; let p = report.probes[0]
-                    wrong.probes = [.init(id: "../escape", title: p.title, category: p.category, command: p.command, outcome: p.outcome, exitCode: p.exitCode, stdout: p.stdout, stderr: p.stderr, durationSeconds: p.durationSeconds, facts: p.facts)]
-                    try saveJSON(wrong, file)
-                case "duplicate-probe": var wrong = report; wrong.probes.append(report.probes[0]); try saveJSON(wrong, file)
-                default: break
-                }
-                let (result, _, manifest) = try archive(root)
-                let entries = manifest["files"] as! [[String: String]]
-                try check(result.warnings > 0 && (manifest["warnings"] as! [String]).contains { $0.hasPrefix("FirmwareResearch:") }, "Research omission unreported: " + kind)
-                try check(entries.contains { $0["path"]?.hasPrefix("Activity/") == true } && !entries.contains { $0["path"]?.hasPrefix("FirmwareResearch/") == true }, "Unsafe research included or activity lost: " + kind)
-                try check(!String(decoding: try JSONSerialization.data(withJSONObject: manifest), as: UTF8.self).contains("CACHE-SECRET"), "Omission leaked error contents")
-            }
+            try check(result.warnings == 0 && !entries.contains { $0["path"]?.hasPrefix("FirmwareResearch/") == true }, "Logs depend on research cache")
+            let text = try entries.map { entry -> String in
+                let data = try Data(contentsOf: folder.appendingPathComponent(entry["path"]!))
+                try check(digest(data) == entry["sha256"], "Log payload digest mismatch")
+                return String(decoding: data, as: UTF8.self)
+            }.joined(separator: "\n")
+            try check(text.contains("PREPARATION-FAILED") && text.contains("INSTALL-FAILED") && text.contains("SSH unavailable"), "Preparation or offline context lost")
+            try check(!text.contains("TOP-SECRET") && !text.contains("MUST-NOT-EXPORT-FIRMWARE-RESEARCH"), "Secret or research copied into logs")
         }
         print("\(count) diagnostic archive tests passed")
     }

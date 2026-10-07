@@ -5,7 +5,7 @@ import Foundation
 enum ConnectionDiagnostics {
     static func collect(engine: ModemEngine, mode: ConnectionMode, session supplied: ReadOnlyChannelSession? = nil,
                         expectedIdentity: Identity? = nil, expectedWebIdentity: WebIdentity? = nil, expectedIMEI: String? = nil,
-                        webPassword: String = "", agentPassword: String = "", router suppliedRouter: ConnectionRouter? = nil) throws -> DiagnosticReport {
+                        webPassword: String = "", agentPassword: String = "", router suppliedRouter: ConnectionRouter? = nil, logsOnly: Bool = false) throws -> DiagnosticReport {
         try require(engine.lockFD >= 0, "Диагностика требует блокировки операции")
         try require(mode == .automatic || mode == .ssh, "Диагностика модема доступна только через SSH")
         let session: ReadOnlyChannelSession
@@ -23,6 +23,6 @@ enum ConnectionDiagnostics {
         guard session.mode == .ssh, let shell = session.diagnosticSession, shell.transport == "ssh" else {
             throw IMEIError.message("Выбранный канал не предоставил проверенную SSH-сессию")
         }
-        return try ModemInformationManager(engine: engine).collectDiagnostics(expectedIdentity: expectedIdentity, expectedWebIdentity: expectedWebIdentity, expectedIMEI: expectedIMEI, preferredSession: shell)
+        return try ModemInformationManager(engine: engine).collectDiagnostics(expectedIdentity: expectedIdentity, expectedWebIdentity: expectedWebIdentity, expectedIMEI: expectedIMEI, preferredSession: shell, logsOnly: logsOnly)
     }
 }

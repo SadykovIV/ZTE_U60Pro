@@ -3,11 +3,12 @@ import Foundation
 extension AppModel {
     func refreshVPN() { performVPN() }
     func installVPN() { performVPN(install: true) }
+    func performVPNProfile(_ operation: VPNOperation) { performVPN(operation: operation) }
     func saveVPNWiFi(_ configuration: VPNWiFiConfiguration, completion: @escaping @MainActor (Bool) -> Void) {
         guard canManage else { completion(false); return }
         performVPN(configuration: configuration, completion: completion)
     }
-    private func performVPN(install: Bool = false, configuration: VPNWiFiConfiguration? = nil, completion: (@MainActor (Bool) -> Void)? = nil) {
+    private func performVPN(install: Bool = false, operation: VPNOperation? = nil, configuration: VPNWiFiConfiguration? = nil, completion: (@MainActor (Bool) -> Void)? = nil) {
         guard canManage else { return }
         let config = connection, root = storage, assets = resources
         let target = sshSelectionContext
@@ -23,7 +24,8 @@ extension AppModel {
                         try target.verify(engine)
                         let manager = VPNSettingsManager(engine: engine)
                         let result: VPNInspection
-                        if let configuration { result = try manager.configureWiFi(configuration) }
+                        if let operation { result = try manager.perform(operation) }
+                        else if let configuration { result = try manager.configureWiFi(configuration) }
                         else if install { result = try manager.install() }
                         else { result = try manager.inspect() }
                         try target.verify(engine)
@@ -31,7 +33,7 @@ extension AppModel {
                     }
                 }.value
                 vpnInspection = result
-                append(configuration != nil ? "Настройки Wi-Fi с VPN сохранены; сеть остаётся выключенной" : install ? "Компоненты VPN установлены" : "Состояние VPN обновлено", progress: 1)
+                append(operation?.message ?? (configuration != nil ? "Настройки Wi-Fi с VPN сохранены; сеть остаётся выключенной" : install ? "Компоненты VPN установлены" : "Состояние VPN обновлено"), progress: 1)
                 completion?(true)
             } catch {
                 vpnError = error.localizedDescription

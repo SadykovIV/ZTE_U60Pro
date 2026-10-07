@@ -163,13 +163,21 @@ private final class MockTTL: RemoteTransport {
                 try check(mock.commands.isEmpty, "Invalid value reached remote shell")
             }
         }
-        test("both pending transaction types block before all remote work") {
+        test("unrelated IMEI and preparation journals do not block TTL status or apply") {
             for name in ["pending.json", "setup-pending.json"] {
-                let mock = MockTTL(), value = try manager(mock)
-                try savePrivate(Data(), value.engine.root.appendingPathComponent(name))
-                try rejects("Сначала завершите") { _ = try perform(value, TTLConfiguration(outbound: 64, inboundIncrement: 1)) }
-                try check(mock.commands.isEmpty, "Pending transaction bypassed")
+                let mock = MockTTL(); mock.installed = true; let value = try manager(mock)
+                try savePrivate(Data("preserved".utf8), value.engine.root.appendingPathComponent(name))
+                _ = try perform(value)
+                _ = try perform(value, TTLConfiguration(outbound: 64, inboundIncrement: 1))
+                try check(mock.installed && mock.configuration == TTLConfiguration(outbound: 64, inboundIncrement: 1), "Unrelated journal blocked TTL")
+                try check(Data(contentsOf: value.engine.root.appendingPathComponent(name)) == Data("preserved".utf8), "TTL changed unrelated journal")
             }
+        }
+        test("active access recovery blocks TTL writes") {
+            let mock = MockTTL(), value = try manager(mock)
+            try savePrivate(Data(), value.engine.root.appendingPathComponent("adb-access-pending.json"))
+            try rejects("Сначала завершите") { _ = try perform(value, TTLConfiguration(outbound: 64, inboundIncrement: 1)) }
+            try check(mock.commands.isEmpty, "Access recovery bypassed")
         }
         test("resource corruption blocks before reading or changing modem") {
             let altered = testRoot.appendingPathComponent("altered")

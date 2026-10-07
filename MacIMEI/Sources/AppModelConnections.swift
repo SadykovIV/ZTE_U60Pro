@@ -170,7 +170,6 @@ import AppKit
         markConnectionUnavailable("")
         channelStatuses = []; connectionsChecked = false; preparationError = ""; diagnosticADBMessage = ""
         clearDisplayLayout()
-        diagnosticReport = nil; diagnosticText = ""; selectedDiagnostic = "system.log"
         if clearIdentity { connectedIdentity = nil; connectedReadCID = nil; connectedWebIdentity = nil; connectedIMEI = nil }
     }
     func mergeChannelStatuses(_ statuses: [ConnectionChannelStatus]) {

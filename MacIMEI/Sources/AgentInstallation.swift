@@ -165,18 +165,7 @@ final class AgentInstallationManager {
     func installBundled(_ candidate: AgentCandidate) throws -> AgentInstallationStatus {
         try require(candidate.sha256 == BundledAgent.sha256, "Повреждён встроенный агент")
         let payload = try AgentDashboardPayload.load(engine.resources)
-        // A bundled agent pins the installed VPN controller, which pins the
-        // display library. Keep that existing chain compatible during updates.
-        // This path does not configure Wi-Fi or enable a VPN.
-        try require(engine.lockFD >= 0, "Установка агента требует блокировки приложения")
-        try engine.acquireRemoteLock()
-        if try inspect().hash == "absent" { _ = try install(candidate) }
-        if try VPNSettingsManager(engine: engine).updateDisplayIntegrationIfNeeded() {
-            let final = try inspect()
-            try require(final.hash == candidate.sha256 && final.running && !final.recoveryPending,
-                        "Агент после обновления компонентов требует проверки. Обновите состояние перед повтором.")
-            return final
-        }
+        // VPN and launcher components are managed by their own operations.
         return try installDashboard(payload) { try install(candidate) }
     }
     private func installDashboard(_ payload: AgentDashboardPayload, installAgent: () throws -> AgentInstallationStatus) throws -> AgentInstallationStatus {

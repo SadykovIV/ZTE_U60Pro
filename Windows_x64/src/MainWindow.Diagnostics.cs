@@ -6,7 +6,6 @@ namespace ZteImeiStudio.Windows;
 
 public sealed partial class MainWindow
 {
-    private Button? _researchCollectButton;
     private Button? _firmwareAdaptationButton;
     private Button? _diagnosticAccessButton;
     private Button? _refreshAdbButton;
@@ -110,8 +109,12 @@ public sealed partial class MainWindow
 
     private void BuildDiagnostics()
     {
-        BuildFirmwareResearch();
-        AddCard("Данные для адаптации прошивки", "Свежее исследование функций программы, файлы экрана, сетевых компонентов, библиотек ZTE и шрифтов в одном ZIP.", panel =>
+        AddCard("Логи и журналы", "Журналы подготовки и подключений, действия программы и ошибки операций. При подключении по SSH добавляются доступные журналы модема и компонентов программы.", panel =>
+        {
+            panel.Children.Add(Actions(("Сохранить логи и журналы", ModemOperation.ExportDiagnostics, null)));
+            panel.Children.Add(Muted("Если модем недоступен, ZIP сохранит локальные журналы и причину пропуска. Просмотр журнала действий остаётся в «Администрирование». Пароли, ключи и профили не включаются."));
+        });
+        AddCard("Данные для адаптации прошивки", "Сведения об устройстве, проверки функций программы, структура прошивки и исходные файлы её компонентов — в одном ZIP. Подробные результаты сохраняются в архиве.", panel =>
         {
             var row = new WrapPanel();
             _firmwareAdaptationButton = ActionButton("Собрать данные для адаптации прошивки", CollectFirmwareAdaptationAsync, false);
@@ -120,12 +123,6 @@ public sealed partial class MainWindow
             row.Children.Add(OperationInfoButton(OperationHelpContent.FirmwareAdaptation));
             panel.Children.Add(row);
             panel.Children.Add(Muted("Только чтение по текущему SSH. Архив сохраняется в выбранное место; неполный сбор отмечается отдельно."));
-        });
-        AddCard("Сбор и экспорт", "Сохранённое исследование и действия программы в одном архиве.", panel =>
-        {
-            panel.Children.Add(Actions(("Сохранить диагностический ZIP", ModemOperation.ExportDiagnostics, null)));
-            panel.Children.Add(Muted("Диагностический ZIP включает сохранённое исследование устройства и действия программы. Новое исследование запускается отдельно."));
-
         });
         UpdateDiagnosticAvailability();
     }
@@ -138,7 +135,6 @@ public sealed partial class MainWindow
         if (_verifyBackupKeyButton is not null) _verifyBackupKeyButton.IsEnabled = idle &&
             System.Net.IPAddress.TryParse(Get("host"),out var keyCheckHost) && keyCheckHost.AddressFamily==System.Net.Sockets.AddressFamily.InterNetwork &&
             Get("web_password").Length>0 && !Get("web_password").Contains('\0');
-        if (_researchCollectButton is not null) _researchCollectButton.IsEnabled = idle;
         if (_firmwareAdaptationButton is not null) _firmwareAdaptationButton.IsEnabled = idle && ssh;
         if (_diagnosticAccessButton is not null) _diagnosticAccessButton.IsEnabled = idle && ssh;
         if (_refreshAdbButton is not null) _refreshAdbButton.IsEnabled = idle && ssh;

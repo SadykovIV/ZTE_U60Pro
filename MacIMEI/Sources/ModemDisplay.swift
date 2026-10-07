@@ -57,13 +57,11 @@ final class ModemDisplayManager {
         "0a462f4021b1306ac5fbf074a674bae9fef952f240436a47468c0126c5d41b50"
     ]
     let engine: ModemEngine
-    private let updateVPNIntegration: (() throws -> Bool)?
-    private let prepareEsimAgent: (() throws -> Void)?
+    private let checkEsimHelper: (() throws -> Void)?
 
-    init(engine: ModemEngine, updateVPNIntegration: (() throws -> Bool)? = nil, prepareEsimAgent: (() throws -> Void)? = nil) {
+    init(engine: ModemEngine, checkEsimHelper: (() throws -> Void)? = nil) {
         self.engine = engine
-        self.updateVPNIntegration = updateVPNIntegration
-        self.prepareEsimAgent = prepareEsimAgent
+        self.checkEsimHelper = checkEsimHelper
     }
 
     private struct Assets {
@@ -277,14 +275,11 @@ final class ModemDisplayManager {
     func inspect() throws -> ModemDisplayInspection { try inspect(assets: assets()) }
 
     /// Install the eSIM-capable bundle without applying a local editor draft.
-    /// Existing VPN installations need their pinned controller upgraded together
-    /// with the agent; an absent VPN is never installed by this action.
+    /// The eSIM page invokes the installed eSIM helper. VPN is independent.
     func installEsimPage() throws -> ModemDisplayInspection {
         try require(engine.lockFD >= 0, "Страница eSIM требует блокировки операции SSH")
         try engine.connection.validate()
-        for name in ["pending.json", "setup-pending.json", "adb-access-pending.json"] {
-            try require(!FileManager.default.fileExists(atPath: engine.root.appendingPathComponent(name).path), "Сначала завершите настройку или смену IMEI")
-        }
+        try require(!FileManager.default.fileExists(atPath: engine.root.appendingPathComponent("adb-access-pending.json").path), "Сначала завершите включение ADB")
         let bundle = try assets(), before = try inspect(assets: bundle)
         try require(before.canInstall && before.layoutIsSafe && before.layout != nil, before.pagesWarning ?? before.layoutWarning ?? before.detail)
         try engine.acquireRemoteLock()
@@ -293,25 +288,19 @@ final class ModemDisplayManager {
                     "Перед установкой страницы eSIM модем или его раскладка изменились")
         try require(locked.canInstall && locked.layoutIsSafe, locked.pagesWarning ?? locked.layoutWarning ?? locked.detail)
         try preflightEsimLauncher(assets: bundle, expected: locked)
-        // The existing VPN path includes agent, controller, dashboard and launcher
-        // once, and preserves profile configuration. Avoid a second launcher apply.
-        let integrated = try updateVPNIntegration?() ?? VPNSettingsManager(engine: engine).updateDisplayIntegrationIfNeeded()
-        let installed: ModemDisplayInspection
-        if integrated {
-            installed = try confirmInstall(assets: bundle, expected: locked)
-        } else {
-            if let prepareEsimAgent { try prepareEsimAgent() }
-            else {
-                engine.update("Проверяю и устанавливаю агент для страницы eSIM", 0.25)
-                let candidate = try AgentCandidate.inspect(engine.resources.appendingPathComponent("Onboarding/zte-agent"))
-                try require(candidate.sha256 == BundledAgent.sha256, "Повреждён встроенный агент")
-                _ = try AgentInstallationManager(engine: engine).installBundled(candidate)
-            }
-            let checked = try inspect(assets: bundle)
-            try require(checked.sameDevice(as: locked) && checked.layout == locked.layout && checked.layoutIsDefault == locked.layoutIsDefault && checked.pages == locked.pages && checked.pagesIsDefault == locked.pagesIsDefault,
-                        "Во время обновления агента модем или его раскладка изменились")
-            installed = try ModemDisplayManager(engine: engine, updateVPNIntegration: { false }).install()
+        if let checkEsimHelper { try checkEsimHelper() }
+        else {
+            let command = "set -eu; test -f /data/zte-agent && test ! -L /data/zte-agent && test -x /data/zte-agent; " +
+                "test \"$(stat -c %u /data/zte-agent)\" = 0; mode=$(stat -c %a /data/zte-agent); test \"$((0$mode & 022))\" = 0; " +
+                "sha256sum /data/zte-agent | cut -d ' ' -f1"
+            let result = try engine.transport.run(command, input: nil, timeout: 15)
+            try require(result.status == 0 && CommandText.decode(result.stdout).trimmingCharacters(in: .whitespacesAndNewlines) == BundledAgent.sha256,
+                        "Для страницы eSIM нужен актуальный компонент eSIM из комплекта агента. Установите или обновите его в разделе «Агент». Запуск постоянного агента не требуется.")
         }
+        let checked = try inspect(assets: bundle)
+        try require(checked.sameDevice(as: locked) && checked.layout == locked.layout && checked.layoutIsDefault == locked.layoutIsDefault && checked.pages == locked.pages && checked.pagesIsDefault == locked.pagesIsDefault,
+                    "Во время проверки компонента eSIM модем или его раскладка изменились")
+        let installed = try ModemDisplayManager(engine: engine).install()
         try require(installed.sameDevice(as: before) && installed.layout == before.layout && installed.layoutIsDefault == before.layoutIsDefault && installed.pages == before.pages && installed.pagesIsDefault == before.pagesIsDefault,
                     "Страница eSIM установлена, но сохранение раскладки не подтверждено. Обновите состояние Launcher.")
         guard let pages = installed.pages else { throw IMEIError.message("Не удалось прочитать порядок страниц") }
@@ -333,7 +322,7 @@ final class ModemDisplayManager {
             "; test \"$(cat /sys/block/mmcblk0/device/cid)\" = " + shellQuote(expected.identity.cid) +
             "; test \"$(cat /proc/sys/kernel/random/boot_id)\" = " + shellQuote(expected.bootID) +
             "; sh " + shellQuote(stage + "/install-launcher.sh") + " " + shellQuote(stage) + " preflight"
-        engine.update("Проверяю компоненты страницы eSIM до обновления агента", 0.15)
+        engine.update("Проверяю компоненты перед установкой страницы eSIM", 0.15)
         let reply = try engine.remote(command, timeout: 45)
         try require(String(decoding: reply, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) == "LAUNCHER_PREFLIGHT_OK",
                     "Предварительная проверка Launcher не подтверждена. Компоненты не обновлялись.")
@@ -341,7 +330,7 @@ final class ModemDisplayManager {
 
     func install(layout: ModemDisplayLayout? = nil, pages: ModemLauncherPages? = nil) throws -> ModemDisplayInspection {
         try layout?.validate(); try pages?.validate()
-        // The dedicated path prepares the agent and coupled VPN controller once.
+        // The dedicated path checks the helper required by the eSIM page.
         // Its inner generic install has no pages argument, so this cannot recurse.
         if pages?.pages.contains(.esim) == true {
             let installed = try installEsimPage()
@@ -349,9 +338,7 @@ final class ModemDisplayManager {
         }
         try require(engine.lockFD >= 0, "Операция дисплея требует общей блокировки приложения")
         try engine.connection.validate()
-        for name in ["pending.json", "setup-pending.json", "adb-access-pending.json"] {
-            try require(!FileManager.default.fileExists(atPath: engine.root.appendingPathComponent(name).path), "Сначала завершите настройку или смену IMEI")
-        }
+        try require(!FileManager.default.fileExists(atPath: engine.root.appendingPathComponent("adb-access-pending.json").path), "Сначала завершите включение ADB")
         let bundle = try assets(), before = try inspect(assets: bundle)
         try require(before.canInstall, before.pagesWarning ?? before.layoutWarning ?? before.detail)
         try engine.acquireRemoteLock()
@@ -360,11 +347,6 @@ final class ModemDisplayManager {
         try require(locked.canInstall, locked.pagesWarning ?? locked.layoutWarning ?? locked.detail)
         if locked.state == .ready && locked.running {
             return try applyPreferences(layout: layout, pages: pages, assets: bundle, expected: locked)
-        }
-        let integrated = try updateVPNIntegration?() ?? VPNSettingsManager(engine: engine).updateDisplayIntegrationIfNeeded()
-        if integrated {
-            let installed = try confirmInstall(assets: bundle, expected: before)
-            return try applyPreferences(layout: layout, pages: pages, assets: bundle, expected: installed)
         }
         let stage = "/tmp/zte-vpn-agent-" + UUID().uuidString.lowercased()
         _ = try engine.remote("umask 077; mkdir " + shellQuote(stage))
@@ -399,9 +381,7 @@ final class ModemDisplayManager {
         try layout.validate()
         try require(engine.lockFD >= 0, "Операция дисплея требует общей блокировки приложения")
         try engine.connection.validate()
-        for name in ["pending.json", "setup-pending.json", "adb-access-pending.json"] {
-            try require(!FileManager.default.fileExists(atPath: engine.root.appendingPathComponent(name).path), "Сначала завершите настройку или смену IMEI")
-        }
+        try require(!FileManager.default.fileExists(atPath: engine.root.appendingPathComponent("adb-access-pending.json").path), "Сначала завершите включение ADB")
         let bundle = try assets(), before = try inspect(assets: bundle)
         try require(before.canApplyLayout, before.layoutWarning ?? "Сначала установите или обновите плитки дисплея. " + before.detail)
         try engine.acquireRemoteLock()
@@ -417,9 +397,7 @@ final class ModemDisplayManager {
         try pages.validate()
         try require(engine.lockFD >= 0, "Операция дисплея требует общей блокировки приложения")
         try engine.connection.validate()
-        for name in ["pending.json", "setup-pending.json", "adb-access-pending.json"] {
-            try require(!FileManager.default.fileExists(atPath: engine.root.appendingPathComponent(name).path), "Сначала завершите настройку или смену IMEI")
-        }
+        try require(!FileManager.default.fileExists(atPath: engine.root.appendingPathComponent("adb-access-pending.json").path), "Сначала завершите включение ADB")
         let bundle = try assets(), before = try inspect(assets: bundle)
         try require(before.canApplyPages, before.pagesWarning ?? "Сначала установите или обновите плитки дисплея. " + before.detail)
         try engine.acquireRemoteLock()

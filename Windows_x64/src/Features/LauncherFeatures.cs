@@ -152,11 +152,6 @@ public sealed partial class DeviceFeatureService
             var writePages = requested is not null || !desiredPages.Order.SequenceEqual(savedPages.Order);
             var files = await LoadResourcesAsync("VPN", LauncherNames, ct);
             if (writePages) files.Add("page-layout.conf", desiredPages.Encode());
-            var dashboard = await LoadBundledDashboardAsync(ct);
-            var agent = await File.ReadAllBytesAsync(Path.Combine(_resourcesRoot, "Onboarding", "zte-agent"), ct);
-            AgentPackage.VerifyPayload(agent);
-            var manager = await ResourceAsync("AgentInstallation", "manager.sh", ct);
-            Check(Sha(manager) == AgentManagerHash, "Несовместимый установщик агента.");
             var stage = await StageAsync("zte-vpn-agent", files, ct);
             var remoteFinished = false;
             try
@@ -165,23 +160,18 @@ public sealed partial class DeviceFeatureService
                 var check = await _shell.RunAsync(command + " preflight", timeout: TimeSpan.FromSeconds(60), ct: ct);
                 remoteFinished = KnownInstallerExit(check.ExitCode);
                 Check(remoteFinished && check.Success && Text(check.Stdout) == "LAUNCHER_PREFLIGHT_OK", InstallerFailure("launcher_preflight", check));
-                var vpn = await RunTextAsync("if test -e /data/zte-vpn || test -L /data/zte-vpn; then echo present; else echo absent; fi", ct: ct);
-                Check(vpn is "present" or "absent", "Каталог VPN требует ручной проверки.");
-                if (vpn == "present")
+                if (desiredPages.Order.Contains("esim"))
                 {
-                    // The controller pins the launcher payload. Update it through its
-                    // existing transaction while preserving VPN profiles and settings.
-                    await UpdateVpnIntegrationAsync(identity, token, ct, pages: writePages ? desiredPages : null);
+                    var helper = await _shell.RunAsync("set -eu; test -f /data/zte-agent && test ! -L /data/zte-agent && test -x /data/zte-agent; " +
+                        "test \"$(stat -c %u /data/zte-agent)\" = 0; mode=$(stat -c %a /data/zte-agent); test \"$((0$mode & 022))\" = 0; " +
+                        "sha256sum /data/zte-agent | cut -d ' ' -f1", timeout: TimeSpan.FromSeconds(15), ct: ct);
+                    Check(helper.Success && Text(helper.Stdout) == AgentPackage.Sha256,
+                        "Для страницы eSIM нужен актуальный компонент eSIM из комплекта агента. Установите или обновите его в разделе «Агент». Запуск постоянного агента не требуется.");
                 }
-                else
-                {
-                    await InstallBundledDashboardAsync(identity, token, dashboard, ct,
-                        () => InstallBundledAgentBinaryAsync(identity, token, agent, manager, ct));
-                    remoteFinished = false;
-                    var applied = await _shell.RunAsync(command, timeout: TimeSpan.FromSeconds(180), ct: ct);
-                    remoteFinished = KnownInstallerExit(applied.ExitCode);
-                    Check(remoteFinished && applied.Success && Text(applied.Stdout) == "LAUNCHER_INSTALLED", InstallerFailure("launcher_install", applied));
-                }
+                remoteFinished = false;
+                var applied = await _shell.RunAsync(command, timeout: TimeSpan.FromSeconds(180), ct: ct);
+                remoteFinished = KnownInstallerExit(applied.ExitCode);
+                Check(remoteFinished && applied.Success && Text(applied.Stdout) == "LAUNCHER_INSTALLED", InstallerFailure("launcher_install", applied));
             }
             catch (Exception) when (!ct.IsCancellationRequested && !remoteFinished)
             {

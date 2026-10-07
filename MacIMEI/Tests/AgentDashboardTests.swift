@@ -83,7 +83,7 @@ private final class FakeRemote: RemoteTransport {
         }
         try test("current bundled agent still installs matching dashboard without VPN") {
             let r = FakeRemote(); try run(r)
-            try check(r.dashboardCalls == 1 && r.preflightCalls == 1 && r.identities == 6, "Dashboard path or before/after guards missing")
+            try check(r.dashboardCalls == 1 && r.preflightCalls == 1 && r.identities == 5, "Dashboard path or before/after guards missing")
             try check(!r.calls.contains { $0.contains("upgrade-controller.sh") || $0.contains(" install ") }, "Current agent unexpectedly replaced or VPN installer invoked")
             try check(r.calls.contains { $0.hasPrefix("rm -f ") && $0.contains("zte-dashboard-stage-") }, "Temporary payload not cleaned")
         }
@@ -94,6 +94,10 @@ private final class FakeRemote: RemoteTransport {
             try run(r, skipFirmwareCheck: true)
             try check(r.installs == 1 && r.installed && r.dashboardCalls == 2, "First or repeated B28 agent installation failed")
             try check(!r.calls.contains { $0.contains("upgrade-controller.sh") || $0.contains("install-launcher.sh") }, "Agent-only installation invoked display ABI or VPN update")
+        }
+        try test("agent install never probes unrelated VPN or launcher components") {
+            let r = FakeRemote(); try run(r)
+            try check(!r.calls.contains{$0.contains("/data/zte-vpn") || $0.contains("launcher") || $0.contains("upgrade-controller")}, "Agent install accessed another component")
         }
         try test("custom agent path does not load or install a dashboard") {
             let r = FakeRemote(); try run(r, custom: true); try check(r.dashboardCalls == 0 && r.identities == 1, "Custom path installed bundled panel")

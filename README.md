@@ -12,19 +12,23 @@ agent **2.9.0-esim.4**. [Changes and verification limits](docs/RELEASE-1.24.9.md
 The release package is in `dist/1.24.9`.
 [Preparation details and limits](docs/PREPARATION-1.24.7.md).
 
-## Local candidate 1.24.13
+## Local candidate 1.24.14
 
-The global agent diagnostic mode and its extra installation/status checks have
-been removed. Firmware research runs in the desktop application over SSH.
-Agent operations validate their own requirements.
+Diagnostics now has two actions: **Logs and journals** and **Firmware adaptation
+data**. Logs include preparation, connections, application operations and available
+modem logs. Adaptation collects the fresh technical survey and firmware files in
+one ZIP, without a long checklist on screen.
 
-Exact B31 and FLY B28 profiles are included for Russian screen localization and
-Launcher pages. Windows agent installation and independent SSH tools use the
-actual platform and component requirements. **Collect firmware adaptation data**
-now combines up to 40 component files, 57 fresh probes and sanitized activity.
-[Changes and remaining checks](docs/RELEASE-1.24.13.md) ·
-[Collection instructions](docs/FIRMWARE-ADAPTATION-DATA.md).
-Full B28 operation, including VPN/TTL and modem writes, is not yet verified.
+Desktop VPN management now imports, lists, activates, renames and deletes the same
+profiles used by the agent. VPN, agent and Launcher installations are separate.
+IMEI changes run only from the desktop app after SSH connection. TTL, eSIM and
+VPN desktop operations do not require the permanent agent.
+
+Exact B31 and FLY B28 screen profiles remain included. Full B28 operation,
+including VPN/TTL and modem writes, still needs hardware verification.
+[Changes and verification limits](docs/RELEASE-1.24.14.md) ·
+[Operation requirements](docs/OPERATION-DEPENDENCIES.md) ·
+[Collect firmware adaptation data](docs/FIRMWARE-ADAPTATION-DATA.md).
 
 ## Changes since published version 1.23.3
 

@@ -2,7 +2,7 @@
 
 ## English
 
-In **ZTE U60Pro Manager 1.24.13**, connect through SSH, then open **Modem preparation → Diagnostics → Collect firmware adaptation data** and choose a ZIP destination. One archive contains a **fresh technical survey** and the available fixed firmware files. You do not need a separate research export. The ZIP is saved locally and is not uploaded automatically.
+In **ZTE U60Pro Manager 1.24.14**, connect through SSH, then open **Modem preparation → Diagnostics → Collect firmware adaptation data** and choose a ZIP destination. One archive contains a **fresh technical survey** and the available fixed firmware files. You do not need a separate research export. The ZIP is saved locally and is not uploaded automatically.
 
 ### What the ZIP contains
 
@@ -37,7 +37,7 @@ The B28 Launcher adapter now has an exact profile for 34 called functions, hook 
 
 ## Русский
 
-В **ZTE U60Pro Manager 1.24.13** подключитесь по SSH, откройте **«Подготовка модема → Диагностика → Собрать данные для адаптации прошивки»** и выберите место для ZIP. В один архив входят **свежее техническое исследование** и доступные файлы прошивки из фиксированного списка. Отдельно экспортировать исследование не нужно. ZIP сохраняется на компьютере и автоматически никуда не отправляется.
+В **ZTE U60Pro Manager 1.24.14** подключитесь по SSH, откройте **«Подготовка модема → Диагностика → Собрать данные для адаптации прошивки»** и выберите место для ZIP. В один архив входят **свежее техническое исследование** и доступные файлы прошивки из фиксированного списка. Отдельно экспортировать исследование не нужно. ZIP сохраняется на компьютере и автоматически никуда не отправляется.
 
 ### Что входит в архив
 

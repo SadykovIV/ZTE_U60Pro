@@ -52,6 +52,17 @@ private func snapshot() -> ConnectionOverviewSnapshot {
             let m = try model()
             try check(!m.connected && m.connectionLabel == "Нет подключения" && !m.canManage && !m.canCollectDiagnostics, "Fresh connection state is misleading")
         }
+        try test("IMEI never bootstraps SSH or installs an agent from supplied preparation passwords") {
+            let m = try model()
+            m.imei1 = "490154203237518"; m.imei2 = "356938035643809"
+            m.webPassword = "synthetic-web"; m.agentPassword = "synthetic-agent"
+            try check(!m.canApply, "Preparation passwords authorized disconnected IMEI change")
+            m.apply()
+            try check(m.operationTask == nil && !m.busy && !m.connected, "IMEI started preparation while disconnected")
+            m.acceptChannelSelection(selection(.ssh))
+            m.webPassword = ""; m.agentPassword = ""
+            try check(m.canApply && m.agentInstallationStatus == nil, "IMEI requires optional agent or Web credentials after SSH connection")
+        }
         try test("Firmware adaptation collection requires only the selected SSH session and stays passive") {
             let m = try model(); var reads = 0
             try check(!m.canCollectFirmwareSupport, "Disconnected collection enabled")
@@ -147,8 +158,6 @@ private func snapshot() -> ConnectionOverviewSnapshot {
             m.forcePreparation = true
             m.preparePreferredSSH(); await m.operationTask?.value
             try check(!m.busy && m.operationTask == nil && m.forcePreparation && m.webPassword == "retained-web-canary" && m.backupSuffix == "retained-backup-canary", "Failed preparation preflight consumed credentials/force intent or retained busy")
-            m.setup(); await m.operationTask?.value
-            try check(!m.busy && m.operationTask == nil && m.webPassword == "retained-web-canary" && m.agentPassword == "retained-agent-canary" && m.backupSuffix == "retained-backup-canary", "Legacy preparation wrapper consumed credentials")
             if let enumerator = FileManager.default.enumerator(at: m.storage, includingPropertiesForKeys: [.isRegularFileKey]) {
                 for case let file as URL in enumerator {
                     guard (try? file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
@@ -230,7 +239,7 @@ private func snapshot() -> ConnectionOverviewSnapshot {
         }
         try test("ADB availability is reserved for SSH preparation") {
             let m = try model(); m.connectionMode = .adb; m.acceptChannelSelection(selection(.adb, requested: .adb))
-            try check(!m.connected && !m.accessReady && m.activeChannel == nil && !m.canCollectDiagnostics && !m.canResearchFirmware, "ADB connection not visible")
+            try check(!m.connected && !m.accessReady && m.activeChannel == nil && !m.canCollectDiagnostics && !m.canCollectFirmwareSupport, "ADB connection not visible")
             try check(!m.canManage && !m.canReadModem && !m.canUseSystemBackupConnection && !m.canApplyTTL, "ADB gained SSH capabilities")
             m.installDisplay(); m.applyDisplayLayout(); m.installVPN(); m.installAgent(custom: false); m.restoreAgent()
             m.enableScreenLocalization(); m.applyTTLSettings(); m.createDeviceBackup(); m.createSystemBackup()
@@ -561,8 +570,8 @@ private func snapshot() -> ConnectionOverviewSnapshot {
             let m = try model(); m.host = "invalid host for isolated test"
             m.channelSession = selection(.adb).session; m.activeChannel = .adb; m.connected = true
             m.acceptConnectionOverview(snapshot()); m.ttlOutboundValue = "117"
-            m.refreshModemInformation(); m.startFirmwareResearch(); m.collectDiagnostics()
-            try check(m.operationTask == nil && !m.busy && !m.canReadModem && !m.canResearchFirmware && !m.canCollectDiagnostics, "Stale ADB enabled ordinary modem work")
+            m.refreshModemInformation(); m.collectFirmwareSupport()
+            try check(m.operationTask == nil && !m.busy && !m.canReadModem && !m.canCollectFirmwareSupport && !m.canCollectDiagnostics, "Stale ADB enabled ordinary modem work")
             try check(m.modemInformation != nil && m.ttlOutboundValue == "117", "Refused request erased unrelated state")
         }
         try test("Partial overview errors retain connection, good sections and user's launcher draft") {

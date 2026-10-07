@@ -83,15 +83,24 @@ internal sealed class TerminalSession : ITerminalSession
 
 public sealed partial class WindowsModemService
 {
+    internal static async Task<(string Cid, string BootId)> ReadTerminalIdentityAsync(ZteImeiStudio.Transport.IRemoteShell shell, string storage, CancellationToken ct)
+    {
+        foreach (var name in new[] { "adb-access-pending.json", "adb-toggle-pending.json", "component-cleanup-pending.json", "system-restore-pending.json" })
+            if (File.Exists(Path.Combine(storage,name)) || Directory.Exists(Path.Combine(storage,name)))
+                throw new InvalidOperationException("Сначала завершите незавершённую операцию доступа или восстановления модема; терминал пока недоступен.");
+        var identity=await SshReadProof.ReadSessionAsync(shell,ct);
+        if (identity.Uid != "0" || identity.Cid is not string cid || identity.BootId is not string boot)
+            throw new InvalidDataException("Для терминала нужны root-доступ SSH, CID и boot ID модема.");
+        return (cid, boot);
+    }
+
     private partial async Task<ITerminalSession> OpenTerminalCoreAsync(CancellationToken ct)
     {
         RequireSsh();
         var operationLock=new FileStream(Path.Combine(_storage,"operation.lock"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None);
         try
         {
-        foreach (var name in new[] { "setup-pending.json", "adb-access-pending.json", "imei-pending.json", "pending.json", "system-restore-pending.json" })
-            if (File.Exists(Path.Combine(_storage,name))) throw new InvalidOperationException("Сначала завершите незавершённую операцию модема; терминал пока недоступен.");
-        var identity=await _imei!.IdentityAsync(ct);
+        var identity=await ReadTerminalIdentityAsync(_sshRead ?? _ssh!, _storage, ct);
         var (client,stream)=await _ssh!.OpenShellAsync(ct);
         try
         {

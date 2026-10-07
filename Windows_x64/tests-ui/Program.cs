@@ -167,9 +167,13 @@ await session.Dispatch(()=> {
   }
   NamedClick(adaptationWindow,"Navigation0");NamedClick(adaptationWindow,"Section0-1");
   Button AdaptationButton()=>adaptationWindow.GetLogicalDescendants().OfType<Button>().Single(b=>b.Name=="CollectFirmwareAdaptation");
+  var diagnosticText=adaptationWindow.GetLogicalDescendants().OfType<TextBlock>().Select(t=>t.Text).ToArray();
+  Check(diagnosticText.Count(t=>t==Localization.Translate("Логи и журналы"))==1&&diagnosticText.Count(t=>t==Localization.Translate("Данные для адаптации прошивки"))==1,language+" diagnostics has exactly the two requested section titles");
+  Check(!adaptationWindow.GetLogicalDescendants().OfType<Expander>().Any()&&!adaptationWindow.GetLogicalDescendants().OfType<Button>().Any(b=>b.Name=="CollectFirmwareResearch"),language+" diagnostics has no separate device survey or expandable checklists");
+  Check(FindButton(adaptationWindow,"Сохранить логи и журналы").IsEnabled,language+" logs remain exportable without SSH");
   Check(AdaptationButton().Content?.ToString()==(language=="en"?"Collect firmware adaptation data":"Собрать данные для адаптации прошивки"),language+" adaptation button label is localized");
   Check(adaptationWindow.GetLogicalDescendants().OfType<TextBlock>().Any(t=>t.Text==(language=="en"?"Firmware adaptation data":"Данные для адаптации прошивки")),language+" adaptation card title is localized");
-  Check(adaptationWindow.GetLogicalDescendants().OfType<TextBlock>().Any(t=>t.Text==(language=="en"?"A fresh survey of application features, current screen files and available fonts in one ZIP.":"Свежее исследование функций программы, текущие файлы экрана и доступные шрифты в одном ZIP.")),language+" adaptation card description is localized");
+  Check(adaptationWindow.GetLogicalDescendants().OfType<TextBlock>().Any(t=>t.Text==Localization.Translate("Сведения об устройстве, проверки функций программы, структура прошивки и исходные файлы её компонентов — в одном ZIP. Подробные результаты сохраняются в архиве.")),language+" adaptation card description is localized");
   Check(adaptationWindow.GetLogicalDescendants().OfType<TextBlock>().Any(t=>t.Text==(language=="en"?"Read-only access over the current SSH connection. The archive is saved to the chosen location; incomplete collection is reported separately.":"Только чтение по текущему SSH. Архив сохраняется в выбранное место; неполный сбор отмечается отдельно.")),language+" adaptation read-only and partial-collection hint is localized");
   Check(!AdaptationButton().IsEnabled,language+" disconnected adaptation capture is disabled");
   foreach(var mode in new[]{"ADB","Web"})
@@ -203,7 +207,7 @@ await session.Dispatch(()=> {
   adaptationHelp.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();var adaptationDialog=adaptationWindow.OwnedWindows.Single();
   Check(adaptationDialog.Title==(language=="en"?"Collecting firmware adaptation data":"Сбор данных для адаптации прошивки"),language+" adaptation help title is localized");
   var adaptationHelpText=string.Join('\n',adaptationDialog.GetLogicalDescendants().OfType<TextBlock>().Select(t=>t.Text));
-  Check(adaptationHelpText.Contains(language=="en"?"current screen UI binary":"текущий бинарник экранного интерфейса",StringComparison.Ordinal)&&adaptationHelpText.Contains(language=="en"?"If a verified backup from our screen localization is available":"Если доступна проверенная копия нашей русификации",StringComparison.Ordinal),language+" adaptation help distinguishes current files from optional verified localization originals");
+  Check(adaptationHelpText.Contains(language=="en"?"screen":"экрана",StringComparison.Ordinal)&&adaptationHelpText.Contains(language=="en"?"If a verified backup from our screen localization is available":"Если доступна проверенная копия нашей русификации",StringComparison.Ordinal),language+" adaptation help distinguishes current files from optional verified localization originals");
   Check(adaptationHelpText.Contains(language=="en"?"agent startup script":"сценарий запуска агента",StringComparison.Ordinal)&&adaptationHelpText.Contains(language=="en"?"passwords":"пароли",StringComparison.Ordinal)&&adaptationHelpText.Contains(language=="en"?"full flash image":"полный образ флеш-памяти",StringComparison.Ordinal)&&adaptationHelpText.Contains(language=="en"?"are not collected":"не собираются",StringComparison.Ordinal),language+" adaptation help explicitly excludes agent startup, secrets and full flash");
   Check(adaptationHelpText.Contains("SHA-256",StringComparison.Ordinal)&&adaptationHelpText.Contains(language=="en"?"incomplete collection":"неполный сбор",StringComparison.Ordinal)&&adaptationHelpText.Contains(language=="en"?"does not authorize":"не разрешает",StringComparison.Ordinal),language+" adaptation help states integrity, partial result and installation boundary");
   Check(adaptationHelpText.Contains(language=="en"?"fresh survey":"новое исследование",StringComparison.Ordinal)&&adaptationHelpText.Contains("TTL")&&adaptationHelpText.Contains("VPN")&&adaptationHelpText.Contains(language=="en"?"optional fonts":"необязательных шрифтов",StringComparison.Ordinal),language+" adaptation help covers fresh whole-program research and optional fonts");
@@ -259,14 +263,14 @@ await session.Dispatch(()=> {
   Check(!window.GetLogicalDescendants().OfType<Button>().Any(b=>b.Name is "DiscoverConnections" or "EnableDiagnosticAdb" or "DiagnosticAccess" or "RefreshAdbState"),language+" unified diagnostics contains no connection/ADB/access controls");
   Check(!window.GetLogicalDescendants().OfType<TextBox>().Any(),language+" diagnostics contains no editable connection fields");
   Check(!window.GetLogicalDescendants().OfType<Button>().Any(b=>b.Content?.ToString()==Localization.Translate("Перезагрузить модем")),language+" diagnostics contains no reboot action");
-  Check(window.GetLogicalDescendants().OfType<Button>().Any(b=>b.Name=="CollectFirmwareResearch"),language+" firmware research exists only in its diagnostic group");
+  Check(!window.GetLogicalDescendants().OfType<Button>().Any(b=>b.Name=="CollectFirmwareResearch"),language+" standalone survey control is removed; adaptation owns the survey");
   Set(window,"_terminal",new FakeTerminal());Render(window);
   typeof(MainWindow).GetMethod("SetBusy",BindingFlags.NonPublic|BindingFlags.Instance)!.Invoke(window,[false]);
-  Check(!window.GetLogicalDescendants().OfType<Button>().Single(b=>b.Name=="CollectFirmwareResearch").IsEnabled,language+" clearing busy never bypasses active terminal research guard");
+  Check(!window.GetLogicalDescendants().OfType<Button>().Single(b=>b.Name=="CollectFirmwareAdaptation").IsEnabled,language+" clearing busy never bypasses active terminal research guard");
   Set(window,"_terminal",null);Render(window);
 
-  Check(FindButton(window,"Сохранить диагностический ZIP").IsEnabled,language+" local diagnostic export remains available without connection");
-  Check(window.GetLogicalDescendants().OfType<Button>().Count(b=>b.Content?.ToString()==Localization.Translate("Сохранить диагностический ZIP"))==1&&!window.GetLogicalDescendants().OfType<Button>().Any(b=>b.Content?.ToString()==Localization.Translate("Экспортировать ZIP")),language+" diagnostics has one common ZIP export and no separate research export");
+  Check(FindButton(window,"Сохранить логи и журналы").IsEnabled,language+" local diagnostic export remains available without connection");
+  Check(window.GetLogicalDescendants().OfType<Button>().Count(b=>b.Content?.ToString()==Localization.Translate("Сохранить логи и журналы"))==1&&!window.GetLogicalDescendants().OfType<Button>().Any(b=>b.Content?.ToString()==Localization.Translate("Экспортировать ZIP")),language+" diagnostics has one common ZIP export and no separate research export");
   using(var frame=window.CaptureRenderedFrame()??throw new Exception("Missing reports frame"))frame.Save(Path.Combine(screenshots,language+"-diagnostic-reports.png"));
   Check(!window.GetLogicalDescendants().OfType<Button>().Any(b=>b.Name?.StartsWith("DiagnosticsGroup")==true),language+" diagnostics has a single combined view");
   NamedClick(window,"Navigation6");
@@ -340,7 +344,7 @@ await session.Dispatch(()=> {
  var activeSecrets=(Dictionary<string,TextBox>)Get(active,"_secretFields")!;
  foreach(var key in new[]{"web_password","agent_password","backup_key_suffix"})activeSecrets[key].Text="synthetic-"+key;
  Pump();NamedClick(active,"VerifyBackupKey");
- NamedClick(active,"Section0-1");NamedClick(active,"CollectFirmwareResearch");NamedClick(active,"Section0-0");
+ NamedClick(active,"Section0-1");NamedClick(active,"Section0-0");
  Check(((Dictionary<string,TextBox>)Get(active,"_secretFields")!).All(x=>x.Value.Text=="synthetic-"+x.Key),"read-only key check and diagnostics navigation retain target preparation credentials");
  FindButton(active,"↻").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();
  Check(lifecycle.Requests.Count==1,"refresh without configured SSH does not invent a transport or replay writes");
@@ -443,11 +447,11 @@ await session.Dispatch(()=> {
  Localization.SetLanguage("ru",persist:false);
  var discovery=new FakeModem {AllowPreparation=true};var first=new MainWindow(discovery,persistPreferences:false);first.Show();Pump();
  Check(!first.GetLogicalDescendants().OfType<Button>().Any(b=>b.Name=="CollectFirmwareResearch"),"connection no longer displays research but keeps preparation precondition");
- NamedClick(first,"Section0-1");NamedClick(first,"CollectFirmwareResearch");
- Check(discovery.ResearchParameters?["mode"]=="SSH","independent diagnostic survey is SSH-only before preparation");
+ NamedClick(first,"Section0-1");
+ Check(discovery.Events.Count==0&&!first.GetLogicalDescendants().OfType<Button>().Any(b=>b.Name=="CollectFirmwareResearch"),"opening diagnostics never repeats preparation survey");
  NamedClick(first,"Section0-0");
  FindButton(first,"Выполнить предварительную подготовку модема").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();
- Check(discovery.Events.SequenceEqual(new[]{"research","bootstrap-research","prepare"})&&discovery.ResearchParameters?["mode"]=="Автоматически","GUI uses explicit bootstrap survey before preparing SSH access");
+ Check(discovery.Events.SequenceEqual(new[]{"bootstrap-research","prepare"})&&discovery.ResearchParameters?["mode"]=="Автоматически","GUI uses explicit bootstrap survey before preparing SSH access");
  Check(((ResearchReport?)Get(first,"_researchReport"))?.BindingStrength=="transport-only","GUI retains incomplete survey rather than inventing full identity");
  first.Close();Pump();
  var persistedRoot=Path.Combine(Path.GetTempPath(),"zte-ui-connection-restart-"+Guid.NewGuid());Directory.CreateDirectory(persistedRoot);
@@ -458,12 +462,13 @@ await session.Dispatch(()=> {
   var savedService=new WindowsModemService(persistedRoot,Path.Combine(windowsRoot,"Resources"));var settings=savedService.GetConnectionSettings();
   Check(settings.Host=="192.0.2.23"&&settings.Port==2223&&settings.Username=="root"&&settings.KeyPath==savedKey&&settings.KnownHostsPath==savedHosts,"service restores connection metadata without reading key contents");
   var restartedModem=new FakeModem{AllowDiagnostics=true,Settings=settings};var restarted=new MainWindow(restartedModem,persistPreferences:false);restarted.Show();Pump();
-  NamedClick(restarted,"Section0-1");NamedClick(restarted,"CollectFirmwareResearch");
-  Check(restartedModem.ResearchParameters?["host"]==settings.Host&&restartedModem.ResearchParameters?["port"]=="2223"&&restartedModem.ResearchParameters?["key_path"]==savedKey&&restartedModem.ResearchParameters?["known_hosts_path"]==savedHosts&&restartedModem.ResearchParameters?["mode"]=="SSH","fresh window diagnostic survey uses restored SSH settings after restart");
+  NamedClick(restarted,"Section0-1");
+  var restoredForm=(Dictionary<string,string>)Get(restarted,"_form")!;
+  Check(restoredForm["host"]==settings.Host&&restoredForm["key_path"]==savedKey&&restoredForm["known_hosts_path"]==savedHosts,"diagnostics retains restored connection selection after restart");
   NamedClick(restarted,"Section0-0");var updatedHost=restarted.GetLogicalDescendants().OfType<TextBox>().Single(t=>t.Watermark=="192.168.0.1");updatedHost.Text="192.0.2.24";
   var updatedKey=restarted.GetLogicalDescendants().OfType<TextBox>().Single(t=>t.Watermark==Localization.Translate("Использовать локальный ключ"));updatedKey.Text=Path.Combine(persistedRoot,"new-key-path-only");Pump();
-  NamedClick(restarted,"Section0-1");NamedClick(restarted,"CollectFirmwareResearch");
-  Check(restartedModem.ResearchParameters?["host"]=="192.0.2.24"&&restartedModem.ResearchParameters?["key_path"]==Path.Combine(persistedRoot,"new-key-path-only"),"current Connection edits override saved settings for subsequent survey");
+  NamedClick(restarted,"Section0-1");
+  Check(restoredForm["host"]=="192.0.2.24"&&restoredForm["key_path"]==Path.Combine(persistedRoot,"new-key-path-only"),"current Connection edits remain selected in diagnostics");
   Check(restartedModem.Operations==0,"restoring settings and opening diagnostics never dispatches a modem operation");
   restarted.Close();Pump();
  }
@@ -531,11 +536,10 @@ await session.Dispatch(()=> {
  Check(!panel.GetLogicalDescendants().OfType<CheckBox>().Single(c=>c.Name=="AdbEnabled").IsEnabled,"pending preparation blocks runtime ADB toggle");
 
  NamedClick(panel,"Section0-1");
- Check(panel.GetLogicalDescendants().OfType<Button>().Any(b=>b.Name=="CollectFirmwareAdaptation"&&b.Content?.ToString()=="Собрать данные для адаптации прошивки"),"diagnostics offers an explicit firmware adaptation capture separately from ordinary research");
- NamedClick(panel,"CollectFirmwareResearch");
- Check(diagnostics.ResearchParameters?["host"]=="192.0.2.2"&&diagnostics.ResearchParameters?["mode"]=="SSH","general firmware survey uses SSH only");
- Check(panel.GetLogicalDescendants().OfType<Button>().Count(b=>b.Content?.ToString()=="Сохранить диагностический ZIP")==1&&!panel.GetLogicalDescendants().OfType<Button>().Any(b=>b.Content?.ToString()=="Экспортировать ZIP"),"saved survey uses one common diagnostic ZIP export after disconnected partial read");
- FindButton(panel,"Сохранить диагностический ZIP").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();
+ Check(panel.GetLogicalDescendants().OfType<Button>().Any(b=>b.Name=="CollectFirmwareAdaptation"&&b.Content?.ToString()=="Собрать данные для адаптации прошивки"),"diagnostics offers one combined firmware adaptation action");
+ Check(!panel.GetLogicalDescendants().OfType<Button>().Any(b=>b.Name=="CollectFirmwareResearch"),"no separate survey or large checklist remains in diagnostics");
+ Check(panel.GetLogicalDescendants().OfType<Button>().Count(b=>b.Content?.ToString()=="Сохранить логи и журналы")==1&&!panel.GetLogicalDescendants().OfType<Button>().Any(b=>b.Content?.ToString()=="Экспортировать ZIP"),"saved survey uses one common diagnostic ZIP export after disconnected partial read");
+ FindButton(panel,"Сохранить логи и журналы").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();
  Check(diagnostics.Requests.Last().Operation==ModemOperation.ExportDiagnostics,"reports exports application diagnostics through unchanged operation");
  Check(diagnostics.Requests.All(r=>r.Operation is ModemOperation.DiscoverConnections or ModemOperation.EnableDiagnosticAdb or ModemOperation.RefreshAccess or ModemOperation.ExportDiagnostics or ModemOperation.SetAdbEnabled or ModemOperation.RefreshAdbState),"navigation never dispatches install/reboot/profile or tool mutation");
  NamedClick(panel,"Section0-0");

@@ -81,16 +81,7 @@ import AppKit
     @Published var diagnosticExportSummary = ""
     @Published var firmwareSupportExportURL: URL?
     @Published var firmwareSupportExportSummary = ""
-    @Published var diagnosticReport: DiagnosticReport?
-    @Published var selectedDiagnostic = "system.log"
-    @Published var diagnosticText = ""
     @Published var firmwareResearchReport: FirmwareResearchReport?
-    @Published var firmwareResearchRunning = false
-    @Published var firmwareResearchProgress: Double = 0
-    @Published var firmwareResearchMessage = ""
-    @Published var firmwareResearchExportURL: URL?
-    var firmwareResearchCancellation: ResearchCancellation?
-    var firmwareResearchLoaded = false
     @Published var activityEvents: [ActivityEvent] = []
     @Published var activitySearch = ""
     @Published var journalWarning = ""
@@ -158,7 +149,7 @@ import AppKit
         if imei1 == currentIMEI1 && imei2 == currentIMEI2 { return "Эта пара уже записана на модеме" }
         return "Оба IMEI корректны по формату и контрольной сумме"
     }
-    var canApply: Bool { permitsSSHOperations && (connected || (!webPassword.isEmpty && !agentPassword.isEmpty)) && !busy && !terminalActive && !pendingOperation && !setupPending && !diagnosticADBPending && !adbTogglePending && !systemRestorePending && IMEI.valid(imei1) && IMEI.valid(imei2) && imei1 != imei2 && (imei1 != currentIMEI1 || imei2 != currentIMEI2) }
+    var canApply: Bool { canManage && !pendingOperation && !setupPending && !diagnosticADBPending && IMEI.valid(imei1) && IMEI.valid(imei2) && imei1 != imei2 && (imei1 != currentIMEI1 || imei2 != currentIMEI2) }
     var canManage: Bool { connected && activeChannel == .ssh && accessReady && permitsSSHOperations && !busy && !terminalActive && !adbTogglePending && !systemRestorePending }
     var ttlValidationMessage: String {
         do {
@@ -331,55 +322,10 @@ import AppKit
             busy = false; refreshBackups(); operationTask = nil
         }
     }
-    func setup(targets: [String]? = nil) {
-        guard !busy && !terminalActive && !systemRestorePending && permitsSSHOperations else { return }
-        let password = webPassword, agentSecret = agentPassword, suffix = backupSuffix
-        let config = connection, root = storage, assets = resources
-        let expectedIdentity = connectedIdentity, expectedIMEI = connectedIMEI ?? channelSummary?.primaryIMEI
-        busy = true; progress = 0
-        operationTask = Task { [weak self] in
-            guard let self else { return }
-            do {
-                let result = try await Task.detached(priority: .userInitiated) { [weak self] in
-                    let installer = try OnboardingEngine(root: root, resources: assets, connection: config, backupSuffix: suffix, update: { [weak self] message,value in
-                        Task { @MainActor [weak self] in self?.append(message, progress: value) }
-                    })
-                    return try installer.run(webPassword: password, agentPassword: agentSecret, expectedIdentity: expectedIdentity, expectedIMEI: expectedIMEI)
-                }.value
-                keyPath = result.connection.keyPath; knownHostsPath = result.connection.knownHostsPath; port = result.connection.port
-                try saveJSON(result.connection, root.appendingPathComponent("connection.json"))
-                accessReady = true; connectedIdentity = result.identity
-                if let state = result.state { accept(state) }
-                else {
-                    connected = false; currentIMEI1 = ""; currentIMEI2 = ""; firmware = result.firmware
-                    modemInformation = nil; applicationInventory = nil; accessState = nil
-                    agentInstallationStatus = nil; screenLocalizationStatus = nil; ttlStatus = nil
-                    vpnInspection = nil; vpnError = ""; sshAccountsLoaded = false; sshAccounts = []
-                    diagnosticReport = nil; diagnosticText = ""; selectedDiagnostic = "system.log"
-                    append("SSH-доступ готов. Готовность агента и совместимость изменения IMEI проверяются отдельно; доступна диагностика.")
-                    if targets != nil { append("Автоматическая смена IMEI после подготовки этой прошивки не выполняется.") }
-                }
-                if let targets, let preparedState = result.state, targets != preparedState.imeis {
-                    let connection = result.connection
-                    let target = SSHSelectionContext(identity: result.identity, imei: preparedState.imeis[0], session: nil)
-                    let state = try await Task.detached(priority: .userInitiated) { [weak self] in
-                        let engine = try ModemEngine(root: root, resources: assets, connection: connection) { [weak self] message,value in
-                            Task { @MainActor [weak self] in self?.append(message, progress: value) }
-                        }
-                        return try engine.locked { try target.verify(engine); return try engine.begin(targets: targets) }
-                    }.value
-                    accept(state)
-                }
-            } catch { markConnectionUnavailable(error.localizedDescription); append("Остановлено: " + error.localizedDescription) }
-            busy = false; refreshBackups(); operationTask = nil
-            if connected { refreshConnectedSections() }
-        }
-    }
     func backup() { perform { engine in let state = try engine.inspect(); _ = try engine.makeBackup(state); engine.update("Бэкап сохранён; контрольные суммы совпали.", 1); return state } }
     func apply() {
         guard canApply else { return }
         let targets = [imei1, imei2]
-        if !connected { setup(targets: targets); return }
         perform { try $0.begin(targets: targets) }
     }
     func restore() {
@@ -463,9 +409,6 @@ import AppKit
                         if ["ssclash", "start-ssclash"].contains(action) {
                             try manager.prepareSSClashOperation()
                         } else {
-                            for file in ["pending.json", "setup-pending.json"] {
-                                try require(!FileManager.default.fileExists(atPath: root.appendingPathComponent(file).path), "Сначала завершите настройку или смену IMEI")
-                            }
                             _ = try engine.identity()
                             if action == "package" { try engine.acquireRemoteLock() }
                         }

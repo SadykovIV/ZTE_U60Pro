@@ -12,10 +12,11 @@ public sealed record DiagnosticActivity(DateTimeOffset Timestamp, string Level, 
 public sealed record DiagnosticSystemSnapshot(string? ConnectionMode, string? Model, string? Firmware, string ApplicationVersion);
 public sealed record DiagnosticExportResult(string Path, int Files, int Events, int Omissions);
 
-/// Fixed local inputs only: saved application activity and the last saved research report.
+/// Fixed local log inputs, with optional fresh SSH log results. No firmware survey or binaries.
 public static class DiagnosticsExporter
 {
     public const int SegmentLimit = 2 * 1024 * 1024;
+    private const int ArchiveLimit = 32 * 1024 * 1024;
     private static readonly JsonSerializerOptions Json = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
     private static readonly string[] JournalFiles = ["activity.previous.jsonl", "activity.jsonl"];
     private static readonly UTF8Encoding Utf8 = new(false, true);
@@ -76,7 +77,7 @@ public static class DiagnosticsExporter
 
     public static DiagnosticExportResult Export(string root, string destination, DiagnosticSystemSnapshot system,
         IEnumerable<DiagnosticActivity> currentSession, DiagnosticPrivacy privacy, bool journalWriteFailed = false,
-        CancellationToken ct = default, bool includeResearch = true)
+        CancellationToken ct = default, ModemLogCollection? modemLogs = null)
     {
         ct.ThrowIfCancellationRequested(); SafePath(destination);
         var exportedAt = DateTimeOffset.UtcNow;
@@ -117,7 +118,7 @@ public static class DiagnosticsExporter
             applicationVersion = privacy.CleanApplicationVersion(system.ApplicationVersion),
             connectionMode = privacy.Clean(system.ConnectionMode ?? ""), model = privacy.Clean(system.Model ?? ""), firmware = privacy.Clean(system.Firmware ?? ""),
             operations = current.Select(x => new { x.Timestamp, x.Level, operation = x.Message.StartsWith("eSIM[", StringComparison.Ordinal) ? x.Message : x.Message.Split(':', 2)[0] }).ToArray(),
-            note = "Сохранённые сведения приложения. Свежий сбор с модема не выполнялся; пароли, ключи, профили, IMEI и CID не включаются."
+            note = "Журналы программы и доступные журналы модема. Результат свежего чтения SSH указан в manifest.json; пароли, ключи, профили, IMEI и CID не включаются."
         };
         var files = new SortedDictionary<string, byte[]>(StringComparer.Ordinal)
         {
@@ -125,53 +126,66 @@ public static class DiagnosticsExporter
             ["application-journal.jsonl"] = Lines(saved),
             ["current-session.jsonl"] = Lines(current),
             ["operation-traces.jsonl"] = Lines(saved.Where(x => x.Kind == "operation" || x.Message.StartsWith("eSIM[", StringComparison.Ordinal))),
-            ["README.txt"] = Encoding.UTF8.GetBytes("Offline diagnostic bundle; no new modem collection or network access.\nreport.json preserves the cached application system-summary format; it is not a fresh modem snapshot.\napplication-journal.jsonl: sanitized saved activity (two bounded 2 MiB segments). Earlier sessions from versions without this journal cannot be recovered.\ncurrent-session.jsonl: latest 2000 in-memory events, may overlap the saved journal.\noperation-traces.jsonl: structured action timing/results and safe eSIM progress; no raw action commands, stdin or responses.\nfirmware-research/: last saved read-only survey, when available, with its own collection times, application/specification versions and sanitized probe transcripts. It may describe a different device/session than the current application summary; no identity match is inferred. Redaction is reapplied during export.\nExisting private keys, trust files, connection settings, backups, VPN profiles and activation codes are never copied. Missing or unsafe inputs are listed in manifest.json.\n")
+            ["README.txt"] = Encoding.UTF8.GetBytes("Application and modem logs. Firmware survey and component files belong to the separate firmware adaptation ZIP.\nreport.json: cached application summary.\napplication-journal.jsonl: sanitized saved preparation, connection and operation events.\ncurrent-session.jsonl: latest in-memory events, which may overlap the saved journal.\noperation-traces.jsonl: action timing/results and eSIM progress.\npreparation/: saved installer logs, when available.\nmodem/: logs read over the existing SSH connection; collection time, command status, omissions and errors are in manifest.json. No agent API is required. When SSH is unavailable, local logs are still exported.\nKeys, trust files, connection settings, backups, VPN profiles and activation codes are never copied.\n")
         };
-        object cachedResearchSource = new { status = includeResearch ? "missing" : "not_requested", path = "FirmwareResearch/latest.json" };
-        if (includeResearch)
+        if (modemLogs is not null)
         {
+            foreach (var entry in modemLogs.Files)
+            {
+                if (!ModemLogCollector.Commands.Any(x => x.Name == entry.Name)) throw new InvalidDataException("Unknown modem log path.");
+                files.Add("modem/" + entry.Name, Encoding.UTF8.GetBytes(ResearchReportFiles.CleanExportText(entry.Text, privacy.Clean, ct)));
+            }
+            foreach (var issue in modemLogs.Issues) omissions.Add(privacy.Clean(issue));
+        }
+        // Current session and fresh modem logs take priority over older installer logs.
+        var optionalLogs = new List<string>();
+        var payloadBytes = files.Values.Sum(x => (long)x.Length);
+        const string skippedInstallLogs = "Older saved installation logs omitted at archive size limit.";
+        // An installation transcript is useful after failed preparation. Enumerate only
+        // direct UUID directories and this fixed filename; never copy backup contents.
+        var setupRoot = System.IO.Path.Combine(root, "SetupBackups");
         try
         {
-            ct.ThrowIfCancellationRequested();
-            var cachedPath = System.IO.Path.Combine(root, "FirmwareResearch", "latest.json");
-            SafePath(cachedPath);
-            if (!File.Exists(cachedPath)) omissions.Add("Cached firmware research is missing; no new collection was performed.");
-            else
-            {
-                var before = new FileInfo(cachedPath); var modified = before.LastWriteTimeUtc; var length = before.Length;
-                var bytes = ResearchReportFiles.ReadBoundedFile(cachedPath, FirmwareResearchEngine.TotalLimit, ct);
-                var after = new FileInfo(cachedPath);
-                if (after.LastWriteTimeUtc != modified || after.Length != length || bytes.LongLength != length)
-                    throw new InvalidDataException("Cached research changed while being read.");
-                var cached = JsonSerializer.Deserialize<ResearchReport>(bytes, ResearchSpec.Json)
-                    ?? throw new InvalidDataException("Invalid cached research.");
-                // Per-line cleaning preserves bounded multi-line probe output while
-                // applying the same secret policy as the application journal.
-                string CleanResearch(string value)=>ResearchReportFiles.CleanExportText(value,privacy.Clean,ct);
-                var payload = ResearchReportFiles.BuildExportFiles(cached, CleanResearch, ct, privacy.CleanApplicationVersion);
-                foreach (var item in payload) files.Add("firmware-research/" + item.Key, item.Value);
-                cachedResearchSource = new { status = "included", path = "FirmwareResearch/latest.json",
-                    sourceLastWriteAt = new DateTimeOffset(modified, TimeSpan.Zero), sourceBytes = bytes.Length,
-                    sourceSha256 = Convert.ToHexStringLower(SHA256.HashData(bytes)),
-                    collectionStartedAt = cached.StartedAt, collectionCompletedAt = cached.CompletedAt,
-                    applicationVersion = privacy.CleanApplicationVersion(cached.ApplicationVersion), specificationRevision = cached.SpecificationRevision,
-                    specificationSha256 = cached.SpecificationSHA256, relationToCurrentConnection = "not-assessed" };
-            }
+            SafePath(setupRoot);
+            if (Directory.Exists(setupRoot))
+                foreach (var setupDirectory in Directory.EnumerateDirectories(setupRoot).OrderByDescending(Directory.GetLastWriteTimeUtc))
+                {
+                    ct.ThrowIfCancellationRequested();
+                    if (!Guid.TryParse(System.IO.Path.GetFileName(setupDirectory), out _)) continue;
+                    var transcript = System.IO.Path.Combine(setupDirectory, "installation.log");
+                    try
+                    {
+                        SafePath(transcript);
+                        if (!File.Exists(transcript)) continue;
+                        var data = Encoding.UTF8.GetBytes(ResearchReportFiles.CleanExportText(Utf8.GetString(ReadBounded(transcript)), privacy.Clean, ct));
+                        if (payloadBytes + data.Length > ArchiveLimit) { omissions.Add(skippedInstallLogs); continue; }
+                        var name = "preparation/" + System.IO.Path.GetFileName(setupDirectory) + "/installation.log";
+                        files.Add(name, data); optionalLogs.Add(name); payloadBytes += data.Length;
+                    }
+                    catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or ArgumentException or System.Security.SecurityException)
+                    { omissions.Add("Saved installation log unavailable or unsafe."); }
+                }
         }
-        catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or JsonException or ArgumentException or System.Security.SecurityException)
+        catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or ArgumentException or System.Security.SecurityException)
+        { omissions.Add("Saved installation logs unavailable or unsafe."); }
+        byte[] Manifest() => JsonSerializer.SerializeToUtf8Bytes(new
         {
-            omissions.Add("Cached firmware research unavailable, malformed, oversized or unsafe; application activity is still included.");
-            cachedResearchSource = new { status = "omitted", path = "FirmwareResearch/latest.json" };
-        }
-        }
-        if (files.Values.Sum(x => (long)x.Length) > 32 * 1024 * 1024) throw new InvalidDataException("Diagnostic export exceeds its size limit.");
-        files["manifest.json"] = JsonSerializer.SerializeToUtf8Bytes(new
-        {
-            schemaVersion = 1, collectedFromModem = false, exportedAt, omissions = omissions.Distinct().ToArray(),
-            sources = new { applicationSummary = new { kind = "cached-application-state", capturedAt = (DateTimeOffset?)null }, firmwareResearch = cachedResearchSource },
-            files = files.Select(x => new { path = x.Key, bytes = x.Value.Length, sha256 = Convert.ToHexStringLower(SHA256.HashData(x.Value)), source = x.Key.StartsWith("firmware-research/", StringComparison.Ordinal) ? "cached-firmware-research" : x.Key == "report.json" ? "cached-application-state" : "local-application-diagnostics" }).ToArray()
+            schemaVersion = 1, collectedFromModem = modemLogs?.Files.Count > 0, exportedAt, omissions = omissions.Distinct().ToArray(),
+            sources = new { applicationSummary = new { kind = "cached-application-state", capturedAt = (DateTimeOffset?)null },
+                modemLogs = modemLogs is null ? null : new { modemLogs.StartedAt, modemLogs.CompletedAt, modemLogs.Status,
+                    files = modemLogs.Files.Select(x => new { x.Name, x.ExitCode, x.Truncated }) } },
+            files = files.Select(x => new { path = x.Key, bytes = x.Value.Length, sha256 = Convert.ToHexStringLower(SHA256.HashData(x.Value)), source = x.Key.StartsWith("modem/", StringComparison.Ordinal) ? "fresh-modem-log" : x.Key == "report.json" ? "cached-application-state" : "local-application-diagnostics" }).ToArray()
         }, Json);
-        if (files.Values.Sum(x => (long)x.Length) > 32 * 1024 * 1024) throw new InvalidDataException("Diagnostic export exceeds its size limit.");
+        // Account for manifest bytes too. Remove the oldest optional transcript,
+        // never the current application context, if its metadata tips the budget.
+        while (true)
+        {
+            var manifest = Manifest();
+            if (payloadBytes + manifest.Length <= ArchiveLimit) { files.Add("manifest.json", manifest); break; }
+            if (optionalLogs.Count == 0) throw new InvalidDataException("Diagnostic export exceeds its size limit.");
+            var oldest = optionalLogs[^1]; optionalLogs.RemoveAt(optionalLogs.Count - 1);
+            payloadBytes -= files[oldest].Length; files.Remove(oldest); omissions.Add(skippedInstallLogs);
+        }
         var directory = System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(destination))!;
         Directory.CreateDirectory(directory); SafePath(directory);
         var temporary = destination + "." + Guid.NewGuid().ToString("N") + ".tmp";

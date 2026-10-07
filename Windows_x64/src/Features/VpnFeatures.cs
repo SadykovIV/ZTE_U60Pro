@@ -29,7 +29,7 @@ public sealed partial class DeviceFeatureService
     private const string DashboardHash = "c804a8ecced9ed3478ee50021b95d3bcd02394f23ba09f10c5c3691f44cd9546";
     private const string LauncherHash = "c04c5c1d0cccb0a2964a1500e6fdc3c549c9eac6125fe591b9cdf25d39dff3c2";
     private static readonly string[] VpnInstallNames = ["install.sh", "manager.sh", "firewall.sh", "configure.lua", "nft-guard.nft", "dnsmasq.conf", "service.sh", "vpnctl", "mihomo"];
-    private static readonly string[] VpnIntegrationNames = ["upgrade-controller.sh", "vpnctl", "manager.sh", "configure.lua", "update-agent.sh", "dashboard-install.sh", "payload.sha256", "dashboard.tar.gz", "dashboard-uhttpd", "start-dashboard.sh", "dashboard-html.sh", "preserve-dashboard-assets.sh", "stop-owned-listener.sh", "update-rc-local.sh", "launcher.so", "launcher-run.sh", "launcher-watch.sh", "launcher-service.sh", "launcher-start.sh", "launcher.sha256", "install-launcher.sh"];
+    private static readonly string[] VpnUpgradeNames = ["upgrade-controller.sh", "vpnctl", "manager.sh", "configure.lua"];
     private static bool CanReadVpnStatus(string hash) => hash is VpnHelperHash or LegacyRadioVpnHelperHash or
         LegacyDirectRadioVpnHelperHash or LegacyPagesVpnHelperHash or LegacyPublicVpnHelperHash or LegacyRecoveryVpnHelperHash or LegacyCardStatusVpnHelperHash;
     // Literal errors from the pinned controller; an arbitrary JSON string is not a log message.
@@ -72,16 +72,37 @@ public sealed partial class DeviceFeatureService
         catch (JsonException) { return "VPN_CONTROLLER_FAILED"; }
     }
 
+    internal const string VpnHelperReadinessCommand = """
+vpn_ready_file() {
+    test -f "$1" && test ! -L "$1" && test "$(stat -c %u:%h "$1")" = 0:1 || return 1
+    vpn_ready_perm=$(stat -c %a "$1") || return 1
+    test "$((0$vpn_ready_perm & 022))" = 0
+}
+if vpn_ready_file /etc/init.d/zte_vpn && vpn_ready_file /data/zte-vpn/service.sh &&
+   cmp -s /etc/init.d/zte_vpn /data/zte-vpn/service.sh &&
+   test -L /etc/rc.d/S99zte_vpn && test "$(stat -c %u /etc/rc.d/S99zte_vpn)" = 0 &&
+   test "$(readlink /etc/rc.d/S99zte_vpn)" = ../init.d/zte_vpn &&
+   test -L /etc/rc.d/K01zte_vpn && test "$(stat -c %u /etc/rc.d/K01zte_vpn)" = 0 &&
+   test "$(readlink /etc/rc.d/K01zte_vpn)" = ../init.d/zte_vpn; then
+    if test ! -e /data/zte-vpn/configured && test ! -L /data/zte-vpn/configured; then
+        echo HELPER_LAYOUT_READY
+    elif vpn_ready_file /data/zte-vpn/configured && vpn_ready_file /etc/init.d/network &&
+         vpn_ready_file /data/zte-vpn/network-init.sha256 &&
+         test "$(sha256sum /etc/init.d/network | cut -d ' ' -f1)" = "$(cat /data/zte-vpn/network-init.sha256)"; then
+        echo HELPER_LAYOUT_READY
+    fi
+fi
+true
+""";
+
     public async Task<VpnStatus> GetVpnStatusAsync(CancellationToken ct = default)
     {
-        var probe = await RunTextAsync("set -eu; if test -e /data/zte-vpn || test -L /data/zte-vpn; then echo PRESENT; else echo ABSENT; fi; for f in /data/zte-vpn/vpnctl /data/zte-agent /data/zte-dashboard-runtime/current/index.html /data/zte-launcher/launcher.so; do if test -f \"$f\" && test ! -L \"$f\"; then sha256sum \"$f\" | cut -d ' ' -f1; else echo missing; fi; done", ct: ct);
+        var probe = await RunTextAsync("set -eu; if test -e /data/zte-vpn || test -L /data/zte-vpn; then echo PRESENT; else echo ABSENT; fi; for f in /data/zte-vpn/vpnctl; do if test -f \"$f\" && test ! -L \"$f\"; then sha256sum \"$f\" | cut -d ' ' -f1; else echo missing; fi; done; " + VpnHelperReadinessCommand, ct: ct);
         var parts = probe.Split('\n', StringSplitOptions.TrimEntries);
-        Check(parts.Length == 5 && (parts[0] == "PRESENT" || parts[0] == "ABSENT"), "Некорректный ответ проверки VPN.");
+        Check(parts.Length is 2 or 3 && (parts[0] == "PRESENT" || parts[0] == "ABSENT"), "Некорректный ответ проверки VPN.");
         var installed = parts[0] == "PRESENT";
-        var helper = installed && parts[1] == VpnHelperHash;
-        var agent = AgentPackage.SupportsVpn(parts[2]);
-        var dashboard = parts[3] == DashboardHash;
-        var launcher = parts[4] == LauncherHash;
+        var helper = installed && parts[1] == VpnHelperHash && parts.Length == 3 && parts[2] == "HELPER_LAYOUT_READY";
+        const bool agent = false, dashboard = false, launcher = false;
         var readableHelper = installed && CanReadVpnStatus(parts[1]);
         if (!readableHelper)
             return new VpnStatus(installed, false, agent, dashboard, launcher, false, false, false, "", "", null, null, false, [], "", installed ? "Компоненты VPN требуют обновления или проверки целостности." : null);
@@ -108,7 +129,7 @@ public sealed partial class DeviceFeatureService
             settingsSupported, profiles, StringProperty(json, "active_profile") ?? "", helper ? null : "Компоненты VPN требуют обновления; сохранённое состояние прочитано.");
     }
 
-    private async Task<JsonElement> VpnRequestAsync(object request, CancellationToken ct, string? statusHelperHash = null)
+    private async Task<JsonElement> VpnRequestAsync(object request, CancellationToken ct, string? statusHelperHash = null, DeviceIdentity? expectedIdentity = null)
     {
         var body = JsonSerializer.SerializeToUtf8Bytes(request);
         Check(body.Length <= 65536, "Запрос VPN превышает допустимый размер.");
@@ -120,7 +141,8 @@ public sealed partial class DeviceFeatureService
                 "Неподдерживаемый контроллер VPN для чтения состояния.");
             expectedHelperHash = statusHelperHash;
         }
-        var command = "set -eu; fail() { printf 'VPN_GUARD_REFUSED\\n' >&2; exit 72; }; " +
+        var targetGuard = expectedIdentity is null ? "" : "test \"$(cat /sys/block/mmcblk0/device/cid)\" = " + Quote(expectedIdentity.Cid) + "; test \"$(cat /proc/sys/kernel/random/boot_id)\" = " + Quote(expectedIdentity.BootId) + "; ";
+        var command = "set -eu; " + targetGuard + "fail() { printf 'VPN_GUARD_REFUSED\\n' >&2; exit 72; }; " +
             "test -d " + VpnRoot + " && test ! -L " + VpnRoot + " || fail; " +
             "test \"$(stat -c '%u:%a' " + VpnRoot + ")\" = 0:700 || fail; test -f " + VpnRoot +
             "/vpnctl && test ! -L " + VpnRoot + "/vpnctl || fail; test \"$(sha256sum " + VpnRoot +
@@ -194,24 +216,67 @@ public sealed partial class DeviceFeatureService
         }
     }
 
+    // The helper takes the shared modem lock. Holding it in MutateAsync as
+    // well would make import/activate/delete/rename/toggle fail with VPN_BUSY.
+    private async Task<VpnStatus> VpnProfileMutationAsync(object request, Func<VpnStatus,VpnStatus,bool> confirmed, CancellationToken ct)
+    {
+        await OperationGate.WaitAsync(ct);
+        try
+        {
+            Directory.CreateDirectory(_storageRoot);
+            using var local = new FileStream(Path.Combine(_storageRoot, "operation.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+            CheckLocalPending();
+            var identity = await ReadIdentityAsync(ct: ct);
+            var before = await GetVpnStatusAsync(ct);
+            Check(before.HelperReady, "Сначала установите или обновите компоненты VPN.");
+            await VpnRequestAsync(request, ct, expectedIdentity: identity);
+            var after = await GetVpnStatusAsync(ct);
+            await VerifyIdentityAsync(identity, ct);
+            Check(confirmed(before, after), "Модем не подтвердил изменение VPN. Обновите состояние перед повтором.");
+            return after;
+        }
+        finally { OperationGate.Release(); }
+    }
+
+    internal static string ValidateVpnUri(string uri)
+    {
+        uri = uri.Trim();
+        Check(uri.StartsWith("vless://", StringComparison.Ordinal) && Encoding.UTF8.GetByteCount(uri) <= 32768 && !uri.Any(char.IsControl), "Нужна одна ссылка vless:// длиной не больше 32 КиБ.");
+        return uri;
+    }
+    private static string ValidateVpnProfileName(string name)
+    {
+        name = name.Trim();
+        Check(name.EnumerateRunes().Count() is >= 1 and <= 64 && !name.Any(char.IsControl), "Название должно содержать от 1 до 64 символов без переносов строк.");
+        return name;
+    }
+    private static void ValidateVpnProfileId(string id)
+        => Check(id.Length == 36 && Guid.TryParseExact(id, "D", out _), "Недопустимый идентификатор VPN-профиля.");
+
     public Task<VpnStatus> ImportVpnProfileAsync(string uri, string? name = null, CancellationToken ct = default)
     {
-        Check(uri.StartsWith("vless://", StringComparison.OrdinalIgnoreCase) && Encoding.UTF8.GetByteCount(uri) <= 16384, "Требуется ссылка VLESS длиной не больше 16 КиБ.");
-        if (name != null) Check(name.Length is >= 1 and <= 64 && !name.Any(char.IsControl), "Недопустимое имя VPN-профиля.");
-        return VpnMutationAsync(new { action = "import", uri, name }, ct);
+        uri = ValidateVpnUri(uri);
+        name = string.IsNullOrWhiteSpace(name) ? null : ValidateVpnProfileName(name);
+        return VpnProfileMutationAsync(new { action = "import", uri, name }, (before, after) =>
+            after.Profiles.Count == before.Profiles.Count + 1 && after.Profiles.Count(profile => !before.Profiles.Any(old => old.Id == profile.Id)) == 1, ct);
     }
     public Task<VpnStatus> ActivateVpnProfileAsync(string id, CancellationToken ct = default)
     {
-        Check(Guid.TryParse(id, out _), "Недопустимый идентификатор VPN-профиля.");
-        return VpnMutationAsync(new { action = "activate", id }, ct);
+        ValidateVpnProfileId(id);
+        return VpnProfileMutationAsync(new { action = "activate", id }, (_, after) => after.ActiveProfile == id && after.Profiles.Any(p => p.Id == id && p.Active), ct);
+    }
+    public Task<VpnStatus> RenameVpnProfileAsync(string id, string name, CancellationToken ct = default)
+    {
+        ValidateVpnProfileId(id); name = ValidateVpnProfileName(name);
+        return VpnProfileMutationAsync(new { action = "rename", id, name }, (_, after) => after.Profiles.Any(p => p.Id == id && p.Name == name), ct);
     }
     public Task<VpnStatus> DeleteVpnProfileAsync(string id, CancellationToken ct = default)
     {
-        Check(Guid.TryParse(id, out _), "Недопустимый идентификатор VPN-профиля.");
-        return VpnMutationAsync(new { action = "delete", id }, ct);
+        ValidateVpnProfileId(id);
+        return VpnProfileMutationAsync(new { action = "delete", id }, (_, after) => after.Profiles.All(p => p.Id != id), ct);
     }
     public Task<VpnStatus> SetVpnEnabledAsync(bool enabled, CancellationToken ct = default)
-        => VpnMutationAsync(new { action = "set_enabled", enabled }, ct);
+        => VpnProfileMutationAsync(new { action = "set_enabled", enabled }, (_, after) => after.Enabled == enabled, ct);
 
     public Task<VpnStatus> InstallVpnAsync(CancellationToken ct = default)
         => MutateAsync(async (identity, token) =>
@@ -221,61 +286,22 @@ public sealed partial class DeviceFeatureService
             var present = await RunTextAsync("if test -e /data/zte-vpn || test -L /data/zte-vpn; then echo PRESENT; else echo ABSENT; fi", ct: ct);
             Check(present is "ABSENT" or "PRESENT", "Каталог VPN требует ручной проверки.");
             if (present == "PRESENT") Check(await RunTextAsync("test -d /data/zte-vpn && test ! -L /data/zte-vpn && echo SAFE", ct: ct) == "SAFE", "Каталог VPN требует ручной проверки.");
-            await UpdateVpnIntegrationAsync(identity, token, ct, async () =>
+            var names = present == "ABSENT" ? VpnInstallNames : VpnUpgradeNames;
+            var files = await LoadResourcesAsync("VPN", names, ct);
+            var stage = await StageAsync(present == "ABSENT" ? "zte-vpn-install" : "zte-vpn-agent", files, ct);
+            var remoteFinished = true;
+            try
             {
-                if (present != "ABSENT") return;
-                var files = await LoadResourcesAsync("VPN", VpnInstallNames, ct);
-                var stage = await StageAsync("zte-vpn-install", files, ct);
-                var remoteFinished = false;
-                try
-                {
-                    var result = await _shell.RunAsync(Guard(identity, token) + "sh " + Quote(stage + "/install.sh") + " " + Quote(stage), timeout: TimeSpan.FromSeconds(180), ct: ct);
-                    remoteFinished = KnownInstallerExit(result.ExitCode);
-                    Check(remoteFinished && result.Success && Text(result.Stdout).Contains("VPN_COMPONENTS_INSTALLED", StringComparison.Ordinal), InstallerFailure("vpn_components", result));
-                }
-                finally { if (remoteFinished) await CleanupStageAsync(stage, files.Keys, CancellationToken.None); }
-            });
-            return await GetVpnStatusAsync(ct);
-        }, ct);
-
-    private async Task UpdateVpnIntegrationAsync(DeviceIdentity identity, string token, CancellationToken ct, Func<Task>? prepareVpn = null, LauncherPages? pages = null)
-    {
-        var installedAgent = await RunTextAsync("set -eu; if test ! -e /data/zte-agent && test ! -L /data/zte-agent; then echo absent; else test -f /data/zte-agent && test ! -L /data/zte-agent || exit 73; sha256sum /data/zte-agent | cut -d ' ' -f1; fi", ct: ct);
-        Check(installedAgent == "absent" || AgentPackage.SupportedUpgradeHashes.Contains(installedAgent), "Установлен сторонний агент. Обновление дисплея остановлено до изменения компонентов VPN; требуется проверка совместимости этого агента.");
-        var files = await LoadResourcesAsync("VPN", VpnIntegrationNames, ct);
-        if (pages is not null) files.Add("page-layout.conf", pages.Encode());
-        var agent = await File.ReadAllBytesAsync(Path.Combine(_resourcesRoot, "Onboarding", "zte-agent"), ct);
-        AgentPackage.VerifyPayload(agent);
-        var manager = await ResourceAsync("AgentInstallation", "manager.sh", ct);
-        Check(Sha(manager) == AgentManagerHash, "Несовместимый установщик агента.");
-        if (installedAgent == "absent")
-            await InstallBundledAgentBinaryAsync(identity, token, agent, manager, ct);
-        files.Add("zte-agent", agent);
-        var stage = await StageAsync("zte-vpn-agent", files, ct);
-        var remoteFinished = true;
-        try
-        {
-            var guard = Guard(identity, token);
-            async Task<string> Step(string script, string phase, int seconds, string suffix = "")
-            {
+                var script = present == "ABSENT" ? "install.sh" : "upgrade-controller.sh";
+                var receipt = present == "ABSENT" ? "VPN_COMPONENTS_INSTALLED" : "VPN_CONTROLLER_UPDATED";
                 remoteFinished = false;
-                var result = await _shell.RunAsync(guard + "sh " + Quote(stage + "/" + script) + " " + Quote(stage) + suffix, timeout: TimeSpan.FromSeconds(seconds), ct: ct);
+                var result = await _shell.RunAsync(Guard(identity, token) + "sh " + Quote(stage + "/" + script) + " " + Quote(stage), timeout: TimeSpan.FromSeconds(180), ct: ct);
                 remoteFinished = KnownInstallerExit(result.ExitCode);
-                Check(remoteFinished && result.Success, InstallerFailure(phase, result));
-                return Text(result.Stdout);
+                Check(remoteFinished && result.Success && Text(result.Stdout).Split('\n').Contains(receipt), InstallerFailure("vpn_components", result));
             }
-            Check(await Step("update-agent.sh", "vpn_preflight", 60, " preflight") == "VPN_AGENT_PREFLIGHT_OK", "Установка не подтверждена: vpn_preflight; неверный ответ проверки.");
-            if (prepareVpn is not null) await prepareVpn();
-            await InstallBundledAgentBinaryAsync(identity, token, agent, manager, ct);
-            await Step("upgrade-controller.sh", "vpn_controller", 180);
-            Check(await Step("update-agent.sh", "vpn_dashboard", 240) == "VPN_AGENT_UPDATED", "Установка не подтверждена: vpn_dashboard; неверный ответ установки.");
-            var output = await Step("install-launcher.sh", "vpn_launcher", 180);
-            Check(output.Contains("LAUNCHER_INSTALLED", StringComparison.Ordinal), "Установка страниц модема не подтверждена.");
-        }
-        catch (Exception) when (!ct.IsCancellationRequested && !remoteFinished)
-        {
-            throw new DeviceFeatureException("Установка VPN не подтверждена: transport_unknown. Файлы установки сохранены для завершения отката; обновите состояние перед повтором.");
-        }
-        finally { if (remoteFinished) await CleanupStageAsync(stage, files.Keys, CancellationToken.None); }
-    }
+            finally { if (remoteFinished) await CleanupStageAsync(stage, files.Keys, CancellationToken.None); }
+            var status = await GetVpnStatusAsync(ct);
+            Check(status.Installed && status.HelperReady, "Установка компонентов VPN не подтверждена. Обновите состояние; подробности — в журнале.");
+            return status;
+        }, ct);
 }

@@ -83,26 +83,8 @@ public sealed partial class DeviceFeatureService
                         return await InstallAgentBinaryAtStageAsync(identity, token, stage, before, ct,
                             finished => remoteFinished = finished, candidate.Sha256);
                     }
-                    if (before.Hash == "absent")
-                    {
-                        await InstallAgentBinaryAtStageAsync(identity, token, stage, before, ct, finished => remoteFinished = finished);
-                        before = await AgentStatusAtStageAsync(stage, ct);
-                    }
-                    var vpn = await RunTextAsync("if test -e /data/zte-vpn || test -L /data/zte-vpn; then echo present; else echo absent; fi", ct: ct);
-                    Check(vpn is "present" or "absent", "Каталог VPN требует ручной проверки.");
-                    if (vpn == "present")
-                    {
-                        // The agent pins its controller, which pins the launcher.
-                        // Reuse their existing transaction under this same lock;
-                        // it preserves VPN configuration and the saved page layout.
-                        await UpdateVpnIntegrationAsync(identity, token, ct);
-                    }
-                    else
-                    {
-                        // Updating an agent must not install VPN on a device without it.
-                        await InstallBundledDashboardAsync(identity, token, dashboardFiles!, ct,
-                            () => InstallAgentBinaryAtStageAsync(identity, token, stage, before, ct, finished => remoteFinished = finished));
-                    }
+                    await InstallBundledDashboardAsync(identity, token, dashboardFiles!, ct,
+                        () => InstallAgentBinaryAtStageAsync(identity, token, stage, before, ct, finished => remoteFinished = finished));
                     var final = await AgentStatusAtStageAsync(stage, ct);
                     Check(final.IsCurrent && final.Running && !final.RecoveryPending,
                         "Агент после установки веб-панели требует проверки.");
@@ -128,24 +110,6 @@ public sealed partial class DeviceFeatureService
 
     // Used under the existing operation/device lock by VPN integration as well.
     // It deliberately does not install a dashboard or acquire a second lock.
-    private async Task InstallBundledAgentBinaryAsync(DeviceIdentity identity, string token, byte[] agent, byte[] manager, CancellationToken ct)
-    {
-        var files = new Dictionary<string, byte[]> { ["manager.sh"] = manager, ["agent.bin"] = agent };
-        var stage = await StageAsync("zte-agent-stage", files, ct);
-        var cleanup = true;
-        try
-        {
-            var before = await AgentStatusAtStageAsync(stage, ct);
-            Check(!before.RecoveryPending && before.StartupReady && (before.Hash != "absent" || !before.Running), "Сначала выполните подготовку SSH/агента либо восстановите предыдущую версию.");
-            await InstallAgentBinaryAtStageAsync(identity, token, stage, before, ct, finished => cleanup = finished);
-        }
-        catch (Exception) when (!ct.IsCancellationRequested && !cleanup)
-        {
-            throw new DeviceFeatureException("Установка агента не подтверждена: transport_unknown. Файлы установки сохранены; обновите состояние перед повтором.");
-        }
-        finally { if (cleanup) await CleanupStageAsync(stage, files.Keys, CancellationToken.None); }
-    }
-
     private async Task<AgentInstallationStatus> InstallAgentBinaryAtStageAsync(DeviceIdentity identity, string token, string stage, AgentInstallationStatus before, CancellationToken ct, Action<bool>? completion = null, string? candidateHash = null)
     {
         Check(identity == await ReadAgentIdentityAsync(ct), "Устройство изменилось во время операции с агентом.");

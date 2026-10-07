@@ -9,10 +9,11 @@ import UniformTypeIdentifiers
         do { try ActivityJournal(root: storage).record(operationID: sessionID, category: "navigation", title: title, result: "message") }
         catch { journalWarning = "Не удалось сохранить переход в журнал: " + error.localizedDescription }
     }
-    func exportDiagnostics(collectFresh: Bool) {
-        guard !busy, !collectFresh || canCollectDiagnostics else { return }
+    func exportDiagnostics() {
+        guard !busy else { return }
+        let collectFresh = canCollectDiagnostics
         let panel = NSSavePanel()
-        panel.title = "Сохранить диагностический ZIP"
+        panel.title = L10n.text("Сохранить логи и журналы")
         panel.allowedContentTypes = [.zip]
         let date = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
         panel.nameFieldStringValue = "ZTE-Diagnostics-" + date + ".zip"
@@ -26,11 +27,10 @@ import UniformTypeIdentifiers
                        "connected": String(connected), "firmwareCheckSkipped": String(skipFirmwareCheck),
                        "pendingIMEIOperation": String(pendingOperation), "pendingSetup": String(setupPending),
                        "sessionID": sessionID, "freshCollectionRequested": String(collectFresh), "connectionMode": mode.rawValue,
-                       "latestDisplayedReportID": diagnosticReport?.id ?? "none",
                        "sshKeyPresent": String(FileManager.default.fileExists(atPath: keyPath)),
                        "knownHostsPresent": String(FileManager.default.fileExists(atPath: knownHostsPath))]
         busy = true; progress = 0
-        append(collectFresh ? "Собираю свежую диагностику для ZIP…" : "Готовлю ZIP из сохранённых журналов…")
+        append(collectFresh ? "Собираю логи и журналы…" : "Готовлю ZIP из сохранённых журналов…")
         operationTask = Task { [weak self] in
             guard let self else { return }
             do {
@@ -42,7 +42,7 @@ import UniformTypeIdentifiers
                                 Task { @MainActor [weak self] in self?.append(message, progress: value * 0.85) }
                             }
                             report = try engine.locked { try ConnectionDiagnostics.collect(engine: engine, mode: mode, session: session,
-                                expectedIdentity: expectedIdentity, expectedWebIdentity: expectedWeb, expectedIMEI: expectedIMEI) }
+                                expectedIdentity: expectedIdentity, expectedWebIdentity: expectedWeb, expectedIMEI: expectedIMEI, logsOnly: true) }
                             context["freshReportID"] = report?.id
                             context["freshReportSummary"] = report?.outcomeSummary
                             context["freshReportTransport"] = report?.transport
@@ -52,17 +52,16 @@ import UniformTypeIdentifiers
                             context["freshCollectionError"] = ActivityJournal.redact(error.localizedDescription)
                             try? ActivityJournal(root: root).record(operationID: DiagnosticsContext.sessionID, category: "diagnostics", title: "Свежая диагностика недоступна; экспорт сохранённых данных", result: "warning", details: ["error": error.localizedDescription])
                         }
+                    } else {
+                        context["modemLogsSkipped"] = "Нет активного SSH-подключения; сохранены локальные журналы."
                     }
                     return (try DiagnosticArchive(root: root).export(to: destination, context: context), report)
                 }.value
-                if let report = value.1 {
-                    diagnosticReport = report; selectedDiagnostic = report.files.first?.name ?? ""; loadDiagnosticText()
-                }
                 diagnosticExportURL = value.0.url
                 let collectionIssues = collectFresh && (value.1 == nil || value.1?.files.contains(where: { $0.effectiveOutcome != .succeeded }) == true || value.1?.warnings?.isEmpty == false)
                 diagnosticExportSummary = "ZIP проверен: \(value.0.fileCount) файлов." +
                     (value.0.warnings > 0 ? " Пропуски и сокращения: \(value.0.warnings), подробности в manifest.json." : "") +
-                    (collectionIssues ? " Диагностика модема неполная; причины включены в архив." : "")
+                    (collectionIssues ? " Не все журналы модема получены; причины включены в архив." : "")
                 append(diagnosticExportSummary, progress: 1)
                 try? ActivityJournal(root: storage).record(operationID: sessionID, category: "export", title: "Диагностический ZIP сохранён", result: "completed", details: ["archiveSHA256": value.0.sha256, "files": String(value.0.fileCount), "warnings": String(value.0.warnings)])
                 NSWorkspace.shared.activateFileViewerSelecting([destination])

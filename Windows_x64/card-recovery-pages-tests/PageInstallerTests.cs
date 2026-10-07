@@ -12,7 +12,7 @@ static class PageInstallerTests
   DeviceFeatureService Service(FakeShell fake)=>new(fake,resources,storage);
   foreach(var ui in new[]{"8d2ebbde880934f52195ad9595815d728f7aa4671bb0633d5a5149b09467ae90","d6c3cd409705d5aa9c12185c84074513b159088025f005da7dbf01c51e3c3715","e3914e78a8488cb736770f0ac9fb8ce10e0e5222fa50285f08e9e8be90d7f1e9","16eb92e27f54b5cf5c6b316a6e7a62b782053a2a609d0d4904a7f08a7bc0afa4"})
   {
-   var f=new FakeShell{FirmwareIdentity="absent",RouterIdentity="absent",UiIdentity=ui,FreshVpn=true,LauncherAbsent=true,Layout=LauncherLayout.Default.Encode()};
+   var f=new FakeShell{FirmwareIdentity="absent",RouterIdentity="absent",UiIdentity=ui,Hash=AgentPackage.Sha256,FreshVpn=true,LauncherAbsent=true,Layout=LauncherLayout.Default.Encode()};
    var service=Service(f);var status=await service.GetLauncherStatusAsync();
    check(status.State=="absent"&&status.CanInstall&&f.AccessProofReads==2,"exact UI profile permits fresh launcher without unrelated firmware files: "+ui[..8]);
    var installed=await service.InstallLauncherAsync();
@@ -23,6 +23,40 @@ static class PageInstallerTests
    f.Events.Clear();await service.InstallLauncherAsync();
    check(f.Events.Count(x=>x=="launcher_install")==1&&f.PageWrites==1,"explicit repeat does not replay page writes: "+ui[..8]);
   }
+  foreach(var pages in new[]{Array.Empty<string>(),new[]{"info"},new[]{"vpn","info"}})
+  {
+   var f=new FakeShell{Hash="absent",AgentRunning=false,AgentStartup=false,LauncherAbsent=true,Layout=LauncherLayout.Default.Encode()};
+   Directory.CreateDirectory(storage);
+   foreach(var name in new[]{"pending.json","imei-pending.json","setup-pending.json"}) File.WriteAllText(Path.Combine(storage,name),"preserved");
+   try
+   {
+    var result=await Service(f).InstallLauncherPagesAsync(new LauncherPages(pages));
+    check(result.State=="ready"&&result.Pages!.Order.SequenceEqual(pages),"selected info/VPN pages install with no agent and unrelated local journals");
+    check(f.Events.SequenceEqual(new[]{"launcher_preflight","launcher_install"})&&!f.Commands.Any(c=>c.Contains("/data/zte-agent")||c.Contains("/data/zte-vpn")||c.Contains("dashboard")),"selected info/VPN pages do not inspect or install optional components");
+    foreach(var name in new[]{"pending.json","imei-pending.json","setup-pending.json"}) check(File.ReadAllText(Path.Combine(storage,name))=="preserved","launcher preserves unrelated journal "+name);
+   }
+   finally {foreach(var name in new[]{"pending.json","imei-pending.json","setup-pending.json"}) File.Delete(Path.Combine(storage,name));}
+  }
+  var helperOnly=new FakeShell{Hash=AgentPackage.Sha256,AgentRunning=false,AgentStartup=false};
+  check((await Service(helperOnly).InstallEsimLauncherAsync()).State=="ready","eSIM page uses current binary while permanent agent is stopped and startup absent");
+  check(helperOnly.Events.SequenceEqual(new[]{"launcher_preflight","launcher_install"}),"eSIM page never starts agent or installs dashboard");
+  Directory.CreateDirectory(storage);
+  foreach(var name in new[]{"pending.json","imei-pending.json","setup-pending.json"}) File.WriteAllText(Path.Combine(storage,name),"preserved");
+  try
+  {
+   var terminal=new FakeShell{FirmwareIdentity=new string('b',64),RouterIdentity="absent",AgentRunning=false,AgentStartup=false,Hash="absent"};
+   var proof=await ZteImeiStudio.Windows.WindowsModemService.ReadTerminalIdentityAsync(terminal,storage,CancellationToken.None);
+   check(proof.Cid is not null && terminal.Commands.SequenceEqual(new[]{SshReadProof.SessionCommand}),"terminal reads only SSH root/CID/boot without NV, firmware hashes or agent");
+   foreach(var name in new[]{"adb-access-pending.json","adb-toggle-pending.json","component-cleanup-pending.json","system-restore-pending.json"})
+   {
+    var path=Path.Combine(storage,name);File.WriteAllText(path,"pending");var blocked=new FakeShell();
+    try{await ZteImeiStudio.Windows.WindowsModemService.ReadTerminalIdentityAsync(blocked,storage,CancellationToken.None);throw new Exception("active access recovery accepted");}
+    catch(InvalidOperationException){check(blocked.Commands.Count==0,"terminal preserves actual recovery guard: "+name);}
+    finally{File.Delete(path);}
+   }
+   foreach(var name in new[]{"pending.json","imei-pending.json","setup-pending.json"}) check(File.ReadAllText(Path.Combine(storage,name))=="preserved","terminal preserves independent journal: "+name);
+  }
+  finally{foreach(var name in new[]{"pending.json","imei-pending.json","setup-pending.json"}) File.Delete(Path.Combine(storage,name));}
   foreach(var fault in new[]{"ui","init","platform","identity","service","integrity","cid","pending"})
   {
    var f=new FakeShell{FirmwareIdentity=new string('b',64),RouterIdentity=new string('c',64),UiIdentity="8d2ebbde880934f52195ad9595815d728f7aa4671bb0633d5a5149b09467ae90",UiInitIdentity=fault=="init"?new string('f',64):"a30da6481637f1fd94e037373d406e574be7e722937a4965325086740be67e35",PlatformReply=fault=="platform"?"0\nLinux\narmv7l":"0\nLinux\naarch64",AccessProofDrift=fault=="identity",LauncherService=fault=="service"?"service-bad":"service-ok",BadLauncherIntegrity=fault=="integrity",WrongLauncherCid=fault=="cid",LauncherPending=fault=="pending"};
@@ -30,12 +64,12 @@ static class PageInstallerTests
    try {await Service(f).InstallLauncherAsync();throw new Exception("accepted launcher "+fault);}
    catch(Exception error) when(error is DeviceFeatureException or InvalidDataException) {check(f.Events.Count==0&&f.Uploads.Count==0,"launcher refuses "+fault+" before staging or mutation");}
   }
-  var waiting=new FakeShell{FreshVpn=true,LauncherAbsent=true,WatchWaitsForLock=true,Layout=LauncherLayout.Default.Encode()};
+  var waiting=new FakeShell{Hash=AgentPackage.Sha256,FreshVpn=true,LauncherAbsent=true,WatchWaitsForLock=true,Layout=LauncherLayout.Default.Encode()};
   var waitingResult=await Service(waiting).InstallLauncherAsync();
   check(waitingResult.State=="ready"&&waitingResult.Running,"fresh launcher installation observes attachment only after releasing the operation lock");
   check(waiting.Events.Count(x=>x=="launcher_install")==1&&!waiting.RemoteLock,"pending runtime attachment returns after releasing lock without replay");
   check((await Service(waiting).GetLauncherStatusAsync()).Running,"explicit status after release can observe launcher attachment");
-  var readFailure=new FakeShell{FreshVpn=true,FailAfterReleaseStatus=true};
+  var readFailure=new FakeShell{Hash=AgentPackage.Sha256,FreshVpn=true,FailAfterReleaseStatus=true};
   var completed=await Service(readFailure).InstallLauncherAsync();
   check(completed.State=="ready"&&!completed.Running&&!completed.CanApplyLayout&&completed.Detail!=null&&readFailure.Events.Count(x=>x=="launcher_install")==1,"failed post-release status preserves confirmed installation with separate unverified runtime result");
 
@@ -200,7 +234,7 @@ static class PageInstallerTests
     var missing=new FakeShell{Hash="absent",AgentRunning=false,FreshVpn=noVpn};
     var installed=await Service(missing).InstallAgentAsync();
     check(installed.IsCurrent&&installed.Running&&installed.BackupHash is null,"missing binary with valid startup installs without inventing a prior backup, VPN absent="+noVpn);
-    check(missing.Events.SequenceEqual(noVpn?new[]{"agent_install","dashboard_preflight","dashboard_install"}:new[]{"agent_install","vpn_preflight","vpn_controller","vpn_dashboard","vpn_launcher"}),"missing agent is installed once before dependent preflight");
+    check(missing.Events.SequenceEqual(new[]{"dashboard_preflight","agent_install","dashboard_install"}),"dashboard preflight precedes first installation, independent of VPN");
     check(!missing.Requests.Any()&&!missing.Events.Contains("vpn_components"),"missing agent repair does not configure or enable VPN");
    }
    foreach(var invalid in new[]{"running","startup","pending"})
@@ -210,8 +244,8 @@ static class PageInstallerTests
     check(missing.Events.Count==0,"absent agent guard prevents component writes: "+invalid);
    }
    var missingForPage=new FakeShell{Hash="absent",AgentRunning=false};
-   check((await Service(missingForPage).InstallLauncherAsync()).State=="ready","launcher integration repairs absent agent before VPN preflight");
-   check(missingForPage.Events.SequenceEqual(new[]{"launcher_preflight","agent_install","vpn_preflight","vpn_controller","vpn_dashboard","vpn_launcher"}),"direct component integration installs absent agent once without recursive dashboard installation");
+   await Reject(()=>Service(missingForPage).InstallEsimLauncherAsync(),"eSIM page requires its executable without automatically installing a permanent agent");
+   check(missingForPage.Events.SequenceEqual(new[]{"launcher_preflight"}),"missing executable prevents launcher write without changing components");
    var failureMethod=typeof(DeviceFeatureService).GetMethod("InstallerFailure",System.Reflection.BindingFlags.Static|System.Reflection.BindingFlags.NonPublic)!;
    string FailureText(string stderr,int exit=73)=> (string)failureMethod.Invoke(null,new object[]{"vpn_controller",new RemoteResult(exit,Encoding.UTF8.GetBytes("PRIVATE output"),Encoding.UTF8.GetBytes(stderr))})!;
    foreach(var code in new[]{"INVALID_STAGE","UNSAFE_LAYOUT","PAYLOAD","VPN_PENDING","SCREEN_BUSY","CONTROLLER_UNKNOWN","OLD_INTEGRITY","DEVICE_CHANGED","NETWORK_CHANGED","SERVICE_CHANGED","STARTUP_CHANGED","STATE_UNSAFE","SNAPSHOT","WRITE","NEW_INTEGRITY","VERIFY","RECOVERY_REQUIRED","ROLLBACK_UNKNOWN"})
@@ -228,11 +262,11 @@ static class PageInstallerTests
    check(FailureText("VPN_UPGRADE_ERROR WRITE\nVPN_UPGRADE_ERROR ROLLBACK_UNKNOWN\n").Contains("VPN_UPGRADE_ROLLBACK_UNKNOWN"),"unknown rollback takes priority over initial write failure");
    foreach(var exit in new[]{-1,255})check(FailureText("VPN_UPGRADE_ERROR NETWORK_CHANGED\n",exit).Contains("transport_unknown"),"unknown remote completion remains transport unknown: "+exit);
    var rejectedUpgrade=new FakeShell{FailPhase="vpn_controller",FailureStderr="PRIVATE detail\nVPN_UPGRADE_ERROR NETWORK_CHANGED\n"};
-   try{await Service(rejectedUpgrade).InstallAgentAsync();throw new Exception("controller rejection accepted");}catch(DeviceFeatureException e){check(e.Message.Contains("VPN_UPGRADE_NETWORK_CHANGED")&&!e.Message.Contains("PRIVATE"),"actual bundled upgrade propagates the fixed controller refusal");}
-   check(rejectedUpgrade.Events.SequenceEqual(new[]{"vpn_preflight","agent_install","vpn_controller"}),"controller refusal stops dashboard and launcher steps without replay");
+   check((await Service(rejectedUpgrade).InstallAgentAsync()).IsCurrent,"unrelated VPN failure does not block bundled agent");
+   check(rejectedUpgrade.Events.SequenceEqual(new[]{"dashboard_preflight","agent_install","dashboard_install"}),"agent update never invokes VPN controller or launcher");
    foreach(var noVpn in new[]{true,false})
    {
-    var shell=new FakeShell{FreshVpn=noVpn,LauncherService="service-missing",Pages=new LauncherPages(new[]{"esim","info"}).Encode()};
+    var shell=new FakeShell{Hash=AgentPackage.Sha256,FreshVpn=noVpn,LauncherService="service-missing",Pages=new LauncherPages(new[]{"esim","info"}).Encode()};
     var oldLayout=shell.Layout.ToArray();var oldPages=shell.Pages.ToArray();
     var status=await Service(shell).GetLauncherStatusAsync();
     check(status.State=="failed"&&status.CanInstall&&!status.CanApplyLayout&&!status.Running,"owned intact launcher with missing service is repairable, VPN absent="+noVpn);
@@ -244,10 +278,10 @@ static class PageInstallerTests
     var repaired=await Service(shell).InstallLauncherAsync();
     check(repaired.State=="ready"&&repaired.Running&&repaired.CanApplyLayout,"explicit install repairs missing startup service, VPN absent="+noVpn);
     check(shell.Layout.SequenceEqual(oldLayout)&&shell.Pages!.SequenceEqual(oldPages)&&shell.StagedPages==0,"service repair preserves exact page order and information layout");
-    check(shell.Events.SequenceEqual(noVpn?new[]{"launcher_preflight","dashboard_preflight","agent_install","dashboard_install","launcher_install"}:new[]{"launcher_preflight","vpn_preflight","agent_install","vpn_controller","vpn_dashboard","vpn_launcher"}),"service repair uses the existing dependency chain once");
+    check(shell.Events.SequenceEqual(new[]{"launcher_preflight","launcher_install"}),"service repair changes only launcher components");
     check(!shell.Events.Contains("vpn_components")&&!shell.Requests.Any(),"service repair does not install absent VPN or change VPN state");
     shell.Events.Clear();var repeated=await Service(shell).InstallLauncherAsync();
-    check(repeated.State=="ready"&&shell.Events.Count(e=>e==(noVpn?"launcher_install":"vpn_launcher"))==1&&shell.Layout.SequenceEqual(oldLayout)&&shell.Pages!.SequenceEqual(oldPages),"subsequent explicit install preserves state without automatic replay");
+    check(repeated.State=="ready"&&shell.Events.Count(e=>e=="launcher_install")==1&&shell.Layout.SequenceEqual(oldLayout)&&shell.Pages!.SequenceEqual(oldPages),"subsequent explicit install preserves state without automatic replay");
    }
    foreach(var service in new[]{"service-bad","service-unknown"})
    {
@@ -261,7 +295,7 @@ static class PageInstallerTests
     var brokenService=new FakeShell{LauncherService="service-missing",BadLauncherIntegrity=fault=="integrity",WrongLauncherCid=fault=="cid",UnsafePages=fault=="pages",LauncherPending=fault=="pending"};
     check(!(await Service(brokenService).GetLauncherStatusAsync()).CanInstall,"missing service does not bypass "+fault+" guard");
    }
-   var freshLauncher=new FakeShell{FreshVpn=true,LauncherAbsent=true,Layout=LauncherLayout.Default.Encode()};
+   var freshLauncher=new FakeShell{Hash=AgentPackage.Sha256,FreshVpn=true,LauncherAbsent=true,Layout=LauncherLayout.Default.Encode()};
    check((await Service(freshLauncher).GetLauncherStatusAsync()).State=="absent","fresh installation remains distinct from service repair");
    check((await Service(freshLauncher).InstallLauncherAsync()).State=="ready","fresh absent launcher uses existing installation path");
    foreach(var absent in new[]{false,true})
@@ -270,36 +304,43 @@ static class PageInstallerTests
     var oldHash=shell.Hash;var layout=shell.Layout.ToArray();var pages=shell.Pages.ToArray();
     var installed=await Service(shell).InstallAgentAsync();
     check(installed.IsCurrent&&installed.Running&&installed.BackupHash==oldHash,"bundled agent update confirms current binary and preserved backup, VPN absent="+absent);
-    check(shell.Events.SequenceEqual(absent?new[]{"dashboard_preflight","agent_install","dashboard_install"}:new[]{"vpn_preflight","agent_install","vpn_controller","vpn_dashboard","vpn_launcher"}),"bundled agent update keeps controller/launcher dependency chain coherent, VPN absent="+absent);
+    check(shell.Events.SequenceEqual(new[]{"dashboard_preflight","agent_install","dashboard_install"}),"bundled agent update touches only agent and its dashboard, VPN absent="+absent);
     check(shell.Layout.SequenceEqual(layout)&&shell.Pages!.SequenceEqual(pages)&&shell.StagedPages==0,"bundled agent update preserves exact page selection and information layout");
     check(!shell.Events.Contains("vpn_components")&&!shell.Requests.Any()&&!shell.Commands.Any(c=>c.Contains("set_enabled")||c.Contains("configure_wifi")),"bundled update never installs absent VPN, enables it or changes profiles");
     check(shell.Commands.Count(c=>c.Contains("mkdir /tmp/zte-imei-app.lock"))==1,"bundled dependency update uses one shared device lock");
-    shell=new FakeShell{FreshVpn=absent,FailPhase=absent?"dashboard_preflight":"vpn_preflight",Failure="exit1"};
+    shell=new FakeShell{FreshVpn=absent,FailPhase="dashboard_preflight",Failure="exit1"};
     await Reject(()=>Service(shell).InstallAgentAsync(),"bundled update preflight refusal, VPN absent="+absent);
     check(shell.Events.SequenceEqual(new[]{shell.FailPhase}),"bundled preflight refusal happens before installed component writes");
+   }
+   foreach(var fresh in new[]{true,false})
+   {
+    var standalone=new FakeShell{FreshVpn=fresh,Hash="absent",AgentRunning=false,AgentStartup=false,UiIdentity=new string('f',64)};
+    var installed=await Service(standalone).InstallVpnAsync();
+    check(installed.HelperReady&&standalone.Events.SequenceEqual(new[]{fresh?"vpn_components":"vpn_controller"}),"VPN install/update succeeds without permanent agent, dashboard or supported launcher");
+    check(!standalone.Uploads.Keys.Any(p=>p.Contains("agent.bin")||p.Contains("launcher")||p.Contains("dashboard")),"VPN stages only core/controller resources");
    }
    var setupActive=new FakeShell{FreshVpn=true,FailPhase="agent_install",FailureStderr="PRIVATE detail\nAGENT_ERROR AGENT_SETUP_PENDING\n"};
    try{await Service(setupActive).InstallAgentAsync();check(false,"active setup refuses an overlapping agent update");}
    catch(DeviceFeatureException error){check(error.Message.Contains("AGENT_SETUP_PENDING")&&!error.Message.Contains("PRIVATE"),"actual setup-file ownership refusal has a fixed actionable message");}
    check(setupActive.Hash!=AgentPackage.Sha256&&!setupActive.Events.Contains("dashboard_install"),"active setup refusal does not replace agent or dashboard");
    var alreadyCurrent=new FakeShell{Hash=AgentPackage.Sha256};await Service(alreadyCurrent).InstallAgentAsync();
-   check(alreadyCurrent.Events.SequenceEqual(new[]{"vpn_preflight","vpn_controller","vpn_dashboard","vpn_launcher"}),"already-current agent still repairs related VPN components without reinstalling binary");
+   check(alreadyCurrent.Events.SequenceEqual(new[]{"dashboard_preflight","dashboard_install"}),"already-current agent refreshes only its dashboard");
    const string previousCardCheckHash="413ba4b0a07540d6901e87e74c9730196eb3373cf35b8914e31a8194bfe5a839";
    check(AgentPackage.VersionForHash(previousCardCheckHash)=="2.9.0-esim.2"&&AgentPackage.SupportedUpgradeHashes.Contains(previousCardCheckHash),"previous card-check release remains a known upgrade source after repackaging");
    var previousCardCheck=new FakeShell{Hash=previousCardCheckHash,Pages=new LauncherPages(new[]{"esim","info"}).Encode()};
    var previousLayout=previousCardCheck.Layout.ToArray();var previousPages=previousCardCheck.Pages.ToArray();
    var previousUpgraded=await Service(previousCardCheck).InstallAgentAsync();
    check(previousUpgraded.IsCurrent&&previousUpgraded.Running&&!previousUpgraded.RecoveryPending&&previousUpgraded.BackupHash==previousCardCheckHash,"previous card-check agent upgrades to current with verified running state and original backup");
-   check(previousCardCheck.Events.SequenceEqual(new[]{"vpn_preflight","agent_install","vpn_controller","vpn_dashboard","vpn_launcher"}),"previous card-check agent follows the complete owned component upgrade chain once");
+   check(previousCardCheck.Events.SequenceEqual(new[]{"dashboard_preflight","agent_install","dashboard_install"}),"previous card-check agent updates only its binary and dashboard once");
    check(previousCardCheck.Layout.SequenceEqual(previousLayout)&&previousCardCheck.Pages!.SequenceEqual(previousPages)&&previousCardCheck.StagedPages==0,"previous card-check upgrade preserves saved page order and information layout");
    check(!previousCardCheck.Requests.Any()&&!previousCardCheck.Commands.Any(c=>c.Contains("set_enabled")||c.Contains("configure_wifi")),"previous card-check upgrade does not activate VPN or change profiles");
-   var customBundled=new FakeShell{Hash=new string('f',64)};await Reject(()=>Service(customBundled).InstallAgentAsync(),"unknown installed agent blocks VPN dependency update");
-   check(customBundled.Events.Count==0,"unknown agent refuses before modifying any installed component");
-   check(!customBundled.Commands.Any(c=>c.Contains("/manager.sh' install ")||c.Contains("/upgrade-controller.sh' ")||c.Contains("/update-agent.sh' ")||c.Contains("/install-launcher.sh' ")),"unknown installed agent never dispatches an installed component update; temporary staging is permitted");
-   foreach(var phase in new[]{"vpn_preflight","vpn_controller","vpn_dashboard","vpn_launcher"})
+   var customBundled=new FakeShell{Hash=new string('f',64)};
+   check((await Service(customBundled).InstallAgentAsync()).IsCurrent&&customBundled.BackupHash==new string('f',64),"explicit bundled replacement backs up a custom binary without VPN dependencies");
+   check(customBundled.Events.SequenceEqual(new[]{"dashboard_preflight","agent_install","dashboard_install"}),"custom replacement uses only agent and its panel");
+   foreach(var phase in new[]{"dashboard_preflight","agent_install","dashboard_install"})
    {
-    var uncertain=new FakeShell{FailPhase=phase,Failure="timeout"};await Reject(()=>Service(uncertain).InstallAgentAsync(),"uncertain bundled dependency update "+phase);
-    check(!uncertain.Cleanup.Contains("zte-vpn-agent")&&uncertain.Events.Count(e=>e==phase)==1,"uncertain dependency update retains its own rollback stage and never retries");
+    var uncertain=new FakeShell{FailPhase=phase,Failure="timeout"};await Reject(()=>Service(uncertain).InstallAgentAsync(),"uncertain bundled install "+phase);
+    check(uncertain.Events.Count(e=>e==phase)==1,"uncertain agent install is never replayed");
    }
    foreach(var wanted in new[]{Array.Empty<string>(),new[]{"esim","info"},new[]{"vpn","info","esim"}})
    {
@@ -311,17 +352,17 @@ static class PageInstallerTests
    }
    foreach(var absent in new[]{true,false})
    {
-    var shell=new FakeShell{FreshVpn=absent,Pages=new LauncherPages(new[]{"vpn","info"}).Encode()};
+    var shell=new FakeShell{Hash=AgentPackage.Sha256,FreshVpn=absent,Pages=new LauncherPages(new[]{"vpn","info"}).Encode()};
     var answer=await Service(shell).InstallEsimLauncherAsync();
     check(answer.Pages!.Order.SequenceEqual(new[]{"vpn","info","esim"}),"eSIM install appends only missing eSIM while retaining order, VPN absent="+absent);
     check(shell.StagedPages>=1,"page configuration is an input to transactional installer");
-    shell=new FakeShell{FreshVpn=absent,Pages=new LauncherPages(new[]{"esim","vpn"}).Encode()};
+    shell=new FakeShell{Hash=AgentPackage.Sha256,FreshVpn=absent,Pages=new LauncherPages(new[]{"esim","vpn"}).Encode()};
     answer=await Service(shell).InstallEsimLauncherAsync();
     check(answer.Pages!.Order.SequenceEqual(new[]{"esim","vpn"})&&shell.StagedPages==0,"existing eSIM order is preserved without replacing page config");
     shell=new FakeShell{FreshVpn=absent};answer=await Service(shell).InstallLauncherPagesAsync(new LauncherPages([]));
     check(answer.Pages!.Order.Count==0&&!answer.Pages.UsesDefault,"generic installer explicitly supports only stock pages, VPN absent="+absent);
    }
-   var publicLegacy=new FakeShell{Hash=AgentPackage.LegacyPublicSha256,VpnStatusHash="f620dab27f951c7de2de77a89376975b51c79f57f8a8a24cec95392c9c61eea4"};var legacyStatus=await Service(publicLegacy).GetVpnStatusAsync();check(legacyStatus.Installed&&!legacyStatus.HelperReady&&legacyStatus.AgentReady,"public 2.8.0 agent and old controller readable but require upgrade");check(publicLegacy.Requests.Count==1&&publicLegacy.Requests[0].Contains("status"),"legacy controller receives only status");await Reject(()=>Service(publicLegacy).SetVpnEnabledAsync(true),"legacy controller refuses enable before update");check(publicLegacy.Requests.All(x=>x.Contains("status")),"legacy mutation attempt never sends mutation request");
+   var publicLegacy=new FakeShell{Hash=AgentPackage.LegacyPublicSha256,VpnStatusHash="f620dab27f951c7de2de77a89376975b51c79f57f8a8a24cec95392c9c61eea4"};var legacyStatus=await Service(publicLegacy).GetVpnStatusAsync();check(legacyStatus.Installed&&!legacyStatus.HelperReady,"public 2.8.0 agent and old controller readable but require upgrade");check(publicLegacy.Requests.Count==1&&publicLegacy.Requests[0].Contains("status"),"legacy controller receives only status");await Reject(()=>Service(publicLegacy).SetVpnEnabledAsync(true),"legacy controller refuses enable before update");check(publicLegacy.Requests.All(x=>x.Contains("status")),"legacy mutation attempt never sends mutation request");
    var broken=new FakeShell{UnsafePages=true,LauncherApplied=true};await Reject(()=>Service(broken).ApplyLauncherPagesAsync(new LauncherPages([])),"unsafe existing page file denies apply");check(broken.PageWrites==0,"unsafe page file is never replaced");
    var malformed=new FakeShell{Pages=Encoding.ASCII.GetBytes("ZTE_LAUNCHER_PAGES_V1\ninfo\ninfo\n")};await Reject(()=>Service(malformed).InstallEsimLauncherAsync(),"malformed installed page file denies installation before writes");check(malformed.Events.Count==0&&malformed.StagedPages==0,"invalid installed configuration is not silently replaced");
    var badReadback=new FakeShell{LauncherApplied=true,CorruptPageReadback=true};await Reject(()=>Service(badReadback).ApplyLauncherPagesAsync(new LauncherPages(new[]{"info"})),"wrong page readback denies success");
@@ -347,9 +388,9 @@ static class PageInstallerTests
    check(!(await Service(unknown).GetVpnStatusAsync()).HelperReady&&unknown.Requests.Count==0,"unrecognized vpnctl is never executed");
    foreach(var absent in new[]{true,false})
    {
-    var s=new FakeShell{FreshVpn=absent};var original=s.Layout.ToArray();var result=await Service(s).InstallEsimLauncherAsync();
+    var s=new FakeShell{Hash=AgentPackage.Sha256,FreshVpn=absent};var original=s.Layout.ToArray();var result=await Service(s).InstallEsimLauncherAsync();
     check(result.State=="ready"&&s.Layout.SequenceEqual(original),"generic page installer preserves saved layout, VPN absent="+absent);
-    check(s.Events.SequenceEqual(absent?new[]{"launcher_preflight","dashboard_preflight","agent_install","dashboard_install","launcher_install"}:new[]{"launcher_preflight","vpn_preflight","agent_install","vpn_controller","vpn_dashboard","vpn_launcher"}),"exact one-time dependency pipeline, VPN absent="+absent);
+    check(s.Events.SequenceEqual(new[]{"launcher_preflight","launcher_install"}),"launcher installation checks the eSIM helper without starting or changing agent/VPN, VPN absent="+absent);
     check(!s.Events.Contains("vpn_components"),"eSIM page installer never installs absent VPN");
     check(!s.Commands.Any(c=>c.EndsWith("/vpnctl request")||c.Contains("set_enabled")||c.Contains("configure_wifi")),"existing VPN profile and enable state are not explicitly changed");
     s=new FakeShell{FreshVpn=absent,FailPhase="launcher_preflight",Failure="exit1"};await Reject(()=>Service(s).InstallEsimLauncherAsync(),"launcher preflight refusal VPN absent="+absent);
@@ -357,16 +398,16 @@ static class PageInstallerTests
    }
    foreach(var phase in new[]{"launcher_preflight","launcher_install"})foreach(var failure in new[]{"timeout","exit255","missing-exit"})
    {
-    var s=new FakeShell{FreshVpn=true,FailPhase=phase,Failure=failure};await Reject(()=>Service(s).InstallEsimLauncherAsync(),"uncertain "+phase+"/"+failure);
+    var s=new FakeShell{Hash=AgentPackage.Sha256,FreshVpn=true,FailPhase=phase,Failure=failure};await Reject(()=>Service(s).InstallEsimLauncherAsync(),"uncertain "+phase+"/"+failure);
     check(!s.Cleanup.Contains("zte-vpn-agent"),"unknown launcher outcome retains its rollback inputs");check(s.Events.Count(x=>x==phase)==1,"uncertain install is not retried");
    }
    var custom=new FakeShell{Hash=new string('f',64)};await Reject(()=>Service(custom).InstallEsimLauncherAsync(),"unknown agent refused before VPN changes");check(!custom.Events.Contains("agent_install")&&!custom.Events.Contains("vpn_controller"),"unknown agent does not mutate controller or agent");
-   var mismatch=new FakeShell{FreshVpn=true,ChangeLayout=true};await Reject(()=>Service(mismatch).InstallEsimLauncherAsync(),"unexpected saved layout change denies final success");
-   var delayed=new FakeShell{FreshVpn=true,StartAfterProbes=2};
+   var mismatch=new FakeShell{Hash=AgentPackage.Sha256,FreshVpn=true,ChangeLayout=true};await Reject(()=>Service(mismatch).InstallEsimLauncherAsync(),"unexpected saved layout change denies final success");
+   var delayed=new FakeShell{Hash=AgentPackage.Sha256,FreshVpn=true,StartAfterProbes=2};
    var delayedResult=await Service(delayed).InstallEsimLauncherAsync();
    check(delayedResult.State=="ready"&&delayedResult.Running,"installed launcher observes runtime attachment after lock release");
    check((await Service(delayed).GetLauncherStatusAsync()).Running&&delayed.Events.Count(x=>x=="launcher_install")==1,"later status confirms attachment without replaying installation");
-   var stopped=new FakeShell{FreshVpn=true,Stopped=true};var stoppedResult=await Service(stopped).InstallEsimLauncherAsync();
+   var stopped=new FakeShell{Hash=AgentPackage.Sha256,FreshVpn=true,Stopped=true};var stoppedResult=await Service(stopped).InstallEsimLauncherAsync();
    check(stoppedResult.State=="ready"&&!stoppedResult.Running&&stoppedResult.Detail!=null,"installed files do not claim a running launcher when runtime is stopped");
   }
   finally{Directory.Delete(storage,true);}
@@ -450,6 +491,7 @@ static class PageInstallerTests
             Commands.Add(command);
             if(command.Contains("mkdir /tmp/zte-imei-app.lock"))RemoteLock=true;
             if(command.Contains("rmdir /tmp/zte-imei-app.lock"))RemoteLock=false;
+            if(command.StartsWith("set -eu; test -f /data/zte-agent") && command.Contains("test -x /data/zte-agent")) return Task.FromResult(Hash=="absent"?new RemoteResult(1,[],[]):Reply(Hash));
             if(command==AccessIdentity.Command)
             {
                 AccessProofReads++;
@@ -484,19 +526,19 @@ static class PageInstallerTests
             if(command.Contains("; sh '/tmp/zte-vpn-agent-"))
             {
                 if(command.Contains("/update-agent.sh' "))return Task.FromResult(command.EndsWith(" preflight")?Step("vpn_preflight","VPN_AGENT_PREFLIGHT_OK"):Step("vpn_dashboard","VPN_AGENT_UPDATED"));
-                if(command.Contains("/upgrade-controller.sh' "))return Task.FromResult(Step("vpn_controller"));
+                if(command.Contains("/upgrade-controller.sh' ")) { var updated=Step("vpn_controller","VPN_CONTROLLER_UPDATED"); if(updated.Success) VpnStatusHash=(string)typeof(DeviceFeatureService).GetField("VpnHelperHash",System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Static)!.GetRawConstantValue()!; return Task.FromResult(updated); }
                 if(command.Contains("/install-launcher.sh' "))
                 {
                     if(command.EndsWith(" preflight"))return Task.FromResult(Step("launcher_preflight","LAUNCHER_PREFLIGHT_OK"));
-                    var r=Step(FreshVpn?"launcher_install":"vpn_launcher","LAUNCHER_INSTALLED");
+                    var r=Step("launcher_install","LAUNCHER_INSTALLED");
                     if(r.Success){LauncherApplied=true;LauncherAbsent=false;LauncherService="service-ok";if(ChangeLayout)Layout=LauncherLayout.Default.Encode();var stage=Regex.Match(command,@"/tmp/zte-vpn-agent-[0-9a-f-]{36}").Value;if(Uploads.TryGetValue(stage+"/page-layout.conf",out var pages))Pages=pages;}return Task.FromResult(r);
                 }
             }
-            if(command.Contains("; sh '/tmp/zte-vpn-install-"))return Task.FromResult(Step("vpn_components","VPN_COMPONENTS_INSTALLED"));
+            if(command.Contains("; sh '/tmp/zte-vpn-install-")) { var installed=Step("vpn_components","VPN_COMPONENTS_INSTALLED"); if(installed.Success) {FreshVpn=false;VpnStatusHash=(string)typeof(DeviceFeatureService).GetField("VpnHelperHash",System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Static)!.GetRawConstantValue()!;}return Task.FromResult(installed); }
             if(command.StartsWith("for c in lua "))return Task.FromResult(Reply());
             if(command.StartsWith("if test -e /data/zte-vpn"))return Task.FromResult(Reply(FreshVpn?"ABSENT":"PRESENT"));
             if(command=="test -d /data/zte-vpn && test ! -L /data/zte-vpn && echo SAFE")return Task.FromResult(Reply("SAFE"));
-            if(command.StartsWith("set -eu; if test -e /data/zte-vpn"))return Task.FromResult(Reply("PRESENT\n"+VpnStatusHash+"\n"+Hash+"\nmissing\nmissing"));
+            if(command.StartsWith("set -eu; if test -e /data/zte-vpn"))return Task.FromResult(Reply((FreshVpn?"ABSENT":"PRESENT")+"\n"+VpnStatusHash+"\nHELPER_LAYOUT_READY"));
             if(command.EndsWith("/vpnctl request")){
                 using var json=System.Text.Json.JsonDocument.Parse(stdin!);Requests.Add(json.RootElement.GetProperty("action").GetString()!);
                 return Task.FromResult(Reply("{\"ok\":true,\"data\":{\"schema_version\":1,\"configured\":true,\"enabled\":true,\"core_running\":true,\"profiles\":[{\"id\":\"fixture-profile\",\"name\":\"synthetic\",\"transport\":\"vless\",\"active\":true}],\"active_profile\":\"fixture-profile\"}}"));

@@ -29,6 +29,11 @@ public enum ModemOperation
     RefreshTtl,
     ApplyTtl,
     RefreshVpn,
+    ImportVpnProfile,
+    ActivateVpnProfile,
+    RenameVpnProfile,
+    DeleteVpnProfile,
+    SetVpnEnabled,
     InstallVpn,
     RefreshVpnWifi,
     SaveVpnWifi,
@@ -109,7 +114,11 @@ public sealed record VpnPageSnapshot(
     bool CoreRunning,
     string? Ssid,
     IReadOnlyList<string> Profiles,
-    string? ActiveProfile);
+    string? ActiveProfile,
+    IReadOnlyList<VpnProfileSnapshot>? ProfileDetails = null,
+    bool SettingsSupported = false);
+
+public sealed record VpnProfileSnapshot(string Id, string Name, string Transport, bool Active);
 
 public sealed record BackupInfo(
     string Id,

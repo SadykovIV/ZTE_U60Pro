@@ -19,6 +19,7 @@ private final class Remote: RemoteTransport {
     var installedHelperHash: String?
     var installedAgentHash = VPNSettingsManager.agentHash
     var requestOverride: CommandResult?
+    var ignoreProfileMutation = false
     var badReceipt = false, enabledReceipt = false, mutateSSIDReceipt = false, bad2GReceipt = false
     var identityCalls = 0, swappedAt = 0, mutationError: String?
     var payload: [String: Any] = [
@@ -75,6 +76,26 @@ private final class Remote: RemoteTransport {
                     payload["ssid"] = request["ssid"]; payload["ssid_2g"] = bad2GReceipt ? "Old 2G name" : request["ssid"]; payload["ssid_5g"] = request["ssid"]
                 }
                 if enabledReceipt { payload["enabled"] = true }
+            } else if let action, ["import", "activate", "rename", "delete", "set_enabled"].contains(action) {
+                try check(!locked, "Desktop took the lock owned by vpnctl")
+                try check(command.contains(cid) && command.contains(boot), "Profile request omitted target guard")
+                try check(request["lock_token"] == nil, "Unexpected borrowed lock token")
+                if let mutationError { return result(String(decoding: try JSONSerialization.data(withJSONObject: ["ok": false, "code": mutationError]), as: UTF8.self), status: 1) }
+                if !ignoreProfileMutation {
+                    var profiles = payload["profiles"] as! [[String: Any]]
+                    let id = request["id"] as? String ?? ""
+                    switch action {
+                    case "import": profiles.append(["id": "11111111-1111-1111-1111-111111111111", "name": request["name"] ?? "Imported", "transport": "tcp", "active": false, "warnings": []])
+                    case "rename": for i in profiles.indices where profiles[i]["id"] as? String == id { profiles[i]["name"] = request["name"] }
+                    case "activate":
+                        for i in profiles.indices { profiles[i]["active"] = profiles[i]["id"] as? String == id }
+                        payload["active_profile"] = id; payload["configured"] = true; payload["enabled"] = true
+                    case "delete": profiles.removeAll { $0["id"] as? String == id }
+                    case "set_enabled": payload["enabled"] = request["enabled"]
+                    default: break
+                    }
+                    payload["profiles"] = profiles
+                }
             } else { try check(action == "status", "Unexpected VPN action") }
             return result(String(decoding: try JSONSerialization.data(withJSONObject: ["ok": true, "data": payload]), as: UTF8.self))
         }
@@ -352,6 +373,49 @@ private final class Fixture {
             try rejects("Сначала выключите") { _ = try f.configure(VPNWiFiConfiguration(ssid: "WiFi", passwordMode: .main)) }
             try check(f.remote.requests.allSatisfy { ["status", "configure_wifi"].contains($0["action"] as? String ?? "") }, "Save invoked unrelated action")
             try check(!f.remote.commands.contains { $0.contains("wifi reload") || $0.contains("uci set") }, "Desktop changed live network directly")
+        }
+        try test("Profile lifecycle uses SSH stdin without agent or a second remote lock") {
+            let f = try Fixture(); f.remote.installedAgentHash = "missing"
+            let uri = "vless://aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa@example.test:443?security=tls#PRIVATE_CANARY"
+            func run(_ operation: VPNOperation) throws -> VPNStatus { try f.engine.locked { try f.manager.perform(operation).status } }
+            let imported = try run(.importProfile(uri: uri, name: "Test"))
+            try check(imported.profiles.count == 1 && !imported.enabled, "Import activated network")
+            let id = imported.profiles[0].id
+            try check(try run(.rename(id, " Renamed ")).profiles[0].name == "Renamed", "Rename missing")
+            try check(try run(.activate(id)).activeProfile == id, "Activation missing")
+            try check(!(try run(.setEnabled(false))).enabled, "Disable missing")
+            try check(try run(.setEnabled(true)).enabled, "Enable missing")
+            // A second profile permits removing the now inactive first profile.
+            f.remote.payload["active_profile"] = "22222222-2222-2222-2222-222222222222"
+            try check(try run(.delete(id)).profiles.isEmpty, "Delete missing")
+            try check(f.remote.requests.first { $0["action"] as? String == "import" }?["uri"] as? String == uri, "Secret not sent through stdin")
+            try check(!f.remote.commands.contains { $0.contains("PRIVATE_CANARY") || $0.contains("example.test") || $0.contains("/data/zte-agent") || $0.contains("mkdir /tmp/zte-imei-app.lock") }, "Profile request leaked or depends on agent/duplicate lock")
+            let files = FileManager.default.enumerator(at: f.root, includingPropertiesForKeys: [.isRegularFileKey])!
+            for case let file as URL in files {
+                if (try file.resourceValues(forKeys: [.isRegularFileKey])).isRegularFile == true {
+                    let text = String(decoding: try Data(contentsOf: file), as: UTF8.self)
+                    try check(!text.contains("PRIVATE_CANARY") && !text.contains(uri), "Profile URL written into local journal")
+                }
+            }
+        }
+        try test("Profile validation rejects unsupported files and malformed identity before SSH") {
+            let f = try Fixture()
+            for operation in [VPNOperation.importProfile(uri: "mixed-port: 7890", name: ""), .importProfile(uri: "vless://first\nvless://second", name: ""), .activate("../profile"), .rename("11111111-1111-1111-1111-111111111111", "\n"), .rename("11111111-1111-1111-1111-111111111111", String(repeating: "Я", count: 65))] {
+                try rejects { _ = try f.engine.locked { try f.manager.perform(operation) } }
+            }
+            try check(f.remote.commands.isEmpty, "Invalid profile reached SSH")
+        }
+        try test("Successful process without changed profile cannot report import success") {
+            let f = try Fixture(); f.remote.ignoreProfileMutation = true
+            try rejects("не подтвердил") { _ = try f.engine.locked { try f.manager.perform(.importProfile(uri: "vless://aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa@example.test:443", name: "")) } }
+            try check(f.remote.requests.filter { $0["action"] as? String == "import" }.count == 1, "Unconfirmed import retried")
+        }
+        try test("Controller refusal for active delete or concurrent operation remains specific") {
+            for code in ["VPN_ACTIVE_PROFILE_DELETE", "VPN_BUSY"] {
+                let f = try Fixture(); f.remote.mutationError = code
+                try rejects(VPNSettingsManager.message(code)) { _ = try f.engine.locked { try f.manager.perform(.delete("11111111-1111-1111-1111-111111111111")) } }
+                try check(f.remote.requests.filter { $0["action"] as? String == "delete" }.count == 1, "Refused delete retried")
+            }
         }
         print("\(count) VPN settings tests passed")
     }

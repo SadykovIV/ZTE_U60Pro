@@ -146,12 +146,15 @@ private final class Fixture {
             try rejects { _ = try f.engine.locked { try m.installAdapter() } }
             try check(f.remote.timeoutUploads == 1 && f.remote.archives == 0 && !f.remote.commands.contains { $0.contains("; sh '") }, "Corrupt supervisor reached remote execution")
         }
-        try test("Unknown firmware and pending journals refuse before transfer") {
-            for pending in [false,true] {
-                let f = try Fixture(), m = ExperimentalOpkgManager(engine:f.engine)
-                if pending { try Data("{}".utf8).write(to:f.root.appendingPathComponent("setup-pending.json")) } else { f.remote.firmware = String(repeating:"b",count:64) }
-                try rejects { _ = try f.engine.locked { try m.installAdapter() } };try check(f.remote.archives == 0, "Refusal uploaded runtime")
-            }
+        try test("Unknown firmware refuses but unrelated IMEI and preparation journals are preserved") {
+            let unknown = try Fixture(); unknown.remote.firmware = String(repeating:"b",count:64)
+            try rejects { _ = try unknown.engine.locked { try ExperimentalOpkgManager(engine: unknown.engine).installAdapter() } }
+            try check(unknown.remote.archives == 0, "Unknown firmware reached transfer")
+            let f = try Fixture()
+            for name in ["pending.json", "setup-pending.json"] { try Data("preserved".utf8).write(to:f.root.appendingPathComponent(name)) }
+            _ = try f.engine.locked { try ExperimentalOpkgManager(engine:f.engine).installAdapter() }
+            try check(f.remote.archives == 1, "Unrelated journal blocked opkg")
+            for name in ["pending.json", "setup-pending.json"] { try check(Data(contentsOf:f.root.appendingPathComponent(name)) == Data("preserved".utf8), "opkg changed journal") }
         }
         try test("Corrupt upload remote failure and changed boot cannot report success") {
             for kind in 0..<3 { let f = try Fixture(), m = ExperimentalOpkgManager(engine:f.engine);f.remote.corruptUpload = kind == 0;f.remote.failCommand = kind == 1;f.remote.reboot = kind == 2;try rejects { _ = try f.engine.locked { try m.installAdapter() } } }

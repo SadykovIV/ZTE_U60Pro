@@ -108,42 +108,6 @@ extension ContentView {
             } else { StudioNote(symbol: "memorychip", text: "Подключитесь по SSH и обновите сведения.") }
         }
     }
-    var diagnosticsPage: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            diagnosticExportCard
-            StudioCard {
-                HStack {
-                    Text(L10n.text("Диагностика модема")).font(.system(size: 18, weight: .semibold))
-                    Spacer()
-                    Button(action: model.collectDiagnostics) { Label(L10n.text("Собрать диагностику"), systemImage: "doc.text.magnifyingglass") }
-                        .buttonStyle(StudioButtonStyle(prominent: true)).disabled(!model.canCollectDiagnostics)
-                }
-                Text(L10n.text("Системный журнал, ядро, сеть, маршруты, firewall, процессы, USB, питание, температуры и структура каталогов. Системные разделы читаются через SSH. Сбор не требует соответствия B31. Для каждого раздела сохраняются результат чтения и контрольная сумма; известные поля с паролями и токенами скрываются."))
-                    .font(.system(size: 12)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
-                if let report = model.diagnosticReport {
-                    ForEach(report.warnings ?? [], id: \.self) { Text(L10n.text($0)).font(.system(size: 11)).foregroundStyle(StudioStyle.warning) }
-                    informationRow("Собрано", report.created)
-                    informationRow("Подключение", report.transport.flatMap(ConnectionMode.init(rawValue:))?.title ?? (report.transport == nil ? "Не указано в старом отчёте" : "Не установлено"))
-                    if let reason = report.selectionReason {
-                        Text(L10n.text(reason)).font(.system(size: 11)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
-                    }
-                    informationRow("Результаты сбора", report.outcomeSummary)
-                    Button(action: model.revealDiagnostics) { Label(L10n.text("Открыть папку отчёта"), systemImage: "folder") }.buttonStyle(StudioButtonStyle())
-                    Text(L10n.text("Отчёт может содержать адреса сети и идентификаторы устройства. Просмотрите его перед отправкой."))
-                        .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary)
-                }
-            }
-            if let report = model.diagnosticReport {
-                Picker(L10n.text("Раздел отчёта"), selection: $model.selectedDiagnostic) {
-                    ForEach(report.files) { file in Text(L10n.text(file.title) + (file.effectiveOutcome == .succeeded ? "" : " · " + L10n.text(file.statusLabel))).tag(file.name) }
-                }.onChange(of: model.selectedDiagnostic) { _ in model.loadDiagnosticText() }
-                ScrollView([.horizontal, .vertical]) {
-                    Text(model.diagnosticText).font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .topLeading).padding(18)
-                }.frame(height: 380).background(StudioStyle.surface, in: RoundedRectangle(cornerRadius: 12))
-            }
-        }
-    }
     var imeiPage: some View {
         VStack(alignment: .leading, spacing: 22) {
             Picker(L10n.text("IMEI"), selection: $imeiSection) {

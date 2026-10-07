@@ -154,7 +154,7 @@ final class ExperimentalOpkgManager {
         try require(engine.lockFD >= 0, "Операция opkg требует блокировки")
         let readOnly = ["inspect", "read-feeds"].contains(action)
         if !readOnly {
-            for name in ["pending.json", "setup-pending.json", "adb-access-pending.json"] { try require(!engine.fm.fileExists(atPath: engine.root.appendingPathComponent(name).path), "Сначала завершите настройку или смену IMEI") }
+            try require(!engine.fm.fileExists(atPath: engine.root.appendingPathComponent("adb-access-pending.json").path), "Сначала завершите включение ADB")
         }
         try require(!SystemBackups.hasPendingRestore(root: engine.root), "Сначала завершите полное восстановление")
         let readProof: DiagnosticDeviceProof?

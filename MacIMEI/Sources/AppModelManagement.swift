@@ -44,24 +44,6 @@ import AppKit
     func refreshModemInformation() {
         refreshChannelInformation()
     }
-    func collectDiagnostics() {
-        let expected = modemInformation?.identity ?? connectedIdentity
-        let mode = diagnosticConnectionMode, session = channelSession, expectedWeb = connectedWebIdentity ?? channelSummary?.webIdentity
-        let expectedIMEI = connectedIMEI ?? channelSummary?.primaryIMEI
-        let webSecret = webPassword, agentSecret = agentPassword
-        runManaged("Собираю диагностическую информацию…", readOnly: true, usesSelectedChannel: true, work: { engine in
-            try engine.locked { try ConnectionDiagnostics.collect(engine: engine, mode: mode, session: session,
-                expectedIdentity: expected, expectedWebIdentity: expectedWeb, expectedIMEI: expectedIMEI, webPassword: webSecret, agentPassword: agentSecret) }
-        }, finish: { [weak self] report in
-            self?.diagnosticReport = report; self?.selectedDiagnostic = report.files.first?.name ?? ""
-            self?.loadDiagnosticText(); self?.append("Диагностика сохранена. " + report.outcomeSummary)
-        })
-    }
-    func loadDiagnosticText() {
-        guard let report = diagnosticReport, report.files.contains(where: { $0.name == selectedDiagnostic }) else { diagnosticText = ""; return }
-        diagnosticText = (try? String(contentsOf: report.url.appendingPathComponent(selectedDiagnostic), encoding: .utf8)) ?? "Не удалось прочитать файл диагностики"
-    }
-    func revealDiagnostics() { if let report = diagnosticReport { NSWorkspace.shared.open(report.url) } }
     func refreshActivity() {
         activityEvents = (try? ActivityJournal(root: storage).recent()) ?? []
         if FileManager.default.fileExists(atPath: storage.appendingPathComponent("Activity/incomplete.txt").path) {

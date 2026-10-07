@@ -46,7 +46,7 @@ try
         {
             var shell = new Shell { Helper = helper, Agent = previousAgent };
             var state = await Service(shell).GetVpnStatusAsync();
-            Check(state.Installed && !state.HelperReady && state.AgentReady && state.Configured && state.Enabled && state.Profiles.Count == 1);
+            Check(state.Installed && !state.HelperReady && !state.AgentReady && state.Configured && state.Enabled && state.Profiles.Count == 1);
             Check(shell.Requests.SequenceEqual(new[] { "status" }));
             Check(shell.Commands.Single(c => c.EndsWith("/vpnctl request")).Contains(helper, StringComparison.Ordinal));
             await Rejected(() => Service(shell).SetVpnEnabledAsync(true));
@@ -132,18 +132,14 @@ try
             Check((await Rejected(() => Service(shell).ConfigureVpnWifiAsync("Synthetic", VpnPasswordMode.Main))).Contains("VPN_REPLY_INVALID", StringComparison.Ordinal));
             Check(shell.Commands.Count == 2 && shell.Requests.SequenceEqual(new[] { "status" }) && shell.Uploads == 0);
         });
-    await Test("Historical agent can reach readonly update preflight despite old controller", async () =>
-    {
-        var shell = new Shell { Agent = previousAgent, Helper = previousHelper };
-        await Rejected(() => Service(shell).InstallVpnAsync());
-        Check(shell.Preflights == 1 && shell.Uploads > 0 && shell.InstallCalls == 0 && shell.Commands.Any(c => c.Contains("rm -f", StringComparison.Ordinal)));
-    });
-    await Test("Unknown agent refuses before staging or controller update", async () =>
-    {
-        var shell = new Shell { Agent = new string('f', 64) };
-        await Rejected(() => Service(shell).InstallVpnAsync());
-        Check(shell.Preflights == 0 && shell.Uploads == 0 && shell.InstallCalls == 0);
-    });
+    foreach (var agent in new[] { previousAgent, new string('f', 64), "missing" })
+        await Test("VPN installation does not require agent " + agent[..Math.Min(8, agent.Length)], async () =>
+        {
+            var shell = new Shell { Agent = agent };
+            var status = await Service(shell).InstallVpnAsync();
+            Check(status.HelperReady && shell.Preflights == 0 && shell.InstallCalls == 1);
+            Check(!shell.Commands.Any(c => c.Contains("update-agent.sh") || c.Contains("install-launcher.sh")));
+        });
     await Test("Unknown firmware refuses mutation before remote lock", async () =>
     {
         var shell = new Shell { Firmware = new string('f', 64) };
@@ -152,7 +148,7 @@ try
     });
     await Test("Existing pending journal refuses before all remote calls", async () =>
     {
-        var pending = Path.Combine(storage, "setup-pending.json");
+        var pending = Path.Combine(storage, "component-cleanup-pending.json");
         await File.WriteAllTextAsync(pending, "{}");
         try { var shell = new Shell(); await Rejected(() => Service(shell).InstallVpnAsync()); Check(shell.Commands.Count == 0); }
         finally { File.Delete(pending); }
@@ -161,7 +157,7 @@ try
     {
         // Construct only the state needed by the actual service dispatch. Avoid its
         // constructor reading the user's saved connection or creating an SSH client.
-        var service = (WindowsModemService)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(WindowsModemService));
+        var service = new WindowsModemService(storage, Path.GetFullPath("Windows_x64/Resources"));
         var ssh = (SshTransport)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(SshTransport));
         void Set(string name, object value) => typeof(WindowsModemService).GetField(name, BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(service, value);
         Set("_operation", new SemaphoreSlim(1, 1)); Set("_logs", new List<LogEntry>()); Set("_storage", storage);
@@ -173,7 +169,101 @@ try
         Check(!result.Success && result.Message.Contains("VPN_GUARD_REFUSED", StringComparison.Ordinal));
         Check(snapshot.IsConnected && snapshot.ConnectionMode == "SSH" && ReferenceEquals(ssh, typeof(WindowsModemService).GetField("_ssh", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(service)));
     });
+    await Test("Profile lifecycle uses private SSH stdin with no running agent or duplicate modem lock", async () =>
+    {
+        var shell = new Shell { Agent = "missing", ProfileMode = true };
+        var service = Service(shell);
+        const string uri = "vless://aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa@example.test:443?security=tls#PRIVATE_CANARY";
+        var imported = await service.ImportVpnProfileAsync(uri, "Test");
+        Check(imported.Profiles.Count == 1 && !imported.Enabled);
+        var id = imported.Profiles[0].Id;
+        Check((await service.RenameVpnProfileAsync(id, " Renamed ")).Profiles[0].Name == "Renamed");
+        Check((await service.ActivateVpnProfileAsync(id)).ActiveProfile == id);
+        Check(!(await service.SetVpnEnabledAsync(false)).Enabled);
+        Check((await service.SetVpnEnabledAsync(true)).Enabled);
+        shell.ProfileState["active_profile"] = "22222222-2222-2222-2222-222222222222";
+        Check((await service.DeleteVpnProfileAsync(id)).Profiles.Count == 0);
+        Check(shell.Bodies.Single(x => x.GetProperty("action").GetString() == "import").GetProperty("uri").GetString() == uri);
+        Check(!shell.Commands.Any(c => c.Contains("PRIVATE_CANARY") || c.Contains("example.test") || c.Contains("mkdir /tmp/zte-imei-app.lock")));
+        Check(shell.Commands.Where(c => c.EndsWith("/vpnctl request") && c.Contains("boot_id")).Count() == 6);
+        var privacy = new ZteImeiStudio.Windows.Diagnostics.DiagnosticPrivacy();
+        privacy.RememberParameters(new Dictionary<string,string> { ["vpn_secret_uri"] = uri });
+        Check(!privacy.Clean(uri).Contains("PRIVATE_CANARY"));
+    });
+    await Test("Desktop service dispatches profile actions and refreshes snapshot without logging URI", async () =>
+    {
+        var shell = new Shell { Agent = "missing", ProfileMode = true };
+        var service = new WindowsModemService(storage, Path.GetFullPath("Windows_x64/Resources"));
+        void Set(string name, object value) => typeof(WindowsModemService).GetField(name, BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(service, value);
+        Set("_ssh", System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(SshTransport)));
+        Set("_imei", System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(ImeiEngine)));
+        Set("_features", Service(shell));
+        Set("_snapshot", new DeviceSnapshot(true, "SSH", ConnectionMode: "SSH"));
+        var uri = "vless://aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa@example.test:443#PRIVATE_DISPATCH";
+        var result = await service.RunAsync(new(ModemOperation.ImportVpnProfile, new Dictionary<string,string> { ["vpn_secret_uri"] = uri, ["vpn_profile_name"] = "Dispatch" }));
+        Check(result.Success);
+        var snapshot = await service.GetDeviceSnapshotAsync();
+        var id = snapshot.VpnPage!.ProfileDetails!.Single().Id;
+        Check(snapshot.VpnPage.ComponentsReady && snapshot.Agent is null);
+        foreach (var (operation, extraKey, extraValue) in new[] {
+            (ModemOperation.RenameVpnProfile, "vpn_profile_name", "Renamed"),
+            (ModemOperation.ActivateVpnProfile, "unused", ""),
+            (ModemOperation.SetVpnEnabled, "vpn_enabled", "false") })
+        {
+            result = await service.RunAsync(new(operation, new Dictionary<string,string> { ["vpn_profile_id"] = id, [extraKey] = extraValue }));
+            Check(result.Success);
+        }
+        snapshot = await service.GetDeviceSnapshotAsync();
+        Check(snapshot.VpnPage!.ActiveProfile == "Renamed" && !snapshot.VpnPage.Enabled);
+        shell.ProfileState["active_profile"] = "22222222-2222-2222-2222-222222222222";
+        Check((await service.RunAsync(new(ModemOperation.DeleteVpnProfile, new Dictionary<string,string> { ["vpn_profile_id"] = id }))).Success);
+        Check((await service.GetDeviceSnapshotAsync()).VpnPage!.Profiles.Count == 0);
+        Check(!(await service.GetLogsAsync()).Any(x => x.Message.Contains("PRIVATE_DISPATCH") || x.Message.Contains(uri)));
+        foreach (var file in Directory.EnumerateFiles(storage, "*.jsonl", SearchOption.AllDirectories))
+            Check(!(await File.ReadAllTextAsync(file)).Contains("PRIVATE_DISPATCH"));
+    });
+    await Test("Profile validation rejects unsupported input before SSH", async () =>
+    {
+        var shell = new Shell(); var service = Service(shell);
+        await Rejected(() => service.ImportVpnProfileAsync("mixed-port: 7890"));
+        await Rejected(() => service.ImportVpnProfileAsync("vless://first\nvless://second"));
+        await Rejected(() => service.RenameVpnProfileAsync("../profile", "name"));
+        await Rejected(() => service.RenameVpnProfileAsync("11111111-1111-1111-1111-111111111111", "\n"));
+        Check(shell.Commands.Count == 0);
+    });
+    await Test("A successful command without changed state is not import success", async () =>
+    {
+        var shell = new Shell { ProfileMode = true, IgnoreProfileMutation = true };
+        Check((await Rejected(() => Service(shell).ImportVpnProfileAsync("vless://aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa@example.test:443"))).Contains("не подтвердил"));
+        Check(shell.Requests.Count(x => x == "import") == 1);
+    });
+    foreach (var code in new[] { "VPN_BUSY", "VPN_ACTIVE_PROFILE_DELETE" })
+        await Test("Profile refusal is specific and never retried: " + code, async () =>
+        {
+            var shell = new Shell { ProfileMode = true, MutationError = code };
+            Check((await Rejected(() => Service(shell).DeleteVpnProfileAsync("11111111-1111-1111-1111-111111111111"))).Contains(code));
+            Check(shell.Requests.Count(x => x == "delete") == 1);
+        });
     using var session = HeadlessUnitTestSession.StartNew(typeof(TestApp));
+    await Test("VPN profile controls work without agent and retain active-delete rule after busy reset", async () =>
+    {
+        await session.Dispatch(() =>
+        {
+            var window = new MainWindow(new FakeModem(), persistPreferences: false); window.Show(); Dispatcher.UIThread.RunJobs();
+            typeof(MainWindow).GetField("_snapshot", BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(window,
+                new DeviceSnapshot(true, "SSH", ConnectionMode: "SSH", Agent: null,
+                    VpnPage: new VpnPageSnapshot(true, true, true, false, false, "Fixture", ["Active"], "Active", [new VpnProfileSnapshot("11111111-1111-1111-1111-111111111111", "Active", "tcp", true)], true)));
+            window.GetLogicalDescendants().OfType<Button>().Single(b => b.Name == "Navigation4").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Dispatcher.UIThread.RunJobs();
+            Button Find(string title) => window.GetLogicalDescendants().OfType<Button>().Single(b => b.Content?.ToString() == Localization.Translate(title));
+            Check(Find("Импортировать профиль").IsEnabled && Find("Переименовать").IsEnabled && Find("Включить Wi-Fi с VPN").IsEnabled);
+            Check(!Find("Удалить профиль").IsEnabled && !Find("Сделать активным").IsEnabled);
+            var busy = typeof(MainWindow).GetMethod("SetBusy", BindingFlags.NonPublic | BindingFlags.Instance)!;
+            busy.Invoke(window, [true]); busy.Invoke(window, [false]);
+            Check(!Find("Удалить профиль").IsEnabled && !Find("Сделать активным").IsEnabled && Find("Импортировать профиль").IsEnabled);
+            window.Close(); Dispatcher.UIThread.RunJobs();
+        }, CancellationToken.None);
+    });
     await Test("VPN navigation and component update remain available with old status", async () =>
     {
         await session.Dispatch(() =>
@@ -194,9 +284,13 @@ if (failed != 0) Environment.ExitCode = 1;
 
 sealed class Shell : IRemoteShell
 {
-    internal string Agent = AgentPackage.Sha256, Helper = "a388d8fa771b3e4bb46d500202ff750df410b4e6608d0f4902288b6aad16d731";
+    internal string Agent = AgentPackage.Sha256, Helper = "f5e1c9e627e3e978ff535de79b95ff920d7318e7ea3ce713e5b174efe313ca0c";
     internal string Firmware = "604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263";
     internal RemoteResult? RequestReply;
+    internal bool ProfileMode, IgnoreProfileMutation;
+    internal string? MutationError;
+    internal List<JsonElement> Bodies = [];
+    internal JsonObject ProfileState = JsonNode.Parse("{\"schema_version\":1,\"configured\":false,\"enabled\":false,\"core_running\":false,\"settings_supported\":true,\"profiles\":[],\"active_profile\":\"\"}")!.AsObject();
     internal List<string> Requests = [], Commands = [];
     internal int Uploads, Preflights, InstallCalls;
     internal static RemoteResult Reply(string text = "", int code = 0) => new(code, Encoding.UTF8.GetBytes(text), []);
@@ -206,11 +300,32 @@ sealed class Shell : IRemoteShell
         if (command.Contains("sha256sum /firmware/image/modem.b16 /usr/bin/diag-router", StringComparison.Ordinal))
             return Task.FromResult(Reply(Firmware + "  /firmware/image/modem.b16\n55c54f74aaa427940254a2f16c36771e675a80a002363e4f10b0dfcb604d9c6f  /usr/bin/diag-router\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n11111111-1111-1111-1111-111111111111"));
         if (command.Contains("for f in /data/zte-vpn/vpnctl", StringComparison.Ordinal))
-            return Task.FromResult(Reply("PRESENT\n" + Helper + "\n" + Agent + "\nmissing\nmissing"));
+            return Task.FromResult(Reply("PRESENT\n" + Helper + "\nHELPER_LAYOUT_READY"));
         if (command.EndsWith("/vpnctl request", StringComparison.Ordinal))
         {
-            using var doc = JsonDocument.Parse(stdin!); Requests.Add(doc.RootElement.GetProperty("action").GetString()!);
-            return Task.FromResult(RequestReply ?? Reply("{\"ok\":true,\"data\":{\"schema_version\":1,\"configured\":true,\"enabled\":true,\"core_running\":false,\"profiles\":[{\"id\":\"fixture\",\"name\":\"Synthetic\",\"transport\":\"vless\",\"active\":true}]}}"));
+            using var doc = JsonDocument.Parse(stdin!); var body = doc.RootElement; var action = body.GetProperty("action").GetString()!;
+            Requests.Add(action); Bodies.Add(body.Clone());
+            if (RequestReply is not null) return Task.FromResult(RequestReply);
+            if (ProfileMode)
+            {
+                if (action != "status" && (!command.Contains("/proc/sys/kernel/random/boot_id") || body.TryGetProperty("lock_token", out _))) throw new Exception("Missing identity guard or duplicate lock");
+                if (action != "status" && MutationError is not null) return Task.FromResult(Reply(JsonSerializer.Serialize(new { ok = false, code = MutationError }), 1));
+                if (!IgnoreProfileMutation)
+                {
+                    var profiles = ProfileState["profiles"]!.AsArray();
+                    var id = body.TryGetProperty("id", out var idValue) ? idValue.GetString() : "";
+                    switch (action)
+                    {
+                        case "import": profiles.Add(new JsonObject { ["id"] = "11111111-1111-1111-1111-111111111111", ["name"] = body.GetProperty("name").GetString() ?? "Imported", ["transport"] = "tcp", ["active"] = false }); break;
+                        case "rename": foreach (var p in profiles.Where(p => p!["id"]!.GetValue<string>() == id)) p!["name"] = body.GetProperty("name").GetString(); break;
+                        case "activate": foreach (var p in profiles) p!["active"] = p["id"]!.GetValue<string>() == id; ProfileState["active_profile"] = id; ProfileState["enabled"] = true; ProfileState["configured"] = true; break;
+                        case "delete": foreach (var p in profiles.Where(p => p!["id"]!.GetValue<string>() == id).ToArray()) profiles.Remove(p); break;
+                        case "set_enabled": ProfileState["enabled"] = body.GetProperty("enabled").GetBoolean(); break;
+                    }
+                }
+                return Task.FromResult(Reply(new JsonObject { ["ok"] = true, ["data"] = ProfileState.DeepClone() }.ToJsonString()));
+            }
+            return Task.FromResult(Reply("{\"ok\":true,\"data\":{\"schema_version\":1,\"configured\":true,\"enabled\":true,\"core_running\":false,\"profiles\":[{\"id\":\"fixture\",\"name\":\"Synthetic\",\"transport\":\"vless\",\"active\":true}]}}"));
         }
         if (command.Contains("for c in lua nft", StringComparison.Ordinal)) return Task.FromResult(Reply());
         if (command.StartsWith("if test -e /data/zte-vpn", StringComparison.Ordinal)) return Task.FromResult(Reply("PRESENT"));
@@ -219,6 +334,7 @@ sealed class Shell : IRemoteShell
         if (command.Contains("cat > ", StringComparison.Ordinal)) { Uploads++; return Task.FromResult(Reply(Convert.ToHexStringLower(SHA256.HashData(stdin!)) + "  staged")); }
         if (command.Contains("update-agent.sh", StringComparison.Ordinal) && command.EndsWith(" preflight", StringComparison.Ordinal))
         { Preflights++; return Task.FromResult(new RemoteResult(1, [], Encoding.UTF8.GetBytes("PRIVATE preflight text"))); }
+        if (command.Contains("upgrade-controller.sh", StringComparison.Ordinal) && command.Contains("sh ", StringComparison.Ordinal)) { InstallCalls++; return Task.FromResult(Reply("VPN_CONTROLLER_UPDATED")); }
         if (command.Contains("sh ", StringComparison.Ordinal)) { InstallCalls++; throw new Exception("Unexpected installation"); }
         if (command.Contains("mkdir", StringComparison.Ordinal) || command.Contains("rmdir", StringComparison.Ordinal)) return Task.FromResult(Reply());
         throw new Exception("Unexpected fake command");
