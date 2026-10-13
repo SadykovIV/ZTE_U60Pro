@@ -31,9 +31,6 @@ mod vpn;
 #[cfg(feature = "esim")]
 mod esim;
 
-#[cfg(feature = "esim")]
-const AGENT_VERSION: &str = "2.9.0-esim.6";
-#[cfg(not(feature = "esim"))]
 const AGENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 use std::sync::Arc;

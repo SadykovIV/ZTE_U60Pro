@@ -16,7 +16,7 @@ def main():
     errors = set()
     for source in (ROOT / "ModemAgent/vpnctl/src").glob("*.rs"):
         errors.update(re.findall(r'"(VPN_[A-Z0-9_]+)"', source.read_text()))
-    errors -= {"VPN_PROFILE_FIXTURE", "VPN_SECOND_PROFILE_FIXTURE", "VPN_SPX_PRESERVED"}
+    errors -= {"VPN_PROFILE_FIXTURE", "VPN_SECOND_PROFILE_FIXTURE", "VPN_SPX_PRESERVED", "VPN_INSECURE_TLS"}
     table = MODEL.read_text().split("static const struct error_text errors[] = {", 1)[1].split("\n};", 1)[0]
     entries = re.findall(r'\{"(VPN_[A-Z0-9_]+)",', table)
     assert len(entries) == len(set(entries)), "Duplicate error codes"

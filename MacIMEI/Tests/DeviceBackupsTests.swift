@@ -9,15 +9,16 @@ private func rejects(_ text: String, _ body: () throws -> Void) throws {
 private final class Flag: @unchecked Sendable { private var value = false; let lock = NSLock(); func set() { lock.lock(); value = true; lock.unlock() }; func get() -> Bool { lock.lock(); defer {lock.unlock()}; return value } }
 private final class MockRemote: RemoteTransport {
     var identityCalls = 0, commands: [String] = []
+    var firmwareHash = ModemEngine.firmwareHash
     var changeIdentity = false, changeBoot = false
     var estimate = "BACKUP_ESTIMATE bytes=20971520\n"
     func run(_ command: String, input: Data?, timeout: TimeInterval) throws -> CommandResult {
         commands.append(command); var text = ""
-        if command.hasPrefix("sha256sum /firmware/image/modem.b16 ") {
+        if command == AccessIdentity.command || command.hasPrefix("sha256sum /firmware/image/modem.b16 ") {
             identityCalls += 1
             let cid = changeIdentity && identityCalls > 1 ? String(repeating: "f", count: 32) : "0123456789abcdef0123456789abcdef"
             let boot = changeBoot && identityCalls > 1 ? "e7d85c31-7c1a-43dc-9e72-0fd40ca78f77" : "00112233-4455-6677-8899-aabbccddeeff"
-            text = "\(ModemEngine.firmwareHash) /firmware/image/modem.b16\n\(ModemEngine.routerHash) /usr/bin/diag-router\n\(cid)\n\(boot)\n"
+            text = "\(firmwareHash)  /firmware/image/modem.b16\n\(ModemEngine.routerHash) /usr/bin/diag-router\n\(cid)\n\(boot)\n"
         } else if command.contains("/tmp/zte-imei-app.lock") || command.hasPrefix("umask 077; mkdir '/tmp/zte-device-backup-") || command.contains("&& rm -rf '/tmp/zte-device-backup-") {}
         else if command.hasPrefix("umask 077; cat > "), let input { text = "\(digest(input))  \(command.split(separator: "'")[1])\n" }
         else if command.contains("'estimate'") { text = estimate }
@@ -91,6 +92,29 @@ private final class Fixture {
             for bad in ["bad", "BACKUP_ESTIMATE bytes=0", "BACKUP_ESTIMATE bytes=-1", "BACKUP_ESTIMATE bytes=1.5", "BACKUP_ESTIMATE bytes=999999999999999999999", "BACKUP_ESTIMATE bytes=5\nextra"] { try rejects("") { _ = try DeviceBackups.parseEstimate(bad) } }
         }
         test("creation requires native operation lock") { let f = try Fixture(); try rejects("блокировки") { _ = try f.backups.create(.configuration) }; try check(f.stream.calls == 0, "Stream before lock") }
+        test("copy-only archives retain observed unknown or absent firmware identity") {
+            for kind in [DeviceBackupKind.configuration, .userData] {
+                for hash in [String(repeating: "a", count: 64), "absent"] {
+                    let f = try Fixture(); f.remote.firmwareHash = hash
+                    let item = try f.create(kind)
+                    try check(item.identity.firmwareHash == hash, "Invented firmware identity")
+                    try check(try DeviceBackups.verify(item).identity.firmwareHash == hash, "Cannot verify independent archive")
+                }
+            }
+        }
+        test("modem partitions accept measured B31 B28 B04 and refuse unknown before transfer") {
+            for hash in DeviceBackups.supportedModemFirmwareHashes {
+                let f = try Fixture(); f.remote.firmwareHash = hash
+                let item = try f.create(.modem)
+                try check(item.bytes == 20 * 1024 * 1024 && item.identity.firmwareHash == hash, "Wrong measured modem copy")
+                _ = try DeviceBackups.verify(item)
+            }
+            for hash in [String(repeating: "a", count: 64), "absent"] {
+                let f = try Fixture(); f.remote.firmwareHash = hash
+                try rejects("проверенной разметкой") { _ = try f.create(.modem) }
+                try check(f.stream.calls == 0, "Read unknown partition mapping")
+            }
+        }
         test("configuration streams into private files then verifies and lists") {
             let f = try Fixture(), item = try f.create()
             try check(item.kind == .configuration && item.bytes == 4096, "Item metadata")
@@ -149,10 +173,16 @@ private final class Fixture {
             try rejects("Повреждён встроенный") { _ = try f.create() }
             try check(f.stream.calls == 1, "Modified resource executed")
         }
-        test("unsafe storage or pending operation stops before stream") {
+        test("saved IMEI and setup journals do not block copy-only backups or get changed") {
+            let f = try Fixture()
+            for name in ["pending.json", "setup-pending.json"] { try savePrivate(Data("preserve journal".utf8), f.root.appendingPathComponent(name)) }
+            _ = try f.create(.configuration)
+            for name in ["pending.json", "setup-pending.json"] { try check(try Data(contentsOf: f.root.appendingPathComponent(name)) == Data("preserve journal".utf8), "Journal modified by capture") }
+        }
+        test("unsafe storage or unfinished ADB recovery stops before stream") {
             let f = try Fixture(); try FileManager.default.createSymbolicLink(at: DeviceBackups.rootURL(f.root), withDestinationURL: f.root)
             try rejects("0700") { _ = try f.create() }; try check(f.stream.calls == 0, "Unsafe storage")
-            try FileManager.default.removeItem(at: DeviceBackups.rootURL(f.root)); try savePrivate(Data(), f.root.appendingPathComponent("pending.json"))
+            try FileManager.default.removeItem(at: DeviceBackups.rootURL(f.root)); try savePrivate(Data(), f.root.appendingPathComponent("adb-access-pending.json"))
             try rejects("незавершённую") { _ = try f.create() }; try check(f.stream.calls == 0, "Pending ignored")
         }
         print("RESULT \(passed) passed; \(failed) failed"); if failed != 0 { exit(1) }

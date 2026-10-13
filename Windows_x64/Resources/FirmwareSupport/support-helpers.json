@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "platform": "Linux aarch64 musl; modem-side temporary SSH tools",
+  "compiler": "aarch64-linux-musl-gcc (GCC) 14.2.0",
+  "build_define": "ZTE_SUPPORT_READONLY",
+  "persistent_writes": false,
+  "raw_device_records_exported": false,
+  "support_config_header_sha256": "737c86238adf6efba55d6ab1c1943380ebf39ae54bc0316aaaa31e717f0fae09",
+  "helpers": [
+    {
+      "name": "zte-support-nv",
+      "command": "--inspect-nv550",
+      "source_sha256": "9e9e8a820cf66e8224ff58c7dd754560c3af581a1e223e81475a44cb4a4909f1",
+      "sha256": "d41b1d537a0f690cc8dc954bd63bb2f41179e862a76818c650ee0b66346d3c76",
+      "size": 67544
+    },
+    {
+      "name": "zte-support-config",
+      "command": "--inspect-config",
+      "source_sha256": "e2b1402f452c68c0a96c828680dda6ccd07bb6134fc2f2a3ac644d170bf33320",
+      "sha256": "61cfce1263c9c882eccf2303b93f83fa3f0e96919ed7da60e690df5a148fa262",
+      "size": 67536
+    }
+  ]
+}

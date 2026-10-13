@@ -46,6 +46,7 @@ struct AgentCandidate: Sendable {
     }
 }
 struct AgentInstallationStatus: Sendable {
+    var web: AgentWebStatus?
     var hash = "absent"
     var running = false
     var startupReady = false

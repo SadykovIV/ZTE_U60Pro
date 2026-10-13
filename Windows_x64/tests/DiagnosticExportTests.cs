@@ -136,14 +136,14 @@ internal static class DiagnosticExportTests
         {
             var shell=new LogShell{Kind=kind};
             var collected=await ModemLogCollector.CollectAsync(shell,LogShell.Proof,CancellationToken.None);
-            Check(shell.Commands.All(c=>c==SshReadProof.SessionCommand||ModemLogCollector.Commands.Any(x=>c==ModemLogCollector.Wrap(x.Command))),"log collection sends only session proof and three known reads: "+kind);
+            Check(shell.Commands.All(c=>c==SshReadProof.SessionCommand||ModemLogCollector.Commands.Any(x=>c==ModemLogCollector.Wrap(x.Command))),"log collection sends only session proof and known log and VPN runtime reads: "+kind);
             Check(collected.Status==(kind=="complete"?"complete":"partial"),"modem log outcome preserves failures: "+kind);
             Check(kind!="changed"||collected.Files.Count==0,"changed device discards remote logs");
             var target=Path.Combine(root,"logs-"+kind+".zip");
             var exportedLogs=DiagnosticsExporter.Export(combinedRoot,target,new("SSH",null,null,"test"),[],privacy,modemLogs:collected);
             var payload=ReadZip(exportedLogs.Path);var body=string.Join('\n',payload.Values.Select(Encoding.UTF8.GetString));
             Check(body.Contains("Preparation failure survives export")&&!body.Contains("REMOTE-SECRET-CANARY"),"local logs survive remote failure and remote secrets are hidden: "+kind);
-            Check(kind!="complete"||payload.Keys.Count(x=>x.StartsWith("modem/"))==3,"connected collection contains all modem logs");
+            Check(kind!="complete"||payload.Keys.Count(x=>x.StartsWith("modem/"))==ModemLogCollector.Commands.Length,"connected collection contains all modem logs");
         }
         var connectedRoot=Path.Combine(root,"connected-logs");var connected=new WindowsModemService(connectedRoot,Path.Combine(root,"no-agent-resources"));
         typeof(WindowsModemService).GetField("_sshRead",BindingFlags.NonPublic|BindingFlags.Instance)!.SetValue(connected,new LogShell());
@@ -151,7 +151,7 @@ internal static class DiagnosticExportTests
         typeof(WindowsModemService).GetField("_snapshot",BindingFlags.NonPublic|BindingFlags.Instance)!.SetValue(connected,new DeviceSnapshot(true,"Synthetic SSH",ConnectionMode:"SSH"));
         Check((await connected.RunAsync(new(ModemOperation.ExportDiagnostics))).Success,"real export dispatcher reads selected SSH without installed agent or feature engine");
         var connectedFiles=ReadZip(Directory.GetFiles(Path.Combine(connectedRoot,"Diagnostics"),"*.zip").Single());
-        Check(connectedFiles.Keys.Count(x=>x.StartsWith("modem/"))==3,"real export dispatcher adds fresh modem logs to ZIP");
+        Check(connectedFiles.Keys.Count(x=>x.StartsWith("modem/"))==ModemLogCollector.Commands.Length,"real export dispatcher adds fresh modem logs to ZIP");
         using(var during=new CancellationTokenSource())
         {
             IEnumerable<DiagnosticActivity> CancelDuring(){during.Cancel();yield return new(eventTime,"info","synthetic cancellation");}

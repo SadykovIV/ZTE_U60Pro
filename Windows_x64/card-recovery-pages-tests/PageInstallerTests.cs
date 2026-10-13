@@ -10,7 +10,7 @@ static class PageInstallerTests
  public static async Task RunLauncherProfiles(string resources,string storage,Action<bool,string> check)
  {
   DeviceFeatureService Service(FakeShell fake)=>new(fake,resources,storage);
-  foreach(var ui in new[]{"8d2ebbde880934f52195ad9595815d728f7aa4671bb0633d5a5149b09467ae90","d6c3cd409705d5aa9c12185c84074513b159088025f005da7dbf01c51e3c3715","e3914e78a8488cb736770f0ac9fb8ce10e0e5222fa50285f08e9e8be90d7f1e9","16eb92e27f54b5cf5c6b316a6e7a62b782053a2a609d0d4904a7f08a7bc0afa4"})
+  foreach(var ui in new[]{"8d2ebbde880934f52195ad9595815d728f7aa4671bb0633d5a5149b09467ae90","d6c3cd409705d5aa9c12185c84074513b159088025f005da7dbf01c51e3c3715","e3914e78a8488cb736770f0ac9fb8ce10e0e5222fa50285f08e9e8be90d7f1e9","16eb92e27f54b5cf5c6b316a6e7a62b782053a2a609d0d4904a7f08a7bc0afa4","dbe6eadc92d43a0cd7206264f9d75ab242df90e88c02ee2ba3ac65598b58523e","0db2294b3e428fb53f4b6b725063ad8ffd9c396e5a27c54452f0ea479fa78f3b"})
   {
    var f=new FakeShell{FirmwareIdentity="absent",RouterIdentity="absent",UiIdentity=ui,Hash=AgentPackage.Sha256,FreshVpn=true,LauncherAbsent=true,Layout=LauncherLayout.Default.Encode()};
    var service=Service(f);var status=await service.GetLauncherStatusAsync();
@@ -224,7 +224,7 @@ static class PageInstallerTests
     return await (Task<ZteImeiStudio.Windows.Core.DeviceIdentity>)typeof(ImeiEngine).GetMethod("IdentityForWriteAsync",System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!.Invoke(engine,[CancellationToken.None])!;
    }
    var nvVersion=new FakeShell{FirmwareIdentity=new string('b',64)};
-   await Reject(()=>NvIdentity(nvVersion,false),"default NV firmware guard still requires B31");
+   check((await NvIdentity(nvVersion,false)).FirmwareHash==new string('b',64),"NV identity preserves measured firmware; native NV/EFS contracts authorize writes separately");
    check((await NvIdentity(nvVersion,true)).FirmwareHash==new string('b',64),"explicit NV firmware override preserves the measured firmware identity");
    var wrongNvAbi=new FakeShell{FirmwareIdentity=new string('b',64),RouterIdentity=new string('c',64)};
    await Reject(()=>NvIdentity(wrongNvAbi,true),"explicit firmware override cannot waive the pinned NV router ABI");

@@ -8,7 +8,7 @@ SOURCE=BASE/'Resources/Onboarding/clean-components.sh'
 def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()
 class CleanupTests(unittest.TestCase):
  def setUp(self):
-  self.tmp=tempfile.TemporaryDirectory(prefix='clean-components-');self.root=Path(self.tmp.name)
+  self.tmp=tempfile.TemporaryDirectory(prefix='clean-components-');self.root=Path(self.tmp.name).resolve()
   self.bin=self.root/'commands';self.bin.mkdir();self.env={**os.environ,'PATH':str(self.bin)+':/usr/bin:/bin'}
   self.id='12345678-1234-1234-1234-123456789abc';self.boot='23456789-2345-2345-2345-23456789abcd';self.token='34567890-3456-3456-3456-34567890abcd';self.cid='0123456789abcdef0123456789abcdef'
   for p in ['data/zte-imei-studio','etc/init.d','etc/rc.d','etc/config','proc/sys/kernel/random','sys/block/mmcblk0/device','firmware/image','usr/bin','tmp']:(self.root/p).mkdir(parents=True,exist_ok=True,mode=0o700)
@@ -36,7 +36,8 @@ exec /usr/bin/shasum -a 256 "$@"''')
  def owned(self,name,owner):
   d=self.root/'data'/name;d.mkdir(mode=0o700);self.write(f'data/{name}/owner',owner);self.write(f'data/{name}/data.txt','important prior data');return d
  def run_helper(self,action,approved=None,**env):
-  args=[action,str(self.tx),self.id,self.cid,self.boot,sha(self.root/'firmware/image/modem.b16'),sha(self.root/'usr/bin/diag-router'),self.token]
+  fw=env.pop('FIRMWARE',None) or (sha(self.root/'firmware/image/modem.b16') if (self.root/'firmware/image/modem.b16').exists() else 'absent')
+  args=[action,str(self.tx),self.id,self.cid,self.boot,fw,sha(self.root/'usr/bin/diag-router'),self.token]
   if approved is not None:args.append(approved)
   return subprocess.run(['/bin/sh',str(self.script),*args],env={**self.env,**env},capture_output=True,timeout=20)
  def ok(self,r):self.assertEqual(r.returncode,0,r.stderr.decode());return r.stdout.decode().strip()
@@ -45,6 +46,14 @@ exec /usr/bin/shasum -a 256 "$@"''')
  def test_absent_components_keeps_oem_ssh_and_archive(self):
   before=(self.root/'etc/rc.local').read_bytes();digest=self.prepare();self.ok(self.run_helper('clean',digest))
   self.assertEqual((self.root/'etc/rc.local').read_bytes(),before);self.assertEqual((self.root/'data/OEM').read_text(),'untouched');self.assertTrue((self.tx/'components.tar').is_file());self.assertTrue((self.root/'data/zte-imei-studio/start_zte_agent.sh').exists())
+ def test_observed_missing_b16_allows_verified_cleanup(self):
+  (self.root/'firmware/image/modem.b16').unlink()
+  d=self.owned('zte-agent-installer','zte-agent-installer-v1');digest=self.prepare()
+  self.ok(self.run_helper('clean',digest));self.assertFalse(d.exists());self.assertEqual((self.tx/'retained/data_zte-agent-installer/data.txt').read_text(),'important prior data')
+ def test_absent_identity_never_accepts_present_or_linked_firmware(self):
+  self.assertNotEqual(self.run_helper('prepare',FIRMWARE='absent').returncode,0);self.assertFalse(self.tx.exists())
+  file=self.root/'firmware/image/modem.b16';file.unlink();file.symlink_to(self.root/'missing')
+  self.assertNotEqual(self.run_helper('prepare',FIRMWARE='absent').returncode,0);self.assertFalse(self.tx.exists())
  def test_owned_roots_archived_then_retained_and_repeat(self):
   d=self.owned('zte-agent-installer','zte-agent-installer-v1');digest=self.prepare();self.assertTrue(d.exists());self.assertEqual(sha(self.tx/'components.tar'),digest)
   self.ok(self.run_helper('clean',digest));self.assertFalse(d.exists());self.assertEqual((self.tx/'retained/data_zte-agent-installer/data.txt').read_text(),'important prior data');self.assertEqual(self.ok(self.run_helper('clean',digest)),'CLEAN_COMPLETE')
@@ -113,6 +122,37 @@ return {cursor=function(path)
   self.command('lua','exec /opt/homebrew/bin/lua "$@"')
  def test_configured_disabled_vpn_restores_stock_after_verified_archive(self):
   self.vpn();self.lua_fixture();digest=self.prepare();self.assertFalse((self.root/'restored').exists());self.ok(self.run_helper('clean',digest));self.assertTrue((self.root/'restored').exists());self.assertEqual(sha(self.root/'etc/init.d/network'),sha(BASE/'Resources/VPN/network.stock'));self.assertTrue((self.tx/'retained/data_zte-vpn/backup').is_dir())
+ def ipa_fixture(self,configured=True):
+  d=self.vpn(configured);self.write('etc/config/zwrt_router','ipa=1\nunrelated=keep\n')
+  self.write('data/zte-vpn/ipa-backup/original','original policy')
+  shutil.copyfile(BASE/'Resources/VPN/manager.sh',d/'manager.sh');(d/'manager.sh').chmod(0o600)
+  self.command('sh',r'''case "$1" in
+ */manager.sh) case "$2" in
+  ipa-check) exit 0;;
+  ipa-restore)
+   test -f "$ARCHIVE" || exit 88
+   test "${FAIL_IPA_RESTORE:-0}" = 0 || exit 89
+   echo ipa-restored >> "$CALLS"
+   printf 'ipa=0\nunrelated=keep\n' > "$ROUTER_CONFIG";;
+  *) exit 87;; esac;;
+ */firewall.sh) echo firewall >> "$CALLS";;
+ *) exec /bin/sh "$@";; esac''')
+  self.env['ARCHIVE']=str(self.tx/'components.tar');self.env['ROUTER_CONFIG']=str(self.root/'etc/config/zwrt_router')
+  return d
+ def test_cleanup_archives_router_before_conditional_ipa_restore(self):
+  import tarfile
+  self.ipa_fixture();digest=self.prepare();self.assertFalse(self.calls.exists())
+  with tarfile.open(self.tx/'components.tar') as archive:self.assertEqual(archive.extractfile('etc/config/zwrt_router').read(),b'ipa=1\nunrelated=keep\n')
+  self.ok(self.run_helper('clean',digest));self.assertIn('ipa-restored',self.calls.read_text())
+  self.assertEqual((self.root/'etc/config/zwrt_router').read_text(),'ipa=0\nunrelated=keep\n')
+  self.assertTrue((self.tx/'retained/data_zte-vpn/ipa-backup/original').exists())
+ def test_ipa_restore_failure_retains_components_and_exact_archive(self):
+  d=self.ipa_fixture();digest=self.prepare();r=self.run_helper('clean',digest,FAIL_IPA_RESTORE='1')
+  self.assertNotEqual(r.returncode,0);self.assertIn('VPN_RESTORE',r.stderr.decode());self.assertTrue(d.exists())
+  self.assertEqual(sha(self.tx/'components.tar'),digest);self.assertEqual((self.tx/'phase').read_text().strip(),'changing')
+ def test_factory_reset_stock_network_still_restores_owned_ipa(self):
+  self.ipa_fixture(configured=False);digest=self.prepare();self.ok(self.run_helper('clean',digest))
+  self.assertEqual(self.calls.read_text().strip(),'ipa-restored')
  def network_runtime(self):
   (self.root/'sys/class/net/br-vpn').mkdir(parents=True)
   self.env['RELOADED']=str(self.root/'reloaded')

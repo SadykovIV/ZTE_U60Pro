@@ -5,7 +5,11 @@
 set -eu
 umask 077
 reinstall=0
-if test "${1:-}" = --reinstall; then reinstall=1; shift; fi
+clean_reinstall=0
+case "${1:-}" in
+  --reinstall) reinstall=1; shift;;
+  --clean-reinstall) reinstall=1; clean_reinstall=1; shift;;
+esac
 anchor=/data/zte-imei-studio
 base=$anchor/installations
 expected_targets='data/zte-agent
@@ -315,6 +319,109 @@ reconcile_completed_owner() {
     release_completed_owner || return 1
     printf 'INSTALL_COMPLETED_OWNER_CLEARED\n' >&2
 }
+archive_previous_boot_owner() (
+    # Explicit clean installation can supersede our transaction from an earlier
+    # boot. Its files and today's targets are backed up, never rolled back.
+    test "$clean_reinstall" = 1 && test "$profile" = linux-arm64-access || exit 1
+    private_directory "$anchor"; private_directory "$base"
+    if test -e "$base/active" || test -L "$base/active"; then
+        private_file "$base/active" || fail CLEAN_RECOVERY_OWNER
+        old_token=$(cat "$base/active")
+    else
+        private_file "$base/lock/owner" || fail CLEAN_RECOVERY_OWNER
+        old_token=$(cat "$base/lock/owner")
+    fi
+    safe_id "$old_token" || fail CLEAN_RECOVERY_OWNER
+    old_journal=$base/$old_token
+    test -d "$old_journal" || fail CLEAN_RECOVERY_JOURNAL
+    private_directory "$old_journal"
+    for item in cid state profile.identity targets; do private_file "$old_journal/$item" || fail CLEAN_RECOVERY_METADATA; done
+    test "$(cat "$old_journal/cid")" = "$cid" && test "$(cat "$old_journal/targets")" = "$expected_targets" || fail CLEAN_RECOVERY_IDENTITY
+    case "$(cat "$old_journal/state")" in preparing|pending|ready|complete|rolled-back) ;; *) fail CLEAN_RECOVERY_STATE;; esac
+    IFS=' ' read -r old_profile old_fw old_router old_boot extra < "$old_journal/profile.identity" || fail CLEAN_RECOVERY_IDENTITY
+    test -z "$extra" && test "$old_profile $old_fw $old_router" = "$profile $firmware_sha $router_sha" || fail CLEAN_RECOVERY_IDENTITY
+    printf '%s\n' "$old_boot" | grep -qE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' || fail CLEAN_RECOVERY_IDENTITY
+    test "$old_boot" != "$boot_id" || fail CLEAN_RECOVERY_CURRENT_BOOT
+    for cmdline in /proc/[0-9]*/cmdline; do
+        test -r "$cmdline" || continue
+        command_line=$(tr '\000' ' ' < "$cmdline")
+        case "$command_line" in *"$anchor/stage-$old_token/"*) fail CLEAN_RECOVERY_BUSY;; esac
+    done
+    if test -e "$base/active" || test -L "$base/active"; then
+        private_file "$base/active" && test "$(cat "$base/active")" = "$old_token" || fail CLEAN_RECOVERY_OWNER
+    fi
+    if test -e "$base/lock" || test -L "$base/lock"; then
+        private_directory "$base/lock"
+        private_file "$base/lock/owner" && test "$(cat "$base/lock/owner")" = "$old_token" || fail CLEAN_RECOVERY_OWNER
+        for item in "$base/lock"/* "$base/lock"/.[!.]* "$base/lock"/..?*; do
+            test -e "$item" || test -L "$item" || continue
+            test "$item" = "$base/lock/owner" || fail CLEAN_RECOVERY_FOREIGN_FILE
+        done
+    fi
+    # The archive is copied only after validating the complete, fixed layout.
+    for item in "$old_journal"/* "$old_journal"/.[!.]* "$old_journal"/..?*; do
+        test -e "$item" || test -L "$item" || continue
+        case "${item##*/}" in
+          completed-lock)
+            private_directory "$item"
+            private_file "$item/owner" && test "$(cat "$item/owner")" = "$old_token" || fail CLEAN_RECOVERY_OWNER
+            for file in "$item"/* "$item"/.[!.]* "$item"/..?*; do
+                test -e "$file" || test -L "$file" || continue
+                test "$file" = "$item/owner" || fail CLEAN_RECOVERY_FOREIGN_FILE
+            done;;
+          before|present|planned)
+            private_directory "$item"
+            for file in "$item"/* "$item"/.[!.]* "$item"/..?*; do
+                test -e "$file" || test -L "$file" || continue
+                valid=0
+                for target in $expected_targets; do test "${file##*/}" != "$(printf '%s' "$target" | tr / _)" || valid=1; done
+                test "$valid" = 1 && plain_file "$file" && test "$(stat -c %u:%h "$file")" = 0:1 || fail CLEAN_RECOVERY_FOREIGN_FILE
+            done;;
+          cid|state|profile.identity|targets|before.sha256|after.sha256|mode|agent-was-running|startup.before.sh|authorized_keys.new|dropbear_ed25519_host_key.new|dropbear_rsa_host_key.new|rc.local.new)
+            plain_file "$item" && test "$(stat -c %u:%h "$item")" = 0:1 || fail CLEAN_RECOVERY_FOREIGN_FILE;;
+          *) fail CLEAN_RECOVERY_FOREIGN_FILE;;
+        esac
+    done
+    archive_id=$(cat /proc/sys/kernel/random/uuid)
+    safe_id "$archive_id" || fail CLEAN_RECOVERY_ARCHIVE
+    archive=$anchor/reset-recovery-$old_token-$archive_id
+    test ! -e "$archive" && test ! -L "$archive" || fail CLEAN_RECOVERY_ARCHIVE
+    mkdir "$archive" "$archive/current" || fail CLEAN_RECOVERY_ARCHIVE
+    cp -Rp "$old_journal" "$archive/journal" || fail CLEAN_RECOVERY_ARCHIVE
+    : > "$archive/snapshot.sha256"
+    for original in "$old_journal"/* "$old_journal"/before/* "$old_journal"/present/* "$old_journal"/planned/* "$old_journal"/completed-lock/*; do
+        test -e "$original" || test -L "$original" || continue
+        test ! -d "$original" || continue
+        copied=$archive/journal${original#"$old_journal"}
+        plain_file "$original" && plain_file "$copied" && test "$(hash "$original")" = "$(hash "$copied")" || fail CLEAN_RECOVERY_CHANGED
+        sha256sum "$copied" >> "$archive/snapshot.sha256"
+    done
+    for target in $expected_targets; do
+        if test -e "/$target" || test -L "/$target"; then
+            plain_file "/$target" && test "$(stat -c %u:%h "/$target")" = 0:1 || fail CLEAN_RECOVERY_TARGET
+            name=$(printf '%s' "$target" | tr / _)
+            cp -p "/$target" "$archive/current/$name" || fail CLEAN_RECOVERY_ARCHIVE
+            test "$(hash "/$target")" = "$(hash "$archive/current/$name")" || fail CLEAN_RECOVERY_CHANGED
+            sha256sum "$archive/current/$name" >> "$archive/snapshot.sha256"
+        fi
+    done
+    printf '%s\n' "$cid" > "$archive/cid"
+    printf '%s\n' "$boot_id" > "$archive/boot"
+    sync
+    identity "$cid"
+    # Moving the owned markers retains their exact bytes and makes interruption
+    # resumable: either remaining marker still identifies this old journal.
+    if test -e "$base/lock"; then
+        test "$(cat "$base/lock/owner")" = "$old_token" || fail CLEAN_RECOVERY_CHANGED
+        mv "$base/lock" "$archive/lock" || fail CLEAN_RECOVERY_ARCHIVE
+    fi
+    if test -e "$base/active"; then
+        test "$(cat "$base/active")" = "$old_token" || fail CLEAN_RECOVERY_CHANGED
+        mv "$base/active" "$archive/active" || fail CLEAN_RECOVERY_ARCHIVE
+    fi
+    sync
+    printf 'INSTALL_RESET_ARCHIVED %s\n' "$archive" >&2
+)
 cleanup_old_stage() (
     candidate=$1
     cleanup_rollback=${2:-0}
@@ -382,6 +489,44 @@ cleanup_old_stages() {
     printf 'INSTALL_CLEANUP removed=%s retained=%s\n' "$removed" "$retained"
 }
 
+if test "${1:-}" = --verify-not-started; then
+    test "$reinstall" = 0 && { test "$#" = 6 || test "$#" = 7; } || fail ARGUMENTS
+    stage=$2; cid=$3
+    case "$stage" in "$anchor"/stage-*) token=${stage#"$anchor"/stage-};;
+      /data/local/tmp/zte-imei-setup-*) token=${stage#/data/local/tmp/zte-imei-setup-};;
+      *) fail STAGE_PATH;; esac
+    safe_id "$token" || fail STAGE_ID
+    select_profile "$4" "$5" "$6" "${7:-}"
+    identity "$cid"
+    parent=$stage
+    while test -n "$parent"; do safe_directory "$parent"; parent=${parent%/*}; done
+    test -d "$stage" || fail STAGE_MISSING
+    private_directory "$stage"
+    owner="$token $cid $profile $firmware_sha $router_sha"
+    if test "$profile" = linux-arm64-access; then owner="$owner $boot_id"; fi
+    private_file "$stage/.owner" && test "$(cat "$stage/.owner")" = "$owner" || fail STAGE_OWNER
+    if test -e "$stage/.install-requested" || test -L "$stage/.install-requested"; then
+        private_file "$stage/.install-requested" && test "$(cat "$stage/.install-requested")" = "$owner" || fail STAGE_OWNER
+    fi
+    for history in "$base" /data/local/tmp/zte-imei-installations; do
+        safe_directory "$history"
+        for name in "$token" active lock; do
+            test ! -e "$history/$name" && test ! -L "$history/$name" || fail INSTALLATION_STARTED
+        done
+    done
+    # A timed-out host may have left its installer running. Inspect argv as
+    # NUL-delimited data; never execute the saved staged installer to recover.
+    for command_line in /proc/[0-9]*/cmdline; do
+        test -r "$command_line" || continue
+        if tr '\000' '\n' < "$command_line" 2>/dev/null | awk -v script="$stage/setup-agent.sh" 'NR==2 && $0==script {found=1} END {exit !found}'; then
+            fail INSTALLER_RUNNING
+        fi
+    done
+    identity "$cid"
+    printf 'INSTALL_NOT_STARTED %s\n' "$stage"
+    exit 0
+fi
+
 if test "${1:-}" = --verify-rollback; then
     test "$reinstall" = 0 && { test "$#" = 6 || test "$#" = 7; } || fail ARGUMENTS
     journal=$2; cid=$3
@@ -406,7 +551,12 @@ if test "${1:-}" = --preflight; then
     test "$#" = 5 || test "$#" = 6 || fail ARGUMENTS
     select_profile "$3" "$4" "$5" "${6:-}"
     identity "$2"
-    if test "$reinstall" = 1; then cid=$2; reconcile_completed_owner || fail RECOVERY_PENDING; fi
+    if test "$reinstall" = 1; then
+        cid=$2
+        if ! reconcile_completed_owner; then
+            archive_previous_boot_owner || fail RECOVERY_PENDING
+        fi
+    fi
     structural_preflight
     # /config is a DIAG/EFS object, not the Linux /config path. Firmware/router
     # matches do not establish NV/EFS compatibility; strict runtime reads do.
@@ -543,7 +693,9 @@ if test -e /data/zte-agent || test -L /data/zte-agent; then
     plain_file /data/zte-agent && test "$(stat -c %u:%h /data/zte-agent)" = 0:1 && test -x /data/zte-agent || fail EXISTING_AGENT_TYPE
     agent_mode=$(stat -c %a /data/zte-agent)
     case "$agent_mode" in ''|*[!0-7]*) fail EXISTING_AGENT_TYPE;; esac
-    test "$((0$agent_mode & 022))" = 0 || fail EXISTING_AGENT_TYPE
+    # Forced replacement snapshots this file and never executes it. Older
+    # installers used mode 0777; that must not prevent repairing our own agent.
+    if test "$reinstall" = 0; then test "$((0$agent_mode & 022))" = 0 || fail EXISTING_AGENT_TYPE; fi
     original_agent_sha=$(hash /data/zte-agent)
     if pidof zte-agent >/dev/null 2>&1; then
         agent_was_running=yes

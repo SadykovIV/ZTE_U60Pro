@@ -109,7 +109,7 @@ final class DiagnosticToolsManager {
     private func guardOperation(mutation: Bool) throws -> DiagnosticDeviceProof {
         try require(engine.lockFD >= 0, "Проверка приложений требует блокировки операции")
         for name in ["adb-access-pending.json"] where mutation {
-            try require(!engine.fm.fileExists(atPath: engine.root.appendingPathComponent(name).path), "Сначала завершите настройку или смену IMEI")
+            try require(!engine.fm.fileExists(atPath: engine.root.appendingPathComponent(name).path), "Сначала завершите включение ADB")
         }
         try require(!SystemBackups.hasPendingRestore(root: engine.root), "Сначала завершите восстановление модема")
         let value = try engine.measuredIdentity()

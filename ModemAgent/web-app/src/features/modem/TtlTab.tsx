@@ -69,7 +69,7 @@ export default function TtlTab() {
       </Button>
     }>
       <div className="space-y-5">
-        <p className="text-[13px] leading-relaxed text-ink2">{t('These settings are shared with the Mac app and saved on the modem. IPv6 is unchanged.')}</p>
+        <p className="text-[13px] leading-relaxed text-ink2">{t('These settings are shared with the macOS and Windows apps and saved on the modem. IPv6 is unchanged.')}</p>
         {loading && !status && <p className="flex items-center gap-2 text-sm text-ink2"><Spinner />{t('Reading TTL settings…')}</p>}
         {status && <div className="flex flex-wrap items-center gap-2">
           <Chip tone={status.state === 'configured' ? 'ok' : 'default'}>{stateLabel}</Chip>

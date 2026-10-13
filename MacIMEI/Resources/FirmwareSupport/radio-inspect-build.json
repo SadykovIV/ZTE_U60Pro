@@ -1,0 +1,59 @@
+{
+  "schema": 1,
+  "name": "zte-support-qmi",
+  "command": "--inspect-current-card",
+  "target": "aarch64-unknown-linux-musl",
+  "sha256": "8ae8a370596c1369b6c03c9fe5c048dccd83e8dda6b0947b4204b407934d2d0d",
+  "size": 462800,
+  "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+  "cargo": "cargo 1.98.1 (797e8a9bc 2026-08-05)",
+  "linker": "aarch64-linux-musl-gcc (GCC) 14.2.0",
+  "source_date_epoch": "1790678400",
+  "offline_locked": true,
+  "device_access_performed": false,
+  "identifiers_exported": false,
+  "qmi_queries": [
+    {
+      "service": 2,
+      "message": 45
+    },
+    {
+      "service": 11,
+      "message": 47
+    },
+    {
+      "service": 11,
+      "message": 71
+    }
+  ],
+  "sources": [
+    {
+      "path": "tools/radio-inspect/Cargo.toml",
+      "sha256": "48d6545ed332b5daa9a68c1fb9f068ed9bc06aab798a372c76f2e2de94322788"
+    },
+    {
+      "path": "tools/radio-inspect/Cargo.lock",
+      "sha256": "aaf4305578c5f1f51ad5d5c68c23d45030de0b239745c84901679cd3a0896f83"
+    },
+    {
+      "path": "tools/radio-inspect/src/main.rs",
+      "sha256": "2de2b959a5cca3256c3dc1a66f356eca4cfec8ce3454bc0172791c5e46c441f4"
+    },
+    {
+      "path": "tools/radio-inspect/build.py",
+      "sha256": "56d15c4e9fb6851f729c85d41984cb9db13e32358a8866013083e13aa4a9fd61"
+    },
+    {
+      "path": "tools/removable-euicc/device/src/qmi/qrtr.rs",
+      "sha256": "5a3acb6643dbfbde1bd1b0b7157d733174711f4b351fad4ebb3e683c8ede8587"
+    },
+    {
+      "path": "tools/removable-euicc/device/src/qmi/tlv.rs",
+      "sha256": "d4a4f4431fb8f94ce0ba773197429847ad48e862e9eb6161569eda502f406351"
+    },
+    {
+      "path": "tools/esim-app/build_runtime.py",
+      "sha256": "198ad4f0f141ea15e6281a3d99de6aae1ba698803101a1c8fe332d92c57b4981"
+    }
+  ]
+}

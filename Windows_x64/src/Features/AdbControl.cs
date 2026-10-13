@@ -6,7 +6,7 @@ namespace ZteImeiStudio.Windows.Features;
 
 public sealed record AdbControlStatus(bool? Enabled, bool SupportsChange = false, bool ReadyForChange = false)
 {
-    public string Detail => SupportsChange ? (Enabled == true ? "USB ADB включён. Переключение доступно через SSH." : "USB ADB выключен. Переключение доступно через SSH.") : Enabled switch
+    public string Detail => SupportsChange ? (Enabled == true ? "USB ADB включён. Переключение изменит также автозапуск ADB. USB-соединение кратко переподключится." : "USB ADB выключен. Переключение изменит также автозапуск ADB. USB-соединение кратко переподключится.") : Enabled switch
     {
         true => "USB ADB включён. Безопасное переключение без изменения USB-сети не подтверждено для этой прошивки.",
         false => "USB ADB выключен. Безопасное переключение без изменения USB-сети не подтверждено для этой прошивки.",

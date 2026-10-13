@@ -14,6 +14,7 @@ static class FirmwareSupportTests
 {
     static int passed;
     static void Check(bool value,string name) {if(!value)throw new Exception("FAIL "+name);Console.WriteLine("PASS "+name);passed++;}
+    static readonly byte[] RadioFixture=Encoding.UTF8.GetBytes("FIRMWARE_RADIO_V1\nPATH firmware_b16 state=missing\nSLOT mdm_get_sim_info value=0\nPOLICY nv_read=0 apdu_sent=0 radio_changed=0 profile_changed=0 private_identifiers_exported=0\nFIRMWARE_RADIO_END\n");
     static readonly byte[] Helper=Encoding.UTF8.GetBytes("#!/bin/sh\n# "+new string('x',24000)+"\n");
     static async Task<int> Main(string[] args)
     { try { await Run(args);return 0; } catch(Exception error) { Console.Error.WriteLine(error);return 1; } }
@@ -25,7 +26,7 @@ static class FirmwareSupportTests
         Check(result.Complete&&result.CapturedFiles==4,"required four files complete without optional originals");
         using(var zip=ZipFile.OpenRead(result.Path))
         {
-            Check(zip.Entries.Any(e=>e.FullName=="research/report.json") && zip.Entries.All(e=>e.FullName is "manifest.json" or "README.txt" || e.FullName.StartsWith("files/") || e.FullName.StartsWith("activity/") || e.FullName.StartsWith("research/")),"fixed files and fresh research share one archive");
+            Check(zip.Entries.Any(e=>e.FullName=="research/report.json") && zip.Entries.All(e=>e.FullName is "manifest.json" or "README.txt" || e.FullName.StartsWith("files/") || e.FullName.StartsWith("activity/") || e.FullName.StartsWith("research/") || e.FullName.StartsWith("radio/")),"fixed files and fresh research share one archive");
             CheckPayloads(zip);
             using var source=zip.GetEntry("files/zte_topsw_devui")!.Open();using var bytes=new MemoryStream();source.CopyTo(bytes);
             Check(bytes.ToArray().SequenceEqual(remote.Data["ui"]),"binary NUL, invalid UTF8, CR and LF preserved exactly");
@@ -36,6 +37,24 @@ static class FirmwareSupportTests
         }
         Check(remote.Commands.All(c=>c.Length<4096)&&remote.Inputs.All(b=>b.SequenceEqual(Helper))&&remote.Uploads==0,"all helper invocations short stdin commands with no upload or remote staging");
         Check(remote.IdentityReads==2&&remote.Inspects==2,"one before/after quick identity and one before/after fixed inspection");
+        Check(remote.RadioCalls==1&&remote.PassiveCalls==2,"automatic native phase is bracketed by passive and final SSH observations");
+        using(var zip=ZipFile.OpenRead(result.Path)){
+            Check(Text(zip,"radio/passive-before.txt")==Encoding.UTF8.GetString(RadioFixture)&&Text(zip,"radio/passive-after.txt")==Encoding.UTF8.GetString(RadioFixture),"both passive radio observations included");
+            Check(Text(zip,"radio/native-status.txt").Contains("not_assessed"),"unsupported native modules remain explicit ZIP status");
+        }
+        Check(FirmwareSupportCollector.PassiveRadioOutput(new RemoteResult(0,RadioFixture,[])).SequenceEqual(RadioFixture),"valid passive radio protocol is preserved");
+        var nativeText=FirmwareRadioSupport.Output(new RemoteResult(20,Encoding.UTF8.GetBytes("SUPPORT_NV_V1\nSUPPORT_NV_LOAD library=1\nSUPPORT_NV_RECORD index=0 readable=1 encoding_valid=1\nPRIVATE_CANARY\nSUPPORT_NV_LOAD library=1 password=PRIVATE_CANARY\n"),Encoding.UTF8.GetBytes("PRIVATE_CANARY")),"SUPPORT_NV_V1");
+        Check(nativeText.Contains("readable=1")&&nativeText.Contains("exit_code=20")&&!nativeText.Contains("PRIVATE_CANARY"),"native DIAG projection preserves failure and metadata without private values");
+        var qmiText=FirmwareRadioSupport.Output(new RemoteResult(0,Encoding.UTF8.GetBytes("{\"schema\":1,\"identifiers_exported\":false,\"radio_reset\":false,\"slot_switch\":false,\"profile_mutation\":false,\"apdu_performed\":false,\"iccid\":\"PRIVATE_CANARY\",\"observations\":{\"cards\":[{\"state\":1,\"iccid\":\"PRIVATE_CANARY\",\"applications\":[{\"type\":2,\"aid\":\"PRIVATE_CANARY\",\"aid_length\":16}]}]}}"),Encoding.UTF8.GetBytes("PRIVATE_CANARY")),"");
+        Check(qmiText.Contains("aid_length")&&!qmiText.Contains("PRIVATE_CANARY")&&!qmiText.Contains("invalid_output"),"native QMI projection includes structure without card identifiers");
+        foreach(var raw in new[]{"PRIVATE_CANARY",Encoding.UTF8.GetString(RadioFixture)+"PRIVATE_CANARY\n",Encoding.UTF8.GetString(RadioFixture).Replace("value=0","value=PRIVATE_CANARY")}){
+            var sanitized=Encoding.UTF8.GetString(FirmwareSupportCollector.PassiveRadioOutput(new RemoteResult(0,Encoding.UTF8.GetBytes(raw),[])));
+            Check(sanitized=="status=not_assessed reason=invalid_passive_output\n","private or malformed passive output is replaced by status");
+        }
+        var malformedRadio=await Capture("radio-malformed",new Fake{Failure="radio-private"});
+        using(var zip=ZipFile.OpenRead(malformedRadio.Path))Check(!Text(zip,"radio/passive-before.txt").Contains("PRIVATE_CANARY"),"malformed passive report is still an exportable sanitized diagnostic status");
+        try{await Capture("native-device-changed",new Fake{Failure="native-boot"});Check(false,"native read changed device");}
+        catch(InvalidDataException){Check(!File.Exists(Path.Combine(root,"native-device-changed.zip")),"identity change during native phase prevents ZIP publication");}
         foreach(var state in new[]{"missing","not_assessed","symlink","not_regular","unreadable","empty"})
         {
             var partial=await Capture(state,new Fake{State=state});
@@ -100,10 +119,10 @@ static class FirmwareSupportTests
         {
             var resources=Path.GetFullPath(args.FirstOrDefault(x=>x.StartsWith("--resources-root="))?[17..]??"Windows_x64/Resources");
             var sourceHelper=FirmwareSupportCollector.LoadHelper(resources);
-            Check(FirmwareSupportCollector.Sha(sourceHelper)==FirmwareSupportCollector.ExpectedHelperSha256,"actual bundled helper and single-file manifest match compiled pin");
+            Check(FirmwareSupportCollector.Sha(sourceHelper)==FirmwareSupportCollector.ExpectedHelperSha256,"actual bundled helper and fixed capture manifest match compiled pin");
             var combinedRoot=Path.Combine(root,"combined-fresh");
             var combinedFake=new Fake();var researchFake=new Survey(ResearchSpec.Load(Path.Combine(resources,"FirmwareResearch/probes.json")),combinedFake);
-            var combinedService=new WindowsModemService(combinedRoot,resources,()=>researchFake){FirmwareSupportStream=combinedFake.Stream};
+            var combinedService=new WindowsModemService(combinedRoot,resources,()=>researchFake){FirmwareSupportStream=combinedFake.Stream,FirmwareSupportRadioProbe=combinedFake.Radio};
             BindService(combinedService,combinedFake);
             ((DiagnosticPrivacy)typeof(WindowsModemService).GetField("_diagnosticPrivacy",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(combinedService)!).Remember(["UNLABELED_KNOWN_SECRET_CANARY"]);
             Directory.CreateDirectory(Path.Combine(combinedRoot,"FirmwareResearch"));
@@ -126,7 +145,7 @@ static class FirmwareSupportTests
                 var scenarioRoot=Path.Combine(root,"combined-"+failure);var scenarioFake=new Fake();
                 using var cancellation=new CancellationTokenSource();
                 var survey=new Survey(researchFake.Spec,scenarioFake){Failure=failure,Cancel=failure=="cancel"?cancellation:null};
-                var service=new WindowsModemService(scenarioRoot,resources,()=>survey){FirmwareSupportStream=scenarioFake.Stream};BindService(service,scenarioFake);
+                var service=new WindowsModemService(scenarioRoot,resources,()=>survey){FirmwareSupportStream=scenarioFake.Stream,FirmwareSupportRadioProbe=scenarioFake.Radio};BindService(service,scenarioFake);
                 if(failure=="selection")survey.OnCall=()=>typeof(WindowsModemService).GetField("_host",BindingFlags.Instance|BindingFlags.NonPublic)!.SetValue(service,"192.0.2.2");
                 var path=Path.Combine(root,"combined-"+failure+".zip");
                 var reply=await service.RunAsync(new(ModemOperation.CollectFirmwareAdaptation,new Dictionary<string,string>{{"destination",path}}),cancellation.Token);
@@ -137,7 +156,7 @@ static class FirmwareSupportTests
             foreach(var partial in new[]{false,true})
             {
                 var serviceRoot=Path.Combine(root,"service-"+partial);var fake=new Fake{NoCid=true,Uid="1000",Architecture="armv7l",State=partial?"unreadable":null};
-                var service=new WindowsModemService(serviceRoot,resources,()=>new Survey(ResearchSpec.Load(Path.Combine(resources,"FirmwareResearch/probes.json")),fake)){FirmwareSupportStream=fake.Stream};
+                var service=new WindowsModemService(serviceRoot,resources,()=>new Survey(ResearchSpec.Load(Path.Combine(resources,"FirmwareResearch/probes.json")),fake)){FirmwareSupportStream=fake.Stream,FirmwareSupportRadioProbe=fake.Radio};
                 void Set(string name,object value)=>typeof(WindowsModemService).GetField(name,BindingFlags.Instance|BindingFlags.NonPublic)!.SetValue(service,value);
                 Set("_sshRead",fake);Set("_connectionProof",fake.Proof());Set("_host","192.0.2.1");Set("_snapshot",new DeviceSnapshot(true,"Synthetic selected SSH",ConnectionMode:"SSH"));
                 File.WriteAllText(Path.Combine(serviceRoot,AdbToggleTransaction.PendingName),"unrelated pending marker");
@@ -167,7 +186,7 @@ static class FirmwareSupportTests
         }
         Console.WriteLine($"Firmware support: {passed} PASS");
 
-        async Task<FirmwareSupportResult> Capture(string name,Fake fake,CancellationToken ct=default)=>await FirmwareSupportCollector.CollectAsync(fake,fake.Proof(),fake.Stream,Helper,"192.0.2.1",Path.Combine(root,name+".zip"),Path.Combine(root,"work"),new Dictionary<string,byte[]>{{"current-session.jsonl","{\"message\":\"Safe synthetic action\"}\n"u8.ToArray()}},"1.24.10-test",ct,collectResearch:(proof,token)=>new FirmwareResearchEngine(TinySpec,new Survey(TinySpec,fake),new ResearchRedactor()).CollectAsync("SSH",proof.Cid is null?null:FirmwareResearchEngine.HashSavedCid(proof.Cid),null,token,boundBootHash:proof.BootId is null?null:FirmwareResearchEngine.HashSavedCid(proof.BootId),enforceTimeLimit:false));
+        async Task<FirmwareSupportResult> Capture(string name,Fake fake,CancellationToken ct=default)=>await FirmwareSupportCollector.CollectAsync(fake,fake.Proof(),fake.Stream,Helper,"192.0.2.1",Path.Combine(root,name+".zip"),Path.Combine(root,"work"),new Dictionary<string,byte[]>{{"current-session.jsonl","{\"message\":\"Safe synthetic action\"}\n"u8.ToArray()}},"1.24.10-test",ct,collectResearch:(proof,token)=>new FirmwareResearchEngine(TinySpec,new Survey(TinySpec,fake),new ResearchRedactor()).CollectAsync("SSH",proof.Cid is null?null:FirmwareResearchEngine.HashSavedCid(proof.Cid),null,token,boundBootHash:proof.BootId is null?null:FirmwareResearchEngine.HashSavedCid(proof.BootId),enforceTimeLimit:false),collectRadio:fake.Radio);
     }
     static string Text(ZipArchive zip,string name){using var stream=zip.GetEntry(name)!.Open();using var reader=new StreamReader(stream);return reader.ReadToEnd();}
     static void BindService(WindowsModemService service,Fake fake)
@@ -219,7 +238,7 @@ static class FirmwareSupportTests
     sealed class Fake:IRemoteShell
     {
         public const string Boot="11111111-1111-1111-1111-111111111111",Cid="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-        public string? Failure,State;public bool NoCid,NoAgent,IncludeFonts,IncludeComponents;public string Uid="0",Architecture="aarch64";public int IdentityReads,Inspects,Transfers,Uploads;
+        public string? Failure,State;public bool NoCid,NoAgent,IncludeFonts,IncludeComponents;public string Uid="0",Architecture="aarch64";public int IdentityReads,Inspects,Transfers,Uploads,RadioCalls,PassiveCalls;
         public CancellationTokenSource? Cancel;
         public List<string> Commands=[];public List<byte[]> Inputs=[];
         public Dictionary<string,byte[]> Data=FirmwareSupportCollector.Inputs.ToDictionary(x=>x.Id,x=>new byte[]{0,255,13,10,13,0,65,66,67,(byte)x.Id.Length});
@@ -230,9 +249,10 @@ static class FirmwareSupportTests
             if(command==SshReadProof.SessionCommand)
             {
                 IdentityReads++;
-                var boot=Failure=="boot"&&IdentityReads==2?"22222222-2222-2222-2222-222222222222":Boot;
+                var boot=(Failure=="boot"||Failure=="native-boot"&&RadioCalls>0)&&IdentityReads==2?"22222222-2222-2222-2222-222222222222":Boot;
                 return Task.FromResult(new RemoteResult(0,Encoding.UTF8.GetBytes("ZTE_SSH_READ_V1\n"+Uid+"\nLinux\n"+Architecture+"\n"+(NoCid?"?":Cid)+"\n"+boot+"\n?\n?\n"),[]));
             }
+            if(command=="sh -s -- radio"&&stdin is not null){Inputs.Add(stdin);PassiveCalls++;return Task.FromResult(new RemoteResult(0,Failure=="radio-private"?Encoding.UTF8.GetBytes("PRIVATE_CANARY"):RadioFixture,[]));}
             if(command!="sh -s -- inspect '192.0.2.1'"||stdin is null)throw new Exception("Unexpected command");
             Inputs.Add(stdin);Inspects++;
             var facts=new Dictionary<string,string>{["uid"]=Uid,["os"]="Linux",["architecture"]=Architecture,["firmware"]="FLY_CN_MU5250V1.0.0B13",["inner"]="BD_FLYMODEMMU5250V1.0.0B28",["openwrt_version"]="23.05.4",["target"]="qualcomm/arm64",["agent_present"]="1",["agent_sha256"]=new string('b',64),["agent_running_count"]="1",["agent_mode"]=Failure=="unknown-mode"?"PRIVATE_MODE_CANARY":"discovery",["agent_mapped_matches_disk"]="yes",["http_health_status"]="401",["http_capabilities_status"]="401",["http_dashboard_status"]="403",["ui_mounts"]="0"};
@@ -253,6 +273,11 @@ static class FirmwareSupportTests
             if(Failure=="duplicate-file")lines.Add(lines[^1]);
             if(Failure!="missing-trailer")lines.Add("FIRMWARE_SUPPORT_END");
             return Task.FromResult(new RemoteResult(Failure=="failed-inspect"?1:0,Encoding.UTF8.GetBytes(string.Join('\n',lines)+"\n"),[]));
+        }
+        public Task<Dictionary<string,byte[]>> Radio(bool root,CancellationToken ct){
+            ct.ThrowIfCancellationRequested();RadioCalls++;
+            if(IdentityReads!=1 || Inspects!=1 || PassiveCalls!=1)throw new Exception("Native phase outside selected capture");
+            return Task.FromResult(new Dictionary<string,byte[]>{["native-status.txt"]=Encoding.UTF8.GetBytes("status=not_assessed reason=synthetic_probe_fixture\n")});
         }
         public async Task<RemoteFileResult> Stream(string command,string path,long maximum,TimeSpan timeout,CancellationToken ct,byte[] input)
         {

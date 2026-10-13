@@ -9,8 +9,18 @@ hash() { sha256sum "$1" | awk '{print $1}'; }
 [ "$(id -u)" = 0 ] && [ "$(uname -m)" = aarch64 ] || fail PROFILE
 case "$cid" in *[!a-f0-9]*|'') fail CID;; esac
 [ "${#cid}" = 32 ] && [ "$(cat /sys/block/mmcblk0/device/cid)" = "$cid" ] || fail CID
-[ "$(hash /firmware/image/modem.b16)" = 604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263 ] || fail PROFILE
-for pending in /data/zte-imei-studio/installations/active /data/local/tmp/zte-imei-installations/active /data/local/tmp/open-u60-transactions/active /tmp/fota_install_processing /data/zte-vpn/transaction /data/zte-vpn/controller-upgrade; do
+# File archives use their actual paths and CID. Raw radio partitions additionally
+# require one of the captured firmware layouts, then verify PARTNAME and size.
+case "$mode:$name" in
+  partition:*|estimate:modem)
+    case "$(hash /firmware/image/modem.b16)" in
+      604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263|5a4489882538b5ab1d3e0049371f1b620d28d262a429923299b4f2626d40d478|c57e063d390983229dfc53aa87380b3d4655ee8daa1c748e1a032ac90cd0df81) ;;
+      *) fail PROFILE;;
+    esac;;
+esac
+# Saved recovery journals must remain available for a copy-only backup.
+# The desktop serializes active operations; live archives are non-atomic.
+for pending in /tmp/fota_install_processing; do
   [ ! -e "$pending" ] && [ ! -L "$pending" ] || fail PENDING
  done
 partition() {
@@ -21,7 +31,7 @@ partition() {
     persist) dev=mmcblk0p56; expected=16384;;
     *) fail PARTITION;;
   esac
-  # sysfs size is a count of 512-byte sectors; known B31 sizes are 4/4/4/8 MiB.
+  # Captured B31/B28/B04 layouts use 4/4/4/8 MiB; sysfs counts 512-byte sectors.
   [ "$(cat /sys/class/block/$dev/size)" = "$expected" ] || fail PARTITION_SIZE
   grep -qx "PARTNAME=$name" "/sys/class/block/$dev/uevent" || fail PARTITION_NAME
   [ -b "/dev/$dev" ] && [ ! -L "/dev/$dev" ] || fail PARTITION_DEVICE
@@ -29,7 +39,7 @@ partition() {
 }
 config_paths() {
   set -- etc/config etc/rc.local
-  for path in etc/dropbear etc/ssh etc/passwd etc/group etc/shadow etc/zte-imei-admin etc/init.d etc/rc.d etc/hotplug.d/iface/99-zte-imei-ttl data/dropbear data/zte-imei-studio/start_zte_agent.sh data/zte-imei-studio/start_zte_imei_studio.sh data/zte-imei-studio/bin data/zte-imei-admin data/zte-imei-ttl data/zte-imei-screen-ru data/zte-imei-apps/ssclash/.ssclash data/local/tmp/start_zte_agent.sh data/local/tmp/start_dropbear.sh data/local/tmp/start_dashboard.sh data/local/tmp/dashboard-html.sh data/local/tmp/start_zte_imei_studio.sh data/local/tmp/start_ttl.sh data/zte-vpn/profiles data/zte-vpn/config.json data/zte-vpn/active data/zte-vpn/configured data/zte-vpn/cid data/zte-vpn/owner data/zte-vpn/backup data/zte-vpn/manager.sh data/zte-vpn/firewall.sh data/zte-vpn/configure.lua data/zte-vpn/nft-guard.nft data/zte-vpn/dnsmasq.conf data/zte-vpn/service.sh data/zte-vpn/network-init.sha256; do
+  for path in etc/dropbear etc/ssh etc/passwd etc/group etc/shadow etc/zte-imei-admin etc/init.d etc/rc.d etc/hotplug.d/iface/99-zte-imei-ttl data/dropbear data/zte-imei-studio/start_zte_agent.sh data/zte-imei-studio/start_zte_imei_studio.sh data/zte-imei-studio/bin data/zte-imei-admin data/zte-imei-ttl data/zte-imei-screen-ru data/zte-imei-apps/ssclash/.ssclash data/local/tmp/start_zte_agent.sh data/local/tmp/start_dropbear.sh data/local/tmp/start_dashboard.sh data/local/tmp/dashboard-html.sh data/local/tmp/start_zte_imei_studio.sh data/local/tmp/start_ttl.sh data/zte-launcher/info-layout.conf data/zte-launcher/page-layout.conf data/zte-vpn/profiles data/zte-vpn/catalog.json data/zte-vpn/wifi-settings.json data/zte-vpn/config.json data/zte-vpn/active data/zte-vpn/configured data/zte-vpn/cid data/zte-vpn/owner data/zte-vpn/backup data/zte-vpn/manager.sh data/zte-vpn/firewall.sh data/zte-vpn/configure.lua data/zte-vpn/nft-guard.nft data/zte-vpn/dnsmasq.conf data/zte-vpn/service.sh data/zte-vpn/network-init.sha256; do
     if [ -e "/$path" ] || [ -L "/$path" ]; then set -- "$@" "$path"; fi
   done
   tar -cf - -C / "$@"

@@ -13,7 +13,7 @@ plain() { exec "$stock"; }
 [ "$(id -u)" = 0 ] && [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ] || plain
 [ -f "$stock" ] && [ ! -L "$stock" ] || plain
 case "$(sha256sum "$stock" | cut -d' ' -f1)" in
- e3914e78a8488cb736770f0ac9fb8ce10e0e5222fa50285f08e9e8be90d7f1e9|16eb92e27f54b5cf5c6b316a6e7a62b782053a2a609d0d4904a7f08a7bc0afa4|8d2ebbde880934f52195ad9595815d728f7aa4671bb0633d5a5149b09467ae90|d6c3cd409705d5aa9c12185c84074513b159088025f005da7dbf01c51e3c3715) ;;
+ e3914e78a8488cb736770f0ac9fb8ce10e0e5222fa50285f08e9e8be90d7f1e9|16eb92e27f54b5cf5c6b316a6e7a62b782053a2a609d0d4904a7f08a7bc0afa4|8d2ebbde880934f52195ad9595815d728f7aa4671bb0633d5a5149b09467ae90|d6c3cd409705d5aa9c12185c84074513b159088025f005da7dbf01c51e3c3715|dbe6eadc92d43a0cd7206264f9d75ab242df90e88c02ee2ba3ac65598b58523e|0db2294b3e428fb53f4b6b725063ad8ffd9c396e5a27c54452f0ea479fa78f3b) ;;
  *) plain;;
 esac
 [ ! -e /tmp/zte-vpn-screen ] || plain

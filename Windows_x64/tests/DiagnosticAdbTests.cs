@@ -28,14 +28,22 @@ internal static class DiagnosticAdbTests
                     if(wire.InventoryFailure)throw new IOException("synthetic inventory failure");
                     return Task.FromResult(Reply(wire.Ready?"ZTE device usb:1-2\n":"List of devices attached\n"));
                 }
+                if(args.SequenceEqual(new[]{"-d","get-serialno"}))return Task.FromResult(Reply("ZTE\n"));
                 var command=stream?.OriginalCommand??args[^1];
+                if(wire.CleanRecovery && command.Contains("'--preflight'",StringComparison.Ordinal))
+                {
+                    wire.RecoveryPreflights++;
+                    if(wire.RecoveryPreflights>1)throw new ReachedInstallerBoundary();
+                    var marker=stream?.Result??Regex.Match(command,"__ZTE_RESULT_[A-F0-9]{32}__").Value;
+                    return Task.FromResult(Reply((stream is null?"":"\n"+stream.Ready+"\n\n"+stream.Begin+"\n")+"INSTALL_PREFLIGHT linux-arm64-access imei_config=unknown\n"+marker+"0\n"));
+                }
                 if(wire.StopAtPreflight && args.Count==4 && args[0]=="-s" && args[2]=="shell" && command.Contains("--preflight"))throw new ReachedInstallerBoundary();
                 if(args.Count==4 && args[0]=="-s" && args[2]=="shell" && command.Contains("test \"$(id -u)\" = 0"))
                 {
                     wire.ShellCount++;
                     var marker=stream?.Result??Regex.Match(command,"__ZTE_RESULT_[A-F0-9]{32}__").Value;
                     var boot=wire.ChangeBoot && wire.ShellCount>1?"20000000-0000-0000-0000-000000000002":Boot;
-                    var proof=ImeiEngine.FirmwareHash+"  /firmware/image/modem.b16\n"+(wire.StopAfterAdb?ImeiEngine.RouterHash:new string('e',64))+"  /usr/bin/diag-router\n"+wire.DeviceCid+"\n"+boot+"\n"+JsonSerializer.Serialize(new {imei=wire.Identity.Imei,integrate_version=wire.Identity.Firmware,wa_inner_version=wire.Identity.Inner});
+                    var proof=wire.ObservedFirmware+"  /firmware/image/modem.b16\n"+(wire.StopAfterAdb?ImeiEngine.RouterHash:new string('e',64))+"  /usr/bin/diag-router\n"+wire.DeviceCid+"\n"+boot+"\n"+(command.Contains("ubus call",StringComparison.Ordinal)?JsonSerializer.Serialize(new {imei=wire.Identity.Imei,integrate_version=wire.Identity.Firmware,wa_inner_version=wire.Identity.Inner}):"");
                     return Task.FromResult(Reply((stream is null?"":"\n"+stream.Ready+"\n\n"+stream.Begin+"\n")+proof+"\n"+marker+"0\n"));
                 }
                 throw new Exception("Diagnostic path attempted a non-identity ADB command: "+string.Join(' ',args));
@@ -51,13 +59,22 @@ internal static class DiagnosticAdbTests
         }
         try
         {
+            foreach (var mode in new[]{"prepare","diagnostic"})
+            {
+                var activeNvScenario=Setup(true);
+                using var activeImei=new FileStream(Path.Combine(activeNvScenario.Storage,"imei-operation.lock"),FileMode.CreateNew,FileAccess.ReadWrite,FileShare.None);
+                await Reject(async()=> { if(mode=="prepare") await activeNvScenario.Engine.PrepareAsync("pw","synthetic-password",testSuffix); else await activeNvScenario.Engine.EnableDiagnosticAdbAsync("pw",testSuffix); },"Active IMEI lock blocks access changes: "+mode);
+                Check(activeNvScenario.Web.Requests==0&&activeNvScenario.Web.InventoryCount==0,"Active IMEI operation refused before transports: "+mode);
+            }
             var builtin=OnboardingEngine.ResolveBackupKeySuffix(B31, "");
             var knownBackup=File.ReadAllBytes("Windows_x64/tests/fixtures/b31-auto-backup.synthetic.bin");
             var automatic=Setup(false);automatic.Web.Backup=knownBackup;automatic.Web.StopAfterAdb=true;
+            foreach(var savedNvJournal in new[]{"imei-pending.json","pending.json"}) File.WriteAllText(Path.Combine(automatic.Storage,savedNvJournal),"saved NV recovery untouched");
             automatic.Web.VerifyUpload=bytes => Check(BackupPatch.Prepare(bytes,B31.Imei,builtin).AlreadyEnabled,"Automatic B31 backup upload passed unchanged codec validation");
             try { await automatic.Engine.PrepareAsync("pw","synthetic-agent-password",""); throw new Exception("Expected fixture boundary"); }
             catch(ReachedInstallerBoundary) { }
             Check(automatic.Web.Uploads==1 && automatic.Web.Restores==1 && automatic.Web.Reboots==0 && automatic.Web.ShellCount>0,"PrepareAsync empty B31 override reaches installer boundary after one verified restore");
+            Check(new[]{"imei-pending.json","pending.json"}.All(journal=>File.ReadAllText(Path.Combine(automatic.Storage,journal))=="saved NV recovery untouched"),"SSH bootstrap preserves saved IMEI recovery journals");
             Check(!Directory.Exists(Path.Combine(automatic.Storage,"SSH")),"Automatic backup path fixture stops before SSH key or installer writes");
             var journalText=File.ReadAllText(Path.Combine(automatic.Storage,"setup-pending.json"));
             Check(!journalText.Contains(builtin,StringComparison.Ordinal) && !journalText.Contains("suffix",StringComparison.OrdinalIgnoreCase),"Resolved suffix is not persisted in the preparation journal");
@@ -80,7 +97,9 @@ internal static class DiagnosticAdbTests
                 Check(wrong.Web.Uploads==0 && wrong.Web.Restores==0 && wrong.Web.Reboots==0,"Invalid explicit override refuses backup writes");
             }
             var diagnosticAutomatic=Setup(false);diagnosticAutomatic.Web.Backup=knownBackup;
+            foreach(var savedNvJournal in new[]{"imei-pending.json","pending.json"}) File.WriteAllText(Path.Combine(diagnosticAutomatic.Storage,savedNvJournal),"saved NV recovery untouched");
             await diagnosticAutomatic.Engine.EnableDiagnosticAdbAsync("pw","");
+            Check(new[]{"imei-pending.json","pending.json"}.All(journal=>File.ReadAllText(Path.Combine(diagnosticAutomatic.Storage,journal))=="saved NV recovery untouched"),"Diagnostic ADB preserves saved IMEI recovery journals");
             Check(diagnosticAutomatic.Web.Uploads==1 && diagnosticAutomatic.Web.Restores==1 && diagnosticAutomatic.Web.Reboots==0,"Diagnostic ADB empty override also uses one verified B31 backup restore");
             Check(!Directory.Exists(Path.Combine(diagnosticAutomatic.Storage,"SSH")) && !File.Exists(Path.Combine(diagnosticAutomatic.Storage,"setup-pending.json")),"Automatic diagnostic ADB does not install SSH or create preparation intent");
             var explicitValid=Setup(false);explicitValid.Web.StopAfterAdb=true;
@@ -117,6 +136,41 @@ internal static class DiagnosticAdbTests
             var corrupt=Setup(false);corrupt.Web.Backup=knownBackup.ToArray();corrupt.Web.Backup[^1]^=1;
             await Reject(()=>corrupt.Engine.PrepareAsync("pw","synthetic-agent-password",""),"Automatic suffix does not accept a corrupted encrypted backup");
             Check(corrupt.Web.Uploads==0 && corrupt.Web.Restores==0 && corrupt.Web.Reboots==0,"Invalid automatic backup refuses all backup writes");
+            foreach(var scenario in new[]{"direct","backup","interrupted-direct","wrong-cid","single-usb"})
+            {
+                var recovery=Setup(false);recovery.Web.CleanRecovery=true;recovery.Web.ObservedFirmware="absent";
+                recovery.Web.Advertise=scenario!="backup";recovery.Web.Backup=knownBackup;
+                var id=Guid.NewGuid().ToString();var directory=Path.Combine(recovery.Storage,"SetupBackups",id);Directory.CreateDirectory(directory);
+                var saved=new OnboardingPending {Id=id,Intent="linux-arm64-access",IdentitySource=scenario=="single-usb"?"single-usb":"web-matched",WebIdentity=scenario=="single-usb"?null:B31,BackupDirectory=directory,
+                    Cid=Cid,FirmwareHash="absent",RouterHash=new string('e',64),BootId="22222222-2222-2222-2222-222222222222",Profile="linux-arm64-access",AdbSerial="ZTE",
+                    InstallRequested=true,Phase="install-requested",RemoteStage="/data/zte-imei-studio/stage-"+id,RemoteJournal="/data/zte-imei-studio/installations/"+id};
+                var path=Path.Combine(recovery.Storage,"setup-pending.json");var old=JsonSerializer.Serialize(saved);await File.WriteAllTextAsync(path,old);
+                var intact=false;recovery.Web.OnActivation=()=>
+                {
+                    intact=File.ReadAllText(path)==old;
+                    if(scenario=="wrong-cid")recovery.Web.DeviceCid=new string('b',32);
+                    if(scenario=="interrupted-direct")throw new ReachedInstallerBoundary();
+                };
+                try{await recovery.Engine.PrepareAsync("pw","synthetic-new-password","",cleanComponents:true);throw new Exception("Expected boundary");}
+                catch(ReachedInstallerBoundary){}
+                catch(InvalidDataException) when(scenario=="wrong-cid"){}
+                if(scenario=="interrupted-direct")
+                {
+                    Check(File.ReadAllText(path)==old&&File.Exists(Path.Combine(recovery.Storage,"adb-access-pending.json")),"Interrupted ADB activation preserves both durable intents");
+                    recovery.Web.OnActivation=null;
+                    try{await recovery.Engine.PrepareAsync("pw","synthetic-new-password","",cleanComponents:true);throw new Exception("Expected boundary");}
+                    catch(ReachedInstallerBoundary){}
+                }
+                Check(intact,"Old dispatched intent remains exact during Web ADB recovery: "+scenario);
+                if(scenario=="wrong-cid")Check(File.ReadAllText(path)==old&&recovery.Web.RecoveryPreflights==0,"Wrong recovered USB CID never archives old installation");
+                else
+                {
+                    var next=JsonSerializer.Deserialize<OnboardingPending>(File.ReadAllBytes(path))!;
+                    Check(next.Id!=id&&!next.InstallRequested&&next.CleanComponents&&recovery.Web.RecoveryPreflights==2,"Disabled ADB recovery reaches a fresh clean installer preflight: "+scenario);
+                    Check(!File.Exists(Path.Combine(recovery.Storage,"adb-access-pending.json")),"Verified ADB activation closes its separate journal: "+scenario);
+                }
+                Check(recovery.Web.DebugRequests==(scenario=="backup"?0:1)&&recovery.Web.Restores==(scenario=="backup"?1:0),"Clean recovery sends each activation only once: "+scenario);
+            }
             if(knownFormatOnly)return;
             var current=Setup(identity:new(B31.Imei,"CN_ZTE_MU5250V1.0.0B27","BD_CNMU5250V1.0.0B27"));
             var result=await current.Engine.EnableDiagnosticAdbAsync("web-password");
@@ -200,7 +254,8 @@ internal static class DiagnosticAdbTests
     private sealed class Wire(WebIdentity identity,byte[] original):IWebTransport
     {
         public WebIdentity Identity=identity;
-        public string DeviceCid=Cid;
+        public string DeviceCid=Cid,ObservedFirmware=ImeiEngine.FirmwareHash;
+        public bool CleanRecovery;public int RecoveryPreflights;public Action? OnActivation;
         public byte[] Backup=original;
         public bool Ready,ChangeBoot,InventoryFailure,FailEveryRequest,Advertise,LoseRebootAcknowledgement,CancelReboot,StopAfterAdb,StopAtPreflight,UnknownIntrospection;
         public Action<byte[]>? VerifyUpload;
@@ -227,8 +282,8 @@ internal static class DiagnosticAdbTests
                 case "web_login":reply=new {result=0,ubus_rpc_session="11111111111111111111111111111111"};headers["Set-Cookie"]=["webtoken=synthetic-cookie; Path=/"];break;
                 case "device_info":reply=new {imei=Identity.Imei,integrate_version=Identity.Firmware,wa_inner_version=Identity.Inner};break;
                 case "device_backup_proc":Backups++;break;
-                case "set":DebugRequests++;Ready=true;break;
-                case "device_restore_proc":Restores++;Ready=true;break;
+                case "set":DebugRequests++;Ready=true;OnActivation?.Invoke();break;
+                case "device_restore_proc":Restores++;Ready=true;OnActivation?.Invoke();break;
                 case "device_reboot":
                     if(p[1].GetString()!="zwrt_mc.device.manager" || p[3].GetProperty("moduleName").GetString()!="web" || p[3].EnumerateObject().Count()!=1)throw new Exception("Bad reboot request");
                     Reboots++;if(CancelReboot)throw new OperationCanceledException();Ready=true;

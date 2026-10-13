@@ -11,7 +11,7 @@ args = parser.parse_args()
 OUT = args.output or ROOT / 'MacIMEI/Resources/VPN'
 def sha(p): return hashlib.sha256(p.read_bytes()).hexdigest()
 assert (SRC/'abi.h').read_text() == header(), 'Regenerate abi.h with abi.py'
-references = [os.environ[k] for k in ('ZTE_STOCK_UI','ZTE_RUSSIAN_UI','ZTE_B28_STOCK_UI','ZTE_B28_RUSSIAN_UI') if os.environ.get(k)]
+references = [os.environ[k] for k in ('ZTE_STOCK_UI','ZTE_RUSSIAN_UI','ZTE_B28_STOCK_UI','ZTE_B28_RUSSIAN_UI','ZTE_B04_STOCK_UI','ZTE_B04_RUSSIAN_UI') if os.environ.get(k)]
 for reference in references:
     print('Verified exact UI ABI:', verify(Path(reference).read_bytes()))
 if not references: print('Reference ELF audit skipped; runtime exact UI SHA guards remain mandatory')

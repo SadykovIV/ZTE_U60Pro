@@ -29,6 +29,10 @@ static uint8_t wanted[4],answer[4096],frame[4096];
 static size_t answer_len,frame_len;
 static int pending,frame_escape,frame_bad;
 static unsigned valid_frames,bad_crc_frames;
+#ifdef ZTE_SUPPORT_READONLY
+static unsigned unmatched_frames,last_unmatched_opcode;
+static size_t last_unmatched_length;
+#endif
 static volatile sig_atomic_t interrupted;
 static unsigned char (*deinit_fn)(void);
 static int (*send_fn)(int,unsigned char*,int);
@@ -41,6 +45,9 @@ static uint32_t le32(const uint8_t *p) {
 static void put32(uint8_t *p,uint32_t n) {
     for(unsigned i=0;i<4;i++) p[i]=(uint8_t)(n>>(8*i));
 }
+#ifdef ZTE_SUPPORT_READONLY
+#include "support_config.h"
+#endif
 static void interrupt_handler(int sig) { interrupted=sig; }
 static uint16_t crc16(const uint8_t *p,size_t n) {
     uint16_t crc=0xffff;
@@ -50,6 +57,7 @@ static uint16_t crc16(const uint8_t *p,size_t n) {
     }
     return (uint16_t)~crc;
 }
+#ifndef ZTE_SUPPORT_READONLY
 static uint32_t file_crc32(const uint8_t *p,size_t n) {
     uint32_t crc=0xffffffffu;
     for(size_t i=0;i<n;i++) {
@@ -58,6 +66,7 @@ static uint32_t file_crc32(const uint8_t *p,size_t n) {
     }
     return ~crc;
 }
+#endif
 static int is_error(uint8_t v) { return (v>=0x13&&v<=0x18)||v==0x42||v==0x47; }
 static void accept_frame(void) {
     if(frame_bad||frame_escape||frame_len<3||!pending||answer_len) return;
@@ -66,6 +75,9 @@ static void accept_frame(void) {
     int match=n>=4&&!memcmp(frame,wanted,4);
     if(is_error(frame[0])&&n>=5&&!memcmp(frame+1,wanted,4)) match=1;
     if(match) { memcpy(answer,frame,n);answer_len=n;valid_frames++;pthread_cond_signal(&cond); }
+#ifdef ZTE_SUPPORT_READONLY
+    else { unmatched_frames++;last_unmatched_opcode=frame[0];last_unmatched_length=n; }
+#endif
 }
 static int callback(unsigned char *p,int n,void *ctx) {
     (void)ctx;
@@ -101,6 +113,9 @@ static int exchange(uint8_t *request,size_t n,uint8_t *response,size_t *response
     pthread_mutex_lock(&mutex);
     memcpy(wanted,request,4);pending=1;answer_len=0;
     frame_len=0;frame_escape=0;frame_bad=0;
+#ifdef ZTE_SUPPORT_READONLY
+    unmatched_frames=last_unmatched_opcode=0;last_unmatched_length=0;
+#endif
     pthread_mutex_unlock(&mutex);
     int sent=send_fn(0,request,(int)n);
     struct timespec until;clock_gettime(CLOCK_REALTIME,&until);until.tv_sec+=4;
@@ -113,6 +128,9 @@ static int exchange(uint8_t *request,size_t n,uint8_t *response,size_t *response
     int okay=sent==0&&answer_len>=4&&error<0&&!memcmp(answer,request,4);
     if(okay) { memcpy(response,answer,answer_len);*response_len=answer_len; }
     printf("EFS_REQUEST label=%s send=%d length=%zu diag_error=%d crc_valid=%d\n",label,sent,answer_len,error,answer_len!=0);
+#ifdef ZTE_SUPPORT_READONLY
+    printf("SUPPORT_CONFIG_RESPONSE label=%s unmatched_frames=%u last_unmatched_length=%zu last_unmatched_opcode=%u\n",label,unmatched_frames,last_unmatched_length,last_unmatched_opcode);
+#endif
     pending=0;
     pthread_mutex_unlock(&mutex);
     return okay;
@@ -176,16 +194,27 @@ static int release_session(void) {
 }
 int main(int argc,char **argv) {
     setvbuf(stdout,NULL,_IOLBF,0);
+#ifdef ZTE_SUPPORT_READONLY
+    if(argc!=2||strcmp(argv[1],"--inspect-config")) return 2;
+    puts("SUPPORT_CONFIG_V1");
+#else
     if(argc!=2||strcmp(argv[1],"--read-config")) return 2;
+#endif
     struct sigaction sa;memset(&sa,0,sizeof(sa));sa.sa_handler=interrupt_handler;sigemptyset(&sa.sa_mask);
     sigaction(SIGALRM,&sa,NULL);sigaction(SIGINT,&sa,NULL);sigaction(SIGTERM,&sa,NULL);sigaction(SIGHUP,&sa,NULL);
     alarm(120);
     void *lib=dlopen("/usr/lib/libdiag.so.1",RTLD_NOW|RTLD_LOCAL);
+#ifdef ZTE_SUPPORT_READONLY
+    printf("SUPPORT_CONFIG_LOAD library=%d\n",lib!=NULL);
+#endif
     if(!lib) return 3;
     unsigned char (*init_fn)(unsigned char*)=dlsym(lib,"Diag_LSM_Init");
     void (*register_fn)(int(*)(unsigned char*,int,void*),void*)=dlsym(lib,"diag_register_callback");
     deinit_fn=dlsym(lib,"Diag_LSM_DeInit");send_fn=dlsym(lib,"diag_callback_send_data");
     ioctl_fn=dlsym(lib,"diag_lsm_comm_ioctl");diag_fd=dlsym(lib,"diag_fd");logging_mode=dlsym(lib,"logging_mode");
+#ifdef ZTE_SUPPORT_READONLY
+    printf("SUPPORT_CONFIG_SYMBOLS init=%d deinit=%d callback=%d send=%d ioctl=%d fd=%d mode=%d\n",init_fn!=NULL,deinit_fn!=NULL,register_fn!=NULL,send_fn!=NULL,ioctl_fn!=NULL,diag_fd!=NULL,logging_mode!=NULL);
+#endif
     if(!init_fn||!deinit_fn||!register_fn||!send_fn||!ioctl_fn||!diag_fd||!logging_mode) return 4;
     if(!init_fn(NULL)) return 5;
     register_fn(callback,NULL);
@@ -222,6 +251,9 @@ finish:
     int deinitialized=deinit_fn();
     if(!released||!deinitialized) outcome=30;
     if(outcome==0) {
+#ifdef ZTE_SUPPORT_READONLY
+        support_config_summary(file_bytes,total);
+#else
         for(uint32_t off=0;off<total;) {
             uint32_t count=total-off;if(count>READ_CHUNK) count=READ_CHUNK;
             printf("EFS_DATA_HEX offset=%u length=%u data=",off,count);
@@ -229,7 +261,11 @@ finish:
             putchar('\n');off+=count;
         }
         printf("EFS_FILE_COMPLETE path=/config length=%u crc32=%08x\n",total,file_crc32(file_bytes,total));
+#endif
     }
     printf("EFS_RESULT outcome=%d bytes=%u file_closed=%d released=%d deinit=%d signal=%d crc_verified_frames=%u bad_crc_frames=%u\n",outcome,total,fd_closed,released,deinitialized,(int)interrupted,valid_frames,bad_crc_frames);
+#ifdef ZTE_SUPPORT_READONLY
+    printf("SUPPORT_CONFIG_RESULT outcome=%d file_closed=%d released=%d deinit=%d writes=0\n",outcome,fd_closed,released,deinitialized);
+#endif
     return outcome;
 }

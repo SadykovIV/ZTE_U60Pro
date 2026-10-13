@@ -16,10 +16,10 @@ public sealed partial class DeviceFeatureService
 {
     private const string AgentManagerHash = "ba9216b75d9b6a5a003e05137416335083609f4d840a0394e6f9016d27527844";
     private const string ScreenRoot = "/data/zte-imei-screen-ru";
-    private const string ScreenManagerHash = "0ce40f0d3e4375165f5e4424db023b786f70f9cacf88bfe07c1c893cff12db7d";
-    private const string ScreenRevision = "20261006";
-    private static readonly HashSet<string> ScreenLegacyManagerHashes = ["6aed6654afb7a4fde7792a5f6034aa41e15b0fd77d794ed04d3a12c111c95fd2", "586a7727fb24a5701990c7cd82889887220c1c5566261c53ca21f3bb12549bfa", "810aae3c07c8019f2d0657f2bad6f1ee38f1dea5f1081210ab144478dd87c7b8"];
-    private static readonly string[] ScreenFileNames = ["install.sh", "service.sh", "English.ini", "Chinese.ini", "font.patch.json", "font.patch.b28.json"];
+    private const string ScreenManagerHash = "089b66525207d9dc9fec54112fbb5786196c4a663fb1609b9aa53d8f07bb15ba";
+    private const string ScreenRevision = "20261013";
+    private static readonly HashSet<string> ScreenLegacyManagerHashes = ["0ce40f0d3e4375165f5e4424db023b786f70f9cacf88bfe07c1c893cff12db7d", "6aed6654afb7a4fde7792a5f6034aa41e15b0fd77d794ed04d3a12c111c95fd2", "586a7727fb24a5701990c7cd82889887220c1c5566261c53ca21f3bb12549bfa", "810aae3c07c8019f2d0657f2bad6f1ee38f1dea5f1081210ab144478dd87c7b8"];
+    private static readonly string[] ScreenFileNames = ["install.sh", "service.sh", "English.ini", "Chinese.ini", "font.patch.json", "font.patch.b28.json", "font.patch.b04.json"];
 
     public Task<AgentInstallationStatus> GetAgentInstallationStatusAsync(CancellationToken ct = default)
         => InvokeAgentAsync("status", ct);
@@ -246,10 +246,11 @@ public sealed partial class DeviceFeatureService
             var originalCommand = current.State == "absent" ? "cat /usr/bin/zte_topsw_devui" : "cat " + ScreenRoot + "/backup/zte_topsw_devui";
             var original = (await RunAsync(originalCommand, seconds: 120, ct: ct)).Stdout;
             var files = await LoadResourcesAsync("ScreenLocalization", ScreenFileNames, ct);
-            var selectedPatch = SelectScreenFontPatch(original, files["font.patch.json"], files["font.patch.b28.json"]);
+            var selectedPatch = SelectScreenFontPatch(original, files["font.patch.json"], files["font.patch.b28.json"], files["font.patch.b04.json"]);
             var patched = ApplyScreenFontPatch(original, selectedPatch);
             files["font.patch.json"] = selectedPatch;
             files.Remove("font.patch.b28.json");
+            files.Remove("font.patch.b04.json");
             files.Add("zte_topsw_devui", patched);
             Check(identity == await ReadAgentIdentityAsync(ct), "Модем или его загрузка изменились во время операции. Обновите состояние.");
             var stage = await StageAsync("zte-screen-ru-install", files, ct);
@@ -272,6 +273,7 @@ public sealed partial class DeviceFeatureService
             var hash = current.Revision switch
             {
                 ScreenRevision => ScreenManagerHash,
+                "20261006" => "0ce40f0d3e4375165f5e4424db023b786f70f9cacf88bfe07c1c893cff12db7d",
                 "20260924" => "810aae3c07c8019f2d0657f2bad6f1ee38f1dea5f1081210ab144478dd87c7b8",
                 "20260922" => "6aed6654afb7a4fde7792a5f6034aa41e15b0fd77d794ed04d3a12c111c95fd2",
                 "20260923" => "586a7727fb24a5701990c7cd82889887220c1c5566261c53ca21f3bb12549bfa",
@@ -326,7 +328,7 @@ public sealed partial class DeviceFeatureService
               int.TryParse(fields["mounted"], out mounted) && mounted is >= 0 and <= 3 &&
               int.TryParse(fields["pid"], out pid) && pid >= 0 &&
               fields["boot"] is "0" or "1" &&
-              new[] { "20260922", "20260923", "20260924", ScreenRevision }.Contains(fields["revision"]), "Некорректный статус русификации.");
+              new[] { "20260922", "20260923", "20260924", "20261006", ScreenRevision }.Contains(fields["revision"]), "Некорректный статус русификации.");
         var boot = fields["boot"] == "1";
         Check(fields["state"] == "error" || (fields["state"] == "enabled" ? mounted == 3 && boot : mounted == 0 && !boot), "Состояние русификации не согласовано.");
         return new ScreenLocalizationStatus(fields["state"], fields["language"], mounted, boot, pid, fields["revision"], fields.GetValueOrDefault("reason"));

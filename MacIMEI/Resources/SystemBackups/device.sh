@@ -249,9 +249,14 @@ case "$mode" in
   [ "$#" = 4 ] || fail ARGUMENTS
   requested_target=$4; inventory; select_target "$requested_target"
   captured_boot=$boot_id; captured_layout=$layout_hash; captured_offline=$offline; captured_bytes=$target_bytes
-  # A live capture is allowed only on the exact known B31 profile. Offline
+  # A live capture uses the captured B31/B28/B04 firmware profiles. Offline
   # recovery can read the same CID without a mounted /firmware filesystem.
-  if [ "$offline" != true ]; then [ "$firmware_hash" = 604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263 ] || fail PROFILE; fi
+  if [ "$offline" != true ]; then
+    case "$firmware_hash" in
+      604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263|5a4489882538b5ab1d3e0049371f1b620d28d262a429923299b4f2626d40d478|c57e063d390983229dfc53aa87380b3d4655ee8daa1c748e1a032ac90cd0df81) ;;
+      *) fail PROFILE;;
+    esac
+  fi
   for file in stream.hash stream.status; do fresh "$work/$file"; done
   [ ! -e "$work/stream.hash.pipe" ] && [ ! -L "$work/stream.hash.pipe" ] || fail PIPE
   mkfifo -m 600 "$work/stream.hash.pipe"

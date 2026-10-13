@@ -3,11 +3,13 @@
 from pathlib import Path
 import hashlib
 import importlib.util
+import io
 import json
 import re
 import sys
 import subprocess
 import tempfile
+import tarfile
 import unittest
 from unittest.mock import patch
 import package_resources as packaging
@@ -59,6 +61,25 @@ class BootstrapSnapshotTests(unittest.TestCase):
             with self.assertRaises(subprocess.CalledProcessError):
                 packaging.baseline_dependencies()
 
+    def test_extracted_archive_can_run_build_pin_tests_without_checkout(self):
+        project = Path(__file__).resolve().parents[2]
+        self.path.write_bytes(self.baseline)
+        inputs = ['tools/build.py', 'tools/test_build_pins.py', 'ModemAgent/agent/src/vpn.rs']
+        for name in inputs:
+            target = self.root / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes((project / name).read_bytes())
+        archive_bytes, _ = packaging.source_archive()
+        extracted = self.root / 'extracted'
+        with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode='r:gz') as archive:
+            for name in inputs:
+                self.assertEqual(archive.extractfile(name).read(), (project / name).read_bytes())
+            archive.extractall(extracted, filter='data')
+        result = subprocess.run([sys.executable, 'tools/test_build_pins.py'], cwd=extracted,
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Ran 4 tests', result.stderr)
+
 
 class AgentUpgradeRetentionTests(unittest.TestCase):
     """Run real generator entrypoints against tiny isolated fixture resources."""
@@ -75,17 +96,20 @@ class AgentUpgradeRetentionTests(unittest.TestCase):
         self.cs = self.win / 'src/Core/AgentPackage.cs'
         self.put(self.swift, 'enum BundledAgent {\n    static let version = "1.0.0"\n    static let sha256 = "' + self.first + '"\n    static let dashboardInstallerSHA256 = "' + self.historical + '"\n    static let supportedUpgradeHashes: Set<String> = [sha256,\n        "' + self.historical + '" // reviewed fixture release\n    ]\n}\n')
         self.put(self.cs, 'public static class AgentPackage {\n    public const string Version = "1.0.0";\n    public const string Sha256 = "' + self.first + '";\n    public static readonly IReadOnlySet<string> SupportedUpgradeHashes = new[] { Sha256,\n        "' + self.historical + '",\n    }.ToFrozenSet(StringComparer.Ordinal);\n}\n')
-        self.put(self.root / 'MacIMEI/Sources/VPNSettings.swift', '\n'.join('static let '+key+' = "'+self.historical+'"' for key in ['launcherHash','helperHash','dashboardIndexHash']))
+        self.put(self.root / 'MacIMEI/Sources/VPNSettings.swift', '\n'.join('static let '+key+' = "'+self.historical+'"' for key in ['launcherHash','helperHash','dashboardIndexHash']) + '\nstatic let supportedStatusHashes: Set<String> = [helperHash, \"' + self.first + '\"]')
         for relative, fields in sync.PINS.items():
             if relative == 'src/Core/AgentPackage.cs': continue
             self.put(self.win / relative, '\n'.join('const string '+key+' = "'+self.historical+'";' for key in fields))
+        vpn_cs = self.win/'src/Features/VpnFeatures.cs'
+        vpn_cs.write_text(vpn_cs.read_text() + '\nprivate static readonly FrozenSet<string> SupportedVpnStatusHashes = new[] { VpnHelperHash, \"' + self.first + '\", }.ToFrozenSet(StringComparer.Ordinal);\n')
         self.put(self.root / 'ModemAgent/target/aarch64-unknown-linux-musl/release/zte-vpnctl', 'synthetic controller')
+        self.put(self.root / 'ModemAgent/vpnctl/THIRD-PARTY.txt', 'synthetic license')
         self.put(self.root / 'ModemAgent/web-app/dist/index.html', 'synthetic dashboard')
         self.put(self.root / 'ModemAgent/web-app/node_modules/jsqr/LICENSE', 'synthetic license')
-        for name in ['manager.sh','configure.lua','launcher.so','launcher.sha256','dashboard-uhttpd','start-dashboard.sh','dashboard-html.sh','stop-owned-listener.sh','update-rc-local.sh','preserve-dashboard-assets.sh']:
+        for name in ['manager.sh','configure.lua','firewall.sh','nft-guard.nft','dnsmasq.conf','service.sh','launcher.so','launcher.sha256','dashboard-uhttpd','start-dashboard.sh','dashboard-html.sh','stop-owned-listener.sh','update-rc-local.sh','preserve-dashboard-assets.sh']:
             self.put(self.mac / 'VPN' / name, 'synthetic '+name)
         self.put(self.mac / 'VPN/README.md', 'обновление агента 2.7.0-vpn.1')
-        self.put(self.mac / 'VPN/upgrade-controller.sh', 'helper_sha='+self.first+'\ncase "$old" in '+self.historical+'|"$helper_sha") :;; esac\nmanager_sha='+self.first+'\nconfigure_sha='+self.first+'\n')
+        self.put(self.mac / 'VPN/upgrade-controller.sh', 'helper_sha='+self.first+'\ncase "$old" in '+self.historical+'|"$helper_sha") :;; esac\n'+''.join(key+'='+self.first+'\n' for key in ['manager_sha','configure_sha','firewall_sha','nft_guard_sha','dnsmasq_sha','service_sha']))
         self.put(self.mac / 'VPN/update-agent.sh', 'agent_sha='+self.first+'\ncase "$old" in '+self.historical+'|"$agent_sha") :;; esac\ndashboard_sha='+self.first+'\ndashboard_installer_sha='+self.first+'\n')
         self.put(self.mac / 'AgentInstallation/dashboard.sh', 'payload_sha='+self.first+'\n')
         self.put(self.mac / 'AgentInstallation/manager.sh', 'synthetic installer')
@@ -96,6 +120,9 @@ class AgentUpgradeRetentionTests(unittest.TestCase):
             permanent.manifest(self.mac / group)
         for app in [self.mac, self.win / 'Resources']:
             self.put(app / 'Onboarding/provenance.json', json.dumps({'files':{}, 'local_changes':[]}))
+        for group in ['TTL','DeviceBackups','SystemBackups']:
+            self.put(self.mac/group/'fixture.sh','synthetic shared script')
+            permanent.manifest(self.mac/group)
         self.put(self.mac / 'FirmwareResearch/probes.json', '{}')
         for name in ['zte_nv','zte_config','zte_config_read']:
             self.put(self.root / 'MacIMEI/DeviceHelpers/bin' / name, 'synthetic '+name)
@@ -149,6 +176,39 @@ class AgentUpgradeRetentionTests(unittest.TestCase):
         before=self.swift.read_bytes();self.generate(b'synthetic generation three')
         self.assertEqual(self.swift.read_bytes(),before,'same generation must not duplicate history')
         self.synchronize(check=True)
+
+    def test_controller_two_generations_keep_previous_status_hash(self):
+        swift=self.root/'MacIMEI/Sources/VPNSettings.swift'
+        cs=self.win/'src/Features/VpnFeatures.cs'
+        helper=self.root/'ModemAgent/target/aarch64-unknown-linux-musl/release/zte-vpnctl'
+        self.generate(b'synthetic agent');self.synchronize()
+        old=hashlib.sha256(helper.read_bytes()).hexdigest()
+        helper.write_bytes(b'second synthetic controller')
+        self.generate(b'synthetic agent');self.synchronize()
+        current,hashes=sync.swift_hash_registry(swift.read_text(),'helperHash','supportedStatusHashes')
+        self.assertEqual(hashes,{self.first,self.historical,old,current})
+        expected=sync.synchronize_hash_registry(cs.read_text(),current,hashes,'VpnHelperHash','SupportedVpnStatusHashes')
+        self.assertEqual(expected,cs.read_text())
+        self.synchronize(check=True)
+
+    def test_runtime_file_changes_refresh_all_upgrade_pins(self):
+        self.generate(b'synthetic agent');self.synchronize()
+        for name in ['firewall.sh','nft-guard.nft','dnsmasq.conf','service.sh']:
+            (self.mac/'VPN'/name).write_text('changed '+name)
+        self.generate(b'synthetic agent');self.synchronize()
+        script=(self.mac/'VPN/upgrade-controller.sh').read_text()
+        for key,name in [('helper_sha','vpnctl'),('manager_sha','manager.sh'),('configure_sha','configure.lua'),('firewall_sha','firewall.sh'),('nft_guard_sha','nft-guard.nft'),('dnsmasq_sha','dnsmasq.conf'),('service_sha','service.sh')]:
+            self.assertEqual(re.findall(r'(?m)^'+key+r'=(.*)$',script),[permanent.sha(self.mac/'VPN'/name)])
+        self.assertEqual(script,(self.win/'Resources/VPN/upgrade-controller.sh').read_text())
+        self.synchronize(check=True)
+
+    def test_dynamic_controller_registry_fails_before_resource_changes(self):
+        swift=self.root/'MacIMEI/Sources/VPNSettings.swift'
+        swift.write_text(swift.read_text().replace('[helperHash,','[deviceHash, helperHash,'))
+        before=(self.mac/'Onboarding/provenance.json').read_bytes()
+        with self.assertRaises(ValueError):self.generate(b'synthetic agent')
+        self.assertEqual((self.mac/'Onboarding/provenance.json').read_bytes(),before)
+        self.assertFalse((self.mac/'AgentDashboard').exists())
 
     def test_dynamic_registry_refuses_before_packaging_mutates_resources(self):
         before=(self.mac/'Onboarding/provenance.json').read_bytes()

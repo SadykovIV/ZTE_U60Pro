@@ -1,6 +1,6 @@
 from pathlib import Path
 import tempfile, subprocess, unittest
-SCRIPT=Path(__file__).resolve().parents[2]/'ModemAgent/scripts/device/preserve-dashboard-assets.sh'
+SCRIPT=Path(__file__).resolve().parents[2]/'MacIMEI/Resources/AgentDashboardInstall/preserve-dashboard-assets.sh'
 class DashboardUpdateTests(unittest.TestCase):
  def setUp(self):
   self.temp=tempfile.TemporaryDirectory();self.root=Path(self.temp.name)

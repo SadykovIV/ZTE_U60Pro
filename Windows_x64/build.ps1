@@ -7,7 +7,7 @@ $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $project = Join-Path $projectRoot 'src/ZteImeiStudio.Windows.csproj'
 [xml] $projectXml = Get-Content -LiteralPath $project -Raw
 $version = [string] $projectXml.Project.PropertyGroup.Version
-if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'В проекте не задана корректная версия релиза.' }
+if ($version -notmatch '^\d+\.\d+(?:\.\d+)?$') { throw 'В проекте не задана корректная версия релиза.' }
 $resourceRoot = Join-Path $projectRoot 'Resources'
 $distRoot = Join-Path $projectRoot 'dist'
 $portableRoot = Join-Path $distRoot "portable$version"

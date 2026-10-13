@@ -41,10 +41,14 @@ if [ "${1:-apply}" = remove ]; then remove; exit; fi
 if ! nft list table inet zte_vpn_guard >/dev/null 2>&1; then
     nft -f "$ROOT/nft-guard.nft"
 fi
-if [ -d /proc/sys/net/ipv6/conf/br-vpn ]; then
-    echo 1 > /proc/sys/net/ipv6/conf/br-vpn/disable_ipv6
-    echo 0 > /proc/sys/net/ipv4/conf/br-vpn/rp_filter
-fi
+bridge_sysctl() {
+    # netifd can create/remove the two families at different boot stages.
+    # Missing nodes need no update; an existing node's write failure is real.
+    [ -e "$1" ] || return 0
+    printf '%s\n' "$2" > "$1" || [ ! -e "$1" ]
+}
+bridge_sysctl /proc/sys/net/ipv6/conf/br-vpn/disable_ipv6 1
+bridge_sysctl /proc/sys/net/ipv4/conf/br-vpn/rp_filter 0
 
 # IPv4 guard remains while the proxy is stopped. Only UDP into our TUN may forward.
 for c in ZVPN_IN ZVPN_FW; do ipt -N "$c" 2>/dev/null || true; done

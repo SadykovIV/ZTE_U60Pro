@@ -1,0 +1,61 @@
+namespace ZteImeiStudio.Windows.Features;
+
+internal static class VpnMessages
+{
+    internal static readonly IReadOnlyDictionary<string, string> Warnings = new Dictionary<string, string>
+    {
+        ["VPN_SPX_PRESERVED"] = "Параметр spx сохранён в исходной ссылке, но не используется этим ядром VPN.",
+        ["NAME_TRUNCATED"] = "Название профиля сокращено до 64 символов.",
+        ["VPN_INSECURE_TLS"] = "В профиле отключена проверка TLS-сертификата",
+        ["VPN_IPV6_GUEST_DISABLED"] = "Сеть Wi-Fi с VPN использует IPv4. Параметры IPv6 туннеля сохранены.",
+    };
+
+    internal static readonly IReadOnlyDictionary<string, string> Errors = new Dictionary<string, string>
+    {
+        ["VPN_SUBSCRIPTION_FILE_REFERENCE"] = "Профиль подписки ссылается на локальный файл сертификата или ключа. Нужны встроенные данные PEM.",
+        ["VPN_SUBSCRIPTION_EXISTS"] = "Эта подписка уже добавлена. Обновите её в списке.",
+        ["VPN_AWG_DUPLICATE_OPTION"] = "Некорректный параметр в файле WireGuard/AmneziaWG. Проверьте исходную конфигурацию.",
+        ["VPN_AWG_DUPLICATE_PEER"] = "Некорректный параметр в файле WireGuard/AmneziaWG. Проверьте исходную конфигурацию.",
+        ["VPN_AWG_HEADER_PADDING_REQUIRED"] = "Для защиты заголовков AWG значения S1–S4 должны быть не меньше 12.",
+        ["VPN_AWG_INVALID_ADDRESS"] = "Некорректный параметр в файле WireGuard/AmneziaWG. Проверьте исходную конфигурацию.",
+        ["VPN_AWG_INVALID_BOOLEAN"] = "Некорректный параметр в файле WireGuard/AmneziaWG. Проверьте исходную конфигурацию.",
+        ["VPN_AWG_INVALID_CONFIG"] = "Некорректный параметр в файле WireGuard/AmneziaWG. Проверьте исходную конфигурацию.",
+        ["VPN_AWG_INVALID_DNS"] = "Некорректный параметр в файле WireGuard/AmneziaWG. Проверьте исходную конфигурацию.",
+        ["VPN_AWG_INVALID_ENDPOINT"] = "Некорректный параметр в файле WireGuard/AmneziaWG. Проверьте исходную конфигурацию.",
+        ["VPN_AWG_INVALID_JUNK_SIZE"] = "Некорректный параметр в файле WireGuard/AmneziaWG. Проверьте исходную конфигурацию.",
+        ["VPN_AWG_INVALID_KEY"] = "Некорректный параметр в файле WireGuard/AmneziaWG. Проверьте исходную конфигурацию.",
+        ["VPN_AWG_INVALID_LIST"] = "Некорректный параметр в файле WireGuard/AmneziaWG. Проверьте исходную конфигурацию.",
+        ["VPN_AWG_INVALID_MTU"] = "Некорректный параметр в файле WireGuard/AmneziaWG. Проверьте исходную конфигурацию.",
+        ["VPN_AWG_INVALID_NUMBER"] = "Некорректный параметр в файле WireGuard/AmneziaWG. Проверьте исходную конфигурацию.",
+        ["VPN_AWG_INVALID_RANGE"] = "Некорректный параметр в файле WireGuard/AmneziaWG. Проверьте исходную конфигурацию.",
+        ["VPN_AWG_INVALID_SECTION"] = "Некорректный параметр в файле WireGuard/AmneziaWG. Проверьте исходную конфигурацию.",
+        ["VPN_AWG_INVALID_SIGNATURE"] = "Некорректный параметр в файле WireGuard/AmneziaWG. Проверьте исходную конфигурацию.",
+        ["VPN_AWG_IPV4_ADDRESS_REQUIRED"] = "Для VPN-сети модема требуется IPv4-адрес туннеля.",
+        ["VPN_AWG_IPV6_ADDRESS_REQUIRED"] = "IPv6 DNS требует IPv6-адрес туннеля.",
+        ["VPN_AWG_MISSING_FIELD"] = "Некорректный параметр в файле WireGuard/AmneziaWG. Проверьте исходную конфигурацию.",
+        ["VPN_AWG_MULTIPLE_LOCAL_ADDRESSES"] = "Это VPN-ядро поддерживает один локальный IPv4 и один IPv6-адрес туннеля.",
+        ["VPN_AWG_OVERLAPPING_HEADERS"] = "Диапазоны заголовков AWG H1–H4 пересекаются.",
+        ["VPN_AWG_OVERLAPPING_PEERS"] = "Маршруты разных узлов WireGuard пересекаются.",
+        ["VPN_AWG_PEER_KEEPALIVE_DIFFERS"] = "Это VPN-ядро требует одинаковый PersistentKeepalive для всех узлов.",
+        ["VPN_AWG_SIGNATURE_TOO_LARGE"] = "Некорректный параметр в файле WireGuard/AmneziaWG. Проверьте исходную конфигурацию.",
+        ["VPN_AWG_UNSUPPORTED_OPTION"] = "Файл WireGuard/AmneziaWG содержит неподдерживаемый параметр. Он не был импортирован.",
+        ["VPN_IPA_ENABLED"] = "Обновите компоненты VPN для автоматического переключения IPA.",
+        ["VPN_IPA_NOT_RUNNING"] = "Служба IPA не найдена. Проверьте журнал модема.",
+        ["VPN_IPA_PREPARE_FAILED"] = "Не удалось автоматически отключить IPA для VPN. Подробности — в журнале модема.",
+        ["VPN_IPA_RESTORE_FAILED"] = "Не удалось восстановить параметры IPA. Подробности — в журнале модема.",
+        ["VPN_IPA_STATE_INVALID"] = "Сохранённые параметры IPA повреждены. Проверьте журнал модема.",
+        ["VPN_IPA_UNSUPPORTED"] = "Реализация IPA в этой прошивке ещё не поддерживается.",
+        ["VPN_PROFILE_LIMIT"] = "Можно хранить до 1024 профилей. Удалите ненужные профили.",
+        ["VPN_PROFILE_NOT_FOUND"] = "Профиль не найден. Обновите список.",
+        ["VPN_REQUEST_TOO_LARGE"] = "Запрос VPN превышает 32 МиБ.",
+        ["VPN_SUBSCRIPTION_DOCUMENT"] = "Документ подписки пуст или превышает 8 МиБ.",
+        ["VPN_SUBSCRIPTION_EMPTY"] = "В подписке нет поддерживаемых профилей.",
+        ["VPN_SUBSCRIPTION_ENTRY"] = "Запись подписки повреждена или не поддерживается.",
+        ["VPN_SUBSCRIPTION_FETCH"] = "Не удалось загрузить подписку. Проверьте доступ к интернету и ссылку.",
+        ["VPN_SUBSCRIPTION_FORMAT"] = "Формат подписки не распознан. Нужен список ссылок, Base64 или конфигурация Mihomo.",
+        ["VPN_SUBSCRIPTION_NOT_FOUND"] = "Подписка не найдена. Обновите список.",
+        ["VPN_SUBSCRIPTION_ROUTING"] = "Профиль подписки задаёт собственную маршрутизацию и не может быть применён к VPN-сети модема.",
+        ["VPN_SUBSCRIPTION_URL"] = "Нужна корректная HTTPS-ссылка подписки без имени пользователя и фрагмента.",
+        ["VPN_UNSUPPORTED_PROTOCOL"] = "Протокол профиля не поддерживается.",
+    };
+}

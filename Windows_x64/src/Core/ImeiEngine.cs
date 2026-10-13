@@ -6,6 +6,28 @@ namespace ZteImeiStudio.Windows.Core;
 
 public sealed record DeviceIdentity(string Cid, string FirmwareHash, string BootId, string RouterHash = ImeiEngine.RouterHash);
 public sealed record ImeiState(DeviceIdentity Identity, byte[][] Nv, string[] Imeis);
+/// <summary>Display-only values; cannot be passed to full-record backup/write operations.</summary>
+public sealed record ImeiReadState(DeviceIdentity Identity, string Primary, string? Secondary)
+{
+    public string Detail => Secondary is null
+        ? "Первый IMEI подтверждён по NV и API. Второй IMEI: запись NV550 не активна (статус 5). Будет использоваться только первый IMEI."
+        : "Оба IMEI подтверждены по NV и API.";
+    internal static (string Primary, string? Secondary) Parse(string output)
+    {
+        var lines = output.Split('\n').Where(x => x.StartsWith("APP_IMEI ", StringComparison.Ordinal)).ToArray();
+        if (lines.Length != 2) throw new InvalidDataException("Неполный или неоднозначный ответ чтения IMEI");
+        static string Value(string line, int index)
+        {
+            var prefix = $"APP_IMEI index={index} value=";
+            if (!line.StartsWith(prefix, StringComparison.Ordinal)) throw new InvalidDataException("Неверный индекс в ответе чтения IMEI");
+            var value = line[prefix.Length..];
+            if (!ImeiCodec.IsValid(value)) throw new InvalidDataException("Некорректный IMEI в ответе чтения");
+            return value;
+        }
+        return (Value(lines[0], 0), lines[1] == "APP_IMEI index=1 state=not-active nv_status=5" ? null : Value(lines[1], 1));
+    }
+}
+
 public sealed record ImeiBackupManifest(int Schema, string Id, DateTimeOffset Created, DeviceIdentity Identity, string[] Imeis, Dictionary<string,string> Hashes);
 public sealed record ImeiPending(int Schema, string Id, string BackupId, DeviceIdentity Identity, string[] TargetHex,
     string Phase, string? FinalBootBefore = null, DateTimeOffset? WriteStartedAt = null,
@@ -41,19 +63,12 @@ public sealed partial class ImeiEngine(IRemoteShell shell, string storageRoot, s
 
     public async Task<DeviceIdentity> IdentityAsync(CancellationToken ct = default)
     {
-        var lines = (await Text("sha256sum /firmware/image/modem.b16 /usr/bin/diag-router; cat /sys/block/mmcblk0/device/cid /proc/sys/kernel/random/boot_id", ct)).Split('\n', StringSplitOptions.TrimEntries);
-        if (lines.Length != 4) throw new InvalidDataException("Не удалось прочитать идентификаторы модема.");
-        static string HashLine(string line, string path)
-        {
-            var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-            if (parts.Length != 2 || parts[1] != path || parts[0].Length != 64 || parts[0].Any(c => !Uri.IsHexDigit(c))) throw new InvalidDataException("Неверная контрольная сумма прошивки.");
-            return parts[0].ToLowerInvariant();
-        }
-        var firmware = HashLine(lines[0], "/firmware/image/modem.b16");
-        var router = HashLine(lines[1], "/usr/bin/diag-router");
-        if (!skipFirmwareCheck && (firmware != FirmwareHash || router != RouterHash)) throw new InvalidDataException("Прошивка отличается от проверенной MU5250 B31. Запись остановлена.");
-        if (lines[2].Length != 32 || lines[2].Any(c => !Uri.IsHexDigit(c)) || !Guid.TryParse(lines[3], out _)) throw new InvalidDataException("Неверный CID или boot ID.");
-        return new DeviceIdentity(lines[2].ToLowerInvariant(), firmware, lines[3], router);
+        var identity = await MeasuredIdentityAsync(ct);
+        if (identity.FirmwareHash == "absent" || identity.RouterHash == "absent")
+            throw new InvalidDataException("Для записи NV и системных копий этой прошивки ещё нужен отдельный адаптер. Чтение IMEI и независимые компоненты доступны отдельно.");
+        if (!skipFirmwareCheck && (identity.FirmwareHash != FirmwareHash || identity.RouterHash != RouterHash))
+            throw new InvalidDataException("Прошивка отличается от проверенной MU5250 B31. Запись остановлена.");
+        return identity;
     }
 
     private static bool SameDevice(DeviceIdentity first, DeviceIdentity second) =>
@@ -159,7 +174,7 @@ public sealed partial class ImeiEngine(IRemoteShell shell, string storageRoot, s
 
     private async Task<byte[][]> Snapshot(CancellationToken ct)
     {
-        var result = await Helper("zte_nv", "--snapshot", ct: ct);
+        var result = await Helper("zte_nv", "--snapshot-available", ct: ct);
         var values = new Dictionary<int,byte[]>();
         foreach (var line in result.Split('\n', StringSplitOptions.TrimEntries))
         {
@@ -168,15 +183,19 @@ public sealed partial class ImeiEngine(IRemoteShell shell, string storageRoot, s
             if (fields.Length != 3 || !fields[1].StartsWith("index=") || !fields[2].StartsWith("data=") || !int.TryParse(fields[1][6..], out var index) || index is < 0 or > 1 || values.ContainsKey(index)) throw new InvalidDataException("Неполный или неоднозначный ответ NV.");
             values[index] = Convert.FromHexString(fields[2][5..]);
         }
-        if (values.Count != 2) throw new InvalidDataException("Не получены оба NV550.");
-        var pair = new[] { values[0], values[1] };
+        var topology = result.Split('\n').Where(x => x.StartsWith("APP_NV_TOPOLOGY ", StringComparison.Ordinal)).ToArray();
+        var count = topology.SequenceEqual(new[] { "APP_NV_TOPOLOGY count=1 secondary=not-active-status5" }) ? 1
+            : topology.SequenceEqual(new[] { "APP_NV_TOPOLOGY count=2 secondary=active" }) ? 2 : 0;
+        if (count == 0 || values.Count != count || !values.ContainsKey(0) || (count == 2 && !values.ContainsKey(1)))
+            throw new InvalidDataException("Не подтверждено число активных NV550.");
+        var pair = Enumerable.Range(0,count).Select(i => values[i]).ToArray();
         foreach (var record in pair) _ = ImeiCodec.DecodeNv550(record);
         return pair;
     }
-    private async Task<string[]> ApiPair(CancellationToken ct)
+    private async Task<string[]> ApiPair(int count, CancellationToken ct)
     {
-        var pair = new string[2]; var methods = new[] { "get_imei", "get_imei2" };
-        for (var i = 0; i < 2; i++)
+        var pair = new string[count]; var methods = new[] { "get_imei", "get_imei2" };
+        for (var i = 0; i < count; i++)
         {
             using var doc = JsonDocument.Parse(await Remote("ubus call zwrt_zte_mdm.api " + methods[i], ct: ct));
             var values = doc.RootElement.EnumerateObject().Where(p => p.Value.ValueKind == JsonValueKind.String).Select(p => p.Value.GetString()!).Where(ImeiCodec.IsValid).ToArray();
@@ -206,24 +225,55 @@ public sealed partial class ImeiEngine(IRemoteShell shell, string storageRoot, s
         var result = memory.ToArray(); _ = ConfigCodec.Validate(result); return result;
     }
 
+    public async Task<ImeiReadState> ReadImeiAsync(CancellationToken ct = default)
+    {
+        var identity = await MeasuredIdentityAsync(ct);
+        if (identity.RouterHash != RouterHash)
+            throw new InvalidDataException("Чтение NV требует совместимый diag-router. Соберите данные для адаптации прошивки.");
+        return await Locked(identity, async token =>
+        {
+            var (primary, secondary) = ImeiReadState.Parse(await Helper("zte_nv", "--read-imei", ct: token));
+            var expected = secondary is null ? new[] { primary } : new[] { primary, secondary };
+            for (var index = 0; index < expected.Length; index++)
+            {
+                using var doc = JsonDocument.Parse(await Remote("ubus call zwrt_zte_mdm.api " + (index == 0 ? "get_imei" : "get_imei2"), ct: token));
+                var values = doc.RootElement.EnumerateObject().Where(p => p.Value.ValueKind == JsonValueKind.String)
+                    .Select(p => p.Value.GetString()!).Where(ImeiCodec.IsValid).ToArray();
+                if (values.Length != 1 || values[0] != expected[index]) throw new InvalidDataException("IMEI в API и NV различаются.");
+            }
+            if (await MeasuredIdentityAsync(token) != identity)
+                throw new InvalidDataException("Модем или его загрузка изменились во время чтения IMEI.");
+            return new ImeiReadState(identity, primary, secondary);
+        }, ct);
+    }
+
     public async Task<ImeiState> InspectAsync(CancellationToken ct = default)
     {
-        var identity = await IdentityAsync(ct);
-        return await Locked(identity, token => InspectCoreAsync(identity, token), ct);
+        var identity = await MeasuredIdentityAsync(ct);
+        if (identity.RouterHash != RouterHash)
+            throw new InvalidDataException("Чтение NV требует совместимый diag-router. Соберите данные для адаптации прошивки.");
+        return await Locked(identity, async token =>
+        {
+            var state = await InspectCoreAsync(identity, token);
+            if (await MeasuredIdentityAsync(token) != identity)
+                throw new InvalidDataException("Модем или его загрузка изменились во время чтения IMEI.");
+            return state;
+        }, ct);
     }
 
     private async Task<ImeiState> InspectCoreAsync(DeviceIdentity identity, CancellationToken ct)
     {
         var nv = await Snapshot(ct);
         var imeis = nv.Select(item => ImeiCodec.DecodeNv550(item)).ToArray();
-        if (!(await ApiPair(ct)).SequenceEqual(imeis)) throw new InvalidDataException("IMEI в API и NV различаются.");
+        if (!(await ApiPair(imeis.Length, ct)).SequenceEqual(imeis)) throw new InvalidDataException("IMEI в API и NV различаются.");
         return new ImeiState(identity, nv, imeis);
     }
 
     public async Task<string> CreateBackupAsync(CancellationToken ct = default)
     {
         if (File.Exists(Pending)) throw new InvalidOperationException("Сначала продолжите незавершённую запись IMEI.");
-        var identity = await IdentityAsync(ct);
+        var identity = await MeasuredIdentityAsync(ct);
+        if (identity.RouterHash != RouterHash) throw new InvalidDataException("Чтение NV требует совместимый diag-router. Соберите данные для адаптации прошивки.");
         return await Locked(identity, async token =>
             await CreateBackupCoreAsync(await InspectCoreAsync(identity, token), token), ct);
     }
@@ -236,9 +286,10 @@ public sealed partial class ImeiEngine(IRemoteShell shell, string storageRoot, s
         var id = Guid.NewGuid().ToString();
         var dir = Path.Combine(Backups, id);
         Directory.CreateDirectory(dir);
-        var files = new Dictionary<string,byte[]> { ["nv0.bin"] = state.Nv[0], ["nv1.bin"] = state.Nv[1], ["config.bin"] = config };
+        var files = state.Nv.Select((record,index) => (record,index)).ToDictionary(x => $"nv{x.index}.bin", x => x.record);
+        files["config.bin"] = config;
         foreach (var (name, data) in files) await SaveBytes(Path.Combine(dir, name), data, ct);
-        var manifest = new ImeiBackupManifest(1,id,DateTimeOffset.UtcNow,state.Identity,state.Imeis,
+        var manifest = new ImeiBackupManifest(state.Nv.Length == 1 ? 2 : 1,id,DateTimeOffset.UtcNow,state.Identity,state.Imeis,
             files.ToDictionary(x => x.Key,x => VerifiedHash.Sha256(x.Value)));
         await SaveJson(Path.Combine(dir,"manifest.json"),manifest,ct);
         _ = await LoadBackup(dir,ct);
@@ -247,9 +298,9 @@ public sealed partial class ImeiEngine(IRemoteShell shell, string storageRoot, s
     private async Task<(ImeiBackupManifest manifest,byte[][] nv,byte[] config)> LoadBackup(string dir,CancellationToken ct)
     {
         var manifest = JsonSerializer.Deserialize<ImeiBackupManifest>(await File.ReadAllTextAsync(Path.Combine(dir,"manifest.json"),ct)) ?? throw new InvalidDataException("Неверный манифест бэкапа.");
-        if (manifest.Schema != 1 || !Guid.TryParse(manifest.Id,out _) || manifest.Imeis.Length != 2 || manifest.Hashes.Count != 3) throw new InvalidDataException("Неверный формат бэкапа.");
+        if (!((manifest.Schema == 1 && manifest.Imeis.Length == 2) || (manifest.Schema == 2 && manifest.Imeis.Length == 1)) || !Guid.TryParse(manifest.Id,out _) || !manifest.Hashes.Keys.ToHashSet().SetEquals(Enumerable.Range(0,manifest.Imeis.Length).Select(i => $"nv{i}.bin").Append("config.bin"))) throw new InvalidDataException("Неверный формат бэкапа.");
         var files = new Dictionary<string,byte[]>();
-        foreach (var name in new[] { "nv0.bin","nv1.bin","config.bin" })
+        foreach (var name in Enumerable.Range(0,manifest.Imeis.Length).Select(i => $"nv{i}.bin").Append("config.bin"))
         {
             var path = Path.Combine(dir,name);
             if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0) throw new InvalidDataException("Ссылка в бэкапе запрещена.");
@@ -257,7 +308,7 @@ public sealed partial class ImeiEngine(IRemoteShell shell, string storageRoot, s
             if (manifest.Hashes.GetValueOrDefault(name) != VerifiedHash.Sha256(data)) throw new InvalidDataException("Повреждён бэкап: " + name);
             files[name] = data;
         }
-        var pair = new[] { files["nv0.bin"],files["nv1.bin"] }; var config = files["config.bin"];
+        var pair = Enumerable.Range(0,manifest.Imeis.Length).Select(i => files[$"nv{i}.bin"]).ToArray(); var config = files["config.bin"];
         if (!pair.Select(item => ImeiCodec.DecodeNv550(item)).SequenceEqual(manifest.Imeis) || ConfigCodec.Validate(config) != 0) throw new InvalidDataException("IMEI/config бэкапа не совпадают.");
         return (manifest,pair,config);
     }
@@ -280,5 +331,5 @@ public sealed partial class ImeiEngine(IRemoteShell shell, string storageRoot, s
     }
 
     private static bool PairEqual(byte[][] first, byte[][] second) =>
-        first.Length == 2 && second.Length == 2 && first[0].AsSpan().SequenceEqual(second[0]) && first[1].AsSpan().SequenceEqual(second[1]);
+        first.Length is 1 or 2 && first.Length == second.Length && first.Zip(second).All(x => x.First.AsSpan().SequenceEqual(x.Second));
 }

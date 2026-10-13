@@ -1,7 +1,7 @@
 #!/bin/sh
-# B31 IPv4 TTL manager. Only owned mangle chains and marked persistence entries
+# B31 / FLY B28 / XCBZ HK B04 IPv4 TTL manager. Only owned mangle chains and marked persistence entries
 # are changed. No firewall restart, global flush, conntrack or IPv6 changes.
-# install STAGE CID OUT IN | status CID | apply CID OUT IN | disable CID | reapply
+# install STAGE CID OUT IN | upgrade STAGE CID | status CID | apply CID OUT IN | disable CID | reapply
 set -eu
 umask 077
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
@@ -13,8 +13,9 @@ firewall=/etc/config/firewall
 rc_local=/etc/rc.local
 out_chain=ZTE_IMEI_TTL_OUT
 in_chain=ZTE_IMEI_TTL_IN
-revision=20260922
+revision=20261013
 firmware_sha=604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263
+b28_firmware_sha=5a4489882538b5ab1d3e0049371f1b620d28d262a429923299b4f2626d40d478
 router_sha=55c54f74aaa427940254a2f16c36771e675a80a002363e4f10b0dfcb604d9c6f
 boot_sha=d13e69f8b9471ac6ab11fbace62cac1d5b64a16770c02d728bbebae3bd898040
 firewall_sha=7610ef7955d21dd21532ce7149a57418daedd7dfcac1887350eb3223ba943600
@@ -31,6 +32,7 @@ acceleration_policy_verified=1
 ipa_switch=/sbin/ipacm_switch.sh
 ipa_switch_sha=8947eee9c554453dc8eeb77df933cd12899f447c8c03df3505c57c7b526d22b9
 ipacm_sha=95385816da7b2edb9a977cee328c091753463fcd4a70a67fa1676e8b335c11c0
+b28_ipacm_sha=a8a90ee631a3e8de3266d1d4231e455c34fd0b0d1ad570e7c4d0dcd09eea1c54
 ipa_runtime=$lock/ipacm.state
 
 hash() { sha256sum "$1" 2>/dev/null | awk '{print $1}'; }
@@ -50,9 +52,23 @@ valid_value() {
     test "${#1}" -le 3 && test "$1" -ge 1 && test "$1" -le 255
 }
 fail() { error_code=$1; printf 'TTL_ERROR %s\n' "$1" >&2; exit 1; }
+# B04 captures include both an unavailable image and this measured modem.b16.
+# Native MDM/router identity remains required; startup needs no vendor RPC.
+b04_profile() {
+    if [ -e /firmware/image/modem.b16 ] || [ -L /firmware/image/modem.b16 ]; then
+        [ -f /firmware/image/modem.b16 ] && [ ! -L /firmware/image/modem.b16 ] || return 1
+        [ "$(sha256sum /firmware/image/modem.b16 2>/dev/null | awk '{print $1}')" = c57e063d390983229dfc53aa87380b3d4655ee8daa1c748e1a032ac90cd0df81 ] || return 1
+    fi
+    [ -f /usr/bin/zte_topsw_mdm ] && [ ! -L /usr/bin/zte_topsw_mdm ] || return 1
+    [ "$(sha256sum /usr/bin/zte_topsw_mdm 2>/dev/null | awk '{print $1}')" = 93a346e7d69024503caf9ad42f14c97e1514dd7d04c7b5ebef4e30473b5d5c64 ] &&
+    [ "$(sha256sum /usr/bin/diag-router 2>/dev/null | awk '{print $1}')" = 55c54f74aaa427940254a2f16c36771e675a80a002363e4f10b0dfcb604d9c6f ]
+}
+firmware_supported() {
+    case "$(hash /firmware/image/modem.b16)" in "$firmware_sha"|"$b28_firmware_sha") return 0;; *) b04_profile;; esac
+}
 profile_supported() {
     test "$(id -u)" = 0 && test "$(uname -m)" = aarch64 &&
-    test "$(hash /firmware/image/modem.b16)" = "$firmware_sha" &&
+    firmware_supported &&
     test "$(hash /usr/bin/diag-router)" = "$router_sha" &&
     iptables --version 2>/dev/null | grep -q 'v1.8.8 (legacy)' &&
     grep -q '^TTL$' /proc/net/ip_tables_targets
@@ -61,7 +77,15 @@ profile_supported() {
 # A populated rule/counter does not prove that later IPA packets use netfilter.
 ipa_tools_valid() {
     plain "$ipa_switch" && plain /usr/bin/ipacm &&
-    test "$(hash "$ipa_switch")" = "$ipa_switch_sha" && test "$(hash /usr/bin/ipacm)" = "$ipacm_sha"
+    test "$(hash "$ipa_switch")" = "$ipa_switch_sha" || return 1
+    # The collected B28 vendor switch has the same bytes and USR1/USR2 + UCI
+    # control contract. Keep each daemon tied to its collected firmware profile.
+    # B04 uses the exact B31 daemon and switch. B28/B04 packet-level
+    # verification remains unverified in the status response.
+    case "$(hash /firmware/image/modem.b16):$(hash /usr/bin/ipacm)" in
+      "$firmware_sha:$ipacm_sha"|"$b28_firmware_sha:$b28_ipacm_sha") return 0;;
+      *) b04_profile && test "$(hash /usr/bin/ipacm)" = "$ipacm_sha";;
+    esac
 }
 ipa_flags() {
     ipa_close=$(uci -q get zwrt_router.tmp_router.close_ipa_acce 2>/dev/null || printf absent)
@@ -194,6 +218,61 @@ assets_valid() {
     test "$(hash "$root/boot.sh")" = "$boot_sha" &&
     test "$(hash "$root/firewall.sh")" = "$firewall_sha" &&
     test "$(hash "$root/hotplug.sh")" = "$hotplug_sha"
+}
+# Only exact previously shipped managers are eligible for an in-place upgrade.
+# The immutable backup permits recovery if power is lost between the two renames.
+upgrade_manager() {
+    target=$(hash "$stage/manager.sh")
+    root_owned && read_settings && hooks_valid || fail UPGRADE_INSTALLATION
+    ! exists "$root/.pending" || fail UPGRADE_PENDING
+    for item in boot.sh firewall.sh hotplug.sh; do
+        test "$(hash "$root/$item")" = "$(hash "$stage/$item")" || fail UPGRADE_ASSET
+    done
+    current=$(hash "$root/manager.sh")
+    case "$current" in
+      e4684cb0fa040de0525d0248897da01a5af2c4ee8509a851719afe9c970e9194|a70afc13c3645f64b5fd937162e7d403e133bcfa0a2da0e565d39a693f9ab488|79d5a2e696613f966fe2dff3fe59a0366455fe16681284c65d8ddb36c5e35b5a|b6588072c82ddd7678093a29b983ec4417c6807562819e3bda69cd6534637b7c) previous=$current;;
+      *) fail UPGRADE_VERSION;;
+    esac
+    backup="/data/zte-imei-ttl-upgrade-$previous"
+    recorded=$(cat "$root/manager.sha256")
+    if ! exists "$backup"; then
+        test "$recorded" = "$previous" || fail UPGRADE_METADATA
+        pending="$backup.new-$token"
+        ! exists "$pending" && mkdir -m 700 "$pending" || fail UPGRADE_BACKUP
+        cp "$root/manager.sh" "$pending/manager.sh"
+        printf '%s\n' "$previous" > "$pending/manager.sha256"
+        printf '%s\n' "$target" > "$pending/target.sha256"
+        printf '%s\n' "$cid" > "$pending/cid"
+        chmod 600 "$pending"/*
+        test "$(hash "$pending/manager.sh")" = "$previous" || fail UPGRADE_BACKUP
+        sync
+        mv "$pending" "$backup" && sync || fail UPGRADE_BACKUP
+    fi
+    private "$backup" || fail UPGRADE_BACKUP
+    for entry in "$backup"/* "$backup"/.[!.]* "$backup"/..?*; do
+        exists "$entry" || continue
+        case "${entry##*/}" in
+          manager.sh|manager.sha256|target.sha256|cid|manager.next|manager.sha256.next)
+            plain "$entry" && test "$(stat -c %a "$entry")" = 600 || fail UPGRADE_BACKUP;;
+          *) fail UPGRADE_BACKUP;;
+        esac
+    done
+    for item in manager.sh manager.sha256 target.sha256 cid; do plain "$backup/$item" || fail UPGRADE_BACKUP; done
+    test "$(hash "$backup/manager.sh")" = "$previous" &&
+    test "$(cat "$backup/manager.sha256")" = "$previous" &&
+    test "$(cat "$backup/target.sha256")" = "$target" &&
+    test "$(cat "$backup/cid")" = "$cid" || fail UPGRADE_BACKUP
+    case "$recorded" in "$previous"|"$target") ;; *) fail UPGRADE_METADATA;; esac
+    cp "$stage/manager.sh" "$backup/manager.next"
+    printf '%s\n' "$target" > "$backup/manager.sha256.next"
+    chmod 600 "$backup/manager.next" "$backup/manager.sha256.next"
+    test "$(hash "$backup/manager.next")" = "$target" &&
+    test "$(hash "$root/manager.sh")" = "$previous" &&
+    test "$(cat "$root/manager.sha256")" = "$recorded" || fail UPGRADE_CHANGED
+    sync
+    mv "$backup/manager.sha256.next" "$root/manager.sha256" && sync || fail UPGRADE_PUBLISH
+    mv "$backup/manager.next" "$root/manager.sh" && sync || fail UPGRADE_PUBLISH
+    assets_valid || fail UPGRADE_VERIFY
 }
 read_settings() {
     plain "$root/settings" || return 1
@@ -410,6 +489,7 @@ trap 'error_code=INTERRUPTED; exit 1' HUP INT TERM
 
 case "$mode" in
   install) test "$#" = 5 || fail ARGUMENTS; stage=$2; cid=$3; new_out=$4; new_in=$5;;
+  upgrade) test "$#" = 3 || fail ARGUMENTS; stage=$2; cid=$3;;
   apply) test "$#" = 4 || fail ARGUMENTS; cid=$2; new_out=$3; new_in=$4;;
   disable) test "$#" = 2 || fail ARGUMENTS; cid=$2; new_out=off; new_in=off;;
   status) test "$#" = 2 || fail ARGUMENTS; cid=$2;;
@@ -424,20 +504,25 @@ layout_safe || fail LAYOUT
 acquire_lock || fail BUSY
 if test "$mode" = status; then exit 0; fi
 if test "$mode" = reapply && ! exists "$root"; then exit 0; fi
+! exists /tmp/fota_install_processing || fail OTHER_TRANSACTION
 if test "$mode" = install || test "$mode" = apply; then
     profile_supported || fail UNSUPPORTED_PROFILE
     if test "$new_out" != off || test "$new_in" != off; then acceleration_supported || fail ACCELERATION_UNVERIFIED; fi
-    ! exists /data/local/tmp/zte-imei-installations/active && ! exists /data/local/tmp/open-u60-transactions/active && ! exists /tmp/fota_install_processing || fail OTHER_TRANSACTION
     get_devices || fail ROUTES
     if test "$new_out" != off || test "$new_in" != off; then test -n "$devices" || fail NO_CELLULAR_DEFAULT; fi
 fi
-if test "$mode" = install; then
+if test "$mode" = install || test "$mode" = upgrade; then
     case "$stage" in /tmp/zte-imei-ttl-*) ;; *) fail STAGE_PATH;; esac
     token=${stage#/tmp/zte-imei-ttl-}
     test "${#token}" = 36 && case "$token" in *[!a-f0-9-]*) false;; *) true;; esac || fail STAGE_TOKEN
     private "$stage" || fail STAGE_DIRECTORY
     for item in manager.sh boot.sh firewall.sh hotplug.sh; do plain "$stage/$item" && sh -n "$stage/$item" || fail STAGE_FILE; done
     test "$(hash "$stage/manager.sh")" = "$(hash "$0")" && test "$(hash "$stage/boot.sh")" = "$boot_sha" && test "$(hash "$stage/firewall.sh")" = "$firewall_sha" && test "$(hash "$stage/hotplug.sh")" = "$hotplug_sha" || fail STAGE_INTEGRITY
+    if test "$mode" = upgrade; then
+        profile_supported || fail UNSUPPORTED_PROFILE
+        upgrade_manager
+        exit 0
+    fi
     if ! exists "$root"; then
         snapshot && owned_rules_safe && rules_match off off || fail FOREIGN_RULES
         ! exists "$hotplug" && ! uci -q get firewall.zte_imei_ttl >/dev/null 2>&1 && ! grep -q 'zte-imei-ttl-v1' "$rc_local" "$firewall" || fail FOREIGN_HOOKS

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Execute the actual revision-11 shell with a private, mechanical namespace map.
+"""Execute the actual revision-12 shell with a private, mechanical namespace map.
 
 No device, service, network, APDU or installed component is invoked. Fake tools
 record all requests and return synthetic private fields to check projection.
@@ -148,8 +148,9 @@ class ComponentProbes(unittest.TestCase):
         self.config.write_text(json.dumps(self.cfg))
         spec=json.loads(SPEC.read_text());body=next(p['command'] for p in spec['probes'] if p['id']==id)
         body=body.replace('PATH=/usr/sbin:/usr/bin:/sbin:/bin','PATH='+str(self.bin))
-        body=re.sub(r'(?<![A-Za-z0-9_/])/(data|etc|proc|sys|tmp)(?=/|[\s"\'])',lambda m:str(self.root)+m.group(0),body)
+        body=re.sub(r'(?<![A-Za-z0-9_/])/(data|etc|proc|sys|tmp|firmware)(?=/|[\s"\'])',lambda m:str(self.root)+m.group(0),body)
         body=body.replace('/usr/bin/zte_topsw_devui',str(self.root)+'/usr/bin/zte_topsw_devui')
+        for name in ['zte_topsw_mdm','diag-router']: body=body.replace('/usr/bin/'+name,str(self.root)+'/usr/bin/'+name)
         body=body.replace('/dev/diag',str(self.root)+'/dev/diag')
         before=self.snapshot()
         result=subprocess.run(['/bin/sh','-c',body],env=self.env,capture_output=True,text=True,timeout=15)
@@ -439,13 +440,28 @@ class ComponentProbes(unittest.TestCase):
         for id in IDS:
             f,_=self.execute(id);self.assertEqual(f['probe_tools'],'not-assessed')
 
+    def test_userspace_fingerprint_is_separate_from_absent_modem_image(self):
+        self.file('/usr/bin/zte_topsw_mdm',b'captured-userspace-mdm')
+        self.file('/usr/bin/diag-router',b'captured-diag-router')
+        facts,out=self.execute('firmware-hashes')
+        self.assertEqual(facts['mdm_sha256'],hashlib.sha256(b'captured-userspace-mdm').hexdigest())
+        self.assertNotEqual(facts['firmware_sha256'],facts['mdm_sha256'])
+        self.assertIn(facts['firmware_sha256'],['missing','not-assessed'])
+        self.assertNotIn('captured-userspace-mdm',out)
+        (self.root/'usr/bin/zte_topsw_mdm').unlink()
+        self.link('/usr/bin/zte_topsw_mdm','/usr/bin/diag-router')
+        facts,_=self.execute('firmware-hashes')
+        self.assertEqual(facts['mdm_sha256'],'not-assessed')
+
     def test_spec_mirror_unique_and_prior_groups_unchanged(self):
         blob=SPEC.read_bytes();s=json.loads(blob)
         self.assertEqual(blob,(REPO/'Windows_x64/Resources/FirmwareResearch/probes.json').read_bytes())
         baseline=json.loads(subprocess.check_output(['git','show','814a5a1:MacIMEI/Resources/FirmwareResearch/probes.json'],cwd=REPO))
-        self.assertEqual([x for x in s['probes'][:46] if x['id']!='opkg-layout'],[x for x in baseline['probes'] if x['id']!='opkg-layout'])
-        self.assertEqual(s['features'],baseline['features'])
-        self.assertEqual(s['revision'],11);self.assertEqual(len(s['probes']),57)
+        changed={'opkg-layout','firmware-hashes','launcher-abi','screen-abi'}
+        self.assertEqual([x for x in s['probes'][:46] if x['id'] not in changed],[x for x in baseline['probes'] if x['id'] not in changed])
+        changed_features={'agent','diagnostic-apps','opkg','launcher','screen-localization','ttl','vpn'}
+        self.assertEqual([f for f in s['features'] if f['id'] not in changed_features],[f for f in baseline['features'] if f['id'] not in changed_features])
+        self.assertEqual(s['revision'],12);self.assertEqual(len(s['probes']),57)
         self.assertLessEqual(len(s['probes']),64);self.assertEqual(len({p['id'] for p in s['probes']}),57)
         self.assertEqual(len({o['id'] for o in s['observations']}),len(s['observations']))
         for p in s['probes']:

@@ -23,7 +23,7 @@ enum DeviceBackupKind: String, Codable, CaseIterable, Identifiable, Sendable {
         switch self { case .modem: return ["modemst1.bin", "modemst2.bin", "fsg.bin", "persist.bin"]; case .userData: return ["user-data.tar"]; case .configuration: return ["configuration.tar"] }
     }
     var exclusions: [String] {
-        self == .userData ? ["data/local/tmp", "data/cache", "data/log", "data/logs", "data/open-u60-agent-backups", "data/zte-imei-admin/backups", "data/zte-imei-ttl/backup", "data/zte-imei-screen-ru/backup", "data/.open-u60-switch.*"] : []
+        self == .userData ? ["data/local/tmp", "data/zte-imei-studio/installations", "data/zte-imei-studio/stage-*", "data/cache", "data/log", "data/logs", "data/open-u60-agent-backups", "data/zte-imei-admin/backups", "data/zte-imei-ttl/backup", "data/zte-imei-screen-ru/backup", "data/.open-u60-switch.*"] : []
     }
 }
 struct DeviceBackupFile: Codable, Equatable, Sendable {
@@ -170,7 +170,7 @@ final class DeviceBackups {
     static let partitionBytes: [String: Int64] = ["modemst1.bin": 4_194_304, "modemst2.bin": 4_194_304, "fsg.bin": 4_194_304, "persist.bin": 8_388_608]
     static let partitionSources = ["modemst1.bin": "/dev/mmcblk0p8", "modemst2.bin": "/dev/mmcblk0p9", "fsg.bin": "/dev/mmcblk0p10", "persist.bin": "/dev/mmcblk0p56"]
     // Updated from the reviewed read-only producer resource.
-    static let readerHash = "c3dfd64e0b7bc59c9aafc3074bfaafb0fdc5d2728e5a80ebe10daa4f7b1fdfac"
+    static let readerHash = "49b79f42304a6eb4303e0e3d1e5ee0e70205df63ee02ba819682afec209f44bb"
     let engine: ModemEngine
     let streamer: BackupStreamTransport
     let spaceAvailable: (URL) throws -> Int64
@@ -179,6 +179,16 @@ final class DeviceBackups {
     }
     static func rootURL(_ root: URL) -> URL { root.appendingPathComponent("DeviceBackups", isDirectory: true) }
     static func checkCancelled(_ cancelled: @Sendable () -> Bool) throws { try require(!cancelled(), "Создание резервной копии отменено") }
+    // These images share the measured modemst1/2, fsg and persist geometry.
+    // Copy-only configuration and user-data archives do not depend on this list.
+    static let supportedModemFirmwareHashes: Set<String> = [
+        ModemEngine.firmwareHash,
+        "5a4489882538b5ab1d3e0049371f1b620d28d262a429923299b4f2626d40d478",
+        "c57e063d390983229dfc53aa87380b3d4655ee8daa1c748e1a032ac90cd0df81"
+    ]
+    static func supportsIdentity(_ identity: Identity, kind: DeviceBackupKind) -> Bool {
+        kind == .modem ? supportedModemFirmwareHashes.contains(identity.firmwareHash) : (validHash(identity.firmwareHash) || identity.firmwareHash == "absent")
+    }
     static func validHash(_ text: String) -> Bool { text.count == 64 && text.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) } }
     static func metadata(_ url: URL) throws -> stat {
         var info = stat(); try require(lstat(url.path, &info) == 0, "Не удалось прочитать файл резервной копии"); return info
@@ -240,10 +250,12 @@ final class DeviceBackups {
     func create(_ kind: DeviceBackupKind, cancelled: @escaping @Sendable () -> Bool = { false }) throws -> DeviceBackupItem {
         try require(engine.lockFD >= 0, "Создание копии требует блокировки операции")
         try Self.checkCancelled(cancelled); try engine.connection.validate()
-        for name in ["pending.json", "setup-pending.json", "adb-access-pending.json"] { try require(!engine.fm.fileExists(atPath: engine.root.appendingPathComponent(name).path), "Сначала завершите незавершённую операцию модема") }
+        for name in ["adb-access-pending.json"] { try require(!engine.fm.fileExists(atPath: engine.root.appendingPathComponent(name).path), "Сначала завершите незавершённую операцию модема") }
         try Self.directory(engine.root)
         let store = Self.rootURL(engine.root); try Self.directory(store, create: true)
-        let identity = try engine.identity(); try engine.acquireRemoteLock()
+        let identity = try engine.diagnosticIdentity()
+        try require(Self.supportsIdentity(identity.0, kind: kind), "Для копии модемных разделов нужна прошивка с проверенной разметкой")
+        try engine.acquireRemoteLock()
         let source = try Self.smallFile(engine.resources.appendingPathComponent("DeviceBackups/reader.sh"), maximum: 65536, publicResource: true)
         try require(digest(source) == Self.readerHash, "Повреждён встроенный инструмент резервного копирования")
         let id = UUID().uuidString.lowercased(), stage = "/tmp/zte-device-backup-" + id
@@ -272,11 +284,11 @@ final class DeviceBackups {
                 let result = try streamer.stream(invoke(stage, args), to: staging.appendingPathComponent(name), maxBytes: maximum, timeout: kind == .modem ? 180 : 2400, cancelled: cancelled)
                 let checked = try Self.hashFile(staging.appendingPathComponent(name), cancelled: cancelled)
                 try require(result.sha256 == checked.sha256 && result.bytes == checked.bytes && result.bytes > 0 && result.bytes <= maximum, "Переданная копия не прошла независимую проверку SHA256")
-                if let bytes = Self.partitionBytes[name] { try require(result.bytes == bytes, "Размер раздела отличается от проверенного B31") }
+                if let bytes = Self.partitionBytes[name] { try require(result.bytes == bytes, "Размер раздела отличается от проверенной разметки") }
                 files.append(DeviceBackupFile(name: name, source: Self.partitionSources[name] ?? (kind == .userData ? "/data" : "configuration allowlist"), bytes: result.bytes, sha256: result.sha256))
                 record("Файл копии проверен", "completed", ["file": name, "bytes": String(result.bytes), "sha256": result.sha256, "durationSeconds": String(Int(Date().timeIntervalSince(started)))])
             }
-            let after = try engine.identity()
+            let after = try engine.diagnosticIdentity()
             try require(after.0 == identity.0 && after.1 == identity.1, "Во время копирования изменился модем или произошла перезагрузка")
             try Self.checkCancelled(cancelled)
             let manifest = DeviceBackupManifest(id: id, kind: kind, created: ISO8601DateFormatter().string(from: Date()), identity: identity.0, bootID: identity.1, scope: kind.scope, limitations: kind.limitations, exclusions: kind.exclusions, files: files)
@@ -303,7 +315,7 @@ final class DeviceBackups {
         try directory(url)
         let manifest = try JSONDecoder().decode(DeviceBackupManifest.self, from: smallFile(url.appendingPathComponent("manifest.json"), maximum: 65536))
         try require(manifest.schema == 1 && manifest.complete && UUID(uuidString: manifest.id) != nil && manifest.id == (expectedID ?? url.lastPathComponent), "Неверный формат или незавершённая резервная копия")
-        try require(manifest.identity.cid.count == 32 && manifest.identity.cid.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) } && manifest.identity.firmwareHash == ModemEngine.firmwareHash && UUID(uuidString: manifest.bootID) != nil, "Неверный идентификатор модема или прошивки в копии")
+        try require(manifest.identity.cid.count == 32 && manifest.identity.cid.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) } && supportsIdentity(manifest.identity, kind: manifest.kind) && UUID(uuidString: manifest.bootID) != nil, "Неверный идентификатор модема или прошивки в копии")
         try require(ISO8601DateFormatter().date(from: manifest.created) != nil, "Неверная дата резервной копии")
         try require(manifest.files.count == manifest.kind.fileNames.count && Set(manifest.files.map(\.name)) == Set(manifest.kind.fileNames), "Неверный состав резервной копии")
         for file in manifest.files {

@@ -9,11 +9,45 @@ using ZteImeiStudio.Windows.Research;
 var passed=0;
 void Check(bool condition,string name) { if(!condition)throw new Exception(name);Console.WriteLine("PASS "+name);passed++; }
 var bundled=Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,"../../../../Resources/FirmwareResearch/probes.json"));
-var productionSpec=ResearchSpec.Load(bundled);Check(productionSpec.Probes.Length==57 && productionSpec.Observations?.Length==76 && productionSpec.Features.Length==19 && productionSpec.Revision==11 && productionSpec.Sha256==ResearchSpec.ExpectedSpecificationSha256,"production probe contract matches pinned digest");
+var productionSpec=ResearchSpec.Load(bundled);Check(productionSpec.Probes.Length==57 && productionSpec.Observations?.Length==76 && productionSpec.Features.Length==19 && productionSpec.Revision==13 && productionSpec.Sha256==ResearchSpec.ExpectedSpecificationSha256,"production probe contract matches pinned digest");
 var genericAccess=productionSpec.Features.Single(f=>f.Id=="generic-access");
 Check(genericAccess.Profiles.Length==0 && genericAccess.Requirements.All(r=>r.Fact!="tool_ubus" && r.Probe!="ubus-inventory" && r.Probe!="firmware-hashes"),"generic access observation has no firmware or vendor API dependency");
 Check(genericAccess.Requirements.Any(r=>r.Probe=="identity" && r.Fact=="root" && r.Expected=="1") && genericAccess.Requirements.Any(r=>r.Fact=="architecture" && r.Expected=="aarch64"),"generic access retains root and ARM64 prerequisites");
-Check(productionSpec.Features.Single(f=>f.Id=="agent").Profiles.Length>0,"full agent updater remains independently firmware-scoped");
+Check(productionSpec.Features.Single(f=>f.Id=="agent").Profiles.Length==0,"agent updater relies on platform and component prerequisites");
+ResearchProbeResult[] ProfileResults(string id)
+{
+ var profile=productionSpec.Profiles.Single(p=>p.Id==id);
+ var facts=new Dictionary<string,Dictionary<string,string>> { ["identity"]=new() { ["architecture"]="aarch64" },["firmware-hashes"]=new() { ["firmware_sha256"]=profile.FirmwareSHA256??"not-assessed",["router_sha256"]=profile.RouterSHA256 } };
+ foreach(var item in profile.IdentityRequirements??[]) { if(!facts.ContainsKey(item.Probe))facts[item.Probe]=new();facts[item.Probe][item.Fact]=item.Expected; }
+ return facts.Select(pair=>new ResearchProbeResult(pair.Key,new("Тест","Test"),"identity","","success",0,"","",0,DateTimeOffset.UtcNow,false,pair.Value)).ToArray();
+}
+foreach(var id in new[]{"b31","b28","b04"})Check(FirmwareResearchEngine.MatchProfile(productionSpec,ProfileResults(id))==id,"measured identity selects "+id);
+foreach(var item in productionSpec.Profiles.Single(p=>p.Id=="b04").IdentityRequirements!)
+ foreach(var value in new[]{"not-assessed","wrong"})
+ {
+  var results=ProfileResults("b04").Select(p=>p.Id==item.Probe?p with {Facts=p.Facts.ToDictionary(x=>x.Key,x=>x.Key==item.Fact?value:x.Value)}:p).ToArray();
+  Check(FirmwareResearchEngine.MatchProfile(productionSpec,results) is null,"B04 missing or wrong identity evidence cannot match "+item.Fact);
+ }
+Check(FirmwareResearchEngine.MatchProfile(productionSpec,ProfileResults("b04").Where(p=>p.Id!="release").ToArray()) is null,"B04 binary without version observation is unidentified");
+try { (productionSpec with {Profiles=[new("invalid",null,"router","aarch64")]}).Validate();throw new Exception("empty identity accepted"); }
+catch(InvalidDataException) { Check(true,"hash-free profile requires explicit identity evidence"); }
+foreach(var id in new[]{"b31","b28","b04"})
+{
+ var facts=new Dictionary<string,Dictionary<string,string>>();
+ foreach(var feature in productionSpec.Features)
+  foreach(var item in feature.Requirements.Where(r=>r.Profiles is null || r.Profiles.Contains(id)))
+  {if(!facts.ContainsKey(item.Probe))facts[item.Probe]=new();facts[item.Probe][item.Fact]=item.Expected;}
+ var results=productionSpec.Probes.Select(p=>new ResearchProbeResult(p.Id,p.Title,p.Category,"","success",0,"","",0,DateTimeOffset.UtcNow,false,facts.GetValueOrDefault(p.Id)??[])).ToArray();
+ var supported=FirmwareResearchEngine.Evaluate(productionSpec,results,id,"complete");
+ Check(supported.Where(f=>new[]{"ttl","vpn","agent","launcher","screen-localization","diagnostic-apps","opkg"}.Contains(f.Id)).All(f=>f.State=="prerequisites_met"),id+" independent components assessed individually");
+ Check(supported.Where(f=>new[]{"imei","modem-backup","full-backup","physical-euicc"}.Contains(f.Id)).All(f=>f.State=="prerequisites_met"),id+" evaluates matching measured feature prerequisites without a B31-only gate");
+ var noEuiccProof=results.Select(p=>p.Id=="esim-components"?p with {Facts=p.Facts.ToDictionary(x=>x.Key,x=>x.Key=="physical_euicc_management"?"not-assessed":x.Value)}:p).ToArray();
+ Check(FirmwareResearchEngine.Evaluate(productionSpec,noEuiccProof,id,"complete").Single(f=>f.Id=="physical-euicc").State=="unknown",id+" firmware identity alone cannot confirm a physical eUICC");
+ var noRadioImage=results.Select(p=>p.Id=="firmware-hashes"?p with {Facts=p.Facts.ToDictionary(x=>x.Key,x=>x.Key=="firmware_image_present"?"0":x.Value)}:p).ToArray();
+ Check(FirmwareResearchEngine.Evaluate(productionSpec,noRadioImage,id,"complete").Where(f=>new[]{"modem-backup","full-backup","physical-euicc"}.Contains(f.Id)).All(f=>f.State=="blocked"),id+" missing measured image blocks raw backup and eUICC prerequisites");
+ facts["ipa-runtime"]["ipacm_sha256"]=id=="b28"?"95385816da7b2edb9a977cee328c091753463fcd4a70a67fa1676e8b335c11c0":"a8a90ee631a3e8de3266d1d4231e455c34fd0b0d1ad570e7c4d0dcd09eea1c54";
+ Check(FirmwareResearchEngine.Evaluate(productionSpec,results,id,"complete").Single(f=>f.Id=="ttl").State=="blocked",id+" rejects mismatched IPA daemon");
+}
 var tampered=Path.Combine(Path.GetTempPath(),"tampered-research-"+Guid.NewGuid().ToString("N")+".json");
 try {File.WriteAllText(tampered,File.ReadAllText(bundled)+" ");try {ResearchSpec.Load(tampered);throw new Exception("tampered spec accepted");}catch(InvalidDataException) {Check(true,"modified probe commands rejected before execution");}}finally {File.Delete(tampered);}
 var fingerprint=new string('a',64);var boot=new string('b',64);

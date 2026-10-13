@@ -2,10 +2,10 @@
 """Production helper control-flow tests in a fake host filesystem, never a modem.
 Real ARM64 opkg/usign execution is covered separately by the isolated VM evidence.
 """
-import hashlib, io, os, re, subprocess, sys, tarfile, tempfile, unittest, uuid
+import hashlib, io, os, re, shutil, subprocess, sys, tarfile, tempfile, unittest, uuid
 from pathlib import Path
 SHA=lambda b:hashlib.sha256(b).hexdigest()
-SOURCE=Path(__file__).resolve().parents[1]/'Resources/ExperimentalOpkg/manager.sh'
+SOURCE=Path(os.environ.get('OPKG_HELPER_SOURCE',Path(__file__).resolve().parents[1]/'Resources/ExperimentalOpkg/manager.sh'))
 DEFAULT_FEEDS=''.join('src/gz official_'+n+' https://downloads.openwrt.org/releases/23.05.4/'+n+'\n' for n in ['base','packages','core'])
 BASE_CONFIG='dest root /\nlists_dir ext /var/opkg-lists\narch all 1\narch aarch64_cortex-a53 10\noption check_signature 1\noption verify_program /usr/sbin/opkg-key\n'
 CID='a'*32; BOOT='11111111-2222-3333-4444-555555555555'
@@ -17,7 +17,7 @@ class HelperTests(unittest.TestCase):
   (self.fs/'etc/openwrt_release').write_text("DISTRIB_RELEASE='23.05.4'\nDISTRIB_ARCH='aarch64_cortex-a53'\n")
   (self.fs/'proc/mounts').write_text(f'/dev/fake {self.fs}/data ext4 rw 0 0\n');(self.fs/'firmware/image/modem.b16').write_bytes(b'fixture')
   src=re.sub(r'(?<![a-zA-Z0-9_/])/(?:data|proc|sys|tmp|etc/openwrt_release|etc/resolv.conf|firmware)',lambda m:str(self.fs)+m[0],SOURCE.read_text())
-  src=src.replace('export PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C','export LC_ALL=C').replace('604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263',SHA(b'fixture'))
+  src=src.replace('export PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C','export LC_ALL=C')
   # macOS cannot create chroot devices without privileges. Stub only these two
   # device predicates/metadata; no guest command executes through this fixture.
   src=src.replace('elif [ -c "$item" ];then','elif [ -c "$item" ];then')
@@ -87,7 +87,40 @@ print('fixture opkg '+str(command))
   (self.fs/'proc/mounts').write_text(f'/dev/fake {self.fs}/data ext4 ro,noexec 0 0\n')
   for name in ['chroot','flock','mknod']:(self.fs/'bin'/name).unlink()
   self.assertEqual(self.call('inspect')['installed'],'0');self.assertFalse(self.root.exists())
-  self.call('install-adapter',*self.runtime(),error='FIRMWARE');self.assertFalse(self.root.exists())
+  self.call('install-adapter',*self.runtime(),error='PLATFORM');self.assertFalse(self.root.exists())
+ def test_b31_b28_preflight_and_install_use_private_runtime_contract(self):
+  for firmware in [b'B31 fixture',b'B28 fixture']:
+   (self.fs/'firmware/image/modem.b16').write_bytes(firmware)
+   self.assertEqual(self.call('preflight',capture=True),'OPKG_PREFLIGHT_OK\n')
+   self.assertFalse(self.root.exists())
+  # Even an unavailable radio-firmware image does not affect a private Linux runtime.
+  (self.fs/'firmware/image/modem.b16').unlink()
+  self.assertEqual(self.install()['installed'],'1')
+  self.call('execute','install','demo');self.call('execute','files','demo')
+ def test_preflight_rejects_wrong_abi_platform_and_mount_without_changes(self):
+  for release,arch in [('24.10','aarch64_cortex-a53'),('23.05.4','arm_cortex-a7')]:
+   (self.fs/'etc/openwrt_release').write_text(f"DISTRIB_RELEASE='{release}'\nDISTRIB_ARCH='{arch}'\n")
+   self.call('preflight',error='PLATFORM');self.assertFalse(self.root.exists())
+  (self.fs/'etc/openwrt_release').write_text("DISTRIB_RELEASE='23.05.4'\nDISTRIB_ARCH='aarch64_cortex-a53'\n")
+  self.shell('uname','case "$1" in -s) echo OtherOS;;*) echo aarch64;;esac')
+  self.call('preflight',error='ROOT_ARCH');self.assertFalse(self.root.exists())
+  self.shell('uname','case "$1" in -s) echo Linux;;*) echo aarch64;;esac')
+  for flags in ['ro','rw,noexec']:
+   (self.fs/'proc/mounts').write_text(f'/dev/fake {self.fs}/data ext4 {flags} 0 0\n')
+   self.call('preflight',error='DATA_NOT_EXECUTABLE');self.assertFalse(self.root.exists())
+ def test_preflight_requires_actual_chroot_tool(self):
+  # Limit lookup to this fixture so the host's /usr/sbin/chroot cannot hide absence.
+  (self.fs/'bin/chroot').unlink()
+  for name in ['grep','cat','awk','cp','tar','gzip','find','sha256sum','sed','readlink','sort','cmp']:
+   p=self.fs/'bin'/name
+   if not p.exists():p.symlink_to(shutil.which(name))
+  self.env['PATH']=str(self.fs/'bin')
+  self.call('preflight',error='CAPABILITY_chroot');self.assertFalse(self.root.exists())
+ def test_real_runtime_self_test_failure_never_activates_candidate(self):
+  self.env['FAKE_MODE']='fail'
+  self.call('install-adapter',*self.runtime(),error='RUNTIME_SELF_TEST')
+  self.assertEqual(self.state(),b'active=none\nprevious=unset\n')
+  self.assertEqual(list((self.root/'generations').iterdir()),[])
  def test_read_binding_platform_and_owned_layout_still_required(self):
   self.shell('id','echo 1000');self.call('inspect',error='ROOT_ARCH');self.shell('id','echo 0')
   self.shell('uname','case "$1" in -s) echo OtherOS;;*) echo aarch64;;esac');self.call('inspect',error='ROOT_ARCH')

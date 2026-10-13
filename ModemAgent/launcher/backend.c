@@ -61,13 +61,13 @@ static char *call_args(char *const args[],const char *json,size_t limit,unsigned
 static int uuid(const char *s){if(!s||strlen(s)!=36)return 0;for(int i=0;i<36;i++){if(i==8||i==13||i==18||i==23){if(s[i]!='-')return 0;}else if(!((s[i]>='0'&&s[i]<='9')||(s[i]>='a'&&s[i]<='f')))return 0;}return 1;}
 /* Fixed metadata only. Never copy protocol JSON, profile ids, names or SSIDs. */
 static void vpn_diagnostic(int action,int ok,const char *code,const struct vpn_process_result *r){
- char text[512];snprintf(text,sizeof text,"operation=%s ok=%d code=%s status_valid=%d exit=%d proof_valid=%d timed_out=%d cleanup_complete=%d read_errno=%d write_errno=%d wait_errno=%d\n",action==2?"change":"status",ok,code?code:"none",r->status_valid,r->status_valid&&WIFEXITED(r->exit_status)?WEXITSTATUS(r->exit_status):-1,r->proof_valid,r->timed_out,r->cleanup_complete,r->read_errno,r->write_errno,r->wait_errno);
+ char text[512];snprintf(text,sizeof text,"operation=%s ok=%d code=%s status_valid=%d exit=%d proof_valid=%d timed_out=%d cleanup_complete=%d read_errno=%d write_errno=%d wait_errno=%d\n",action==3?"subscriptions":action==2?"change":"status",ok,code?code:"none",r->status_valid,r->status_valid&&WIFEXITED(r->exit_status)?WEXITSTATUS(r->exit_status):-1,r->proof_valid,r->timed_out,r->cleanup_complete,r->read_errno,r->write_errno,r->wait_errno);
  if(!ok)syslog(LOG_USER|LOG_WARNING,"zte-launcher VPN: %s",text);
  int dir=open("/tmp/zte-launcher",O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);struct stat st;
  if(dir<0)return;if(fstat(dir,&st)||st.st_uid||(st.st_mode&0777)!=0700){close(dir);return;}
  const char *names[]={"vpn-status","vpn-error","vpn-last-change"};
  for(int i=0;i<3;i++){
-  if((i==1&&ok)||(i==2&&action!=2))continue;
+  if((i==1&&ok)||(i==2&&action<2))continue;
   int fd=openat(dir,names[i],O_WRONLY|O_CREAT|O_NONBLOCK|O_NOFOLLOW|O_CLOEXEC,0600);
   if(fd<0)continue;
   if(!fstat(fd,&st)&&S_ISREG(st.st_mode)&&st.st_uid==0&&(st.st_mode&07777)==0600&&st.st_nlink==1){if(!ftruncate(fd,0)){size_t used=0,n=strlen(text);while(used<n){ssize_t k=write(fd,text+used,n-used);if(k<0&&errno==EINTR)continue;if(k<=0)break;used+=(size_t)k;}}}close(fd);
@@ -141,20 +141,37 @@ static void *telemetry_worker(void *unused){
  }
  return NULL;
 }
-static void *worker(void *unused){(void)unused;
- /* Never let an early helper exit deliver SIGPIPE to the stock launcher. */
- sigset_t blocked;sigemptyset(&blocked);sigaddset(&blocked,SIGPIPE);pthread_sigmask(SIG_BLOCK,&blocked,NULL);
- for(;;){pthread_mutex_lock(&mutex);while(!pending)pthread_cond_wait(&cond,&mutex);int action=pending;char cmd[160];memcpy(cmd,request,sizeof cmd);pending=0;working=1;struct snapshot next=state;pthread_mutex_unlock(&mutex);
- const char *input=action==2?cmd:"{\"action\":\"status\"}";char *args[]={"/data/zte-vpn/vpnctl","request",NULL};struct vpn_process_result process={0};
+/* The existing controller action owns each subscription transaction separately.
+ * A slow or failed subscription does not block attempts for the remaining IDs. */
+static int vpn_request(void *context,struct snapshot *next,const char *input,const char **code){
+ int action=*(const int*)context;char *args[]={"/data/zte-vpn/vpnctl","request",NULL};struct vpn_process_result process={0};
  int transport=vpn_process_run(args,input,strlen(input),220000,&process);
  int exited=transport&&process.status_valid&&WIFEXITED(process.exit_status),success=exited&&WEXITSTATUS(process.exit_status)==0;
  int text_valid=process.output&&strlen(process.output)==process.output_length;
- int ok=success&&text_valid&&vpn_parse_status(&next,process.output);
- const char *code=NULL;if(!ok){code=exited&&WEXITSTATUS(process.exit_status)==1&&text_valid?vpn_error_code(process.output):NULL;if(!code)code=success?"VPN_INVALID_STATUS":"VPN_RESULT_UNKNOWN";}
- vpn_diagnostic(action,ok,code,&process);vpn_process_free(&process);
- if(action==2){snprintf(next.operation_error,sizeof next.operation_error,"%s",ok?"":code);next.error_code[0]=0;if(!ok)next.valid=0;}
- else {snprintf(next.error_code,sizeof next.error_code,"%s",ok?"":code);if(!ok)next.valid=0;}
- pthread_mutex_lock(&mutex);next.error=next.error_code[0]||next.operation_error[0];next.busy=0;next.generation=state.generation+1;next.telemetry=state.telemetry;next.layout=state.layout;if(action==2||!state.busy)state=next;working=0;pthread_mutex_unlock(&mutex);
+ int ok=success&&text_valid&&vpn_parse_status(next,process.output);
+ *code=NULL;if(!ok){*code=exited&&WEXITSTATUS(process.exit_status)==1&&text_valid?vpn_error_code(process.output):NULL;if(!*code)*code=success?"VPN_INVALID_STATUS":"VPN_RESULT_UNKNOWN";}
+ vpn_diagnostic(action,ok,*code,&process);vpn_process_free(&process);return ok;
+}
+static void subscription_progress(void *unused,const struct snapshot *next){
+ (void)unused;pthread_mutex_lock(&mutex);
+ struct modem_telemetry metrics=state.telemetry;struct info_layout layout=state.layout;unsigned generation=state.generation;
+ state=*next;state.telemetry=metrics;state.layout=layout;state.generation=generation+1;
+ pthread_mutex_unlock(&mutex);
+}
+static void *worker(void *unused){(void)unused;
+ /* Never let an early helper exit deliver SIGPIPE to the stock launcher. */
+ sigset_t blocked;sigemptyset(&blocked);sigaddset(&blocked,SIGPIPE);pthread_sigmask(SIG_BLOCK,&blocked,NULL);
+ /* One worker owns this buffer; keep the large profile list off its stack. */
+ static struct snapshot scratch;struct snapshot *next=&scratch;
+ for(;;){pthread_mutex_lock(&mutex);while(!pending)pthread_cond_wait(&cond,&mutex);int action=pending;char cmd[160];memcpy(cmd,request,sizeof cmd);pending=0;working=1;*next=state;pthread_mutex_unlock(&mutex);
+ if(action==3){
+  if(!vpn_update_subscriptions(next,vpn_request,subscription_progress,&action)){memset(&next->subscription_update,0,sizeof next->subscription_update);snprintf(next->operation_error,sizeof next->operation_error,"VPN_OPERATION_FAILED");}
+ }else{
+  const char *input=action==2?cmd:"{\"action\":\"status\"}";const char *code=NULL;int ok=vpn_request(&action,next,input,&code);
+  if(action==2){snprintf(next->operation_error,sizeof next->operation_error,"%s",ok?"":code);next->error_code[0]=0;if(!ok)next->valid=0;}
+  else {snprintf(next->error_code,sizeof next->error_code,"%s",ok?"":code);if(!ok)next->valid=0;}
+ }
+ pthread_mutex_lock(&mutex);next->error=next->error_code[0]||next->operation_error[0];next->busy=0;next->generation=state.generation+1;next->telemetry=state.telemetry;next->layout=state.layout;if(action>=2||!state.busy)state=*next;working=0;pthread_mutex_unlock(&mutex);
  }
  return NULL;
 }
@@ -163,8 +180,18 @@ void backend_refresh(void){pthread_mutex_lock(&mutex);if(!telemetry_pending&&!te
 void backend_snapshot(struct snapshot *out){pthread_mutex_lock(&mutex);*out=state;pthread_mutex_unlock(&mutex);telemetry_expire(&out->telemetry,monotonic_ms());}
 int backend_action(int enable,const char *id){
  if(enable<0&&!uuid(id))return 0;
- pthread_mutex_lock(&mutex);if(!started||!state.valid||state.busy||pending==2){pthread_mutex_unlock(&mutex);return 0;}
+ pthread_mutex_lock(&mutex);if(!started||!state.valid||state.busy||pending>=2){pthread_mutex_unlock(&mutex);return 0;}
  if(enable<0)snprintf(request,sizeof request,"{\"action\":\"activate\",\"id\":\"%s\"}",id);
  else snprintf(request,sizeof request,"{\"action\":\"set_enabled\",\"enabled\":%s}",enable?"true":"false");
+ memset(&state.subscription_update,0,sizeof state.subscription_update);
  state.busy=1;state.error=0;state.error_code[0]=0;state.operation_error[0]=0;state.generation++;pending=2;pthread_cond_signal(&cond);pthread_mutex_unlock(&mutex);return 1;
+}
+
+int backend_update_subscriptions(void){
+ pthread_mutex_lock(&mutex);
+ if(!started||!vpn_can_update_subscriptions(&state)||pending>=2){pthread_mutex_unlock(&mutex);return 0;}
+ memset(&state.subscription_update,0,sizeof state.subscription_update);
+ state.subscription_update.running=1;state.subscription_update.total=state.subscription_count;
+ state.busy=1;state.error=0;state.error_code[0]=0;state.operation_error[0]=0;state.generation++;
+ pending=3;pthread_cond_signal(&cond);pthread_mutex_unlock(&mutex);return 1;
 }

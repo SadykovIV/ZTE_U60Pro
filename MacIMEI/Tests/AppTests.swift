@@ -88,6 +88,11 @@ private final class MockRemote: RemoteTransport {
     var writeCommands: [String] = []
     var rebootCommands: [String] = []
     var snapshotCalls = 0
+    var imeiReadCalls = 0
+    var imeiReadOutput: String?
+    var inactiveSecondary = false
+    var snapshotOutput: String?
+    var activateOnBoot = false
     var configReadCalls = 0
 
     init(config: Data) { self.originalConfig = config; self.config = config }
@@ -108,16 +113,24 @@ private final class MockRemote: RemoteTransport {
     private func executeHelper(_ path: String, mode: String, planPath: String) throws -> CommandResult {
         let expectedName: String
         switch mode {
-        case "--snapshot", "--apply-plan": expectedName = "zte_nv"
+        case "--snapshot", "--snapshot-available", "--read-imei", "--apply-plan": expectedName = "zte_nv"
         case "--read-config": expectedName = "zte_config_read"
         case "--enable-flag", "--restore-original-config", "--check-original": expectedName = "zte_config"
         default: throw TestFailure.assertion("Unknown helper mode")
         }
         try check(uploads[path] == Data(("MOCK RESOURCE " + expectedName).utf8), "Wrong or missing helper binary for mode")
-        if mode == "--snapshot" {
+        if mode == "--read-imei" {
+            try check(planPath.isEmpty, "IMEI read unexpectedly has a plan")
+            imeiReadCalls += 1
+            let first = "APP_IMEI index=0 value=\(try IMEI.decode(records[0]))\n"
+            let second = inactiveSecondary ? "APP_IMEI index=1 state=not-active nv_status=5\n" : "APP_IMEI index=1 value=\(try IMEI.decode(records[1]))\n"
+            return output(imeiReadOutput ?? (first + second))
+        }
+        if mode == "--snapshot" || mode == "--snapshot-available" {
             try check(planPath.isEmpty, "Snapshot unexpectedly has a plan")
             snapshotCalls += 1
-            return output("APP_NV index=0 data=\(records[0].hex)\nAPP_NV index=1 data=\(records[1].hex)\n")
+            let current = inactiveSecondary ? Array(records.prefix(1)) : records
+            return output(snapshotOutput ?? (current.enumerated().map { "APP_NV index=\($0.offset) data=\($0.element.hex)\n" }.joined() + "APP_NV_TOPOLOGY count=\(current.count) secondary=\(current.count == 1 ? "not-active-status5" : "active")\n"))
         }
         if mode == "--read-config" {
             try check(planPath.isEmpty, "Config read unexpectedly has a plan")
@@ -129,15 +142,16 @@ private final class MockRemote: RemoteTransport {
         if mode == "--apply-plan" {
             try check(allowWrites, "Unexpected persistent write attempt")
             try check(runtimeWriteGate, "NV write attempted before boot applied config flag")
-            try check(plan.count == 512, "NV plan length mismatch")
-            let slices = (0..<4).map { Data(plan[($0 * 128)..<(($0 + 1) * 128)]) }
-            try check(Array(slices.prefix(2)) == records, "NV plan baseline is not the current full records")
-            for slot in 0...1 {
-                try check(slices[slot].dropFirst(9) == slices[slot + 2].dropFirst(9), "Plan changes NV tail")
-                _ = try IMEI.decode(slices[slot + 2])
+            let count = inactiveSecondary ? 1 : 2
+            try check(plan.count == count * 256, "NV plan length mismatch")
+            let slices = (0..<count*2).map { Data(plan[($0 * 128)..<(($0 + 1) * 128)]) }
+            try check(Array(slices.prefix(count)) == Array(records.prefix(count)), "NV plan baseline is not the current full records")
+            for slot in 0..<count {
+                try check(slices[slot].dropFirst(9) == slices[slot + count].dropFirst(9), "Plan changes NV tail")
+                _ = try IMEI.decode(slices[slot + count])
             }
-            try check(try IMEI.decode(slices[2]) != IMEI.decode(slices[3]), "Plan IMEIs are identical")
-            records = Array(slices.suffix(2)); nvApplyCalls += 1
+            try check(try Set(slices.suffix(count).map(IMEI.decode)).count == count, "Plan IMEIs are identical")
+            for i in 0..<count { records[i] = slices[i + count] }; nvApplyCalls += 1
             if failAfterNVWriteOnce {
                 failAfterNVWriteOnce = false
                 return CommandResult(status: 71, stdout: Data("MOCK: pair written; acknowledgement lost\n".utf8), stderr: Data())
@@ -168,6 +182,7 @@ private final class MockRemote: RemoteTransport {
         commands.append(command)
         if command.contains("device_reboot") {
             rebootCommands.append(command)
+            if activateOnBoot { inactiveSecondary = false }
             try check(allowWrites, "Unexpected reboot attempt")
             runtimeWriteGate = try ConfigFile.validate(config) == 1
             if runtimeWriteGate && autoRestoreConfigOnBoot {
@@ -182,7 +197,7 @@ private final class MockRemote: RemoteTransport {
             writeCommands.append(command)
             try check(allowWrites, "Unexpected persistent write attempt")
         }
-        if command.hasPrefix("sha256sum /firmware/image/modem.b16 ") {
+        if command == AccessIdentity.command || command.hasPrefix("sha256sum /firmware/image/modem.b16 ") {
             return output("\(firmwareHash)  /firmware/image/modem.b16\n\(routerHash)  /usr/bin/diag-router\n\(cid)\n\(boot)\n")
         }
         if command.contains("/tmp/zte-imei-app.lock") { return output("") }
@@ -247,15 +262,15 @@ private final class EngineFixture {
         let id = UUID().uuidString.lowercased()
         let url = engine.backupsURL.appendingPathComponent(id)
         try secureDirectory(url)
-        let files = ["nv0.bin": records[0], "nv1.bin": records[1], "config.bin": config]
+        var files = Dictionary(uniqueKeysWithValues: records.enumerated().map { ("nv\($0.offset).bin", $0.element) }); files["config.bin"] = config
         for (name, bytes) in files { try savePrivate(bytes, url.appendingPathComponent(name)) }
-        let manifest = BackupManifest(id: id, created: "2026-01-01T00:00:00Z", identity: Identity(cid: cid, firmwareHash: ModemEngine.firmwareHash), imeis: try records.map(IMEI.decode), hashes: files.mapValues(digest))
+        let manifest = BackupManifest(schema: records.count == 1 ? 2 : 1, id: id, created: "2026-01-01T00:00:00Z", identity: Identity(cid: cid, firmwareHash: ModemEngine.firmwareHash), imeis: try records.map(IMEI.decode), hashes: files.mapValues(digest))
         try saveJSON(manifest, url.appendingPathComponent("manifest.json"))
         return url
     }
 
     func transaction(backup: URL, desired: [Data], cid: String = testCID) throws {
-        let transaction = Transaction(id: UUID().uuidString.lowercased(), backupID: backup.lastPathComponent,
+        let transaction = Transaction(schema: desired.count == 1 ? 2 : 1, id: UUID().uuidString.lowercased(), backupID: backup.lastPathComponent,
             identity: Identity(cid: cid, firmwareHash: ModemEngine.firmwareHash), targetHex: desired.map(\.hex),
             connection: connection, phase: "prepared")
         try saveJSON(transaction, engine.pendingURL)
@@ -286,12 +301,52 @@ struct AppTests {
             let fixture = try EngineFixture(config: config, skipFirmwareCheck: true)
             fixture.remote.firmwareHash = String(repeating: "a", count: 64)
             fixture.remote.routerHash = String(repeating: "b", count: 64)
-            let state = try fixture.engine.locked { try fixture.engine.inspect() }
-            try check(state.identity.firmwareHash == fixture.remote.firmwareHash, "Real firmware identity lost")
+            let state = try fixture.engine.identity()
+            try check(state.0.firmwareHash == fixture.remote.firmwareHash, "Real firmware identity lost")
             try check(try ActivityJournal(root: fixture.engine.root).recent().contains { $0.category == "firmware" && $0.result == "warning" }, "Bypass missing from audit")
             let strict = try ModemEngine(root: fixture.engine.root, resources: fixture.engine.resources, connection: Connection(host:"192.0.2.1",port:"2222",keyPath:"/a",knownHostsPath:"/b"), transport:fixture.remote)
             try rejects("Прошивка отличается") { _ = try strict.identity() }
             try fixture.remote.assertNoPersistentWrites()
+        }
+        tests.run("B04: missing modem image permits NV reading without permitting writes") {
+            let fixture = try EngineFixture(config: config, skipFirmwareCheck: true)
+            fixture.remote.firmwareHash = "absent"
+            let state = try fixture.engine.locked { try fixture.engine.inspect() }
+            try check(state.identity.firmwareHash == "absent" && state.imeis.count == 2, "Missing image blocked independent NV read")
+            let reads = fixture.remote.snapshotCalls
+            try rejects("измеренный хэш") { _ = try fixture.engine.locked { try fixture.engine.begin(targets: ["353490068701230", "353490068701248"]) } }
+            try check(fixture.remote.snapshotCalls == reads, "Unsupported write reached helper")
+            try fixture.remote.assertNoPersistentWrites()
+        }
+        tests.run("B04 inactive NV1: read and snapshot primary; wrong target count rejected") {
+            let fixture = try EngineFixture(config: config, skipFirmwareCheck: true)
+            fixture.remote.firmwareHash = "c57e063d390983229dfc53aa87380b3d4655ee8daa1c748e1a032ac90cd0df81"
+            fixture.remote.inactiveSecondary = true
+            let state = try fixture.engine.locked { try fixture.engine.readIMEI() }
+            try check(state.primary == IMEI.decode(fixture.remote.records[0]) && state.secondary == nil && state.detail.contains("статус 5"), "Inactive NV1 fabricated a second IMEI")
+            try check(fixture.remote.imeiReadCalls == 1 && !fixture.remote.commands.contains("ubus call zwrt_zte_mdm.api get_imei2"), "Read retried or consulted unsupported second IMEI")
+            let inspected = try fixture.engine.locked { try fixture.engine.inspect() }; try check(inspected.records.count == 1, "Single record inspect failed")
+            try rejects("активной записи") { _ = try fixture.engine.locked { try fixture.engine.begin(targets: ["353490068701230", "353490068701248"]) } }
+            try fixture.remote.assertNoPersistentWrites()
+        }
+        tests.run("Display IMEI read preserves pair behavior and rejects malformed output") {
+            let fixture = try EngineFixture(config: config)
+            let state = try fixture.engine.locked { try fixture.engine.readIMEI() }
+            try check(state.primary == IMEI.decode(fixture.remote.records[0]) && state.secondary == IMEI.decode(fixture.remote.records[1]), "Pair read changed values")
+            let first = "APP_IMEI index=0 value=353490068701222\n"
+            for output in [first, first + first, first + "APP_IMEI index=1 state=not-active nv_status=4\n", first + "APP_IMEI index=1 value=invalid\n", first + "APP_IMEI index=1 value=353490068701230 extra=1\n"] {
+                fixture.remote.imeiReadOutput = output
+                try rejects { _ = try fixture.engine.locked { try fixture.engine.readIMEI() } }
+            }
+            fixture.remote.imeiReadOutput = nil; fixture.remote.apiRecords = fixture.remote.records.reversed()
+            try rejects("API и NV") { _ = try fixture.engine.locked { try fixture.engine.readIMEI() } }
+            try fixture.remote.assertNoPersistentWrites()
+        }
+        tests.run("NV read checks its router ABI even with firmware override") {
+            let fixture = try EngineFixture(config: config, skipFirmwareCheck: true)
+            fixture.remote.routerHash = String(repeating: "b", count: 64)
+            try rejects("diag-router") { _ = try fixture.engine.locked { try fixture.engine.inspect() } }
+            try check(fixture.remote.snapshotCalls == 0, "Unknown ABI reached helper")
         }
         tests.run("Firmware override: malformed hashes CID and boot still reject") {
             for choice in 0..<3 {
@@ -406,10 +461,10 @@ struct AppTests {
             try check(FileManager.default.fileExists(atPath: pending.path), "Pending ADB journal was discarded")
             try check(!FileManager.default.fileExists(atPath: fixture.engine.tokenURL.path), "Pending ADB acquired a device lock")
         }
-        tests.run("Engine: unknown firmware refuses before helpers or writes") {
+        tests.run("Engine: unknown router refuses before helpers or writes") {
             let fixture = try EngineFixture(config: config)
-            fixture.remote.firmwareHash = String(repeating: "0", count: 64)
-            try rejects("Прошивка отличается") { _ = try fixture.engine.locked { try fixture.engine.begin(targets: ["353490068701230", "353490068701248"]) } }
+            fixture.remote.routerHash = String(repeating: "0", count: 64)
+            try rejects("совместимый diag-router") { _ = try fixture.engine.locked { try fixture.engine.begin(targets: ["353490068701230", "353490068701248"]) } }
             try check(fixture.remote.snapshotCalls == 0, "A helper ran on unknown firmware")
             try fixture.remote.assertNoPersistentWrites()
         }
@@ -421,7 +476,7 @@ struct AppTests {
         }
         tests.run("Engine: duplicate input IMEIs refuse before writes") {
             let fixture = try EngineFixture(config: config)
-            try rejects("два разных IMEI") { _ = try fixture.engine.locked { try fixture.engine.begin(targets: ["353490068701222", "353490068701222"]) } }
+            try rejects("активной записи") { _ = try fixture.engine.locked { try fixture.engine.begin(targets: ["353490068701222", "353490068701222"]) } }
             try fixture.remote.assertNoPersistentWrites()
         }
         tests.run("Engine: malformed NV snapshot refuses before writes") {
@@ -561,6 +616,54 @@ struct AppTests {
             try check(fixture.remote.writeCommands.count == 1, "Unexpected additional write helper invocation")
             try check(fixture.remote.records == sampleRecords(), "NV changed on wrong device")
             try check(FileManager.default.fileExists(atPath: fixture.engine.pendingURL.path), "CID mismatch lost recovery journal")
+        }
+
+
+        tests.run("Single IMEI: full backup/write/restore preserves inactive NV1") {
+            let fixture = try EngineFixture(config: config)
+            fixture.remote.inactiveSecondary = true; fixture.remote.allowWrites = true
+            let secondary = fixture.remote.records[1]
+            let final = try fixture.engine.locked { try fixture.engine.begin(targets: ["353490068701230"]) }
+            try check(final.imeis == ["353490068701230"] && fixture.remote.records[1] == secondary, "Single write modified NV1")
+            let completed = try readJSON(Transaction.self, fixture.engine.logDirectory.appendingPathComponent("completed.json"))
+            let backup = fixture.engine.backupsURL.appendingPathComponent(completed.backupID)
+            let (manifest, original, _) = try fixture.engine.loadBackup(backup)
+            try check(manifest.schema == 2 && original.count == 1 && manifest.hashes.count == 2 && !FileManager.default.fileExists(atPath: backup.appendingPathComponent("nv1.bin").path), "Single backup includes NV1")
+            let restored = try fixture.engine.locked { try fixture.engine.begin(targets: nil, restore: backup) }
+            try check(restored.records == original && fixture.remote.records[1] == secondary, "Single restore fabricated NV1")
+        }
+        tests.run("Single IMEI: lost acknowledgement resumes without another NV write") {
+            let fixture = try EngineFixture(config: config)
+            fixture.remote.inactiveSecondary = true; fixture.remote.allowWrites = true; fixture.remote.failAfterNVWriteOnce = true
+            try rejects("Инструмент zte_nv остановился") { _ = try fixture.engine.locked { try fixture.engine.begin(targets: ["353490068701230"]) } }
+            let final = try fixture.engine.locked { try fixture.engine.resume() }
+            try check(final.imeis.count == 1 && fixture.remote.nvApplyCalls == 1, "Single resume repeated NV write")
+        }
+        tests.run("Single IMEI: topology changes after reboot stops before NV write") {
+            let fixture = try EngineFixture(config: config)
+            fixture.remote.inactiveSecondary = true; fixture.remote.allowWrites = true; fixture.remote.activateOnBoot = true
+            try rejects("Число активных") { _ = try fixture.engine.locked { try fixture.engine.begin(targets: ["353490068701230"]) } }
+            try check(fixture.remote.nvApplyCalls == 0, "Topology drift wrote NV")
+        }
+        tests.run("Single IMEI: pair backup and ambiguous topology are rejected") {
+            let fixture = try EngineFixture(config: config), backup = try fixture.backup()
+            fixture.remote.inactiveSecondary = true
+            try rejects("Число активных") { _ = try fixture.engine.locked { try fixture.engine.begin(targets: nil, restore: backup) } }
+            for marker in ["", "APP_NV_TOPOLOGY count=1 secondary=active\n", "APP_NV_TOPOLOGY count=1 secondary=not-active-status5\nAPP_NV_TOPOLOGY count=1 secondary=not-active-status5\n", "APP_NV_TOPOLOGY count=2 secondary=active\n"] {
+                fixture.remote.snapshotOutput = "APP_NV index=0 data=\(fixture.remote.records[0].hex)\n" + marker
+                try rejects("число активных") { _ = try fixture.engine.locked { try fixture.engine.inspect() } }
+            }
+            try fixture.remote.assertNoPersistentWrites()
+        }
+        tests.run("B28/B04: actual single and pair contracts grant writes without version override") {
+            for firmware in ["5a4489882538b5ab1d3e0049371f1b620d28d262a429923299b4f2626d40d478", "c57e063d390983229dfc53aa87380b3d4655ee8daa1c748e1a032ac90cd0df81"] {
+                for count in 1...2 {
+                    let fixture = try EngineFixture(config: config)
+                    fixture.remote.firmwareHash = firmware; fixture.remote.inactiveSecondary = count == 1; fixture.remote.allowWrites = true
+                    let result = try fixture.engine.locked { try fixture.engine.begin(targets: Array(["353490068701230", "353490068701248"].prefix(count))) }
+                    try check(result.imeis.count == count && result.identity.firmwareHash == firmware, "Actual contract refused or real identity replaced")
+                }
+            }
         }
 
         print("RESULT passed=\(tests.passed) failed=\(tests.failed) network=mock-only")

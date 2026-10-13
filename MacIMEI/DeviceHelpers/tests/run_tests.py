@@ -15,7 +15,7 @@ BUILD.mkdir(exist_ok=True)
 compiler = shutil.which("clang")
 if not compiler:
     raise SystemExit("clang is required for host-only sanitizer tests")
-names = ("nv_plan_tests", "nv_protocol_tests", "nv_restore_tests", "config_plan_tests",
+names = ("nv_topology_tests", "nv_read_tests", "nv_plan_tests", "nv_protocol_tests", "nv_restore_tests", "config_plan_tests",
          "config_transaction_tests", "config_read_tests")
 for name in names:
     command = [compiler, "-std=c11", "-D_DARWIN_C_SOURCE", "-O1", "-g", "-Wall", "-Wextra", "-Werror",

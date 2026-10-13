@@ -37,8 +37,16 @@ static class AppReadTests
    Check(!(await s.GetPrivateOpkgStatusAsync()).Installed&&f.Uploads==0&&f.Strict==0,fw+" absent opkg status is read-only stdin with unrelated NV pending");
    f.OpkgInstalled=true;var feeds=await s.ReadPrivateOpkgFeedsAsync();Check(feeds.Release=="23.05.4"&&f.Uploads==0&&f.OpkgCalls==2,fw+" owned opkg feed read requires no mutation stage");
   }
-  foreach(var op in new[]{"install","list","save"}){
-   var f=new Fake();var s=Service(f,"strict-"+op);try{if(op=="install")await s.InstallPrivateOpkgAsync();else if(op=="list")await s.RunPrivateOpkgCommandAsync("list");else await s.SavePrivateOpkgFeedsAsync("",Fake.Generation);throw new Exception("mutations opened");}catch(DeviceFeatureException){Check(f.OpkgCalls==0&&f.Uploads==0,"opkg "+op+" retains old mutation policy");}
+  foreach(var fw in new[]{"b31","b28"}){
+   var f=new Fake{Firmware=fw};var s=Service(f,"opkg-write-"+fw);
+   Check((await s.InstallPrivateOpkgAsync()).Status.Installed,fw+" opkg install accepted with actual runtime contract and default firmware setting");
+   await s.RunPrivateOpkgCommandAsync("list");await s.SavePrivateOpkgFeedsAsync("",Fake.Generation);
+   Check(!(await s.RemovePrivateOpkgAsync()).Status.Installed,fw+" opkg remove");
+   Check((await s.RollbackPrivateOpkgAsync()).Status.Installed,fw+" opkg rollback");
+   Check(f.OpkgPreflights==5&&f.OpkgMutations==5&&f.Strict==0&&f.Measured>=10,fw+" every mutation checks runtime and measured identity without B31 override");
+  }
+  foreach(var fault in new[]{"platform","opkg-platform","opkg-preflight-receipt"}){
+   var f=new Fake{Fault=fault};try{await Service(f,"opkg-write-bad-"+fault).InstallPrivateOpkgAsync();throw new Exception("accepted "+fault);}catch(Exception e)when(e is DeviceFeatureException or InvalidDataException){Check(f.Uploads==0&&f.OpkgMutations==0,"opkg mutation refuses "+fault+" before payload upload");}
   }
   foreach(var fault in new[]{"platform","drift","opkg"}){
    var f=new Fake{Fault=fault};try{await Service(f,"opkg-bad-"+fault).GetPrivateOpkgStatusAsync();throw new Exception("accepted "+fault);}catch(Exception e)when(e is DeviceFeatureException or InvalidDataException){Check(f.Uploads==0,"opkg status refuses "+fault+" without staging");}
@@ -48,7 +56,7 @@ static class AppReadTests
  sealed class Fake:IRemoteShell
  {
   public const string Generation="g-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
-  public string Firmware="b28",Fault="";public bool Installed,PasswordStdin,OpkgInstalled,RemovalPrepared;public int Measured,Strict,Uploads,Starts,Commits,OpkgCalls;public List<string> Commands=[];
+  public string Firmware="b28",Fault="";public bool Installed,PasswordStdin,OpkgInstalled,RemovalPrepared;public int Measured,Strict,Uploads,Starts,Commits,OpkgCalls,OpkgPreflights,OpkgMutations;public List<string> Commands=[];
   public readonly byte[] Archive=Encoding.UTF8.GetBytes("synthetic private archive");string archivePath="";
   const string Cid="11111111111111111111111111111111",Boot="11111111-1111-1111-1111-111111111111";
   static RemoteResult Result(string s,int code=0)=>new(code,code==0?Encoding.UTF8.GetBytes(s):[],code==0?[]:Encoding.UTF8.GetBytes(s));
@@ -73,7 +81,9 @@ static class AppReadTests
    else if(command.Contains("sh -s -- 'prepare'")){RemovalPrepared=true;var id=Regex.Match(command,@"sh -s -- 'prepare' '([^']+)'").Groups[1].Value;archivePath="/data/zte-imei-apps/.removals/"+id+"/archive.tar.gz";r=Result("SSCLASH_ARCHIVE sha256="+Hash(Archive)+" bytes="+Archive.Length);}
    else if(command.Contains("sh -s -- 'commit'")){Commits++;Installed=false;r=Result("SSCLASH_REMOVED archive="+archivePath);}
    else if(command.StartsWith("sh -s -- 'inspect'")||command.StartsWith("sh -s -- 'read-feeds'")){OpkgCalls++;if(input==null||!Encoding.UTF8.GetString(input).Contains("ROOT=$BASE/opkg-private"))throw new Exception("unpinned opkg body");r=Fault=="opkg"?Result("OPKG_ERROR OWNER",1):Result((command.Contains("'read-feeds'")?"__ZTE_OPKG_FEEDS_V1__\nrelease=23.05.4\narchitecture=aarch64_cortex-a53\ngeneration="+Generation+"\nkey=b5043e70f9a75cde\nsource=src/gz base https://example.org/base\n__END_FEEDS__\n":"")+Opkg());}
+   else if(command.StartsWith("sh -s -- 'preflight'")){OpkgPreflights++;if(input==null||Hash(input)!=Hash(File.ReadAllBytes("Windows_x64/Resources/ExperimentalOpkg/manager.sh")))throw new Exception("unpinned preflight");r=Fault=="opkg-platform"?Result("OPKG_ERROR PLATFORM",1):Result(Fault=="opkg-preflight-receipt"?"UNKNOWN":"OPKG_PREFLIGHT_OK\n");}
    else if(input!=null&&command.Contains("cat > '")){Uploads++;var p=Regex.Match(command,@"cat > '([^']+)'").Groups[1].Value;r=Result(Hash(input)+"  "+p);}
+   else if(command.Contains("; sh '/tmp/zte-opkg-")&&command.Contains("/manager.sh'")){OpkgMutations++;var action=Regex.Match(command,@"/manager\.sh' '([^']+)'").Groups[1].Value;if(action is "install-adapter" or "rollback")OpkgInstalled=true;else if(action=="remove-adapter")OpkgInstalled=false;r=Result(Opkg());}
    else if(command.Contains("; sh '")&&command.Contains("/manager.sh'"))throw new DeviceFeatureException("diagnostic tools unavailable in fixture");
    else if(command.Contains("/etc/init.d/zte_imei_ssclash start")){Starts++;Installed=true;r=Result("");}
    else if(command.Contains("command -v procd"))r=Result("",Fault=="preflight"?73:0);

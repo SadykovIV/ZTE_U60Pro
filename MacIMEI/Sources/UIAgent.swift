@@ -13,9 +13,19 @@ extension ContentView {
                 informationRow("Поставляемый агент", BundledAgent.version + " · eSIM")
                 if let state = model.agentInstallationStatus {
                     informationRow("Процесс", state.running ? "Запущен" : "Не запущен")
-                    informationRow("Файл", BundledAgent.description(for: state.hash))
+                    informationRow("Файл", BundledAgent.description(for: state.hash).components(separatedBy: " · ").map(L10n.text).joined(separator: " · "))
                     informationRow("SHA256", state.hash)
                     informationRow("Сценарий запуска", state.startupReady ? "Сценарий запуска доступен" : "Требуется автоматическая подготовка")
+                    if let web = state.web {
+                        informationRow("Веб-панель", web.url)
+                        informationRow("HTTP на модеме (loopback)", web.loopback.display(L10n.text))
+                        informationRow("HTTP на модеме (LAN)", web.lan.display(L10n.text))
+                        informationRow("HTTP с компьютера", web.computer.display(L10n.text))
+                        if let warning = web.warning { StudioNote(symbol: "exclamationmark.triangle", text: warning) }
+                    }
+                    if state.hash != BundledAgent.sha256 && BundledAgent.supportedUpgradeHashes.contains(state.hash) {
+                        StudioNote(symbol: "arrow.up.circle", text: "На модеме предыдущая версия агента. Нажмите «Установить / обновить агент и веб-панель», чтобы агент мог управлять новыми компонентами VPN и TTL. Обновление программы на компьютере само по себе не обновляет агент.")
+                    }
                     if state.warningCode == "OWNER" {
                         StudioNote(symbol: "exclamationmark.triangle", text: L10n.text("Файл и процесс агента проверены, но история установки не подтверждена. Сохранённые данные оставлены без изменений; установка требует восстановления.", "The agent file and process were checked, but installation history could not be verified. Saved data was preserved; installation requires recovery."))
                     } else if state.recoveryPending { StudioNote(symbol: "arrow.uturn.backward", text: "Есть незавершённая замена. Сначала восстановите предыдущий агент.") }

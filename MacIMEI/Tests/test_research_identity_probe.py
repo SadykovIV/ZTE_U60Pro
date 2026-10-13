@@ -21,6 +21,6 @@ class IdentityTests(unittest.TestCase):
     def test_no_newline_zero(self):self.assertIn('FR_FACT selinux_enforcing=0',self.run_probe(b'0'))
     def test_no_newline_one(self):self.assertIn('FR_FACT selinux_enforcing=1',self.run_probe(b'1'))
     def test_optional_missing_empty_invalid(self):
-        for data,wanted in [(None,'missing'),(b'','unknown'),(b'private-synthetic','unknown'),(b'0\n','0')]:
+        for data,wanted in [(None,'missing'),(b'','not-assessed'),(b'private-synthetic','not-assessed'),(b'0\n','0')]:
             out=self.run_probe(data);self.assertIn('FR_FACT selinux_enforcing='+wanted,out);self.assertNotIn('private-synthetic',out)
 if __name__=='__main__':unittest.main()

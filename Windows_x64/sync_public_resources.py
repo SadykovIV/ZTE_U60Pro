@@ -11,7 +11,7 @@ WINDOWS = Path(__file__).resolve().parent
 ROOT = WINDOWS.parent
 SOURCE = ROOT / 'MacIMEI/Resources'
 DEST = WINDOWS / 'Resources'
-GROUPS = ('Onboarding', 'VPN', 'AgentDashboard', 'AgentDashboardInstall', 'AgentInstallation', 'Esim', 'FirmwareSupport', 'ScreenLocalization', 'SSHAccounts')
+GROUPS = ('Onboarding', 'VPN', 'AgentDashboard', 'AgentDashboardInstall', 'AgentInstallation', 'Esim', 'FirmwareSupport', 'ScreenLocalization', 'SSHAccounts', 'TTL', 'DeviceBackups', 'SystemBackups')
 PINS = {
     'src/Core/AgentPackage.cs': {'Sha256': 'Onboarding/zte-agent'},
     'src/Features/VpnFeatures.cs': {'VpnHelperHash': 'VPN/vpnctl', 'DashboardHash': 'AgentDashboard/index.html', 'LauncherHash': 'VPN/launcher.so'},
@@ -53,35 +53,43 @@ def validate_group(folder):
 def copy_file(source, destination):
     regular(source)
     data = source.read_bytes()
-    locally_built = source.name in ('zte-agent', 'zte-agent-esim', 'vpnctl', 'launcher.so', 'zte_nv', 'zte_config', 'zte_config_read')
+    locally_built = source.name in ('zte-agent', 'zte-agent-esim', 'vpnctl', 'launcher.so', 'zte_nv', 'zte_config', 'zte_config_read', 'zte-support-nv', 'zte-support-config', 'zte-support-qmi')
     if locally_built and data[:4] == b'\x7fELF' and (b'/Users/' in data or b'/home/' in data):
         raise ValueError('Unremapped host build path in native resource: ' + source.name)
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, destination)
 
-def swift_agent_upgrade_hashes(source):
+def swift_hash_registry(source, pin_name="sha256", registry_name="supportedUpgradeHashes"):
     """Read the explicit reviewed Swift registry; reject executable expressions."""
-    pins = re.findall(r'static let sha256 = "([0-9a-f]{64})"', source)
-    registries = re.findall(r'static let supportedUpgradeHashes:\s*Set<String>\s*=\s*\[(.*?)\]', source, re.S)
+    pins = re.findall(r'static let ' + re.escape(pin_name) + r' = "([0-9a-f]{64})"', source)
+    registries = re.findall(r'static let ' + re.escape(registry_name) + r':\s*Set<String>\s*=\s*\[(.*?)\]', source, re.S)
     if len(pins) != 1 or len(registries) != 1:
         raise ValueError('Missing or ambiguous Swift agent registry')
     tokens = [part.strip() for part in re.sub(r'//[^\n]*', '', registries[0]).split(',')]
     if tokens and not tokens[-1]: tokens.pop()
-    if tokens.count('sha256') != 1 or any(token != 'sha256' and not re.fullmatch(r'"[0-9a-f]{64}"', token) for token in tokens):
+    if tokens.count(pin_name) != 1 or any(token != pin_name and not re.fullmatch(r'"[0-9a-f]{64}"', token) for token in tokens):
         raise ValueError('Unsupported Swift agent registry expression')
-    return pins[0], {pins[0]} | {token[1:-1] for token in tokens if token != 'sha256'}
+    return pins[0], {pins[0]} | {token[1:-1] for token in tokens if token != pin_name}
 
 
-def synchronize_agent_upgrade_hashes(source, current, hashes):
-    pins = re.findall(r'const string Sha256\s*=\s*"([0-9a-f]{64})";', source)
+def swift_agent_upgrade_hashes(source):
+    return swift_hash_registry(source)
+
+
+def synchronize_hash_registry(source, current, hashes, pin_name="Sha256", registry_name="SupportedUpgradeHashes"):
+    pins = re.findall(r'const string ' + re.escape(pin_name) + r'\s*=\s*"([0-9a-f]{64})";', source)
     if pins != [current] or current not in hashes:
         raise ValueError('Swift/Windows current agent pin mismatch')
-    pattern = r'(SupportedUpgradeHashes\s*=\s*new\[\]\s*\{)(.*?)(\}\.ToFrozenSet\(StringComparer\.Ordinal\);)'
-    body = '\n        Sha256,\n' + ''.join('        "' + value + '",\n' for value in sorted(hashes - {current})) + '    '
+    pattern = r'(' + re.escape(registry_name) + r'\s*=\s*new\[\]\s*\{)(.*?)(\}\.ToFrozenSet\(StringComparer\.Ordinal\);)'
+    body = '\n        ' + pin_name + ',\n' + ''.join('        "' + value + '",\n' for value in sorted(hashes - {current})) + '    '
     updated, count = re.subn(pattern, lambda match: match[1] + body + match[3], source, flags=re.S)
     if count != 1:
         raise ValueError('Missing or ambiguous Windows agent registry')
     return updated
+
+def synchronize_agent_upgrade_hashes(source, current, hashes):
+    return synchronize_hash_registry(source, current, hashes)
+
 
 def synchronize_agent_access_registry(root, check=False):
     """Generate service ownership checks from the same reviewed release registry."""
@@ -109,6 +117,7 @@ def main():
     parser.add_argument('--check', action='store_true', help='Verify mirrored resources and compiled pins without edits')
     args = parser.parse_args()
     swift_current, upgrade_hashes = swift_agent_upgrade_hashes((ROOT / 'MacIMEI/Sources/BundledAgent.swift').read_text())
+    vpn_current, vpn_hashes = swift_hash_registry((ROOT / 'MacIMEI/Sources/VPNSettings.swift').read_text(), 'helperHash', 'supportedStatusHashes')
     synchronize_agent_access_registry(ROOT, check=args.check)
     manifests = {name: validate_group(SOURCE / name) for name in GROUPS}
     for name, manifest in manifests.items():
@@ -148,6 +157,10 @@ def main():
             text = updated
             updated = synchronize_agent_upgrade_hashes(text, swift_current, upgrade_hashes)
             if args.check and updated != text: raise ValueError('Windows agent upgrade registry mismatch')
+            text = updated
+        if relative == 'src/Features/VpnFeatures.cs':
+            updated = synchronize_hash_registry(text, vpn_current, vpn_hashes, 'VpnHelperHash', 'SupportedVpnStatusHashes')
+            if args.check and updated != text: raise ValueError('Windows VPN status registry mismatch')
             text = updated
         if not args.check: path.write_text(text)
     print('PASS public resource identity, exact manifests, helpers and Windows compiled pins')

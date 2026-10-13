@@ -41,7 +41,7 @@ static int mock_send(int unused,unsigned char *p,int ni) {
             if(le32(p+4)==0xc1) {
                 assert(ix>0);
                 if(model[ix].exists) { put32(r+4,UINT32_MAX);put32(r+8,6);break; }
-                memset(&model[ix],0,sizeof(model[ix]));model[ix].exists=1;model[ix].mode=0x8d00;mutations++;
+                memset(&model[ix],0,sizeof(model[ix]));model[ix].exists=1;model[ix].mode=0x8000|le32(p+8);mutations++;
             } else assert(model[ix].exists);
             assert(mock_fd<0);mock_fd=71;mock_ix=ix;put32(r+4,71);
             if(fault==OPEN_ACK_MALFORMED&&!fault_used&&ix==2&&le32(p+4)==0xc1) { fault_used=1;rn=8; }
@@ -95,6 +95,7 @@ static void reset_model(int candidate_live,int selected_fault,int want_candidate
     memcpy(backing_store,model,sizeof(model));
     before_bytes=want_candidate?config_original:config_candidate;
     after_bytes=want_candidate?config_candidate:config_original;
+    config_mode=0;create_mode=0xd00;
     file_fd=-1;file_access=file_index=owned_stage=owned_rollback=0;
     commit_ready=commit_attempted=rollback_ready=rolling_back=0;
     transport_uncertain=target_verified=rollback_verified=retain_files=0;
@@ -147,5 +148,15 @@ int main(void) {
     reset_model(0,0,0);model[0].mode=0x8d40;assert(run_operation(0)!=0);assert(!target_verified&&!mutations);assert_clean();
     reset_model(0,0,0);model[0].mode=0x4d20;assert(run_operation(0)!=0);assert(!target_verified&&!mutations);assert_clean();
     reset_model(0,0,1);model[1]=model[0];model[1].mode=0x8d20;owned_stage=1;uint8_t scratch[CONFIG_SIZE];assert(!read_file(1,scratch));assert(!mutations&&mock_fd<0);
-    puts("CONFIG_UPDATE_HOST_TESTS_PASS scenarios=22 guard_allowlist=PASS cleanup_durability=PASS live_mode8d20=PASS staging_mode_strict=PASS");return 0;
+    for(int f=NO_FAULT;f<=FINAL_CLEANUP_SYNC_ERROR;f++) {
+        reset_model(0,f,1);model[0].mode=0x81a4;
+        int result=run_operation(0);
+        assert(result==(f==NO_FAULT?0:result));
+        assert((f==NO_FAULT)==(result==0));
+        assert(model[0].mode==0x81a4);
+        for(int i=1;i<3;i++) if(model[i].exists) assert(model[i].mode==0x81a4);
+    }
+    reset_model(1,0,0);model[0].mode=0x81a4;assert(run_operation(0)==0);assert(live_is(config_original)&&model[0].mode==0x81a4);assert_clean();
+    reset_model(0,0,0);model[0].mode=0x81a4;assert(run_operation(1)==0);assert(!mutations);
+    puts("CONFIG_UPDATE_HOST_TESTS_PASS scenarios=35 guard_allowlist=PASS cleanup_durability=PASS live_mode8d20=PASS staging_mode_strict=PASS");return 0;
 }

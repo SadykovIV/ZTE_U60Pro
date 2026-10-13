@@ -28,6 +28,7 @@ static int commit_ready,commit_attempted,rollback_ready,rolling_back;
 static uint16_t sync_sequence;
 static uint32_t sync_token;
 static unsigned send_count;
+static uint32_t config_mode,create_mode=0xd00;
 struct logging_params { uint32_t mode,mask,pd; uint8_t mode_param,diag_id,pd_val,reserved; int32_t peripheral,device; };
 struct query_params { uint32_t mask,pd; int32_t pid,device,kill_op,kill_count; };
 struct file_stat { uint32_t mode,size,nlink,atime,mtime,ctime; };
@@ -107,7 +108,7 @@ static int allowed_request(const uint8_t *p,size_t n) {
         case 2:
             if(n<12||file_fd>=0) return 0;
             ix=path_index(p,n,12);if(ix<0) return 0;
-            return (ix>0&&le32(p+4)==0xc1&&le32(p+8)==0xd00)||(le32(p+4)==0&&le32(p+8)==0&&(ix==0||is_owned(ix)));
+            return (ix>0&&le32(p+4)==0xc1&&le32(p+8)==create_mode)||(le32(p+4)==0&&le32(p+8)==0&&(ix==0||is_owned(ix)));
         case 3: return n==8&&file_fd>=0&&le32(p+4)==(uint32_t)file_fd;
         case 4:
             if(n!=16||file_fd<0||file_access!=0||le32(p+4)!=(uint32_t)file_fd) return 0;
@@ -208,7 +209,7 @@ static int stat_path(int ix,struct file_stat *out) {
 }
 static int open_path(int ix,int create) {
     uint8_t req[128]={0x4b,0x13,2,0},resp[4096];size_t n;
-    put32(req+4,create?0xc1:0);put32(req+8,create?0xd00:0);
+    put32(req+4,create?0xc1:0);put32(req+8,create?create_mode:0);
     const char *path=file_path(ix);size_t z=strlen(path)+1;memcpy(req+12,path,z);
     if(!exchange(req,12+z,resp,&n,create?"open_excl":"open_readonly")) return 0;
     if(n!=12) { transport_uncertain=1;return 0; }
@@ -237,7 +238,14 @@ static int read_file(int ix,uint8_t out[CONFIG_SIZE]) {
     /* B31 boot restored exact original bytes with S_IRGRP (0040=0x20)
      * added. Accept only these two observed live modes; owned staging
      * files still require the exact create mode verified by the probe. */
-    int mode_ok=st.mode==0x8d00||(ix==0&&st.mode==0x8d20);
+    /* EFS STAT exposes mode,size,nlink,atime,mtime,ctime (no uid/gid).
+     * B04 has regular 0644 config. Preserve that exact mode on both owned
+     * staging files; never convert it to B31's special 06400 mode. */
+    if(ix==0&&!config_mode) {
+        if(st.mode!=0x8d00&&st.mode!=0x8d20&&st.mode!=0x81a4) return 0;
+        config_mode=st.mode;create_mode=st.mode==0x81a4?0x1a4:0xd00;
+    }
+    int mode_ok=ix==0 ? (config_mode==0x81a4 ? st.mode==0x81a4 : st.mode==0x8d00||st.mode==0x8d20) : st.mode==(0x8000|create_mode);
     if(!mode_ok||st.size!=CONFIG_SIZE||st.nlink!=1||!open_path(ix,0)) return 0;
     int okay=1;
     for(uint32_t off=0;off<CONFIG_SIZE;) {

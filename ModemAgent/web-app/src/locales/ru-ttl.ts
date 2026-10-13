@@ -11,7 +11,7 @@ export const ruTtl: Record<string, string> = {
   'Check required': 'Нужна проверка',
   'IPv4 TTL': 'TTL для IPv4',
   'Refresh status': 'Обновить статус',
-  'These settings are shared with the Mac app and saved on the modem. IPv6 is unchanged.': 'Эти настройки общие с приложением Mac и сохраняются на модеме. На IPv6 они не влияют.',
+  'These settings are shared with the macOS and Windows apps and saved on the modem. IPv6 is unchanged.': 'Эти настройки общие с программами для macOS и Windows и сохраняются на модеме. На IPv6 они не влияют.',
   'Reading TTL settings…': 'Читаем настройки TTL…',
   'Applies after restart': 'Сохраняется после перезагрузки',
   'Technical details': 'Технические подробности',

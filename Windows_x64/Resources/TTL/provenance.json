@@ -1,6 +1,6 @@
 {
   "component": "ZTE IMEI Studio IPv4 TTL manager",
-  "version": "1.4.0",
+  "version": "1.6.0",
   "firmware": "CN_ZTE_MU5250V1.0.0B31",
   "origin": "Project source; uses device-provided legacy iptables TTL target and ZTE IPACM controls",
   "outbound": "POSTROUTING --ttl-set",
@@ -8,5 +8,41 @@
   "reference_sources": [
     "https://github.com/torvalds/linux/blob/v5.15/net/netfilter/xt_HL.c",
     "https://github.com/torvalds/linux/blob/v5.15/net/ipv4/ip_forward.c"
-  ]
+  ],
+  "firmware_profiles": [
+    {
+      "firmware": "CN_ZTE_MU5250V1.0.0B31",
+      "inner": "BD_CNMU5250V1.0.0B31"
+    },
+    {
+      "firmware": "FLY_CN_MU5250V1.0.0B13",
+      "inner": "BD_FLYMODEMMU5250V1.0.0B28"
+    },
+    {
+      "firmware": "XCBZ_HK_MU5250V1.0.0B04",
+      "inner": "BD_XCBZHKMU5250V1.0.0B04",
+      "modem_b16_states": [
+        "absent",
+        "c57e063d390983229dfc53aa87380b3d4655ee8daa1c748e1a032ac90cd0df81"
+      ],
+      "mdm_sha256": "93a346e7d69024503caf9ad42f14c97e1514dd7d04c7b5ebef4e30473b5d5c64",
+      "router_sha256": "55c54f74aaa427940254a2f16c36771e675a80a002363e4f10b0dfcb604d9c6f",
+      "ipacm_sha256": "95385816da7b2edb9a977cee328c091753463fcd4a70a67fa1676e8b335c11c0",
+      "ipa_switch_sha256": "8947eee9c554453dc8eeb77df933cd12899f447c8c03df3505c57c7b526d22b9"
+    }
+  ],
+  "b28_packet_verification": false,
+  "b04_packet_verification": false,
+  "manager_upgrade": {
+    "source_sha256": "a70afc13c3645f64b5fd937162e7d403e133bcfa0a2da0e565d39a693f9ab488",
+    "trigger": "explicit desktop Apply only",
+    "backup_directory": "/data/zte-imei-ttl-upgrade-a70afc13c3645f64b5fd937162e7d403e133bcfa0a2da0e565d39a693f9ab488",
+    "preserves": [
+      "settings",
+      "boot and firewall hooks",
+      "TTL chains"
+    ],
+    "pending_transaction": "refuse",
+    "interrupted_publish": "retry exact saved transition on next explicit Apply"
+  }
 }

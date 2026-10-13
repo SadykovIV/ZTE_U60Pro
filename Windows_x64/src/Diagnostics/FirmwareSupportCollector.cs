@@ -17,7 +17,7 @@ internal sealed record FirmwareSupportResult(string Path, bool Complete, int Cap
 /// Fixed file paths and read-only research commands; raw environment and HTTP bodies are never exported.
 internal static class FirmwareSupportCollector
 {
-    internal const string ExpectedHelperSha256 = "8270fd3811ec49eb4f52321662ed78618f55572ac0ee7b3803c68dc3baf8423c";
+    internal const string ExpectedHelperSha256 = "9c6c2ad48216b7be268fdb777a541e8fac0c3ed83e02c483247163f64e3f13ce";
     internal sealed record Input(string Id, string RemotePath, string ArchivePath, long Limit, bool Required);
     internal static readonly Input[] Inputs = [
         new("ui", "/usr/bin/zte_topsw_devui", "files/zte_topsw_devui", 256L*1024*1024, true),
@@ -60,6 +60,24 @@ internal static class FirmwareSupportCollector
         new("liblua", "/usr/lib/liblua.so.5.1 | /usr/lib/liblua.so | /usr/lib/liblua5.1.so", "components/liblua", 256L*1024*1024, false),
         new("lua_uci", "/usr/lib/lua/uci.so", "components/lua_uci", 256L*1024*1024, false),
         new("lua_jsonc", "/usr/lib/lua/luci/jsonc.so | /usr/lib/lua/jsonc.so", "components/lua_jsonc", 256L*1024*1024, false),
+        new("firmware_mdt", "/firmware/image/modem.mdt", "components/firmware_mdt", 256L*1024*1024, false),
+        new("firmware_b16", "/firmware/image/modem.b16", "components/firmware_b16", 256L*1024*1024, false),
+        new("libqcril_nr", "/usr/lib/libqcrilNr.so | /lib/libqcrilNr.so", "components/libqcril_nr", 256L*1024*1024, false),
+        new("libqcril_nrril", "/usr/lib/libqcrilNrril.so.1 | /usr/lib/libqcrilNrril.so | /lib/libqcrilNrril.so.1 | /lib/libqcrilNrril.so", "components/libqcril_nrril", 256L*1024*1024, false),
+        new("libzte_qmi", "/usr/lib/libzteqmi.so | /lib/libzteqmi.so", "components/libzte_qmi", 256L*1024*1024, false),
+        new("libqmiservices", "/usr/lib/libqmiservices.so | /lib/libqmiservices.so", "components/libqmiservices", 256L*1024*1024, false),
+        new("libqmi_cci", "/usr/lib/libqmi_cci.so.1 | /usr/lib/libqmi_cci.so | /lib/libqmi_cci.so.1 | /lib/libqmi_cci.so", "components/libqmi_cci", 256L*1024*1024, false),
+        new("libqmi_csi", "/usr/lib/libqmi_csi.so.1 | /usr/lib/libqmi_csi.so | /lib/libqmi_csi.so.1 | /lib/libqmi_csi.so", "components/libqmi_csi", 256L*1024*1024, false),
+        new("libqmi_common", "/usr/lib/libqmi_common_so.so.1 | /usr/lib/libqmi_common_so.so | /lib/libqmi_common_so.so.1 | /lib/libqmi_common_so.so", "components/libqmi_common", 256L*1024*1024, false),
+        new("libqmi_encdec", "/usr/lib/libqmi_encdec.so.1 | /usr/lib/libqmi_encdec.so | /lib/libqmi_encdec.so.1 | /lib/libqmi_encdec.so", "components/libqmi_encdec", 256L*1024*1024, false),
+        new("libqmi_sap", "/usr/lib/libqmi_sap.so.1 | /usr/lib/libqmi_sap.so | /lib/libqmi_sap.so.1 | /lib/libqmi_sap.so", "components/libqmi_sap", 256L*1024*1024, false),
+        new("libqrtr", "/usr/lib/libqrtr.so.1 | /usr/lib/libqrtr.so | /lib/libqrtr.so.1 | /lib/libqrtr.so", "components/libqrtr", 256L*1024*1024, false),
+        new("libqsocket", "/usr/lib/libqsocket.so.1 | /usr/lib/libqsocket.so | /lib/libqsocket.so.1 | /lib/libqsocket.so", "components/libqsocket", 256L*1024*1024, false),
+        new("libglib", "/usr/lib/libglib-2.0.so.0 | /usr/lib/libglib-2.0.so | /lib/libglib-2.0.so.0 | /lib/libglib-2.0.so", "components/libglib", 256L*1024*1024, false),
+        new("libgthread", "/usr/lib/libgthread-2.0.so.0 | /usr/lib/libgthread-2.0.so | /lib/libgthread-2.0.so.0 | /lib/libgthread-2.0.so", "components/libgthread", 256L*1024*1024, false),
+        new("liblog", "/usr/lib/liblog.so.0 | /usr/lib/liblog.so | /lib/liblog.so.0 | /lib/liblog.so", "components/liblog", 256L*1024*1024, false),
+        new("libtime_genoff", "/usr/lib/libtime_genoff.so.1 | /usr/lib/libtime_genoff.so | /lib/libtime_genoff.so.1 | /lib/libtime_genoff.so", "components/libtime_genoff", 256L*1024*1024, false),
+        new("libsqlite3", "/usr/lib/libsqlite3.so | /lib/libsqlite3.so", "components/libsqlite3", 256L*1024*1024, false),
     ];
     private static readonly HashSet<string> FactKeys = ["uid","os","architecture","firmware","inner","openwrt_version","target","agent_present","agent_sha256","agent_running_count","agent_mode","agent_mapped_matches_disk","http_health_status","http_capabilities_status","http_dashboard_status","ui_mounts"];
     private static readonly HashSet<string> FileStates = ["present","missing","not_assessed","symlink","not_regular","unreadable","empty","unsafe_target","not_elf","ambiguous"];
@@ -133,9 +151,43 @@ internal static class FirmwareSupportCollector
         var manifest=Path.Combine(resources,"FirmwareSupport","SHA256.json");SafeLocal(manifest);
         Require(new FileInfo(manifest).Length<=4096);
         using var parsed=JsonDocument.Parse(File.ReadAllBytes(manifest));
-        Require(parsed.RootElement.ValueKind==JsonValueKind.Object && parsed.RootElement.EnumerateObject().Count()==1 &&
+        string[] entries=["collect.sh","zte-support-nv","zte-support-config","zte-support-qmi","support-helpers.json","radio-inspect-build.json","support-sources.tar.gz","NOTICE-QMI.txt","README.txt"];
+        Require(parsed.RootElement.ValueKind==JsonValueKind.Object && parsed.RootElement.EnumerateObject().Count()==entries.Length &&
+            parsed.RootElement.EnumerateObject().Select(x=>x.Name).ToHashSet(StringComparer.Ordinal).SetEquals(entries) &&
+            parsed.RootElement.EnumerateObject().All(x=>x.Value.ValueKind==JsonValueKind.String && Match(x.Value.GetString()!,"[0-9a-f]{64}")) &&
             parsed.RootElement.TryGetProperty("collect.sh",out var pin) && pin.ValueKind==JsonValueKind.String && pin.GetString()==ExpectedHelperSha256);
         return bytes;
+    }
+
+    internal static readonly string[] RadioLinePatterns = [
+        @"^PATH (firmware_mdt|firmware_b16|mdm|diag_router|modem_segment_b[0-9]{2}) state=(missing|not_assessed|symlink|not_regular|unreadable)$",
+        @"^PATH (firmware_mdt|firmware_b16|mdm|diag_router|modem_segment_b[0-9]{2}) state=present type=regular uid=[0-9]+ mode=[0-7]{3,4} bytes=[0-9]+ sha256=([0-9a-f]{64}|not_assessed)$",
+        @"^NODE (diag|diag_tty|at_mdm0|at_mdm1|ffs_diag|ffs_diag_1|ffs_diag_2|diag_socket) type=(missing|not_assessed|symlink|character|block|socket|directory|other) uid=([0-9]+|not_assessed) mode=([0-7]{3,4}|not_assessed)$",
+        @"^DIAG_SOCKET (abstract_diag|abstract_diag_socket|filesystem_diag) flags=[0-9A-Fa-f]+ type=[0-9A-Fa-f]+ state=[0-9A-Fa-f]+$",
+        @"^DIAG_SOCKETS state=(observed|not_assessed) count=[0-9]+$",
+        @"^SLOT (mdm_get_sim_info|mdm_get_current_slot_info|uci_active_card_id|uci_active_slot_temp) value=([0-3]|not_assessed)$",
+        @"^QRTR service=[0-9]{1,10} version=[0-9]{1,10} instance=[0-9]{1,10} node=[0-9]{1,10} port=[0-9]{1,10}$",
+        @"^QRTR_INVENTORY state=(observed|not_assessed) count=[0-9]+$",
+        @"^PARTITION name=(modem|modem_a|modem_b|modemst1|modemst2|fsg|fsc|persist|userdata|rawdump|system|system_b|ztedata|ztedata_b|zterw|zteoverlay) block=mmcblk[0-9]p[0-9]+ sectors=([0-9]+|not_assessed) start=([0-9]+|not_assessed) ro=([01]|not_assessed)$",
+        @"^MOUNT (data|firmware) mode=(ro|rw|unknown) type=(ext4|squashfs|ubifs|tmpfs|overlay|vfat|unknown)$",
+        @"^POLICY nv_read=0 apdu_sent=0 radio_changed=0 profile_changed=0 private_identifiers_exported=0$"
+    ];
+    internal static byte[] PassiveRadioOutput(RemoteResult reply)
+    {
+        byte[] invalid=Utf8.GetBytes("status=not_assessed reason=invalid_passive_output\n");
+        if(!reply.Success || reply.Stdout.Length>131072 || reply.Stderr.Length!=0 || reply.Stdout.Any(b=>b!=10&&(b<32||b>126)))return invalid;
+        var text=Utf8.GetString(reply.Stdout);if(!text.EndsWith('\n'))return invalid;
+        var lines=text[..^1].Split('\n');
+        if(lines.Length<3 || lines[0]!="FIRMWARE_RADIO_V1" || lines[^1]!="FIRMWARE_RADIO_END")return invalid;
+        var body=lines.Skip(1).SkipLast(1).ToArray();
+        if(body.Count(x=>x.StartsWith("POLICY ",StringComparison.Ordinal))!=1 || body.Any(line=>!RadioLinePatterns.Any(pattern=>Match(line,pattern))))return invalid;
+        return reply.Stdout;
+    }
+    private static async Task<byte[]> PassiveRadio(IRemoteShell shell,byte[] helper,CancellationToken ct)
+    {
+        try{return PassiveRadioOutput(await shell.RunAsync("sh -s -- radio",helper,TimeSpan.FromSeconds(90),ct));}
+        catch(OperationCanceledException){throw;}
+        catch{ct.ThrowIfCancellationRequested();return Utf8.GetBytes("status=not_assessed reason=passive_transport_failure\n");}
     }
 
     private static void SafeLocal(string path)
@@ -173,7 +225,8 @@ internal static class FirmwareSupportCollector
 
     internal static async Task<FirmwareSupportResult> CollectAsync(IRemoteShell shell,SshReadProof selected,StreamFile stream,
         byte[] helper,string host,string destination,string workingDirectory,IReadOnlyDictionary<string,byte[]> activity,string version,CancellationToken ct,Action? verifySelection = null,
-        Func<SshReadProof,CancellationToken,Task<ResearchReport>>? collectResearch=null,DiagnosticPrivacy? privacy=null)
+        Func<SshReadProof,CancellationToken,Task<ResearchReport>>? collectResearch=null,DiagnosticPrivacy? privacy=null,
+        string? resources=null,Func<bool,CancellationToken,Task<Dictionary<string,byte[]>>>? collectRadio=null)
     {
         Require(System.Net.IPAddress.TryParse(host,out var ip)&&ip.AddressFamily==System.Net.Sockets.AddressFamily.InterNetwork);
         Require(Path.IsPathFullyQualified(destination)&&!File.Exists(destination)&&!Directory.Exists(destination));
@@ -187,6 +240,7 @@ internal static class FirmwareSupportCollector
             var inspect="sh -s -- inspect "+VerifiedHash.ShellQuote(host);
             var firstTime=DateTimeOffset.UtcNow;
             var first=Parse(await shell.RunAsync(inspect,helper,TimeSpan.FromSeconds(45),token));
+            var radioPayloads=new Dictionary<string,byte[]> { ["passive-before.txt"]=await PassiveRadio(shell,helper,token) };
             var captures=new Dictionary<string,string>(StringComparer.Ordinal);
             foreach(var item in first.Files.Where(x=>x.State=="present" && x.Bytes<=Inputs.Single(i=>i.Id==x.Id).Limit))
             {
@@ -203,6 +257,13 @@ internal static class FirmwareSupportCollector
             verifySelection?.Invoke();
             var research=collectResearch is null?null:await collectResearch(before,token);
             if(research is not null)ValidateResearch(research,before);
+            token.ThrowIfCancellationRequested();verifySelection?.Invoke();
+            Dictionary<string,byte[]> nativeRadio;
+            if(before.Architecture!="aarch64")nativeRadio=new(){["native-status.txt"]=Utf8.GetBytes("status=not_assessed reason=architecture_unsupported\n")};
+            else if(collectRadio is not null)nativeRadio=await collectRadio(before.Uid=="0",token);
+            else {Require(resources is not null);nativeRadio=await FirmwareRadioSupport.CollectAsync(resources!,shell,before.Uid=="0",token);}
+            foreach(var (name,data) in nativeRadio){Require((name=="native-status.txt" || FirmwareRadioSupport.Probes.Any(p=>p.Name+".txt"==name)) && data.Length<=131072);radioPayloads.Add(name,data);}
+            radioPayloads.Add("passive-after.txt",await PassiveRadio(shell,helper,token));
             token.ThrowIfCancellationRequested();verifySelection?.Invoke();
             var last=Parse(await shell.RunAsync(inspect,helper,TimeSpan.FromSeconds(45),token));
             var lastTime=DateTimeOffset.UtcNow;
@@ -226,13 +287,15 @@ internal static class FirmwareSupportCollector
                 foreach(var item in ResearchReportFiles.BuildExportFiles(research,value=>ResearchReportFiles.CleanExportText(value,privacy.Clean,token),token,privacy.CleanApplicationVersion))
                     entries.Add("research/"+item.Key,(null,item.Value));
             }
-            entries.Add("README.txt",(null,Utf8.GetBytes("Firmware adaptation evidence; read-only SSH collection.\nFiles under files/ and originals/ are unchanged bytes, not redacted text.\nRaw files include the screen program, language files, init script, fonts, verified localization originals, networking executables and init script, ZTE modem/QCRIL code, DIAG, SDK, gesture and rendering/system library dependencies. Library source paths separated by | are ordered aliases; a versioned alias may resolve only within system library directories and must contain ELF bytes. Missing dependencies remain explicit. Complete collection does not mean complete adaptation or a functional test pass. Agent startup, passwords, keys, raw device identifiers, user configuration, NV and SIM/eSIM profiles are excluded.\nactivity/ contains sanitized application activity; it may include earlier actions and is not a same-device proof. research/ contains a fresh full read-only firmware survey from the same captured SSH selection, inside the before/after inspection window. No cached firmware survey is copied.\nHTTP 401 means authentication is required, not an agent failure. Runtime mode may restrict features despite a running process.\nobservedFactsStable refers only to available quick SSH identity observations. identityStable is true only with both CID and boot continuity; partial or transport-only binding cannot establish full device identity. Runtime facts retain separate before/after observations and may differ.\nThe survey covers access/agent, firmware APIs, IMEI prerequisites, TTL, VPN, screen/launcher, backups, packages and eSIM prerequisites; it performs no NV, APDU or functional write tests. Missing optional fonts do not make collection incomplete. Missing required files or a partial survey do. An incomplete report is evidence only, not compatibility or write authorization.\n")));
+            foreach(var (name,data) in radioPayloads)entries.Add("radio/"+name,(null,data));
+            entries.Add("README.txt",(null,Utf8.GetBytes("Firmware adaptation evidence; read-only SSH collection.\nFiles under files/ and originals/ are unchanged bytes, not redacted text.\nRaw files include the screen program, language files, init script, fonts, verified localization originals, networking executables and init script, ZTE modem/QCRIL code, DIAG, SDK, gesture and rendering/system library dependencies. Library source paths separated by | are ordered aliases; a versioned alias may resolve only within system library directories and must contain ELF bytes. Missing dependencies remain explicit. Complete collection does not mean complete adaptation or a functional test pass. Agent startup, passwords, keys, raw device identifiers, user configuration, raw NV/EFS values and SIM/eSIM profiles are excluded. Static modem.mdt/modem.b16 code and QMI/RIL/DIAG library dependencies may be included for offline ABI analysis.\nactivity/ contains sanitized application activity; it may include earlier actions and is not a same-device proof. research/ contains a fresh full read-only firmware survey from the same captured SSH selection, inside the before/after inspection window. No cached firmware survey is copied.\nHTTP 401 means authentication is required, not an agent failure. Runtime mode may restrict features despite a running process.\nobservedFactsStable refers only to available quick SSH identity observations. identityStable is true only with both CID and boot continuity; partial or transport-only binding cannot establish full device identity. Runtime facts retain separate before/after observations and may differ.\nThe survey covers access/agent, firmware APIs, IMEI prerequisites, TTL, VPN, screen/launcher, backups, packages and eSIM prerequisites; radio/ contains passive before/after snapshots and temporary native DIAG/QMI reads of NV550/EFS response status and structure and current card routing. The helpers export no IMEI, ICCID, EID, keys or raw NV/EFS bytes. They send no APDUs, perform no NV writes, slot switches, radio resets or profile changes and install no agent; temporary helper files are removed. Unsupported modules remain explicit statuses. It performs no functional write tests. Missing optional fonts do not make collection incomplete. Missing required files or a partial survey do. An incomplete report is evidence only, not compatibility or write authorization.\n")));
             var payloads=new List<object>();
             foreach(var (name,entry) in entries)payloads.Add(new { path=name,bytes=entry.Data?.LongLength??new FileInfo(entry.Path!).Length,sha256=entry.Data is {} data?Sha(data):await FileSha(entry.Path!,token) });
             var binding=before.Cid is not null&&before.BootId is not null?"full":before.Cid is not null||before.BootId is not null?"partial":"transport-only";
             entries.Add("manifest.json",(null,JsonSerializer.SerializeToUtf8Bytes(new {
-                schemaVersion=1,outcome=complete?"complete":"incomplete",complete,filesComplete,applicationVersion=version,createdAt=DateTimeOffset.UtcNow,
+                schemaVersion=2,outcome=complete?"complete":"incomplete",complete,filesComplete,applicationVersion=version,createdAt=DateTimeOffset.UtcNow,
                 research=research is null?null:new { fresh=true,outcome=research.Outcome,complete=research.Outcome=="complete",specificationRevision=research.SpecificationRevision,specificationSha256=research.SpecificationSHA256,probeResultCount=research.Probes.Length,observationCount=research.Observations?.Length??0,startedAt=research.StartedAt,completedAt=research.CompletedAt,bindingStrength=research.BindingStrength,identityVerified=before.Cid is not null&&before.BootId is not null },
+                radio=new{passiveBefore="radio/passive-before.txt",passiveAfter="radio/passive-after.txt",nativeReports=nativeRadio.Keys.Order().ToArray(),temporaryReadHelpers=true,deviceWrites=false},
                 readOnly=true,writeAuthorization="none",channel="SSH",bindingStrength=binding,observedFactsStable=true,identityStable=binding=="full",helperSha256=Sha(helper),
                 firstObservedAt=firstTime,lastObservedAt=lastTime,factsBefore=first.Facts,factsAfter=last.Facts,files=Inputs.Select(x=>new {id=x.Id,path=x.RemotePath,archivePath=x.ArchivePath,required=x.Required,observation=first.Files.Single(f=>f.Id==x.Id),captureStatus=captures.ContainsKey(x.Id)?"verified":first.Files.Single(f=>f.Id==x.Id).Bytes>x.Limit?"over_limit":"unavailable"}),payloads,
             },Json)));

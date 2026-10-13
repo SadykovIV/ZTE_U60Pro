@@ -1,6 +1,6 @@
 {
-  "revision": "20261006",
-  "profile": "Exact screen profiles: MU5250 B31 and FLY MU5250 B28",
+  "revision": "20261013",
+  "profile": "Exact screen profiles: MU5250 B31, FLY B28 and XCBZHK B04",
   "input_sources": {
     "dictionaries": "Device screen language resources, revised locally and accepted on the device",
     "font_patch": "Locally generated AArch64 font-size hook; original executable read from the connected device"
@@ -15,9 +15,9 @@
   "special_spaces_removed": 26,
   "font_scale": 0.85,
   "font_hook_execution_vectors": 44992,
-  "live_visual_confirmation": "B31 historical only; FLY B28 not yet assessed",
-  "vpn_menu_label": "WiFi с VPN / WiFi with VPN",
-  "previous_revision": "20260924",
+  "live_visual_confirmation": "B31 historical only; XCBZHK B04 not yet assessed",
+  "vpn_menu_label": "WiFi \u0441 VPN / WiFi with VPN",
+  "previous_revision": "20261006",
   "profiles": [
     {
       "id": "b31",
@@ -36,6 +36,15 @@
       "patched_ui_sha256": "d6c3cd409705d5aa9c12185c84074513b159088025f005da7dbf01c51e3c3715",
       "original_english_sha256": "24a1022bf9380cfadaf4c4a737f1f0ce8ecf1ad025563376f7dd83eb94e6ceae",
       "validation": "verified private capture; offline AArch64 hook/font tests and host installer fixtures; device execution and visual validation not yet performed"
+    },
+    {
+      "id": "xcbzhk-b04",
+      "firmware_label": "BD_XCBZHKMU5250V1.0.0B04",
+      "patch": "font.patch.b04.json",
+      "stock_ui_sha256": "dbe6eadc92d43a0cd7206264f9d75ab242df90e88c02ee2ba3ac65598b58523e",
+      "patched_ui_sha256": "0db2294b3e428fb53f4b6b725063ad8ffd9c396e5a27c54452f0ea479fa78f3b",
+      "original_english_sha256": "47348faa9783bc69109743eb9cfcc3bd3888508040e9eca51cb4a6460b7a70ce",
+      "validation": "verified private capture; complete font getter and launcher functions audited offline; host patch/installer fixtures; device execution and visual validation not yet performed"
     }
   ],
   "shared_original_chinese_sha256": "b84c05af9046dd2458b2220633320fb0089e1000e03c45c3dc81dc72df0c44fc",

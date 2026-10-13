@@ -1,22 +1,34 @@
+using System.Collections.Frozen;
 using System.Text;
 using System.Text.Json;
 using ZteImeiStudio.Windows.Core;
 
 namespace ZteImeiStudio.Windows.Features;
 
-public sealed record VpnProfile(string Id, string Name, string Transport, bool Active);
+public sealed record VpnProfile(string Id, string Name, string Transport, bool Active, string Protocol = "vless",
+    string? SubscriptionId = null, bool UpdateAvailable = false, bool RemovedFromSubscription = false, IReadOnlyList<string>? Warnings = null);
+public sealed record VpnSubscription(string Id, string Name, string Host, string UpdatedAt, int ProfileCount);
+public sealed record VpnImportSkipped(int Index, string Code);
+public sealed record VpnImportSummary(int Added, int Updated, int Removed, int Duplicates, int RetainedActive, IReadOnlyList<VpnImportSkipped> Skipped);
 public sealed record VpnStatus(
     bool Installed, bool HelperReady, bool AgentReady, bool DashboardReady, bool LauncherReady,
     bool Configured, bool Enabled, bool CoreRunning, string Version, string Ssid,
     string? DesiredSsid, string? PasswordMode, bool SettingsSupported,
-    IReadOnlyList<VpnProfile> Profiles, string ActiveProfile, string? Detail = null);
+    IReadOnlyList<VpnProfile> Profiles, string ActiveProfile, string? Detail = null,
+    IReadOnlyList<VpnSubscription>? Subscriptions = null, VpnImportSummary? LastImport = null);
 
 public enum VpnPasswordMode { Main, Custom, Preserve }
 
 public sealed partial class DeviceFeatureService
 {
     private const string VpnRoot = "/data/zte-vpn";
-    private const string VpnHelperHash = "f5e1c9e627e3e978ff535de79b95ff920d7318e7ea3ce713e5b174efe313ca0c";
+    private const string VpnHelperHash = "8aaece533e2503c7a501497bb1bf191f37a0ffbba067e7a7ff3a4c6f9623673f";
+    private const string Legacy12422VpnHelperHash = "b5f581427afd423be3931473db2ce4b496a387b685ab3c48adf26cc597000f9a";
+    private const string Legacy12421VpnHelperHash = "82a8b6655ff6cd43938ffe3735e8841599ef6116bf33079d8d203db9415ca3f2";
+    private const string Legacy12420VpnHelperHash = "fe1f6d535ccee6ec0f9333c01108b00f35006209850ed641023dbb937dd30b48";
+    private const string Legacy12418VpnHelperHash = "b2c3fcfafeccd50fa3000ad5f8f66f1e42ff157b295cdda11dddd31571612af7";
+    private const string LegacyB28VpnHelperHash = "cf15a6290316dd6832873e35972831a590d70cf0734eb93dbcd96aab87fab6f1";
+    private const string LegacyB31VpnHelperHash = "f5e1c9e627e3e978ff535de79b95ff920d7318e7ea3ce713e5b174efe313ca0c";
     private const string LegacyPublicVpnHelperHash = "f620dab27f951c7de2de77a89376975b51c79f57f8a8a24cec95392c9c61eea4";
     private const string LegacyPagesVpnHelperHash = "3142fb503e64ddba79d523be3c87f0344d6efa78673e30a4b740714d8e9389ca";
     private const string LegacyDirectRadioVpnHelperHash = "cdb01d27775d61bcb3ae14a8d124ccbab683f940f1dcfd2adffa43a6b7b462f0";
@@ -26,17 +38,40 @@ public sealed partial class DeviceFeatureService
     // Public 1.24.4 build 42 controller. It may only serve a status request.
     private const string LegacyCardStatusVpnHelperHash = "7a8b84c3502e711c6b66c943f883a984dd9ed82da41455fc083ed0cc7d44b6fb";
     private const string VpnAgentHash = AgentPackage.Sha256;
-    private const string DashboardHash = "c804a8ecced9ed3478ee50021b95d3bcd02394f23ba09f10c5c3691f44cd9546";
-    private const string LauncherHash = "c04c5c1d0cccb0a2964a1500e6fdc3c549c9eac6125fe591b9cdf25d39dff3c2";
+    private const string DashboardHash = "e7362584a399d4acd292c5ca896295cd4d50fa79eff63549b6dfbf97a91a9a2c";
+    private const string LauncherHash = "eb01a6f3c6cb914ded0e2f069f6f5072cd8445245b9b7f0d5f572f6662e9dc70";
     private static readonly string[] VpnInstallNames = ["install.sh", "manager.sh", "firewall.sh", "configure.lua", "nft-guard.nft", "dnsmasq.conf", "service.sh", "vpnctl", "mihomo"];
-    private static readonly string[] VpnUpgradeNames = ["upgrade-controller.sh", "vpnctl", "manager.sh", "configure.lua"];
-    private static bool CanReadVpnStatus(string hash) => hash is VpnHelperHash or LegacyRadioVpnHelperHash or
-        LegacyDirectRadioVpnHelperHash or LegacyPagesVpnHelperHash or LegacyPublicVpnHelperHash or LegacyRecoveryVpnHelperHash or LegacyCardStatusVpnHelperHash;
+    private static readonly string[] VpnUpgradeNames = ["upgrade-controller.sh", "vpnctl", "manager.sh", "firewall.sh", "configure.lua", "nft-guard.nft", "dnsmasq.conf", "service.sh"];
+    private static readonly FrozenSet<string> SupportedVpnStatusHashes = new[]
+    {
+        VpnHelperHash,
+        "1cc33e3825a556a825e83392675c254ef22f738660d1016ae1413f7669f88231",
+        "3142fb503e64ddba79d523be3c87f0344d6efa78673e30a4b740714d8e9389ca",
+        "3c8a139d9ba6f3372b009e9e0fb5ed9ff27faf1675dcb654f09eedec851661f3",
+        "48b9af93098b4b1b31754a48707ac066a39977bcc0db0cc438ead64c62322bd4",
+        "572e2e1133cebb690584bda8b5ac047336451bc26c6a5e37522a756b6254fac5",
+        "7a8b84c3502e711c6b66c943f883a984dd9ed82da41455fc083ed0cc7d44b6fb",
+        "80f16fafe203d661d6a90686c90a25c61eea38cf9e83e002c1cdffea85d02f23",
+        "82a8b6655ff6cd43938ffe3735e8841599ef6116bf33079d8d203db9415ca3f2",
+        "8f9e82ca45177fc19ffd4d7663764fa44750e05eed86ef83567ed2dec5ce7827",
+        "96a4717fe085a80479675486d23b260c3254084638d195d933d4d9d944b98e88",
+        "9c2e3c21eecace7031c4029c969efdec44241f000716447df805f3020dfce95e",
+        "9e8b1a737888468a4be6a010a915524b84440037802c6cfc6a5e251abf0e81ce",
+        "b2c3fcfafeccd50fa3000ad5f8f66f1e42ff157b295cdda11dddd31571612af7",
+        "b5f581427afd423be3931473db2ce4b496a387b685ab3c48adf26cc597000f9a",
+        "cdb01d27775d61bcb3ae14a8d124ccbab683f940f1dcfd2adffa43a6b7b462f0",
+        "cf15a6290316dd6832873e35972831a590d70cf0734eb93dbcd96aab87fab6f1",
+        "e00749ed2a6273c95a4b0563212313c81e54928f6564fdbd8f9616d12a4df6ba",
+        "f5e1c9e627e3e978ff535de79b95ff920d7318e7ea3ce713e5b174efe313ca0c",
+        "f620dab27f951c7de2de77a89376975b51c79f57f8a8a24cec95392c9c61eea4",
+        "fe1f6d535ccee6ec0f9333c01108b00f35006209850ed641023dbb937dd30b48",
+    }.ToFrozenSet(StringComparer.Ordinal);
+    private static bool CanReadVpnStatus(string hash) => SupportedVpnStatusHashes.Contains(hash);
     // Literal errors from the pinned controller; an arbitrary JSON string is not a log message.
     private static string VpnErrorCode(JsonElement reply) => StringProperty(reply, "code") switch
     {
         "VPN_ACTIVE_PROFILE_DELETE" or "VPN_AUDIT_FAILED" or "VPN_BRIDGE_NOT_READY" or "VPN_BUSY" or
-        "VPN_CONFIGURATION_PENDING" or "VPN_CONFLICTING_OPTION" or "VPN_CORE_INTEGRITY" or "VPN_CORE_NOT_READY" or
+        "VPN_CONFIGURATION_PENDING" or "VPN_CONFLICTING_OPTION" or "VPN_CORE_INTEGRITY" or "VPN_CORE_NOT_READY" or "VPN_DHCP_NOT_READY" or
         "VPN_DEVICE_CHANGED" or "VPN_DUPLICATE_OPTION" or "VPN_FILE_UNAVAILABLE" or "VPN_GUEST_IN_USE" or
         "VPN_INTEGRITY" or "VPN_INVALID_EXTRA" or "VPN_INVALID_KEY" or "VPN_INVALID_NAME" or "VPN_INVALID_PATH" or
         "VPN_INVALID_PORT" or "VPN_INVALID_PROFILE_ID" or "VPN_INVALID_REQUEST" or "VPN_INVALID_SERVER" or
@@ -51,8 +86,12 @@ public sealed partial class DeviceFeatureService
         "VPN_UNSUPPORTED_SECURITY" or "VPN_UNSUPPORTED_TRANSPORT" or "VPN_VALIDATION_FAILED" or "VPN_VLESS_ONLY" or
         "VPN_WIFI_CONFIGURATION_CHANGED" or "VPN_WIFI_NOT_CONFIGURED" or "VPN_WIFI_NOT_READY" or
         "VPN_WIFI_SETTINGS_ENABLED" or "VPN_WIFI_SETTINGS_PENDING" or "VPN_WRITE_FAILED" => StringProperty(reply, "code")!,
+        var code when code is not null && VpnMessages.Errors.ContainsKey(code) => code,
         _ => "VPN_CONTROLLER_FAILED"
     };
+    private static string VpnRequestError(string code) => VpnMessages.Errors.TryGetValue(code, out var message) ? message + " (" + code + ")" : code == "VPN_DHCP_NOT_READY"
+        ? "Не запустилась служба выдачи IP-адресов VPN. Откройте «Логи и журналы»: подробности сохранены в vpn.log." + " (VPN_DHCP_NOT_READY)"
+        : "Контроллер VPN не завершил запрос. Обновите состояние перед повтором (" + code + ").";
     private static bool RequiredVpnBool(JsonElement value, string key)
     {
         Check(value.TryGetProperty(key, out var item) && item.ValueKind is JsonValueKind.True or JsonValueKind.False,
@@ -115,24 +154,58 @@ true
         var settingsSupported = json.TryGetProperty("settings_supported", out _) && RequiredVpnBool(json, "settings_supported");
         Check(json.TryGetProperty("profiles", out var array) && array.ValueKind == JsonValueKind.Array,
             "Список профилей VPN повреждён (VPN_REPLY_INVALID).");
-        Check(array.GetArrayLength() <= 32, "Список профилей VPN повреждён (VPN_REPLY_INVALID).");
+        Check(array.GetArrayLength() <= 1024, "Список профилей VPN повреждён (VPN_REPLY_INVALID).");
         var profiles = new List<VpnProfile>();
         foreach (var item in array.EnumerateArray())
         {
             Check(item.ValueKind == JsonValueKind.Object, "Список профилей VPN повреждён (VPN_REPLY_INVALID).");
-            profiles.Add(new VpnProfile(StringProperty(item, "id") ?? "", StringProperty(item, "name") ?? "", StringProperty(item, "transport") ?? "", RequiredVpnBool(item, "active")));
+            profiles.Add(new VpnProfile(StringProperty(item, "id") ?? "", StringProperty(item, "name") ?? "", StringProperty(item, "transport") ?? "", RequiredVpnBool(item, "active"),
+                StringProperty(item, "protocol") ?? "vless", StringProperty(item, "subscription_id"),
+                BoolProperty(item, "update_available"), BoolProperty(item, "removed_from_subscription"), VpnWarnings(item)));
         }
         return new VpnStatus(installed, helper, agent, dashboard, launcher,
             configured, enabled, coreRunning,
             StringProperty(json, "version") ?? "", StringProperty(json, "ssid") ?? "",
             StringProperty(json, "desired_ssid"), StringProperty(json, "password_mode"),
-            settingsSupported, profiles, StringProperty(json, "active_profile") ?? "", helper ? null : "Компоненты VPN требуют обновления; сохранённое состояние прочитано.");
+            settingsSupported, profiles, StringProperty(json, "active_profile") ?? "", helper ? null : "Компоненты VPN требуют обновления; сохранённое состояние прочитано.", ParseVpnSubscriptions(json), ParseVpnImportSummary(json));
+    }
+
+    private static IReadOnlyList<string> VpnWarnings(JsonElement profile)
+    {
+        if (!profile.TryGetProperty("warnings", out var values) || values.ValueKind != JsonValueKind.Array) return [];
+        return values.EnumerateArray().Where(value => value.ValueKind == JsonValueKind.String)
+            .Select(value => value.GetString()!).Where(VpnMessages.Warnings.ContainsKey).Distinct().ToArray();
+    }
+
+    private static IReadOnlyList<VpnSubscription> ParseVpnSubscriptions(JsonElement json)
+    {
+        if (!json.TryGetProperty("subscriptions", out var array)) return [];
+        Check(array.ValueKind == JsonValueKind.Array && array.GetArrayLength() <= 1024, "Некорректный список подписок VPN.");
+        return array.EnumerateArray().Select(item => new VpnSubscription(
+            StringProperty(item, "id") ?? "", StringProperty(item, "name") ?? "", StringProperty(item, "host") ?? "",
+            item.TryGetProperty("updated_at", out var updated) ? updated.ToString() : "",
+            item.TryGetProperty("profile_count", out var count) && count.ValueKind == JsonValueKind.Number && count.TryGetInt32(out var number) && number >= 0 ? number : 0)).ToArray();
+    }
+    private static VpnImportSummary? ParseVpnImportSummary(JsonElement json)
+    {
+        if (!json.TryGetProperty("last_import", out var summary) || summary.ValueKind == JsonValueKind.Null) return null;
+        Check(summary.ValueKind == JsonValueKind.Object, "Некорректный результат импорта VPN.");
+        int Count(string name) => summary.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var count) && count >= 0 ? count : 0;
+        var skipped = new List<VpnImportSkipped>();
+        if (summary.TryGetProperty("skipped", out var items) && items.ValueKind == JsonValueKind.Array)
+            foreach (var item in items.EnumerateArray())
+            {
+                var code = StringProperty(item, "code") ?? "VPN_UNSUPPORTED_OPTION";
+                if (code.Length > 80 || !code.StartsWith("VPN_", StringComparison.Ordinal) || code.Any(c => !(c is >= 'A' and <= 'Z' or >= '0' and <= '9' or '_'))) code = "VPN_UNSUPPORTED_OPTION";
+                skipped.Add(new(item.TryGetProperty("index", out var index) && index.ValueKind == JsonValueKind.Number && index.TryGetInt32(out var n) && n >= 0 ? n : 0, code));
+            }
+        return new(Count("added"), Count("updated"), Count("removed"), Count("duplicates"), Count("retained_active"), skipped);
     }
 
     private async Task<JsonElement> VpnRequestAsync(object request, CancellationToken ct, string? statusHelperHash = null, DeviceIdentity? expectedIdentity = null)
     {
         var body = JsonSerializer.SerializeToUtf8Bytes(request);
-        Check(body.Length <= 65536, "Запрос VPN превышает допустимый размер.");
+        Check(body.Length <= 32 * 1024 * 1024, "Запрос VPN превышает допустимый размер.");
         var expectedHelperHash = VpnHelperHash;
         if (statusHelperHash is not null)
         {
@@ -153,15 +226,15 @@ true
         {
             if (reply.ExitCode == 72 && Text(reply.Stderr) == "VPN_GUARD_REFUSED")
                 throw new DeviceFeatureException("Проверка каталога или контроллера VPN не пройдена. Обновите состояние (VPN_GUARD_REFUSED).");
-            throw new DeviceFeatureException("Контроллер VPN не завершил запрос. Обновите состояние перед повтором (" + RejectedVpnCode(reply.Stdout) + ").");
+            throw new DeviceFeatureException(VpnRequestError(RejectedVpnCode(reply.Stdout)));
         }
-        Check(reply.Stdout.Length <= 262144, "Слишком большой ответ менеджера VPN (VPN_REPLY_INVALID).");
+        Check(reply.Stdout.Length <= 2 * 1024 * 1024, "Слишком большой ответ менеджера VPN (VPN_REPLY_INVALID).");
         try
         {
             using var document = JsonDocument.Parse(reply.Stdout);
             var root = document.RootElement;
             Check(root.ValueKind == JsonValueKind.Object, "Некорректный ответ менеджера VPN (VPN_REPLY_INVALID).");
-            Check(BoolProperty(root, "ok"), "Менеджер VPN отклонил запрос. Обновите состояние (" + VpnErrorCode(root) + ").");
+            Check(BoolProperty(root, "ok"), VpnRequestError(VpnErrorCode(root)));
             Check(root.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Object,
                 "Ответ менеджера VPN не содержит состояние (VPN_REPLY_INVALID).");
             return data.Clone();
@@ -184,7 +257,7 @@ true
             await VpnRequestAsync(map, ct);
             await VerifyIdentityAsync(identity, ct);
             return await GetVpnStatusAsync(ct);
-        }, ct);
+        }, ct, measuredAgentPlatform: true);
 
     public Task<VpnStatus> ConfigureVpnWifiAsync(string ssid, VpnPasswordMode mode, string? password = null, CancellationToken ct = default)
     {
@@ -218,7 +291,7 @@ true
 
     // The helper takes the shared modem lock. Holding it in MutateAsync as
     // well would make import/activate/delete/rename/toggle fail with VPN_BUSY.
-    private async Task<VpnStatus> VpnProfileMutationAsync(object request, Func<VpnStatus,VpnStatus,bool> confirmed, CancellationToken ct)
+    private async Task<VpnStatus> VpnProfileMutationAsync(object request, Func<VpnStatus,VpnStatus,bool> confirmed, CancellationToken ct, DeviceIdentity? expectedIdentity = null)
     {
         await OperationGate.WaitAsync(ct);
         try
@@ -227,10 +300,12 @@ true
             using var local = new FileStream(Path.Combine(_storageRoot, "operation.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
             CheckLocalPending();
             var identity = await ReadIdentityAsync(ct: ct);
+            if (expectedIdentity is not null) Check(identity == expectedIdentity, "Устройство изменилось во время загрузки подписки (VPN_DEVICE_CHANGED).");
             var before = await GetVpnStatusAsync(ct);
             Check(before.HelperReady, "Сначала установите или обновите компоненты VPN.");
-            await VpnRequestAsync(request, ct, expectedIdentity: identity);
+            var reply = await VpnRequestAsync(request, ct, expectedIdentity: identity);
             var after = await GetVpnStatusAsync(ct);
+            after = after with { LastImport = ParseVpnImportSummary(reply) ?? after.LastImport };
             await VerifyIdentityAsync(identity, ct);
             Check(confirmed(before, after), "Модем не подтвердил изменение VPN. Обновите состояние перед повтором.");
             return after;
@@ -241,7 +316,7 @@ true
     internal static string ValidateVpnUri(string uri)
     {
         uri = uri.Trim();
-        Check(uri.StartsWith("vless://", StringComparison.Ordinal) && Encoding.UTF8.GetByteCount(uri) <= 32768 && !uri.Any(char.IsControl), "Нужна одна ссылка vless:// длиной не больше 32 КиБ.");
+        Check((uri.StartsWith("vless://", StringComparison.Ordinal) || uri.StartsWith("hy2://", StringComparison.Ordinal) || uri.StartsWith("hysteria2://", StringComparison.Ordinal)) && Encoding.UTF8.GetByteCount(uri) <= 32768 && !uri.Any(char.IsControl), "Нужна ссылка VLESS или Hysteria2 длиной не больше 32 КиБ.");
         return uri;
     }
     private static string ValidateVpnProfileName(string name)
@@ -260,10 +335,45 @@ true
         return VpnProfileMutationAsync(new { action = "import", uri, name }, (before, after) =>
             after.Profiles.Count == before.Profiles.Count + 1 && after.Profiles.Count(profile => !before.Profiles.Any(old => old.Id == profile.Id)) == 1, ct);
     }
+    internal static bool IsVpnConfig(string input) => input.TrimStart('\uFEFF').Split('\n').Select(line => line.Split('#')[0].Trim()).FirstOrDefault(line => line.Length != 0)?.Equals("[Interface]", StringComparison.OrdinalIgnoreCase) == true;
+    public Task<VpnStatus> ImportVpnConfigAsync(string config, string? name = null, CancellationToken ct = default)
+    {
+        Check(Encoding.UTF8.GetByteCount(config) <= 32768 && IsVpnConfig(config), "Нужен конфигурационный файл WireGuard или AmneziaWG не больше 32 КиБ.");
+        name = string.IsNullOrWhiteSpace(name) ? null : ValidateVpnProfileName(name);
+        return VpnProfileMutationAsync(new { action = "import_config", config, name }, (before, after) => after.Profiles.Count == before.Profiles.Count + 1, ct);
+    }
+    public async Task<VpnStatus> ImportVpnSubscriptionAsync(string url, string? name = null, CancellationToken ct = default)
+    {
+        _ = VpnSubscriptionClient.Validate(url);
+        name = string.IsNullOrWhiteSpace(name) ? null : ValidateVpnProfileName(name);
+        var documents = await VpnSubscriptionClient.FetchAsync(url, ct);
+        return await VpnProfileMutationAsync(new { action = "subscription_import", url, name, documents },
+            (before, after) => after.LastImport is not null, ct);
+    }
+    public async Task<VpnStatus> UpdateVpnSubscriptionAsync(string id, CancellationToken ct = default)
+    {
+        ValidateVpnProfileId(id);
+        // The URL is read only into private memory and is never returned in status or journal.
+        var identity = await ReadIdentityAsync(ct: ct);
+        var details = await VpnRequestAsync(new { action = "subscription_details", id }, ct, expectedIdentity: identity);
+        Check(details.TryGetProperty("subscription", out var subscription) && StringProperty(subscription, "id") == id,
+            "Модем не подтвердил подписку VPN.");
+        var url = StringProperty(subscription, "url") ?? "";
+        var documents = await VpnSubscriptionClient.FetchAsync(url, ct);
+        await VerifyIdentityAsync(identity, ct);
+        return await VpnProfileMutationAsync(new { action = "subscription_update", id, documents },
+            (before, after) => after.LastImport is not null, ct, expectedIdentity: identity);
+    }
+    public Task<VpnStatus> DeleteVpnSubscriptionAsync(string id, CancellationToken ct = default)
+    {
+        ValidateVpnProfileId(id);
+        return VpnProfileMutationAsync(new { action = "subscription_delete", id },
+            (before, after) => !(after.Subscriptions ?? []).Any(s => s.Id == id), ct);
+    }
     public Task<VpnStatus> ActivateVpnProfileAsync(string id, CancellationToken ct = default)
     {
         ValidateVpnProfileId(id);
-        return VpnProfileMutationAsync(new { action = "activate", id }, (_, after) => after.ActiveProfile == id && after.Profiles.Any(p => p.Id == id && p.Active), ct);
+        return VpnProfileMutationAsync(new { action = "activate", id }, (_, after) => after.ActiveProfile == id && after.Profiles.Any(p => p.Id == id && p.Active && !p.UpdateAvailable), ct);
     }
     public Task<VpnStatus> RenameVpnProfileAsync(string id, string name, CancellationToken ct = default)
     {
@@ -303,5 +413,5 @@ true
             var status = await GetVpnStatusAsync(ct);
             Check(status.Installed && status.HelperReady, "Установка компонентов VPN не подтверждена. Обновите состояние; подробности — в журнале.");
             return status;
-        }, ct);
+        }, ct, measuredAgentPlatform: true);
 }

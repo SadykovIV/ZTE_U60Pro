@@ -3,6 +3,10 @@ using System.Text;
 using System.Text.Json;
 using ZteImeiStudio.Windows.Core;
 
+if (args.Contains("--imei-read-only")) { await ImeiReadTests.RunAsync(); return; }
+
+if (args.Contains("--preparation-recovery-only")) { await PreparationRecoveryTests.RunAsync(); return; }
+
 if (args.Contains("--component-cleanup-only")) { await ComponentCleanupTests.RunAsync(); return; }
 if (args.Contains("--ready-reinstall-only")) { await ReadyReinstallTests.RunAsync(); return; }
 if (args.Contains("--force-preparation-only")) { await ForcePreparationTests.RunAsync(); return; }
@@ -57,6 +61,7 @@ static byte[] Tar(params (string Path, byte[] Bytes)[] entries)
 }
 
 BackupTemplateTests.Run();
+await PreparationRecoveryTests.RunAsync();
 await BackupKeyVerificationTests.RunAsync();
 await AdbRegressionTests.RunAsync();
 await AdbLineEndingTests.RunAsync();
@@ -134,8 +139,75 @@ var inventory = new SystemBackupInventory(1, new string('a', 32),
     [new("mmcblk0p1", "test", 1, 0, 1)]);
 SystemBackupManager.ValidateInventory(inventory);
 Check(true, "Full eMMC inventory accepted");
+foreach (var firmware in new[] { "5a4489882538b5ab1d3e0049371f1b620d28d262a429923299b4f2626d40d478", "c57e063d390983229dfc53aa87380b3d4655ee8daa1c748e1a032ac90cd0df81" })
+{
+    SystemBackupManager.ValidateInventory(inventory with { FirmwareHash = firmware });
+    Check(DeviceBackupManager.SupportsModemImage(firmware), "Measured B28/B04 images allow data and live system backup");
+    Reject(() => SystemBackupManager.ValidateInventory(inventory with { FirmwareHash = firmware, Offline = true, Capture = "offline" }), "B28/B04 live backup support does not authorize offline restore contract");
+}
+Reject(() => SystemBackupManager.ValidateInventory(inventory with { FirmwareHash = new string('c', 64) }), "Unknown firmware full partition backup rejected");
+Check(!DeviceBackupManager.SupportsModemImage("absent"), "Missing image does not authorize partition capture");
+
 Reject(() => SystemBackupManager.ValidateInventory(inventory with
     { Devices = inventory.Devices.Reverse().ToArray() }), "Swapped eMMC regions rejected");
+var backupEntryRoot=Path.Combine(Path.GetTempPath(),"zte-backup-entry-"+Guid.NewGuid());Directory.CreateDirectory(backupEntryRoot);
+try
+{
+    foreach(var journal in new[]{"imei-pending.json","pending.json","setup-pending.json"}) File.WriteAllText(Path.Combine(backupEntryRoot,journal),"saved recovery unchanged");
+    foreach(var kind in new[]{"all","modem","userData","configuration","system"})
+    {
+        var shell=new BackupEntryProbe();var features=new ZteImeiStudio.Windows.Features.DeviceFeatureService(shell,storageRoot:backupEntryRoot);
+        async Task Create() { if(kind=="system") await new SystemBackupManager(null!,features,backupEntryRoot).CreateAsync(); else await new DeviceBackupManager(null!,features,backupEntryRoot).CreateAsync(kind:kind); }
+        using(var active=new FileStream(Path.Combine(backupEntryRoot,"imei-operation.lock"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None))
+        {
+            try { await Create(); Check(false,"active NV write must refuse backup"); } catch(IOException) { Check(shell.Calls==0,"Active IMEI write prevents snapshot before SSH: "+kind); }
+        }
+        try { await Create(); Check(false,"backup must reach synthetic identity"); } catch(BackupProbeReached) { Check(shell.Calls==1,"Saved recovery journals do not prevent copy-only backup: "+kind); }
+        Check(new[]{"imei-pending.json","pending.json","setup-pending.json"}.All(j=>File.ReadAllText(Path.Combine(backupEntryRoot,j))=="saved recovery unchanged"),"Backup leaves recovery journals unchanged: "+kind);
+    }
+}
+finally { Directory.Delete(backupEntryRoot,true); }
+var scopedBackupRoot = Path.Combine(Path.GetTempPath(), "zte-scoped-backup-test-" + Guid.NewGuid().ToString("N"));
+try
+{
+    {
+        var id = Guid.NewGuid().ToString("D"); var directory = Path.Combine(scopedBackupRoot,"DeviceBackups",id); Directory.CreateDirectory(directory);
+        var entries = new List<DeviceBackupEntry>();
+        foreach (var part in new[]{("modemst1.bin","/dev/mmcblk0p8",4194304), ("modemst2.bin","/dev/mmcblk0p9",4194304), ("fsg.bin","/dev/mmcblk0p10",4194304), ("persist.bin","/dev/mmcblk0p56",8388608), ("user-data.tar","/data",128), ("configuration.tar","/etc + selected /data settings",128)})
+        {
+            var bytes = new byte[part.Item3];await File.WriteAllBytesAsync(Path.Combine(directory,part.Item1),bytes);
+            entries.Add(new(part.Item1,part.Item2,bytes.Length,Convert.ToHexStringLower(SHA256.HashData(bytes))));
+        }
+        var manifest = new DeviceBackupManifest(1,id,DateTimeOffset.UtcNow,new string('a',32),ImeiEngine.FirmwareHash,Guid.NewGuid().ToString("D"),entries.ToArray(),"legacy fixture",true);
+        var legacy = System.Text.Json.Nodes.JsonNode.Parse(JsonSerializer.Serialize(manifest))!.AsObject();legacy.Remove("Kind");
+        await File.WriteAllTextAsync(Path.Combine(directory,"manifest.json"),legacy.ToJsonString());
+        Check((await DeviceBackupManager.VerifyStoredAsync(scopedBackupRoot,id)).Kind=="all","Legacy six-file schema1 without Kind remains verifiable");
+    }
+    foreach (var kind in new[] { "configuration", "userData" })
+    foreach (var hash in new[] { "absent", new string('f',64), ImeiEngine.FirmwareHash })
+    {
+        var id = Guid.NewGuid().ToString("D");
+        var directory = Path.Combine(scopedBackupRoot,"DeviceBackups",id); Directory.CreateDirectory(directory);
+        var name = kind == "configuration" ? "configuration.tar" : "user-data.tar";
+        var source = kind == "configuration" ? "/etc + selected /data settings" : "/data";
+        var bytes = System.Text.Encoding.UTF8.GetBytes("synthetic archive");
+        await File.WriteAllBytesAsync(Path.Combine(directory,name),bytes);
+        var manifest = new DeviceBackupManifest(2,id,DateTimeOffset.UtcNow,new string('a',32),hash,Guid.NewGuid().ToString("D"),
+            [new DeviceBackupEntry(name,source,bytes.Length,Convert.ToHexStringLower(SHA256.HashData(bytes)))],"fixture",true,kind);
+        var manifestPath = Path.Combine(directory,"manifest.json");
+        await File.WriteAllTextAsync(manifestPath,JsonSerializer.Serialize(manifest));
+        var verified = await DeviceBackupManager.VerifyStoredAsync(scopedBackupRoot,id);
+        Check(verified.Kind == kind && verified.FirmwareHash == hash, "Scoped copy verifies measured or absent image identity: " + kind + "/" + hash[..6]);
+        await File.WriteAllTextAsync(manifestPath,JsonSerializer.Serialize(manifest with { Kind = "modem" }));
+        try { await DeviceBackupManager.VerifyStoredAsync(scopedBackupRoot,id); Check(false,"forged modem scope rejected"); }
+        catch (InvalidDataException) { Check(true,"Scoped copy cannot be relabeled as NV backup"); }
+        await File.WriteAllTextAsync(manifestPath,JsonSerializer.Serialize(manifest));
+        await File.AppendAllTextAsync(Path.Combine(directory,name),"corruption");
+        try { await DeviceBackupManager.VerifyStoredAsync(scopedBackupRoot,id); Check(false,"corrupt scoped archive rejected"); }
+        catch (InvalidDataException) { Check(true,"Scoped archive corruption rejected"); }
+    }
+}
+finally { if (Directory.Exists(scopedBackupRoot)) Directory.Delete(scopedBackupRoot,true); }
 var tempRoot = Path.Combine(Path.GetTempPath(), "zte-full-backup-test-" + Guid.NewGuid().ToString("N"));
 var backupId = Guid.NewGuid().ToString("D");
 var backupDir = Path.Combine(tempRoot, "SystemBackups", backupId);
@@ -175,9 +247,20 @@ try
     Check(true, "Tampered eMMC image rejected");
 }
 finally { Directory.Delete(tempRoot, recursive: true); }
+await ImeiReadTests.RunAsync();
 Console.WriteLine("ALL SYNTHETIC CHECKS PASSED");
 
 Check(AgentPackage.VersionForHash(AgentPackage.LegacyPublicSha256) == "2.8.0" && AgentPackage.SupportsVpn(AgentPackage.LegacyPublicSha256), "Previous public agent 2.8.0 remains recognized");
 Reject(() => BackupPatch.Prepare(encrypted, imei, ""), "Low-level backup codec still requires an explicit suffix");
 
 Check(AgentPackage.SupportedUpgradeHashes.Contains(AgentPackage.LegacyPublicSha256) && !AgentPackage.SupportedUpgradeHashes.Contains(new string('f',64)), "Public legacy agent accepted; unknown upgrade hash rejected");
+
+sealed class BackupProbeReached : Exception { }
+sealed class BackupEntryProbe : ZteImeiStudio.Transport.IRemoteShell
+{
+    internal int Calls;
+    public Task<ZteImeiStudio.Transport.RemoteResult> RunAsync(string command,byte[]? stdin=null,TimeSpan? timeout=null,CancellationToken ct=default)
+    { if(command!=AccessIdentity.Command) throw new InvalidOperationException("Unexpected backup command");Calls++;throw new BackupProbeReached(); }
+    public Task UploadAsync(string path,byte[] bytes,TimeSpan? timeout=null,CancellationToken ct=default)=>throw new InvalidOperationException("Unexpected upload");
+    public Task<byte[]> DownloadAsync(string path,TimeSpan? timeout=null,CancellationToken ct=default)=>throw new InvalidOperationException("Unexpected download");
+}

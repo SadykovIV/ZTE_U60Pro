@@ -363,7 +363,7 @@ public sealed partial class MainWindow : Window
             case 0:
                 AddCard("Подключение к модему", Localization.IsEnglish ? "Manage the modem over SSH. USB ADB is used only to prepare SSH access." : "Управление модемом выполняется по SSH. USB ADB используется только для подготовки доступа SSH.", panel =>
                 {
-                    panel.Children.Add(FieldPair(Field("Адрес модема", "host", "192.168.0.1"), Field("Пользователь SSH", "username", "root")));
+                    panel.Children.Add(FieldPair(Field("Адрес модема", "host", "192.168.0.1"), Field("Пользователь SSH", "username", "root", readOnly: true)));
                     panel.Children.Add(FileField("Приватный ключ SSH", "key_path", "Использовать локальный ключ"));
                     panel.Children.Add(FileField("Файл known_hosts", "known_hosts_path", "Использовать локальный known_hosts"));
                     var skipFirmware = new CheckBox
@@ -962,10 +962,10 @@ public sealed partial class MainWindow : Window
                     await ExecuteAsync(ModemOperation.ResumeImei, (string[]?)null), false));
                 panel.Children.Add(Muted("Используйте эту кнопку после прерванной записи или перезагрузки. Повторная запись проверяет журнал, NV и config."));
             });
-            AddCard("Новые IMEI", "Оба номера должны иметь 15 цифр и верную контрольную цифру. Перед записью создаётся проверенный бэкап.", panel =>
+            AddCard("Новые IMEI", "Прочитайте IMEI: программа определит одну или две активные записи NV550. Перед записью создаётся проверенный бэкап.", panel =>
             {
                 panel.Children.Add(Field("IMEI 1", "imei1", "15 цифр"));
-                panel.Children.Add(Field("IMEI 2", "imei2", "15 цифр"));
+                if (_snapshot?.ImeiRecordCount == 2) { panel.Children.Add(Field("IMEI 2", "imei2", "15 цифр"));
                 panel.Children.Add(ActionButton("Получить второй из первого", async () =>
                 {
                     try
@@ -975,29 +975,29 @@ public sealed partial class MainWindow : Window
                         SetStatus("Второй IMEI рассчитан из первого.");
                     }
                     catch (Exception error) { SetStatus(error.Message, true); }
-                }, false));
+                }, false)); }
                 panel.Children.Add(ActionButton("Проверить IMEI", async () =>
                 {
                     var first = Get("imei1");
-                    var second = Get("imei2");
-                    SetStatus(ImeiCodec.IsValid(first) && ImeiCodec.IsValid(second) && first != second
-                        ? "Оба IMEI прошли проверку формата и контрольной цифры."
-                        : "Проверьте оба IMEI: 15 цифр, верная контрольная цифра, номера различаются.",
-                        !(ImeiCodec.IsValid(first) && ImeiCodec.IsValid(second) && first != second));
+                    var second = _snapshot?.ImeiRecordCount == 1 ? "" : Get("imei2");
+                    SetStatus(ImeiCodec.IsValid(first) && (_snapshot?.ImeiRecordCount == 1 || (ImeiCodec.IsValid(second) && first != second))
+                        ? "Активные IMEI прошли проверку формата и контрольной цифры."
+                        : "Проверьте активные IMEI: 15 цифр, верная контрольная цифра; номера двух записей должны различаться.",
+                        !(ImeiCodec.IsValid(first) && (_snapshot?.ImeiRecordCount == 1 || (ImeiCodec.IsValid(second) && first != second))));
                     await Task.CompletedTask;
                 }, false));
                 var writeImei = new WrapPanel { Orientation = Orientation.Horizontal };
-                writeImei.Children.Add(ActionButton("Записать оба IMEI", async () =>
+                writeImei.Children.Add(ActionButton("Записать IMEI", async () =>
                 {
                     var first = Get("imei1");
-                    var second = Get("imei2");
-                    if (!ImeiCodec.IsValid(first) || !ImeiCodec.IsValid(second) || first == second)
+                    var second = _snapshot?.ImeiRecordCount == 1 ? "" : Get("imei2");
+                    if (_snapshot?.ImeiRecordCount is not (1 or 2) || !ImeiCodec.IsValid(first) || (_snapshot?.ImeiRecordCount == 2 && (!ImeiCodec.IsValid(second) || first == second)))
                     {
-                        SetStatus("Оба IMEI должны быть действительными и различаться.", true);
+                        SetStatus("Прочитайте IMEI и заполните номера активных записей NV550.", true);
                         return;
                     }
-                    if (await ConfirmAsync("Записать оба IMEI?", $"IMEI 1: {first}\nIMEI 2: {second}\nВо время записи модем может перезагрузиться."))
-                        await ExecuteAsync(ModemOperation.ApplyImei, ["imei1", "imei2"]);
+                    if (await ConfirmAsync("Записать IMEI?", $"IMEI 1: {first}" + (second.Length == 0 ? "" : $"\nIMEI 2: {second}") + "\nВо время записи модем может перезагрузиться."))
+                        await ExecuteAsync(ModemOperation.ApplyImei, _snapshot?.ImeiRecordCount == 1 ? ["imei1"] : ["imei1", "imei2"]);
                 }, true));
                 writeImei.Children.Add(OperationInfoButton(OperationHelpContent.Imei));
                 panel.Children.Add(writeImei);
@@ -1174,9 +1174,15 @@ public sealed partial class MainWindow : Window
                 break;
             case 1:
                 AddCard("Бэкап данных модема", "Сохраняет NV, persist, /data и конфигурацию. Создаётся с работающего модема; автоматического восстановления нет.", panel =>
-                    panel.Children.Add(Actions(("Создать бэкап данных", ModemOperation.CreateDeviceBackup, null))));
+                {
+                    panel.Children.Add(Actions(("Создать бэкап данных", ModemOperation.CreateDeviceBackup, null)));
+                    foreach (var kind in new[] { "modem", "userData", "configuration" })
+                        panel.Children.Add(ActionButton(Core.DeviceBackupManager.Title(kind), () => ExecuteAsync(ModemOperation.CreateDeviceBackup,
+                            new Dictionary<string,string> { ["backup_kind"] = kind }), false));
+                    panel.Children.Add(Muted("Конфигурацию и пользовательские файлы можно копировать отдельно. Копии содержат приватные данные; автоматического восстановления нет."));
+                });
                 AddBackups("Устройство", restoreOperation: null);
-                AddCard("Полный образ eMMC", "Считывает пользовательскую область eMMC и boot0/boot1 по SSH. Нужны свободное место на ПК и время; снимок работающего модема не атомарен. RPMB/OTP и автоматическое восстановление не поддерживаются. Доступно только на проверенной B31.", panel =>
+                AddCard("Полный образ eMMC", "Считывает пользовательскую область eMMC и boot0/boot1 по SSH. Нужны свободное место на ПК и время; снимок работающего модема не атомарен. RPMB/OTP и автоматическое восстановление не поддерживаются. Геометрия чтения проверена по данным B31, B28 и B04.", panel =>
                     panel.Children.Add(ActionButton("Создать полный образ", async () =>
                     {
                         if (await ConfirmAsync("Создать полный образ eMMC?", "Образ может занимать несколько гигабайт. Во время чтения модем должен оставаться подключённым к питанию и ПК."))
@@ -1318,7 +1324,7 @@ public sealed partial class MainWindow : Window
 
     private async Task OpenTerminalAsync()
     {
-        if (_terminalOpening || _terminal?.IsConnected == true) return;
+        if (_terminalOpening || _terminal?.IsConnected == true || !RequireSelectedConnection()) return;
         if (_snapshot?.IsConnected != true || _snapshot.ConnectionMode != "SSH")
         {
             SetStatus("Для терминала подключитесь к модему по SSH.", true);
@@ -1376,6 +1382,7 @@ public sealed partial class MainWindow : Window
 
     private async Task SendTerminalAsync()
     {
+        if (!RequireSelectedConnection()) return;
         if (_terminal?.IsConnected != true)
         {
             SetStatus("Сначала откройте терминал.", true);
@@ -1436,13 +1443,14 @@ public sealed partial class MainWindow : Window
         return row;
     }
 
-    private Control Field(string label, string key, string watermark, bool secret = false, bool multiline = false)
+    private Control Field(string label, string key, string watermark, bool secret = false, bool multiline = false, bool readOnly = false)
     {
         var stack = new StackPanel { Spacing = 5 };
         stack.Children.Add(new TextBlock { Text = Localization.Translate(label), Foreground = Secondary, FontSize = 12 });
         var input = new TextBox
         {
             Text = secret ? _preparationSecrets.GetValueOrDefault(key, "") : Get(key),
+            IsReadOnly = readOnly,
             Watermark = Localization.Translate(watermark),
             Background = Elevated,
             Foreground = Foreground,
@@ -1567,7 +1575,7 @@ public sealed partial class MainWindow : Window
             CanResize = false, Background = Surface, WindowStartupLocation = WindowStartupLocation.CenterOwner };
         var panel = new StackPanel { Margin = new Thickness(28), Spacing = 15 };
         panel.Children.Add(new TextBlock { Text = "ZTE U60Pro Manager", Foreground = Foreground, FontSize = 25, FontWeight = FontWeight.Bold });
-        panel.Children.Add(Muted("Windows x64 · " + typeof(MainWindow).Assembly.GetName().Version?.ToString(3)));
+        panel.Children.Add(Muted("Windows x64 · " + PublicVersion(System.Reflection.CustomAttributeExtensions.GetCustomAttribute<System.Reflection.AssemblyInformationalVersionAttribute>(typeof(MainWindow).Assembly)?.InformationalVersion, typeof(MainWindow).Assembly.GetName().Version)));
         var attribution = new WrapPanel { Orientation = Orientation.Horizontal };
         Button LinkButton(string title, string url)
         {
@@ -1708,12 +1716,40 @@ public sealed partial class MainWindow : Window
         return button;
     }
 
+    private bool SelectedConnectionMatches()
+    {
+        var saved = _service.GetConnectionSettings();
+        return Get("host") == saved.Host && Get("key_path") == saved.KeyPath &&
+            Get("known_hosts_path") == saved.KnownHostsPath && Get("username") == saved.Username &&
+            int.TryParse(Get("port"), out var port) && port == saved.Port;
+    }
+
+    private bool RequireSelectedConnection()
+    {
+        if (SelectedConnectionMatches()) return true;
+        _esimAuthorized = false;
+        SetStatus("Настройки подключения изменились; подключитесь к выбранному модему заново.", true);
+        return false;
+    }
+
+    private static bool UsesSavedSsh(ModemOperation operation) => operation is not (
+        ModemOperation.DiscoverConnections or ModemOperation.Connect or ModemOperation.PrepareSsh or
+        ModemOperation.EnableDiagnosticAdb or ModemOperation.VerifyBackupKey or ModemOperation.CancelComponentCleanup or
+        ModemOperation.VerifyDeviceBackup or ModemOperation.VerifySystemBackup or ModemOperation.ExportDiagnostics or
+        ModemOperation.CollectFirmwareAdaptation);
+
+    internal static string PublicVersion(string? informational, Version? fallback)
+    {
+        var version = informational?.Split('+', 2)[0];
+        return string.IsNullOrWhiteSpace(version) ? fallback?.ToString(3) ?? "unknown" : version;
+    }
+
     private async Task ExecuteAsync(ModemOperation operation, string[]? keys) =>
         await ExecuteAsync(operation, keys is null ? null : keys.ToDictionary(key => key, Get));
 
     private async Task ExecuteAsync(ModemOperation operation, IReadOnlyDictionary<string, string>? parameters)
     {
-        if (_busy) return;
+        if (_busy || (UsesSavedSsh(operation) && !RequireSelectedConnection())) return;
         parameters = parameters is null ? new Dictionary<string,string>() : new Dictionary<string,string>(parameters);
         ((Dictionary<string,string>)parameters)["skip_firmware_check"] = Get("skip_firmware_check") == "true" ? "true" : "false";
         if (operation == ModemOperation.PrepareSsh && _snapshot?.ComponentCleanupPending != true && _lastResearchInput != ResearchInputKey())
@@ -1910,6 +1946,7 @@ public sealed partial class MainWindow : Window
 
     private async Task RefreshApplicationsAsync()
     {
+        if (!RequireSelectedConnection()) return;
         try { _applications = await _service.ListApplicationsAsync(_lifetime.Token); RenderPage(); }
         catch (Exception error) { SetStatus(error.Message, true); }
     }

@@ -2,8 +2,9 @@ import Foundation
 private enum Failure: Error { case assertion(String) }
 private func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws { if try !value() { throw Failure.assertion(message) } }
 private final class Transport: RemoteTransport {
+    var firmwareHash = ModemEngine.firmwareHash
     var calls: [String] = [], phase = "", enabled = true, wanted = false
-    var absentStage = false, capabilityMissing = false
+    var absentStage = false, capabilityMissing = false, descriptorsMissing = false, b04Measured = true
     var identityReads=0, changeOnIdentityRead=Int.max
     var lostDispatch = false, lostACK = false, lostResult = false, outcome = "committed", changed = false
     var applies = 0, acks = 0, cleans = 0, cancels = 0
@@ -12,14 +13,15 @@ private final class Transport: RemoteTransport {
         var reply = ""
         if command == AccessIdentity.command {
             identityReads += 1
-            reply = ModemEngine.firmwareHash+" /firmware/image/modem.b16\n"+ModemEngine.routerHash+" /usr/bin/diag-router\n0123456789abcdef0123456789abcdef\n"+(changed || identityReads >= changeOnIdentityRead ? "11111111-1111-1111-1111-111111111111" : "00000000-0000-0000-0000-000000000001")+"\n"
-        } else if command == ADBControlManager.capabilityCommand {
+            reply = firmwareHash+"  /firmware/image/modem.b16\n"+ModemEngine.routerHash+" /usr/bin/diag-router\n0123456789abcdef0123456789abcdef\n"+(changed || identityReads >= changeOnIdentityRead ? "11111111-1111-1111-1111-111111111111" : "00000000-0000-0000-0000-000000000001")+"\n"
+        } else if command == ADBControlManager.capabilityCommand || command.contains(ADBControlManager.b04CapabilityCommand) {
+            if command.contains(ADBControlManager.b04CapabilityCommand) && !b04Measured { return .init(status:71,stdout:Data(),stderr:Data()) }
             if capabilityMissing { return .init(status:127,stdout:Data(),stderr:Data()) }
             reply="ADB_CAPABILITY_READY\n"
         } else if command.contains("ADB_STAGE_ABSENT") {
             return .init(status:absentStage ? 0 : 71,stdout:Data((absentStage ? "ADB_STAGE_ABSENT\n" : "").utf8),stderr:Data())
         } else if command == ADBControlProtocol.command {
-            reply = "ZTE_ADB_STATE_V1\nlinked=\(enabled ? 1 : 0)\nready=1\nbound=1\ndaemon=1\n"
+            reply = "ZTE_ADB_STATE_V1\nlinked=\(enabled ? 1 : 0)\nready=\(descriptorsMissing ? "unknown" : "1")\nbound=1\ndaemon=\(descriptorsMissing ? "0" : "1")\n"
         } else if input != nil {
             try check(digest(input!) == ADBControlManager.scriptHash,"Bad upload")
         } else if command.contains(" prepare ") {
@@ -69,6 +71,34 @@ private final class Fixture {
             let f=try Fixture();f.transport.lostDispatch=true;f.transport.lostACK=true
             let result=try f.engine.locked{try f.manager.setEnabled(false)}
             try check(result.enabled==false && result.supportsChange && f.transport.applies==1 && f.transport.acks==1 && f.transport.cleans==1,"Bad lifecycle")
+        }
+        try test("measured B28 uses descriptor capability and the same rollback transaction") {
+            let f=try Fixture();f.transport.firmwareHash=ADBControlManager.b28FirmwareHash
+            let result=try f.engine.locked{try f.manager.setEnabled(false)}
+            try check(result.enabled==false && result.supportsChange && f.transport.applies==1 && f.transport.acks==1,"B28 path")
+        }
+        for image in ["absent", ADBControlManager.b04FirmwareHash] {
+        try test("B04 image state \(image) requires native capability before switching") {
+            let f=try Fixture();f.transport.firmwareHash=image
+            let result=try f.engine.locked{try f.manager.setEnabled(false)}
+            try check(result.enabled==false && result.supportsChange && f.transport.applies==1,"B04 path")
+            try check(f.transport.calls.contains { $0.contains(ADBControlManager.b04CapabilityCommand) }, "B04 native proof missing")
+        }
+        try test("B04 image state \(image) alone never permits ADB changes") {
+            let f=try Fixture();f.transport.firmwareHash=image;f.transport.b04Measured=false
+            try reject{_=try f.engine.locked{try f.manager.setEnabled(false)}}
+            try check(f.transport.applies==0 && f.transport.calls.allSatisfy{!$0.contains("mkdir -m 700")},"Unmeasured B04 writes")
+        }
+        }
+        try test("already runtime-off still sends preparation to clear boot activation") {
+            let f=try Fixture();f.transport.enabled=false
+            _=try f.engine.locked{try f.manager.setEnabled(false)}
+            try check(f.transport.applies==1 && f.transport.cleans==1,"Persistence skipped due to runtime state")
+        }
+        try test("runtime off without descriptors still permits persistence-only disable") {
+            let f=try Fixture();f.transport.enabled=false;f.transport.descriptorsMissing=true
+            let result=try f.engine.locked{try f.manager.setEnabled(false)}
+            try check(result.enabled==false && !result.supportsChange && f.transport.applies==1,"Persistence-only unavailable")
         }
         try test("worker rollback cleans only after verified terminal receipt") {
             let f=try Fixture();f.transport.outcome="rolled-back"

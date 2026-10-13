@@ -31,7 +31,7 @@ public sealed record SystemBackupItem(string Id, string Path, long Bytes, string
     DateTimeOffset Created);
 
 /// <summary>
-/// Read-only full eMMC capture on verified B31. Images are streamed to disk and
+/// Read-only full eMMC capture on measured B31/B28/B04 images. Images are streamed to disk and
 /// independently rehashed before publishing. This class has no raw restore API.
 /// Live captures are not atomic and RPMB/OTP are outside the eMMC image.
 /// </summary>
@@ -57,6 +57,9 @@ public sealed class SystemBackupManager(SshTransport ssh, DeviceFeatureService f
 
     public async Task<SystemBackupItem> CreateAsync(CancellationToken ct = default)
     {
+        Directory.CreateDirectory(storageRoot);
+        using var imeiOperation = new FileStream(Path.Combine(storageRoot,"imei-operation.lock"),
+            FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None);
         Directory.CreateDirectory(Root);
         SecureDirectory(Root);
         var id = Guid.NewGuid().ToString("D");
@@ -71,6 +74,8 @@ public sealed class SystemBackupManager(SshTransport ssh, DeviceFeatureService f
         {
             var manifest = await features.MutateAsync(async (identity, token) =>
             {
+                if (!DeviceBackupManager.SupportsModemImage(identity.FirmwareHash))
+                    throw new InvalidDataException("Для этой прошивки не подтверждена геометрия полной копии. Соберите данные для адаптации.");
                 var script = await features.ResourceAsync("SystemBackups", "device.sh", ct)
                     .ConfigureAwait(false);
                 if (Convert.ToHexStringLower(SHA256.HashData(script)) != HelperHash)
@@ -84,7 +89,7 @@ public sealed class SystemBackupManager(SshTransport ssh, DeviceFeatureService f
                         .ConfigureAwait(false);
                     if (first.Cid != identity.Cid || first.BootID != identity.BootId ||
                         first.FirmwareHash != identity.FirmwareHash || first.Offline)
-                        throw new InvalidDataException("Полная копия работающего модема требует подтверждённую B31 и ту же загрузку.");
+                        throw new InvalidDataException("Полная копия работающего модема требует подтверждённую прошивку и ту же загрузку.");
                     var total = first.Devices.Sum(d => d.Bytes);
                     var free = new DriveInfo(Path.GetPathRoot(partial)!).AvailableFreeSpace;
                     if (free < checked(total + ReserveBytes))
@@ -130,7 +135,7 @@ public sealed class SystemBackupManager(SshTransport ssh, DeviceFeatureService f
                     // exits; never remove work files under a live helper.
                     if (!captureInFlight) await CleanupStageAsync(stage).ConfigureAwait(false);
                 }
-            }, ct).ConfigureAwait(false);
+            }, ct, measuredAgentPlatform: true).ConfigureAwait(false);
 
             var manifestPath = Path.Combine(partial, "manifest.json");
             await using (var output = new FileStream(manifestPath, FileMode.CreateNew,
@@ -241,7 +246,7 @@ public sealed class SystemBackupManager(SshTransport ssh, DeviceFeatureService f
     {
         if (value is null || value.Schema != 1 || !ValidCid(value.Cid) ||
             !Guid.TryParseExact(value.BootID, "D", out _) || !ValidHash(value.LayoutHash) ||
-            value.FirmwareHash != ImeiEngine.FirmwareHash ||
+            !(value.Offline ? value.FirmwareHash == ImeiEngine.FirmwareHash : DeviceBackupManager.SupportsModemImage(value.FirmwareHash)) ||
             value.OfflineReason is null || value.OfflineReason.Length > 4096 ||
             value.Capture != (value.Offline ? "offline" : "live-non-atomic") ||
             value.Devices is null || value.Devices.Length != Names.Length ||
@@ -415,10 +420,11 @@ public sealed class SystemBackupManager(SshTransport ssh, DeviceFeatureService f
             throw new InvalidDataException("Файл полной копии отсутствует или является ссылкой.");
     }
 
-    private static void SecureDirectory(string path)
+    internal static void SecureDirectory(string path)
     {
         CheckDirectory(path);
         if (OperatingSystem.IsWindows()) ProtectWindowsDirectory(path);
+        else File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
     }
 
     [SupportedOSPlatform("windows")]

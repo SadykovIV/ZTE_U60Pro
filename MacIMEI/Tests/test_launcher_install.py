@@ -14,6 +14,7 @@ class LauncherInstallTests(unittest.TestCase):
   self.firmware=self.base/'firmware';self.firmware.write_bytes(b'firmware fixture')
   self.ui=self.base/'zte_topsw_devui';self.ui.write_bytes(b'B31 UI fixture')
   self.b28_ui=b'B28 UI fixture';self.b28_russian_ui=b'B28 Russian UI fixture'
+  self.b04_ui=b'B04 UI fixture';self.b04_russian_ui=b'B04 Russian UI fixture'
   self.rc=self.etc/'rc.local';self.rc.write_text('#!/bin/sh\n# existing services\nexit 0\n');self.before=self.rc.read_bytes();self.rc.chmod(0o755)
   self.stock=self.etc/'init.d/zte_topsw_devui';self.stock.write_text('#!/bin/sh\nexit 0\n');self.stock.chmod(0o755)
   self.root=self.data/'zte-launcher';self.transaction=self.data/'zte-launcher-update'
@@ -31,7 +32,7 @@ class LauncherInstallTests(unittest.TestCase):
   for old,new in [('/usr/bin/zte_topsw_devui',str(self.ui)),('/data',str(self.data)),('/etc',str(self.etc)),('/sys/block/mmcblk0/device/cid',str(self.cid)),('/firmware/image/modem.b16',str(self.firmware)),('/tmp/zte-imei-app.lock',str(self.lock)),('/tmp/zte-launcher-trial/supervisor',str(self.base/'trial')),('/tmp/zte-vpn-screen',str(self.base/'screen'))]:script=script.replace(old,new)
   script=script.replace('= 0:700',f'= {os.getuid()}:700').replace('= 0:600',f'= {os.getuid()}:600').replace('stat -c %u \"$dir\")\" = 0',f'stat -c %u \"$dir\")\" = {os.getuid()}').replace('stat -c %u '+str(self.rc)+')\" = 0',f'stat -c %u {self.rc})\" = {os.getuid()}')
   script=script.replace('604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263',sha(self.firmware)).replace('a30da6481637f1fd94e037373d406e574be7e722937a4965325086740be67e35',sha(self.stock))
-  script=script.replace('e3914e78a8488cb736770f0ac9fb8ce10e0e5222fa50285f08e9e8be90d7f1e9',sha(self.ui)).replace('8d2ebbde880934f52195ad9595815d728f7aa4671bb0633d5a5149b09467ae90',hashlib.sha256(self.b28_ui).hexdigest()).replace('d6c3cd409705d5aa9c12185c84074513b159088025f005da7dbf01c51e3c3715',hashlib.sha256(self.b28_russian_ui).hexdigest())
+  script=script.replace('e3914e78a8488cb736770f0ac9fb8ce10e0e5222fa50285f08e9e8be90d7f1e9',sha(self.ui)).replace('8d2ebbde880934f52195ad9595815d728f7aa4671bb0633d5a5149b09467ae90',hashlib.sha256(self.b28_ui).hexdigest()).replace('d6c3cd409705d5aa9c12185c84074513b159088025f005da7dbf01c51e3c3715',hashlib.sha256(self.b28_russian_ui).hexdigest()).replace('dbe6eadc92d43a0cd7206264f9d75ab242df90e88c02ee2ba3ac65598b58523e',hashlib.sha256(self.b04_ui).hexdigest()).replace('0db2294b3e428fb53f4b6b725063ad8ffd9c396e5a27c54452f0ea479fa78f3b',hashlib.sha256(self.b04_russian_ui).hexdigest())
   # Service command execution is stubbed, its installed bytes still match the signed payload.
   script=script.replace(str(self.etc)+'/init.d/zte_launcher stop', 'test -f '+str(self.etc)+'/init.d/zte_launcher')
   self.script=self.base/'install.sh';self.script.write_text(script)
@@ -43,9 +44,9 @@ class LauncherInstallTests(unittest.TestCase):
  def assert_success(self,result):self.assertEqual(result.returncode,0,result.stderr.decode())
  def tree(self):
   return {str(p.relative_to(self.base)):(p.read_bytes(),p.stat().st_mode) for p in self.base.rglob('*') if p.is_file()}
- def test_b28_stock_and_russian_install_repeat_rollback_without_modem_binary(self):
+ def test_b28_b04_stock_and_russian_install_repeat_rollback_without_modem_binary(self):
   self.firmware.unlink()
-  for data in (self.b28_ui,self.b28_russian_ui):
+  for data in (self.b28_ui,self.b28_russian_ui,self.b04_ui,self.b04_russian_ui):
    self.ui.write_bytes(data);self.assert_success(self.run_install('preflight'))
    self.assert_success(self.run_install());self.assert_success(self.run_install())
    rc=self.rc.read_bytes();stock=self.stock.read_bytes()

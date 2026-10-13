@@ -12,8 +12,8 @@ pub(super) trait Device {
     fn card_power(&mut self, on: bool) -> Result<()>;
     fn pause(&mut self);
 }
-pub(super) struct B31;
-impl Device for B31 {
+pub(super) struct QmiModem;
+impl Device for QmiModem {
     fn mode(&mut self) -> Result<u8> {
         super::radio_qmi::mode()
     }
@@ -26,8 +26,7 @@ impl Device for B31 {
     fn selection(&mut self) -> Result<()> {
         // A profile may already be enabled while the modem retains the old
         // ICCID. Require the exact slot route, not the new ICCID at this point.
-        super::radio_qmi::iccid()
-            .map(|_| ())
+        super::radio_qmi::selection()
             .map_err(|_| Error::new("card_reset_failed"))
     }
     fn card_power(&mut self, on: bool) -> Result<()> {
@@ -48,7 +47,7 @@ pub fn ready() -> Result<()> {
     if super::radio_qmi::mode()? != 0 {
         return Err(Error::new("radio_not_online"));
     }
-    Ok(())
+    super::radio_qmi::selection()
 }
 fn wait_mode(device: &mut impl Device, desired: u8) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(20);
@@ -114,7 +113,7 @@ impl<D: Device> Drop for Restore<'_, D> {
 }
 pub fn refresh(expected: &str, relay: &mut dyn Relay) -> Result<()> {
     super::resources::check_radio_device()?;
-    cycle(&mut B31, expected, relay)
+    cycle(&mut QmiModem, expected, relay)
 }
 fn wait_card_ready(device: &mut impl Device, expected: &str) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(30);

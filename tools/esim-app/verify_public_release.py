@@ -11,7 +11,7 @@ def digest(p): return hashlib.sha256(p.read_bytes()).hexdigest()
 def need(value, message):
     if not value: raise SystemExit(message)
 def main(receipt_name='public-release-verification.json'):
-    groups = ['Esim', 'VPN', 'AgentDashboard', 'AgentDashboardInstall', 'AgentInstallation']
+    groups = ['Esim', 'VPN', 'AgentDashboard', 'AgentDashboardInstall', 'AgentInstallation', 'FirmwareSupport', 'Onboarding', 'SSHAccounts']
     records = {}
     for group in groups:
         base = MAC / group
@@ -24,7 +24,7 @@ def main(receipt_name='public-release-verification.json'):
         need((WIN/group/'SHA256.json').read_bytes() == (base/'SHA256.json').read_bytes(), 'Manifest mirror mismatch')
         records[group] = {'files': len(manifest), 'manifest_sha256': digest(base/'SHA256.json')}
     agent = MAC/'Esim/zte-agent-esim'; helper=MAC/'VPN/vpnctl'; launcher=MAC/'VPN/launcher.so'
-    for binary in [agent, helper, launcher, ROOT/'ModemAgent/agent/resources/esim/bridge', ROOT/'ModemAgent/agent/resources/esim/lpac']:
+    for binary in [agent, helper, launcher, ROOT/'ModemAgent/agent/resources/esim/bridge', ROOT/'ModemAgent/agent/resources/esim/lpac', *[MAC/'FirmwareSupport'/name for name in ['zte-support-nv','zte-support-config','zte-support-qmi']]]:
         data=binary.read_bytes()
         need(data[:6] == b'\x7fELF\x02\x01' and int.from_bytes(data[18:20],'little') == 183, 'Invalid ARM64 ELF')
         need(str(ROOT).encode() not in data and str(Path.home()).encode() not in data, 'Host path in ELF')
@@ -32,6 +32,14 @@ def main(receipt_name='public-release-verification.json'):
     fields=[('MacIMEI/Sources/BundledAgent.swift','sha256',digest(agent)),('MacIMEI/Sources/BundledAgent.swift','dashboardInstallerSHA256',digest(MAC/'AgentInstallation/dashboard.sh')),('MacIMEI/Sources/VPNSettings.swift','helperHash',digest(helper)),('MacIMEI/Sources/VPNSettings.swift','launcherHash',digest(launcher)),('MacIMEI/Sources/VPNSettings.swift','dashboardIndexHash',digest(MAC/'AgentDashboard/index.html'))]
     for path,key,value in fields:
         need(re.search(r'static let '+key+r' = "'+value+r'"',(ROOT/path).read_text()) is not None,'Compiled pin mismatch '+key)
+    for name in ['zte-support-nv','zte-support-config','zte-support-qmi']:
+        sha=digest(MAC/'FirmwareSupport'/name)
+        for source in ['MacIMEI/Sources/FirmwareRadioSupport.swift','Windows_x64/src/Diagnostics/FirmwareRadioSupport.cs']:
+            need(sha in (ROOT/source).read_text(),'Missing compiled research helper pin: '+name)
+    with tarfile.open(MAC/'FirmwareSupport/support-sources.tar.gz','r:gz') as support:
+        for member in support:
+            need(member.isfile() and not member.name.startswith('/') and '..' not in Path(member.name).parts,'Unsafe support source member')
+            need(support.extractfile(member).read()==(ROOT/member.name).read_bytes(),'Stale support source archive: '+member.name)
     sources=MAC/'Esim/eSIM-sources.tar.gz'; count=0; current_matches=0; dependency_snapshot=None
     with tarfile.open(sources,'r:gz') as tar:
         names=set()

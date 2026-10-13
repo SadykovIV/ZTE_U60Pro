@@ -14,6 +14,7 @@ public sealed partial class DeviceFeatureService
             System.Text.Encoding.UTF8.GetString(result.Stderr).Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n')
                 .Contains("AGENT_ERROR AGENT_SETUP_PENDING", StringComparer.Ordinal))
             return "Подготовка агента ещё владеет его файлами. Завершите её или выберите чистую установку после заводского сброса (AGENT_SETUP_PENDING).";
+        if (VpnInstallFailure(result) is { } installFailure) return installFailure;
         if (VpnUpgradeFailure(result) is { } upgradeFailure) return upgradeFailure;
         var permitted = new HashSet<string>(StringComparer.Ordinal)
         {
@@ -24,6 +25,34 @@ public sealed partial class DeviceFeatureService
         var code = Text(result.Stderr).Split('\n', StringSplitOptions.TrimEntries).FirstOrDefault(permitted.Contains)
             ?? (KnownInstallerExit(result.ExitCode) ? "installer_failed" : "transport_unknown");
         return $"Установка не подтверждена: {phase}; код {result.ExitCode}; {code}. Обновите состояние перед повтором.";
+    }
+
+    private static string? VpnInstallFailure(RemoteResult result)
+    {
+        if (result.ExitCode <= 0 || result.ExitCode >= 255) return null;
+        var messages = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["INVALID_STAGE"] = "Не удалось проверить путь временных файлов установки VPN.",
+            ["PLATFORM"] = "Для установки VPN нужны root и ARM64.",
+            ["UNSAFE_STAGE"] = "Временные файлы VPN не прошли проверку владельца и прав.",
+            ["ALREADY_PRESENT"] = "Компоненты или служба VPN уже существуют. Обновите состояние и выполните обновление компонентов.",
+            ["UNSUPPORTED_FIRMWARE"] = "Компоненты VPN рассчитаны на исследованные MU5250 CN B31, FLY B28 (B13) и XCBZ HK B04. Соберите данные для адаптации этой прошивки.",
+            ["RUNTIME_TOOLS"] = "В прошивке отсутствует одна из необходимых команд VPN: lua, nft, iptables, ip6tables, ebtables, dnsmasq, ip, ubus, sha256sum или flock.",
+            ["TUN_UNAVAILABLE"] = "Для VPN недоступно устройство /dev/net/tun.",
+            ["LUA_MODULES"] = "Не удалось загрузить модули Lua uci и luci.jsonc, необходимые для настройки VPN.",
+            ["NO_SPACE"] = "Для установки VPN требуется не менее 128 МиБ свободного места в /data.",
+            ["PAYLOAD"] = "Файлы установки VPN отсутствуют или не прошли проверку контрольной суммы.",
+            ["WRITE"] = "Не удалось записать компоненты VPN в /data. Проверьте место и доступность записи.",
+            ["INTEGRITY"] = "Записанные компоненты VPN не прошли проверку целостности.",
+            ["SERVICE"] = "Не удалось установить службу или автозапуск VPN. Обновите состояние и повторите обновление компонентов."
+        };
+        const string prefix = "VPN_INSTALL_ERROR ";
+        var codes = System.Text.Encoding.UTF8.GetString(result.Stderr)
+            .Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n')
+            .Where(line => line.StartsWith(prefix, StringComparison.Ordinal))
+            .Select(line => line[prefix.Length..]).Where(messages.ContainsKey)
+            .Distinct(StringComparer.Ordinal).ToArray();
+        return codes.Length == 1 ? messages[codes[0]] + " (VPN_INSTALL_" + codes[0] + ")" : null;
     }
 
     private static string? VpnUpgradeFailure(RemoteResult result)

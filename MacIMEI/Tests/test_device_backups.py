@@ -29,6 +29,8 @@ class ProducerTests(unittest.TestCase):
         self.raw = self.fixture / 'raw'
         self.raw.write_bytes(b'x' * 4194304)
         source = READER.read_text()
+        pending = source[source.index('for pending in '):source.index('partition() {')]
+        pending = re.sub(r'(?<!\S)/(data|tmp)/', lambda m: str(self.fixture) + '/' + m[1] + '/', pending)
         config = source[source.index('config_paths() {'):source.index('case "$mode" in\n  estimate)')]
         config = config.replace('"/$path"', '"' + str(self.fixture) + '/$path"')
         config = config.replace('-C / "$@"', '-C "' + str(self.fixture) + '" "$@"')
@@ -44,7 +46,7 @@ export PATH="''' + str(self.bin) + ''':/usr/bin:/bin:/usr/sbin:/sbin"
 mode=$1; cid=test-cid; dev=fixture; expected=4194304
 fail() { printf 'BACKUP_ERROR %s\\n' "$1" >&2; exit 1; }
 hash() { sha256sum "$1" | awk '{print $1}'; }
-''' + config + region)
+''' + pending + config + region)
 
     def tearDown(self):
         shutil.rmtree(self.stage)
@@ -97,7 +99,7 @@ hash() { sha256sum "$1" | awk '{print $1}'; }
         for name in ['etc/config/network', 'etc/rc.local', 'etc/zte-imei-admin/doas.conf',
                      'etc/init.d/zte_imei_ssclash', 'etc/init.d/zte_imei_screen_ru',
                      'data/zte-imei-apps/ssclash/.ssclash/config.json',
-                     'data/local/tmp/start_zte_agent.sh', 'data/zte-imei-studio/start_zte_agent.sh', 'data/zte-imei-studio/start_zte_imei_studio.sh', 'data/zte-imei-studio/bin/dropbear', 'data/zte-vpn/profiles/test.json', 'data/zte-vpn/config.json', 'data/zte-vpn/mihomo', 'data/unrelated/private.txt']:
+                     'data/local/tmp/start_zte_agent.sh', 'data/zte-imei-studio/start_zte_agent.sh', 'data/zte-imei-studio/start_zte_imei_studio.sh', 'data/zte-imei-studio/bin/dropbear', 'data/zte-vpn/profiles/test.json', 'data/zte-vpn/catalog.json', 'data/zte-vpn/wifi-settings.json', 'data/zte-launcher/info-layout.conf', 'data/zte-launcher/page-layout.conf', 'data/zte-vpn/config.json', 'data/zte-vpn/mihomo', 'data/unrelated/private.txt']:
             path = self.fixture / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text('fixture')
@@ -109,11 +111,34 @@ hash() { sha256sum "$1" | awk '{print $1}'; }
         with tarfile.open(fileobj=io.BytesIO(result.stdout), mode='r:') as archive:
             for name in ['etc/config/network', 'etc/rc.local', 'etc/zte-imei-admin/doas.conf',
                          'etc/init.d/zte_imei_ssclash', 'etc/init.d/zte_imei_screen_ru',
-                         'data/zte-imei-apps/ssclash/.ssclash/config.json', 'data/local/tmp/start_zte_agent.sh', 'data/zte-imei-studio/start_zte_agent.sh', 'data/zte-imei-studio/start_zte_imei_studio.sh', 'data/zte-imei-studio/bin/dropbear', 'data/zte-vpn/profiles/test.json', 'data/zte-vpn/config.json']:
+                         'data/zte-imei-apps/ssclash/.ssclash/config.json', 'data/local/tmp/start_zte_agent.sh', 'data/zte-imei-studio/start_zte_agent.sh', 'data/zte-imei-studio/start_zte_imei_studio.sh', 'data/zte-imei-studio/bin/dropbear', 'data/zte-vpn/profiles/test.json', 'data/zte-vpn/catalog.json', 'data/zte-vpn/wifi-settings.json', 'data/zte-launcher/info-layout.conf', 'data/zte-launcher/page-layout.conf', 'data/zte-vpn/config.json']:
                 self.assertIn(name, archive.getnames())
             self.assertTrue(archive.getmember('etc/rc.d/S95zte_imei_ssclash').issym())
             self.assertNotIn('data/unrelated/private.txt', archive.getnames())
             self.assertNotIn('data/zte-vpn/mihomo', archive.getnames())
+
+    def test_saved_deployment_journals_do_not_block_copy_and_are_preserved(self):
+        paths = ['data/zte-imei-studio/installations/active', 'data/local/tmp/zte-imei-installations/active',
+                 'data/local/tmp/open-u60-transactions/active', 'data/zte-vpn/transaction', 'data/zte-vpn/controller-upgrade']
+        for name in paths:
+            p=self.fixture/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_text('unfinished recovery journal')
+        (self.fixture/'etc/config').mkdir(parents=True)
+        (self.fixture/'etc/rc.local').write_text('fixture')
+        for mode in ['configuration','userData','partition']:
+            with self.subTest(mode=mode):self.receipt(self.run_mode(mode))
+        for name in paths:self.assertEqual((self.fixture/name).read_text(),'unfinished recovery journal')
+
+    def test_fota_marker_and_dangling_link_still_block_capture(self):
+        p=self.fixture/'tmp/fota_install_processing';p.parent.mkdir(parents=True)
+        for symlink in [False,True]:
+            if symlink:p.symlink_to('missing')
+            else:p.write_text('updating')
+            try:
+                result=self.run_mode('partition')
+                self.assertNotEqual(result.returncode,0)
+                self.assertIn(b'BACKUP_ERROR PENDING',result.stderr)
+                self.assertEqual(result.stdout,b'')
+            finally:p.unlink()
 
     def test_tar_failure_cannot_be_hidden_by_successful_tee_and_hash(self):
         self.command('tar', 'printf incomplete; exit 7\n')

@@ -37,6 +37,8 @@ FONTS = {
     "font_oswald": "/usr/ui/fonts/Zoswald-Medium-24.ttf",
 }
 COMPONENTS = {'ipacm': '/usr/bin/ipacm', 'ipa_switch': '/sbin/ipacm_switch.sh', 'network_init': '/etc/init.d/network', 'netifd': '/sbin/netifd', 'procd': '/sbin/procd', 'ubusd': '/sbin/ubusd', 'ubus_cli': '/bin/ubus', 'uci_cli': '/sbin/uci', 'lua_cli': '/usr/bin/lua', 'mdm': '/usr/bin/zte_topsw_mdm', 'qcril': '/usr/bin/qcrilNrd', 'diag_router': '/usr/bin/diag-router', 'libdiag': '/usr/lib/libdiag.so.1', 'libzte_sdk': '/usr/lib/libzte_SDKowrt.so', 'libzte_gesture': '/usr/lib/libzte_gesture.so', 'libzte_log': '/usr/lib/libztelog.so', 'libfreetype': '/usr/lib/libfreetype.so.6', 'libpng': '/usr/lib/libpng16.so.16', 'libdrm': '/usr/lib/libdrm.so.2', 'libgcc': '/lib/libgcc_s.so.1', 'libc': '/lib/libc.so', 'libuci': '/lib/libuci.so', 'libubus': '/lib/libubus.so', 'libubox': '/lib/libubox.so', 'libblobmsg_json': '/lib/libblobmsg_json.so', 'libjson_c': '/usr/lib/libjson-c.so.5', 'liblua': '/usr/lib/liblua.so.5.1', 'lua_uci': '/usr/lib/lua/uci.so', 'lua_jsonc': '/usr/lib/lua/luci/jsonc.so'}
+RADIO_COMPONENTS = {'firmware_mdt': '/firmware/image/modem.mdt', 'firmware_b16': '/firmware/image/modem.b16', 'libqcril_nr': '/usr/lib/libqcrilNr.so', 'libqcril_nrril': '/usr/lib/libqcrilNrril.so.1', 'libzte_qmi': '/usr/lib/libzteqmi.so', 'libqmiservices': '/usr/lib/libqmiservices.so', 'libqmi_cci': '/usr/lib/libqmi_cci.so.1', 'libqmi_csi': '/usr/lib/libqmi_csi.so.1', 'libqmi_common': '/usr/lib/libqmi_common_so.so.1', 'libqmi_encdec': '/usr/lib/libqmi_encdec.so.1', 'libqmi_sap': '/usr/lib/libqmi_sap.so.1', 'libqrtr': '/usr/lib/libqrtr.so.1', 'libqsocket': '/usr/lib/libqsocket.so.1', 'libglib': '/usr/lib/libglib-2.0.so.0', 'libgthread': '/usr/lib/libgthread-2.0.so.0', 'liblog': '/usr/lib/liblog.so.0', 'libtime_genoff': '/usr/lib/libtime_genoff.so.1', 'libsqlite3': '/usr/lib/libsqlite3.so'}
+COMPONENTS.update(RADIO_COMPONENTS)
 FACTS = set("uid os architecture firmware inner openwrt_version target agent_present agent_sha256 agent_running_count agent_mode agent_mapped_matches_disk http_health_status http_capabilities_status http_dashboard_status ui_mounts".split())
 CANARY = "PRIVATE_PASSWORD_CANARY_NEVER_EXPORT"
 SHIM = r'''#!__PYTHON__
@@ -68,6 +70,11 @@ elif tool=='uname':print('Linux' if args==['-s'] else 'aarch64')
 elif tool=='pidof':
  print(' '.join(str(x) for x in settings.get('pids',[])))
 elif tool=='ubus':
+ if 'zwrt_zte_mdm.api' in args:
+  method=args[args.index('zwrt_zte_mdm.api')+1]
+  if method not in ['get_sim_info','zte_get_current_slot_info']:sys.exit(91)
+  print(json.dumps({'current_sim_slot':settings.get(method,0),'iccid':'PRIVATE_PASSWORD_CANARY_NEVER_EXPORT','eid':'PRIVATE_PASSWORD_CANARY_NEVER_EXPORT'}))
+  sys.exit(settings.get('slot_exit',0))
  print(json.dumps({'integrate_version':'FLY_CN_MU5250V1.0.0B13','wa_inner_version':'BD_FLYMODEMMU5250V1.0.0B28','password':'PRIVATE_PASSWORD_CANARY_NEVER_EXPORT'}))
  sys.exit(settings.get('ubus_exit',0))
 elif tool=='jsonfilter':
@@ -75,6 +82,16 @@ elif tool=='jsonfilter':
   data=json.load(sys.stdin);value=data.get(args[1].removeprefix('@.'))
   if value is not None:print(value)
  except Exception:sys.exit(1)
+elif tool=='uci':
+ if len(args)!=3 or args[:2]!=['-q','get']:sys.exit(91)
+ print(settings.get(args[2],1))
+ sys.exit(settings.get('uci_exit',0))
+elif tool=='timeout':
+ if args!=['6','qrtr-lookup']:sys.exit(91)
+ os.execv(str(Path(__file__).parent/'qrtr-lookup'),['qrtr-lookup'])
+elif tool=='qrtr-lookup':
+ print(settings.get('qrtr','Service Version Instance Node Port\n11 1 0 3 42 UIM\n'))
+ sys.exit(settings.get('qrtr_exit',0))
 elif tool=='curl':
  if not args or args[0]!='-q':(root/'unexpected-curl-config-effect').touch()
  print(settings.get('http_status','401'),end='')
@@ -90,7 +107,7 @@ class Fixture:
         self.bin = self.root / "fixture-bin"
         self.bin.mkdir()
         shim = SHIM.replace("__PYTHON__", sys.executable)
-        for name in ["stat", "sha256sum", "id", "uname", "pidof", "ubus", "jsonfilter", "curl"]:
+        for name in ["stat", "sha256sum", "id", "uname", "pidof", "ubus", "jsonfilter", "curl", "uci", "timeout", "qrtr-lookup"]:
             path = self.bin / name
             path.write_text(shim)
             path.chmod(0o755)
@@ -100,7 +117,7 @@ class Fixture:
         self.put("/proc/self/mountinfo", b"1 2 3:4 / /none rw - tmpfs tmpfs rw\n")
         self.put("/data/zte-agent", b"synthetic agent")
         text = SOURCE.read_text()
-        prefixes = r"(?<![A-Za-z0-9_])/(?:usr|lib|etc|data|proc|sbin)|/bin/ubus"
+        prefixes = r"(?<![A-Za-z0-9_])/(?:usr|lib|etc|data|proc|sbin|firmware|sys)|/bin/ubus|/dev/(?:diag|at_mdm|ffs-diag|socket)"
         old = "export PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C"
         assert text.count(old) == 1
         text = text.replace(old, "export PATH='" + str(self.bin) + ":/usr/bin:/bin' LC_ALL=C")
@@ -390,6 +407,94 @@ class HelperTests(unittest.TestCase):
         self.fx.settings["http_status"] = CANARY
         facts,_=self.fx.inspect()
         self.assertEqual(facts["http_health_status"],"000")
+
+    def radio(self):
+        result=self.fx.run("radio")
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(result.stderr,b"")
+        text=result.stdout.decode()
+        self.assertTrue(text.startswith("FIRMWARE_RADIO_V1\n"))
+        self.assertTrue(text.endswith("FIRMWARE_RADIO_END\n"))
+        self.assertNotIn(CANARY,text)
+        return text
+
+    def test_radio_numeric_slot_sources_remain_separate_and_private_values_stay_local(self):
+        self.fx.settings.update(get_sim_info=0,zte_get_current_slot_info=2)
+        self.fx.settings["zwrt_zte_mdm.sim_info.sim_active_card_id"]=1
+        self.fx.settings["zwrt_zte_mdm.sim_info.simcard_active_slot_temp"]=3
+        text=self.radio()
+        for row in ["mdm_get_sim_info value=0","mdm_get_current_slot_info value=2","uci_active_card_id value=1","uci_active_slot_temp value=3"]:
+            self.assertIn("SLOT "+row+"\n",text)
+        self.assertNotIn("physical",text)
+        self.assertNotIn("builtin",text)
+        self.assertIn("POLICY nv_read=0 apdu_sent=0 radio_changed=0 profile_changed=0 private_identifiers_exported=0",text)
+
+    def test_radio_invalid_and_failed_slot_getters_are_not_exported(self):
+        self.fx.settings.update(get_sim_info=CANARY,zte_get_current_slot_info="1\n2")
+        self.fx.settings["zwrt_zte_mdm.sim_info.sim_active_card_id"]=CANARY
+        self.fx.settings["zwrt_zte_mdm.sim_info.simcard_active_slot_temp"]="89123456789012345678"
+        self.assertEqual(sum(x.startswith("SLOT ") and x.endswith("value=not_assessed") for x in self.radio().splitlines()),4)
+        self.fx.settings.update(get_sim_info=0,zte_get_current_slot_info=1,slot_exit=1,uci_exit=1)
+        self.assertEqual(sum(x.startswith("SLOT ") and x.endswith("value=not_assessed") for x in self.radio().splitlines()),4)
+
+    def test_radio_hashes_static_firmware_and_binaries_without_exporting_contents(self):
+        self.fx.put("/firmware/image/modem.b16",CANARY.encode())
+        self.fx.put("/firmware/image/modem.b03",b"static modem code")
+        self.fx.put("/usr/bin/zte_topsw_mdm",b"mdm")
+        self.fx.put("/usr/bin/diag-router",b"router")
+        text=self.radio()
+        self.assertIn("PATH firmware_mdt state=missing",text)
+        self.assertIn("PATH firmware_b16 state=present type=regular uid=0 mode=644 bytes="+str(len(CANARY))+" sha256="+hashlib.sha256(CANARY.encode()).hexdigest(),text)
+        self.assertIn("PATH modem_segment_b03 state=present",text)
+        self.assertNotIn("PATH modem_segment_b16 ",text)
+        self.assertIn("PATH mdm state=present",text)
+
+    def test_radio_firmware_symlink_does_not_hash_private_target(self):
+        target=self.fx.put("/data/private-firmware",CANARY.encode())
+        alias=self.fx.path("/firmware/image/modem.b16");alias.parent.mkdir(parents=True);alias.symlink_to(target)
+        text=self.radio()
+        self.assertIn("PATH firmware_b16 state=symlink",text)
+        self.assertNotIn(hashlib.sha256(CANARY.encode()).hexdigest(),text)
+
+    def test_radio_qrtr_projects_five_numeric_columns_only(self):
+        self.fx.settings['qrtr']="Service Version Instance Node Port\n11 1 0 3 42 "+CANARY+"\n1 PRIVATE 3 4 5\n999999999999999 0 0 0 0\n"
+        text=self.radio()
+        self.assertIn("QRTR service=11 version=1 instance=0 node=3 port=42\n",text)
+        self.assertIn("QRTR_INVENTORY state=observed count=1",text)
+        self.fx.settings['qrtr_exit']=1
+        text=self.radio()
+        self.assertIn("QRTR_INVENTORY state=not_assessed count=0",text)
+        self.assertNotIn("QRTR service=",text)
+
+    def test_radio_missing_optional_tools_remains_useful(self):
+        for name in ['ubus','jsonfilter','uci','qrtr-lookup']:
+            (self.fx.bin/name).unlink()
+        text=self.radio()
+        self.assertIn("QRTR_INVENTORY state=not_assessed count=0",text)
+        self.assertIn("SLOT mdm_get_sim_info value=not_assessed",text)
+        self.assertIn("PATH mdm state=",text)
+
+    def test_radio_diag_socket_and_partition_metadata_exclude_identifiers(self):
+        self.fx.put("/proc/net/unix",("Num RefCount Protocol Flags Type St Inode Path\n0001: 1 0 00010000 0001 01 123 @diag\n0002: 1 0 00010000 0001 01 456 @"+CANARY+"\n").encode())
+        self.fx.put("/sys/class/block/mmcblk0p68/uevent",("PARTNAME=userdata\nPARTUUID="+CANARY+"\n").encode())
+        self.fx.put("/sys/class/block/mmcblk0p68/size",b"1024\n")
+        self.fx.put("/sys/class/block/mmcblk0p68/start",b"4096\n")
+        self.fx.put("/sys/class/block/mmcblk0p68/ro",b"0\n")
+        self.fx.put("/sys/class/block/mmcblk0p69/uevent",("PARTNAME="+CANARY+"\n").encode())
+        self.fx.put("/proc/self/mountinfo",("1 2 3:4 / "+str(self.fx.path("/data"))+" rw - ext4 /dev/"+CANARY+" rw\n").encode())
+        text=self.radio()
+        self.assertIn("DIAG_SOCKET abstract_diag flags=00010000 type=0001 state=01",text)
+        self.assertIn("DIAG_SOCKETS state=observed count=1",text)
+        self.assertIn("PARTITION name=userdata block=mmcblk0p68 sectors=1024 start=4096 ro=0",text)
+        self.assertIn("MOUNT data mode=rw type=ext4",text)
+
+    def test_new_qmi_library_alias_cannot_export_configuration(self):
+        target=self.fx.put("/data/secret-ril",b"\x7fELF"+CANARY.encode())
+        alias=self.fx.path(COMPONENTS['libqcril_nr']);alias.parent.mkdir(parents=True,exist_ok=True);alias.symlink_to(target)
+        self.assertEqual(self.fx.inspect()[1]['libqcril_nr'][0],'unsafe_target')
+        result=self.fx.run('file','libqcril_nr',str(target.stat().st_size),hashlib.sha256(target.read_bytes()).hexdigest())
+        self.assertNotEqual(result.returncode,0)
+        self.assertEqual(result.stdout,b'')
 
     def test_unknown_file_id_never_path_argument(self):
         result=self.fx.run("file","../../etc/shadow","1","0"*64)

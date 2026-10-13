@@ -12,7 +12,7 @@ public sealed record OpkgFeeds(string Text, string Generation, string Release, s
 
 public sealed partial class DeviceFeatureService
 {
-    private const string OpkgManagerHash = "3fe8d52c7cd1028d260e3e4f37278277700b75f4b2df65a4093629ba2ab504fb";
+    private const string OpkgManagerHash = "cd451eb1fd5cf71f61843d24bb3260a3e1df785ba00c8b209f8ca702f3f72d12";
     private const string OpkgRuntimeMetadataHash = "1ed406a3644f16bb7937ce11cb395a2520bdeb4eb36090b6d1d9d7753804a74a";
     private static readonly HashSet<string> OpkgCommands = ["update", "list", "search", "info", "install", "remove", "list-installed", "status", "files"];
     private static readonly HashSet<string> ProtectedPackages = ["kernel", "libc", "libpthread", "zte-private-musl", "busybox", "opkg", "base-files", "procd", "netifd", "firewall", "firewall4"];
@@ -105,7 +105,7 @@ public sealed partial class DeviceFeatureService
     private Task<PrivateOpkgResult> InvokeOpkgAsync(string action, IReadOnlyList<string> args, byte[]? payload, string? generation, CancellationToken ct)
     {
         if (action is "inspect" or "read-feeds") return ReadOnly();
-        return MutateAsync(async (identity, token) => await Invoke(identity, token), ct);
+        return MutateAsync(async (identity, token) => await Invoke(identity, token), ct, measuredAgentPlatform: true);
 
         async Task<PrivateOpkgResult> ReadOnly()
         {
@@ -126,6 +126,9 @@ public sealed partial class DeviceFeatureService
                 var readCommand = "sh -s -- " + string.Join(" ", new[] { action, identity.Cid, identity.BootId }.Select(Quote));
                 return ParseOpkgResult((await RunAsync(readCommand, files["manager.sh"], 60, ct)).Stdout);
             }
+            var preflight = "sh -s -- " + string.Join(" ", new[] { "preflight", identity.Cid, identity.BootId }.Select(Quote));
+            Check(Text((await RunAsync(preflight, files["manager.sh"], 60, ct)).Stdout) == "OPKG_PREFLIGHT_OK",
+                "Адаптер opkg не подтвердил совместимость среды");
             if (token != null) files.Add("zte-timeout", await ResourceAsync("HostTools", "zte-timeout", ct));
             if (action == "install-adapter")
             {

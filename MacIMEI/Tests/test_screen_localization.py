@@ -19,7 +19,7 @@ import unittest
 
 REPO = Path(__file__).resolve().parents[2]
 RES = REPO / "MacIMEI/Resources/ScreenLocalization"
-EVIDENCE = Path(os.environ.get("ZTE_SCREEN_EVIDENCE", str(REPO / "evidence")))
+EVIDENCE = Path(os.environ.get("ZTE_SCREEN_EVIDENCE", str(REPO.parents[1] / "evidence")))
 CID = "0123456789abcdef0123456789abcdef"
 TOKEN = "11111111-2222-3333-4444-555555555555"
 FIRMWARE = "604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263"
@@ -312,13 +312,12 @@ class ScreenLocalizationTests(unittest.TestCase):
         with (self.root/"proc/self/mountinfo").open("a") as f:
             f.write(f"90 1 {dev} {root} {self.root}{target} rw - tmpfs tmpfs rw\n")
 
-    def b28(self):
-        folder = EVIDENCE / "friend-adaptation-20261006-191138/files"
+    def captured_profile(self, folder, patch):
         self.b28_originals = {name: (folder/name).read_bytes() for name in TARGETS}
         for name, data in self.b28_originals.items():
             self.write(TARGETS[name], data, 0o755 if name == "zte_topsw_devui" else 0o644)
             (self.root/"stock"/name).write_bytes(data)
-        manifest = json.loads((EVIDENCE/"b28-adaptation-20261006/font.patch.B28.candidate.json").read_text())
+        manifest = json.loads((RES/patch).read_text())
         original = self.b28_originals["zte_topsw_devui"]
         self.assertEqual(sha(original), manifest["inputSHA256"])
         patched = bytearray(original)
@@ -330,6 +329,65 @@ class ScreenLocalizationTests(unittest.TestCase):
         self.assertEqual(sha(patched), manifest["outputSHA256"])
         (self.stage/"zte_topsw_devui").write_bytes(patched)
         self.env["MOCK_FIRMWARE_SHA"] = "f"*64
+
+    def b28(self):
+        self.captured_profile(EVIDENCE / "friend-adaptation-20261006-191138/files", "font.patch.b28.json")
+
+    def b04(self):
+        self.captured_profile(EVIDENCE / "b04-20261013/adaptation/files", "font.patch.b04.json")
+
+    def test_b04_install_reboot_disable_enable_preserves_exact_originals(self):
+        self.b04()
+        self.assert_success(self.install())
+        for name, data in self.b28_originals.items():
+            self.assertEqual((self.installed/"backup"/name).read_bytes(), data)
+        self.cold_boot_state()
+        self.assert_success(self.boot())
+        self.assertEqual(len(json.loads((self.root/"mounts.json").read_text())), 3)
+        self.assert_success(self.manager("disable"))
+        for name, data in self.b28_originals.items():
+            self.assertEqual((self.root/TARGETS[name].lstrip("/")).read_bytes(), data)
+        self.assert_success(self.manager("enable"))
+
+    def test_b04_failed_start_rolls_back_exact_b04_originals(self):
+        self.b04()
+        result = self.install(MOCK_FAIL_CANDIDATE_START="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(self.installed.exists(), result.stderr)
+        for name, data in self.b28_originals.items():
+            self.assertEqual((self.root/TARGETS[name].lstrip("/")).read_bytes(), data)
+        self.assertEqual(self.language(), "en")
+        self.assertFalse((self.installed/".enabled").exists())
+
+    def test_b04_rejects_b31_patch_before_mutation(self):
+        self.b04()
+        (self.stage/"zte_topsw_devui").write_bytes(PAYLOAD["zte_topsw_devui"].read_bytes())
+        result = self.install()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("STAGE_HASH", result.stderr)
+        self.assert_no_device_mutations()
+
+    def upgrade_20261006(self):
+        self.prepare_scripts()
+        old = (EVIDENCE/"b04-20261013/screen/install.20261006.sh").read_text()
+        self.assertEqual(sha(old.encode()), "0ce40f0d3e4375165f5e4424db023b786f70f9cacf88bfe07c1c893cff12db7d")
+        (self.stage/"install.sh").write_text(self.redirect(old))
+        self.assert_success(self.run_script(self.stage/"install.sh", "install", self.stage, CID))
+        before = {p.name:p.read_bytes() for p in (self.installed/"backup").iterdir()}
+        self.assert_success(self.install())
+        self.assertEqual(before, {p.name:p.read_bytes() for p in (self.installed/"backup").iterdir()})
+        self.assertEqual((self.installed/"manager.sh").read_text(), self.redirect((RES/"install.sh").read_text()))
+        self.assert_success(self.manager("disable"))
+
+    def test_upgrade_20261006_preserves_b31_originals(self):
+        self.upgrade_20261006()
+        self.assert_originals()
+
+    def test_upgrade_20261006_preserves_b28_originals(self):
+        self.b28()
+        self.upgrade_20261006()
+        for name, data in self.b28_originals.items():
+            self.assertEqual((self.root/TARGETS[name].lstrip("/")).read_bytes(), data)
 
     def test_b28_install_disable_enable_preserves_exact_originals(self):
         self.b28()
@@ -394,7 +452,7 @@ class ScreenLocalizationTests(unittest.TestCase):
             (self.stage / name).write_bytes((RES / name).read_bytes())
         result = self.install()
         self.assert_success(result)
-        self.assertIn("revision=20261006", result.stdout)
+        self.assertIn("revision=20261013", result.stdout)
         self.assertEqual(before, {p.name:p.read_bytes() for p in (self.installed / "backup").iterdir()})
         self.assertIn("WiFi с VPN", (self.installed / "Chinese.ini").read_text())
         self.assertEqual(self.language(), "cn")
@@ -415,7 +473,7 @@ class ScreenLocalizationTests(unittest.TestCase):
             (self.stage / name).write_bytes((RES / name).read_bytes())
         result = self.install()
         self.assert_success(result)
-        self.assertIn("revision=20261006", result.stdout)
+        self.assertIn("revision=20261013", result.stdout)
         self.assertIn("WiFi с VPN", (self.installed / "Chinese.ini").read_text())
         self.assertEqual(before, {p.name:p.read_bytes() for p in (self.installed / "backup").iterdir()})
         self.assert_success(self.manager("disable"))

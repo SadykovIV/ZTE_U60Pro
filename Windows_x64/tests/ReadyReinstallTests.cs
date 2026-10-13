@@ -34,7 +34,7 @@ internal static class ReadyReinstallTests
                     var prefix=stream is null?"":"\n"+stream.Ready+"\n\n"+stream.Begin+"\n";
                     if(command.Contains("'--preflight'"))
                     {
-                        preflight++;Check(command.Contains(" -- '--reinstall' '--preflight' "),"new transaction after ready reconciliation requires reinstall");
+                        preflight++;Check(command.Contains(" -- '--clean-reinstall' '--preflight' "),"new transaction after ready reconciliation requires reinstall");
                         return Task.FromResult(Reply(prefix+"\n"+marker+"71\n"));
                     }
                     if(!command.Contains("observed_hash()"))throw new Exception("Unexpected ADB mutation");

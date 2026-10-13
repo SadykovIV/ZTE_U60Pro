@@ -9,7 +9,7 @@ struct ADBControlStatus: Equatable {
     var message: String? = nil
     var detail: String {
         if let message { return message }
-        if supportsChange { return enabled == true ? "USB ADB включён. Переключение действует до перезагрузки; USB-соединение кратко переподключится." : "USB ADB выключен. Переключение действует до перезагрузки; USB-соединение кратко переподключится." }
+        if supportsChange { return enabled == true ? "USB ADB включён. Переключение изменит также автозапуск ADB. USB-соединение кратко переподключится." : "USB ADB выключен. Переключение изменит также автозапуск ADB. USB-соединение кратко переподключится." }
         switch enabled {
         case true: return "USB ADB включён. Безопасное переключение без изменения USB-сети не подтверждено для этой прошивки."
         case false: return "USB ADB выключен. Безопасное переключение без изменения USB-сети не подтверждено для этой прошивки."

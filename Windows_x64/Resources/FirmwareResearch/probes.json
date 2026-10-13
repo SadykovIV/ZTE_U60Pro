@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "revision": 11,
+  "revision": 13,
   "profiles": [
     {
       "id": "b31",
@@ -13,6 +13,67 @@
       "firmwareSHA256": "7f1905a2844337640c08b66edffbde147adf20b3ab3e1e54fefe4939c40e633e",
       "routerSHA256": "55c54f74aaa427940254a2f16c36771e675a80a002363e4f10b0dfcb604d9c6f",
       "architecture": "aarch64"
+    },
+    {
+      "id": "b28",
+      "firmwareSHA256": "5a4489882538b5ab1d3e0049371f1b620d28d262a429923299b4f2626d40d478",
+      "routerSHA256": "55c54f74aaa427940254a2f16c36771e675a80a002363e4f10b0dfcb604d9c6f",
+      "architecture": "aarch64",
+      "identityRequirements": [
+        {
+          "probe": "firmware-hashes",
+          "fact": "mdm_sha256",
+          "equals": "5d140d3b31078607ecfc3333188289f12a9cdf285390448c5ae748bdf53f2995",
+          "label": {
+            "ru": "Штатный MDM B28",
+            "en": "Stock B28 MDM"
+          }
+        }
+      ]
+    },
+    {
+      "id": "b04",
+      "firmwareSHA256": null,
+      "routerSHA256": "55c54f74aaa427940254a2f16c36771e675a80a002363e4f10b0dfcb604d9c6f",
+      "architecture": "aarch64",
+      "identityRequirements": [
+        {
+          "probe": "firmware-hashes",
+          "fact": "mdm_sha256",
+          "equals": "93a346e7d69024503caf9ad42f14c97e1514dd7d04c7b5ebef4e30473b5d5c64",
+          "label": {
+            "ru": "Штатный MDM B04",
+            "en": "Stock B04 MDM"
+          }
+        },
+        {
+          "probe": "release",
+          "fact": "zte_integrate_version",
+          "equals": "XCBZ_HK_MU5250V1.0.0B04",
+          "label": {
+            "ru": "Публичная версия B04",
+            "en": "Public B04 version"
+          }
+        },
+        {
+          "probe": "release",
+          "fact": "zte_inner_version",
+          "equals": "BD_XCBZHKMU5250V1.0.0B04",
+          "label": {
+            "ru": "Внутренняя версия B04",
+            "en": "Internal B04 version"
+          }
+        },
+        {
+          "probe": "firmware-hashes",
+          "fact": "b04_image_compatible",
+          "equals": "1",
+          "label": {
+            "ru": "Проверенный образ B04 либо подтверждённое отсутствие образа",
+            "en": "Measured B04 image or confirmed image absence"
+          }
+        }
+      ]
     }
   ],
   "probes": [
@@ -52,11 +113,11 @@
     {
       "id": "firmware-hashes",
       "title": {
-        "ru": "Хэши прошивки и DIAG router",
-        "en": "Firmware and DIAG router hashes"
+        "ru": "Хэши прошивки, MDM и DIAG router",
+        "en": "Firmware, MDM and DIAG router hashes"
       },
       "category": "identity",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nhasher=not-assessed\nif command -v sha256sum >/dev/null 2>&1; then hasher=sha256sum\nelif command -v busybox >/dev/null 2>&1 && busybox sha256sum </dev/null >/dev/null 2>&1; then hasher=busybox-sha256sum; fi\nhash_fact() {\n hash_key=$1; hash_path=$2\n if test -L \"$hash_path\" || test ! -r \"$hash_path\" || test ! -f \"$hash_path\"; then state=$(path_state \"$hash_path\"); test \"$state\" != present || state=not-assessed; fact \"$hash_key\" \"$state\"; return; fi\n if test \"$hasher\" = not-assessed; then fact \"$hash_key\" not-assessed; return; fi\n if test \"$hasher\" = sha256sum; then if hash_result=$(sha256sum \"$hash_path\" 2>/dev/null); then hash_code=0; else hash_code=$?; fi\n else if hash_result=$(busybox sha256sum \"$hash_path\" 2>/dev/null); then hash_code=0; else hash_code=$?; fi; fi\n hash_result=${hash_result%% *}\n case \"$hash_result\" in ''|*[!0-9a-f]*) fact \"$hash_key\" not-assessed;; *)\n  if test \"$hash_code\" = 0 && test \"${#hash_result}\" = 64; then fact \"$hash_key\" \"$hash_result\"; else fact \"$hash_key\" not-assessed; fi;; esac\n}\nhash_fact firmware_sha256 /firmware/image/modem.b16\nhash_fact router_sha256 /usr/bin/diag-router\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n # Fixed absolute probe paths only. Verify every existing ancestor before\n # treating a missing intermediate directory as proof of absence below it.\n case \"$1\" in /*) ;; *) printf not-assessed; return;; esac\n test -d / && test -r / && test -x / || { printf not-assessed; return; }\n rest=${1#/}; checked=; depth=0\n while test -n \"$rest\"; do\n  part=${rest%%/*}; case \"$rest\" in */*) rest=${rest#*/};; *) rest=;; esac\n  case \"$part\" in ''|.|..) printf not-assessed; return;; esac\n  depth=$((depth+1)); test \"$depth\" -le 32 || { printf not-assessed; return; }\n  checked=\"$checked/$part\"\n  test ! -L \"$checked\" || { printf not-assessed; return; }\n  if test ! -e \"$checked\"; then printf missing; return; fi\n  if test -n \"$rest\"; then\n   test -d \"$checked\" && test -r \"$checked\" && test -x \"$checked\" || { printf not-assessed; return; }\n  else printf present; return; fi\n done\n printf present\n}\nhasher=not-assessed\nif command -v sha256sum >/dev/null 2>&1; then hasher=sha256sum\nelif command -v busybox >/dev/null 2>&1 && busybox sha256sum </dev/null >/dev/null 2>&1; then hasher=busybox-sha256sum; fi\npublish_hash() { hash_observation=$2; fact \"$1\" \"$2\"; }\nhash_fact() {\n hash_key=$1; hash_path=$2\n if test -L \"$hash_path\" || test ! -r \"$hash_path\" || test ! -f \"$hash_path\"; then state=$(path_state \"$hash_path\"); test \"$state\" != present || state=not-assessed; publish_hash \"$hash_key\" \"$state\"; return; fi\n if test \"$hasher\" = not-assessed; then publish_hash \"$hash_key\" not-assessed; return; fi\n if test \"$hasher\" = sha256sum; then if hash_result=$(sha256sum \"$hash_path\" 2>/dev/null); then hash_code=0; else hash_code=$?; fi\n else if hash_result=$(busybox sha256sum \"$hash_path\" 2>/dev/null); then hash_code=0; else hash_code=$?; fi; fi\n hash_result=${hash_result%% *}\n case \"$hash_result\" in ''|*[!0-9a-f]*) publish_hash \"$hash_key\" not-assessed;; *)\n  if test \"$hash_code\" = 0 && test \"${#hash_result}\" = 64; then publish_hash \"$hash_key\" \"$hash_result\"; else publish_hash \"$hash_key\" not-assessed; fi;; esac\n}\nhash_fact firmware_sha256 /firmware/image/modem.b16\nimage_observation=$hash_observation\ncase \"$image_observation\" in\n missing) fact firmware_identity_valid 1; fact firmware_image_present 0;;\n not-assessed) fact firmware_identity_valid not-assessed; fact firmware_image_present not-assessed;;\n *) fact firmware_identity_valid 1; fact firmware_image_present 1;;\nesac\ncase \"$image_observation\" in\n missing|c57e063d390983229dfc53aa87380b3d4655ee8daa1c748e1a032ac90cd0df81) fact b04_image_compatible 1;;\n not-assessed) fact b04_image_compatible not-assessed;;\n *) fact b04_image_compatible 0;;\nesac\nhash_fact router_sha256 /usr/bin/diag-router\ncase \"$hash_observation\" in not-assessed) fact router_identity_valid not-assessed;; *) fact router_identity_valid 1;; esac\nhash_fact mdm_sha256 /usr/bin/zte_topsw_mdm\n",
       "timeoutSeconds": 20,
       "maxBytes": 32768
     },
@@ -298,7 +359,7 @@
         "en": "Launcher: display ABI and service hash"
       },
       "category": "display",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nneed stat\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  if metadata=$(stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\" 2>/dev/null); then printf 'PATH %s %s\\n' \"$1\" \"$metadata\"\n  else printf 'PATH %s not-assessed\\n' \"$1\"; fi\n else printf 'PATH %s %s\\n' \"$1\" \"$(path_state \"$1\")\"; fi\n}\npresent() { case \"$(path_state \"$2\")\" in present) fact \"$1\" 1;; missing) fact \"$1\" 0;; *) fact \"$1\" not-assessed;; esac; }\nhasher=not-assessed\nif command -v sha256sum >/dev/null 2>&1; then hasher=sha256sum\nelif command -v busybox >/dev/null 2>&1 && busybox sha256sum </dev/null >/dev/null 2>&1; then hasher=busybox-sha256sum; fi\nhash_fact() {\n hash_key=$1; hash_path=$2\n if test -L \"$hash_path\" || test ! -r \"$hash_path\" || test ! -f \"$hash_path\"; then state=$(path_state \"$hash_path\"); test \"$state\" != present || state=not-assessed; fact \"$hash_key\" \"$state\"; return; fi\n if test \"$hasher\" = not-assessed; then fact \"$hash_key\" not-assessed; return; fi\n if test \"$hasher\" = sha256sum; then if hash_result=$(sha256sum \"$hash_path\" 2>/dev/null); then hash_code=0; else hash_code=$?; fi\n else if hash_result=$(busybox sha256sum \"$hash_path\" 2>/dev/null); then hash_code=0; else hash_code=$?; fi; fi\n hash_result=${hash_result%% *}\n case \"$hash_result\" in ''|*[!0-9a-f]*) fact \"$hash_key\" not-assessed;; *)\n  if test \"$hash_code\" = 0 && test \"${#hash_result}\" = 64; then fact \"$hash_key\" \"$hash_result\"; else fact \"$hash_key\" not-assessed; fi;; esac\n}\n\nfor path in /usr/bin/zte_topsw_devui /etc/init.d/zte_topsw_devui /usr/ui /usr/lib/libMiniGUI.so /dev/fb0 /dev/input /data/zte-launcher /data/zte-launcher-trial /tmp/zte-vpn-screen; do meta \"$path\"; done\nhash_fact ui_sha256 /usr/bin/zte_topsw_devui\nhash_fact ui_service_sha256 /etc/init.d/zte_topsw_devui\nif test -x /usr/bin/zte_topsw_devui && test -f /etc/init.d/zte_topsw_devui; then fact ui_present 1; else fact ui_present 0; fi\nservice_known=0\nif test -f /etc/init.d/zte_topsw_devui && test -r /etc/init.d/zte_topsw_devui; then\n value=$(sha256sum /etc/init.d/zte_topsw_devui); set -- $value\n case \"$1\" in a30da6481637f1fd94e037373d406e574be7e722937a4965325086740be67e35|0a462f4021b1306ac5fbf074a674bae9fef952f240436a47468c0126c5d41b50) service_known=1;; esac\nfi\nfact service_hash_known \"$service_known\"\nui_known=0\nif test -f /usr/bin/zte_topsw_devui && test -r /usr/bin/zte_topsw_devui; then\n value=$(sha256sum /usr/bin/zte_topsw_devui); set -- $value\n case \"$1\" in e3914e78a8488cb736770f0ac9fb8ce10e0e5222fa50285f08e9e8be90d7f1e9|16eb92e27f54b5cf5c6b316a6e7a62b782053a2a609d0d4904a7f08a7bc0afa4) ui_known=1;; esac\nfi\nfact ui_hash_known \"$ui_known\"\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nneed stat\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  if metadata=$(stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\" 2>/dev/null); then printf 'PATH %s %s\\n' \"$1\" \"$metadata\"\n  else printf 'PATH %s not-assessed\\n' \"$1\"; fi\n else printf 'PATH %s %s\\n' \"$1\" \"$(path_state \"$1\")\"; fi\n}\npresent() { case \"$(path_state \"$2\")\" in present) fact \"$1\" 1;; missing) fact \"$1\" 0;; *) fact \"$1\" not-assessed;; esac; }\nhasher=not-assessed\nif command -v sha256sum >/dev/null 2>&1; then hasher=sha256sum\nelif command -v busybox >/dev/null 2>&1 && busybox sha256sum </dev/null >/dev/null 2>&1; then hasher=busybox-sha256sum; fi\nhash_fact() {\n hash_key=$1; hash_path=$2\n if test -L \"$hash_path\" || test ! -r \"$hash_path\" || test ! -f \"$hash_path\"; then state=$(path_state \"$hash_path\"); test \"$state\" != present || state=not-assessed; fact \"$hash_key\" \"$state\"; return; fi\n if test \"$hasher\" = not-assessed; then fact \"$hash_key\" not-assessed; return; fi\n if test \"$hasher\" = sha256sum; then if hash_result=$(sha256sum \"$hash_path\" 2>/dev/null); then hash_code=0; else hash_code=$?; fi\n else if hash_result=$(busybox sha256sum \"$hash_path\" 2>/dev/null); then hash_code=0; else hash_code=$?; fi; fi\n hash_result=${hash_result%% *}\n case \"$hash_result\" in ''|*[!0-9a-f]*) fact \"$hash_key\" not-assessed;; *)\n  if test \"$hash_code\" = 0 && test \"${#hash_result}\" = 64; then fact \"$hash_key\" \"$hash_result\"; else fact \"$hash_key\" not-assessed; fi;; esac\n}\n\nfor path in /usr/bin/zte_topsw_devui /etc/init.d/zte_topsw_devui /usr/ui /usr/lib/libMiniGUI.so /dev/fb0 /dev/input /data/zte-launcher /data/zte-launcher-trial /tmp/zte-vpn-screen; do meta \"$path\"; done\nhash_fact ui_sha256 /usr/bin/zte_topsw_devui\nhash_fact ui_service_sha256 /etc/init.d/zte_topsw_devui\nif test -x /usr/bin/zte_topsw_devui && test -f /etc/init.d/zte_topsw_devui; then fact ui_present 1; else fact ui_present 0; fi\nservice_known=0\nif test -f /etc/init.d/zte_topsw_devui && test -r /etc/init.d/zte_topsw_devui; then\n value=$(sha256sum /etc/init.d/zte_topsw_devui); set -- $value\n case \"$1\" in a30da6481637f1fd94e037373d406e574be7e722937a4965325086740be67e35|0a462f4021b1306ac5fbf074a674bae9fef952f240436a47468c0126c5d41b50) service_known=1;; esac\nfi\nfact service_hash_known \"$service_known\"\nui_known=0\nif test -f /usr/bin/zte_topsw_devui && test -r /usr/bin/zte_topsw_devui; then\n value=$(sha256sum /usr/bin/zte_topsw_devui); set -- $value\n case \"$1\" in e3914e78a8488cb736770f0ac9fb8ce10e0e5222fa50285f08e9e8be90d7f1e9|16eb92e27f54b5cf5c6b316a6e7a62b782053a2a609d0d4904a7f08a7bc0afa4|8d2ebbde880934f52195ad9595815d728f7aa4671bb0633d5a5149b09467ae90|d6c3cd409705d5aa9c12185c84074513b159088025f005da7dbf01c51e3c3715|dbe6eadc92d43a0cd7206264f9d75ab242df90e88c02ee2ba3ac65598b58523e|0db2294b3e428fb53f4b6b725063ad8ffd9c396e5a27c54452f0ea479fa78f3b) ui_known=1;; esac\nfi\nfact ui_hash_known \"$ui_known\"\n",
       "timeoutSeconds": 12,
       "maxBytes": 32768
     },
@@ -309,7 +370,7 @@
         "en": "Screen localization: resource hashes and cache metadata"
       },
       "category": "display",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nneed stat\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  if metadata=$(stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\" 2>/dev/null); then printf 'PATH %s %s\\n' \"$1\" \"$metadata\"\n  else printf 'PATH %s not-assessed\\n' \"$1\"; fi\n else printf 'PATH %s %s\\n' \"$1\" \"$(path_state \"$1\")\"; fi\n}\npresent() { case \"$(path_state \"$2\")\" in present) fact \"$1\" 1;; missing) fact \"$1\" 0;; *) fact \"$1\" not-assessed;; esac; }\nhasher=not-assessed\nif command -v sha256sum >/dev/null 2>&1; then hasher=sha256sum\nelif command -v busybox >/dev/null 2>&1 && busybox sha256sum </dev/null >/dev/null 2>&1; then hasher=busybox-sha256sum; fi\nhash_fact() {\n hash_key=$1; hash_path=$2\n if test -L \"$hash_path\" || test ! -r \"$hash_path\" || test ! -f \"$hash_path\"; then state=$(path_state \"$hash_path\"); test \"$state\" != present || state=not-assessed; fact \"$hash_key\" \"$state\"; return; fi\n if test \"$hasher\" = not-assessed; then fact \"$hash_key\" not-assessed; return; fi\n if test \"$hasher\" = sha256sum; then if hash_result=$(sha256sum \"$hash_path\" 2>/dev/null); then hash_code=0; else hash_code=$?; fi\n else if hash_result=$(busybox sha256sum \"$hash_path\" 2>/dev/null); then hash_code=0; else hash_code=$?; fi; fi\n hash_result=${hash_result%% *}\n case \"$hash_result\" in ''|*[!0-9a-f]*) fact \"$hash_key\" not-assessed;; *)\n  if test \"$hash_code\" = 0 && test \"${#hash_result}\" = 64; then fact \"$hash_key\" \"$hash_result\"; else fact \"$hash_key\" not-assessed; fi;; esac\n}\n\nfor path in /usr/ui/language /usr/ui/language/English.ini /usr/ui/language/Chinese.ini /cache /cache/language.txt /data/zte-imei-screen-ru; do meta \"$path\"; done\nhash_fact english_sha256 /usr/ui/language/English.ini\nhash_fact chinese_sha256 /usr/ui/language/Chinese.ini\nassets_known=1\nfor language in English Chinese; do\n path=/usr/ui/language/$language.ini\n if test -f \"$path\" && test ! -L \"$path\" && test -r \"$path\"; then\n  value=$(sha256sum \"$path\"); set -- $value\n  case \"$language:$1\" in English:47348faa9783bc69109743eb9cfcc3bd3888508040e9eca51cb4a6460b7a70ce|English:d97925e40f9c119e05dd692e8fbce36593b55aa3faf718af373b2cb57075981a|Chinese:b84c05af9046dd2458b2220633320fb0089e1000e03c45c3dc81dc72df0c44fc|Chinese:5c4b6e3896593172608f2d8890da56c7ff521667129375d0a52383243bb760df) ;; *) assets_known=0;; esac\n else assets_known=0; fi\ndone\nfact language_hashes_known \"$assets_known\"\nif test -f /cache/language.txt && test ! -L /cache/language.txt; then fact cache_regular 1; else fact cache_regular 0; fi\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nneed stat\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  if metadata=$(stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\" 2>/dev/null); then printf 'PATH %s %s\\n' \"$1\" \"$metadata\"\n  else printf 'PATH %s not-assessed\\n' \"$1\"; fi\n else printf 'PATH %s %s\\n' \"$1\" \"$(path_state \"$1\")\"; fi\n}\npresent() { case \"$(path_state \"$2\")\" in present) fact \"$1\" 1;; missing) fact \"$1\" 0;; *) fact \"$1\" not-assessed;; esac; }\nhasher=not-assessed\nif command -v sha256sum >/dev/null 2>&1; then hasher=sha256sum\nelif command -v busybox >/dev/null 2>&1 && busybox sha256sum </dev/null >/dev/null 2>&1; then hasher=busybox-sha256sum; fi\nhash_fact() {\n hash_key=$1; hash_path=$2\n if test -L \"$hash_path\" || test ! -r \"$hash_path\" || test ! -f \"$hash_path\"; then state=$(path_state \"$hash_path\"); test \"$state\" != present || state=not-assessed; fact \"$hash_key\" \"$state\"; return; fi\n if test \"$hasher\" = not-assessed; then fact \"$hash_key\" not-assessed; return; fi\n if test \"$hasher\" = sha256sum; then if hash_result=$(sha256sum \"$hash_path\" 2>/dev/null); then hash_code=0; else hash_code=$?; fi\n else if hash_result=$(busybox sha256sum \"$hash_path\" 2>/dev/null); then hash_code=0; else hash_code=$?; fi; fi\n hash_result=${hash_result%% *}\n case \"$hash_result\" in ''|*[!0-9a-f]*) fact \"$hash_key\" not-assessed;; *)\n  if test \"$hash_code\" = 0 && test \"${#hash_result}\" = 64; then fact \"$hash_key\" \"$hash_result\"; else fact \"$hash_key\" not-assessed; fi;; esac\n}\n\nfor path in /usr/ui/language /usr/ui/language/English.ini /usr/ui/language/Chinese.ini /cache /cache/language.txt /data/zte-imei-screen-ru; do meta \"$path\"; done\nhash_fact english_sha256 /usr/ui/language/English.ini\nhash_fact chinese_sha256 /usr/ui/language/Chinese.ini\nassets_known=1\nfor language in English Chinese; do\n path=/usr/ui/language/$language.ini\n if test -f \"$path\" && test ! -L \"$path\" && test -r \"$path\"; then\n  value=$(sha256sum \"$path\"); set -- $value\n  case \"$language:$1\" in English:24a1022bf9380cfadaf4c4a737f1f0ce8ecf1ad025563376f7dd83eb94e6ceae|English:47348faa9783bc69109743eb9cfcc3bd3888508040e9eca51cb4a6460b7a70ce|English:d97925e40f9c119e05dd692e8fbce36593b55aa3faf718af373b2cb57075981a|Chinese:b84c05af9046dd2458b2220633320fb0089e1000e03c45c3dc81dc72df0c44fc|Chinese:5c4b6e3896593172608f2d8890da56c7ff521667129375d0a52383243bb760df) ;; *) assets_known=0;; esac\n else assets_known=0; fi\ndone\nfact language_hashes_known \"$assets_known\"\nif test -f /cache/language.txt && test ! -L /cache/language.txt; then fact cache_regular 1; else fact cache_regular 0; fi\n",
       "timeoutSeconds": 12,
       "maxBytes": 32768
     },
@@ -375,7 +436,7 @@
         "en": "Backups: source availability without content reads"
       },
       "category": "backup",
-      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nneed stat\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  if metadata=$(stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\" 2>/dev/null); then printf 'PATH %s %s\\n' \"$1\" \"$metadata\"\n  else printf 'PATH %s not-assessed\\n' \"$1\"; fi\n else printf 'PATH %s %s\\n' \"$1\" \"$(path_state \"$1\")\"; fi\n}\npresent() { case \"$(path_state \"$2\")\" in present) fact \"$1\" 1;; missing) fact \"$1\" 0;; *) fact \"$1\" not-assessed;; esac; }\n\nfor path in /data /etc/config /etc/rc.local /data/zte-vpn/profiles /data/zte-vpn/config.json /data/zte-imei-ttl /data/zte-imei-screen-ru /data/zte-imei-admin; do meta \"$path\"; done\nif test -d /data && test -r /data; then fact data_readable 1; else fact data_readable 0; fi\nif test -d /etc/config && test -r /etc/config && test -f /etc/rc.local; then fact config_sources_present 1; else fact config_sources_present 0; fi\nfact backup_consistency_validated not-performed\nfact secret_contents_collected 0\n",
+      "command": "set -eu\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n# Every fact is a bounded single line. Missing prerequisites never certify absence.\nfact() {\n key=$1; normalized=\n while :; do case \"$key\" in *-*) normalized=\"$normalized${key%%-*}_\"; key=\"${key#*-}\";; *) break;; esac; done\n value=$2\n case \"$value\" in *[!\\ -~]*) value=not-assessed;; esac\n if test \"${#value}\" -gt 512; then value=not-assessed; fi\n printf 'FR_FACT %s=%s\\n' \"$normalized$key\" \"$value\"\n}\nneed() { for tool in \"$@\"; do if ! command -v \"$tool\" >/dev/null 2>&1; then fact probe_tools not-assessed; printf 'FR_NOTICE missing_tool=%s\\n' \"$tool\" >&2; exit 0; fi; done; }\npath_state() {\n if test -e \"$1\" || test -L \"$1\"; then printf present\n elif test -d \"${1%/*}\" && test -x \"${1%/*}\" && test -r \"${1%/*}\"; then printf missing\n else printf not-assessed; fi\n}\nneed stat\nmeta() {\n if test -e \"$1\" || test -L \"$1\"; then\n  if metadata=$(stat -c 'type=%F mode=%a uid=%u gid=%g bytes=%s links=%h' \"$1\" 2>/dev/null); then printf 'PATH %s %s\\n' \"$1\" \"$metadata\"\n  else printf 'PATH %s not-assessed\\n' \"$1\"; fi\n else printf 'PATH %s %s\\n' \"$1\" \"$(path_state \"$1\")\"; fi\n}\npresent() { case \"$(path_state \"$2\")\" in present) fact \"$1\" 1;; missing) fact \"$1\" 0;; *) fact \"$1\" not-assessed;; esac; }\n\nfor path in /data /etc/config /etc/rc.local /data/zte-vpn/profiles /data/zte-vpn/config.json /data/zte-vpn/catalog.json /data/zte-imei-ttl /data/zte-imei-screen-ru /data/zte-imei-admin; do meta \"$path\"; done\nif test -d /data && test -r /data; then fact data_readable 1; else fact data_readable 0; fi\nif test -d /etc/config && test -r /etc/config && test -f /etc/rc.local; then fact config_sources_present 1; else fact config_sources_present 0; fi\nfact backup_consistency_validated not-performed\nfact secret_contents_collected 0\n",
       "timeoutSeconds": 12,
       "maxBytes": 32768
     },
@@ -648,8 +709,8 @@
     {
       "id": "generic-access",
       "title": {
-        "ru": "Диагностический доступ: SSH и пассивный агент",
-        "en": "Diagnostic access: SSH and passive agent"
+        "ru": "Подготовка SSH и агента",
+        "en": "SSH and agent preparation"
       },
       "profiles": [],
       "requirements": [
@@ -687,15 +748,6 @@
           "label": {
             "ru": "Безопасный каталог /etc",
             "en": "Safe /etc directory"
-          }
-        },
-        {
-          "probe": "pending-operations",
-          "fact": "no_pending_operations",
-          "equals": "1",
-          "label": {
-            "ru": "Нет обнаруженных незавершённых операций",
-            "en": "No detected pending operations"
           }
         },
         {
@@ -1060,15 +1112,15 @@
         }
       ],
       "limitations": {
-        "ru": "Наблюдаются условия общего Linux ARM64 доступа через уже доступный канал. Нет зависимости от Web API или метки прошивки. Установщик отдельно повторяет CID/boot, ABI, файлы, startup и транзакционные проверки. Это не разрешение записи и не проверка функций модема. Для ограничения проверки запуска payload установщик передаёт собственный проверенный ARM64-инструмент; наличие системной команды timeout не требуется.",
-        "en": "Observes general Linux ARM64 access prerequisites on an existing channel, independently of Web API or firmware labels. The installer separately repeats CID/boot, ABI, file, startup and transaction checks. This is neither write authorization nor modem-function validation. The installer supplies its own verified ARM64 tool to bound payload startup checks; a system timeout command is not required."
+        "ru": "Наблюдаются условия общего Linux ARM64 доступа через уже доступный канал. Нет зависимости от Web API или метки прошивки. Установщик отдельно повторяет CID/boot, ABI, файлы, startup и транзакционные проверки. Это не разрешение записи и не проверка функций модема. Для ограничения проверки запуска payload установщик передаёт собственный проверенный ARM64-инструмент; наличие системной команды timeout не требуется. Наличие сохранённого журнала само по себе не блокирует функцию: соответствующий журнал и активную блокировку повторно проверяет конкретная операция.",
+        "en": "Observes general Linux ARM64 access prerequisites on an existing channel, independently of Web API or firmware labels. The installer separately repeats CID/boot, ABI, file, startup and transaction checks. This is neither write authorization nor modem-function validation. The installer supplies its own verified ARM64 tool to bound payload startup checks; a system timeout command is not required. A saved journal alone does not block this feature; the actual operation rechecks its relevant journal and active lock."
       }
     },
     {
       "id": "preparation",
       "title": {
-        "ru": "Предпосылки подготовки диагностического доступа",
-        "en": "Diagnostic access preparation prerequisites"
+        "ru": "Предпосылки подготовки модема",
+        "en": "Modem preparation prerequisites"
       },
       "profiles": [],
       "requirements": [
@@ -1106,15 +1158,6 @@
           "label": {
             "ru": "Безопасный каталог /etc",
             "en": "Safe /etc directory"
-          }
-        },
-        {
-          "probe": "pending-operations",
-          "fact": "no_pending_operations",
-          "equals": "1",
-          "label": {
-            "ru": "Нет обнаруженных незавершённых операций",
-            "en": "No detected pending operations"
           }
         },
         {
@@ -1479,8 +1522,8 @@
         }
       ],
       "limitations": {
-        "ru": "Наблюдаются условия общего Linux ARM64 доступа через уже доступный канал. Нет зависимости от Web API или метки прошивки. Установщик отдельно повторяет CID/boot, ABI, файлы, startup и транзакционные проверки. Это не разрешение записи и не проверка функций модема. Для ограничения проверки запуска payload установщик передаёт собственный проверенный ARM64-инструмент; наличие системной команды timeout не требуется.",
-        "en": "Observes general Linux ARM64 access prerequisites on an existing channel, independently of Web API or firmware labels. The installer separately repeats CID/boot, ABI, file, startup and transaction checks. This is neither write authorization nor modem-function validation. The installer supplies its own verified ARM64 tool to bound payload startup checks; a system timeout command is not required."
+        "ru": "Наблюдаются условия общего Linux ARM64 доступа через уже доступный канал. Нет зависимости от Web API или метки прошивки. Установщик отдельно повторяет CID/boot, ABI, файлы, startup и транзакционные проверки. Это не разрешение записи и не проверка функций модема. Для ограничения проверки запуска payload установщик передаёт собственный проверенный ARM64-инструмент; наличие системной команды timeout не требуется. Наличие сохранённого журнала само по себе не блокирует функцию: соответствующий журнал и активную блокировку повторно проверяет конкретная операция.",
+        "en": "Observes general Linux ARM64 access prerequisites on an existing channel, independently of Web API or firmware labels. The installer separately repeats CID/boot, ABI, file, startup and transaction checks. This is neither write authorization nor modem-function validation. The installer supplies its own verified ARM64 tool to bound payload startup checks; a system timeout command is not required. A saved journal alone does not block this feature; the actual operation rechecks its relevant journal and active lock."
       }
     },
     {
@@ -1489,10 +1532,7 @@
         "ru": "Обновление агента и веб-панели",
         "en": "Agent and dashboard update"
       },
-      "profiles": [
-        "b31",
-        "b02-experimental"
-      ],
+      "profiles": [],
       "requirements": [
         {
           "probe": "identity",
@@ -1528,15 +1568,6 @@
           "label": {
             "ru": "Безопасный каталог /etc",
             "en": "Safe /etc directory"
-          }
-        },
-        {
-          "probe": "pending-operations",
-          "fact": "no_pending_operations",
-          "equals": "1",
-          "label": {
-            "ru": "Нет обнаруженных незавершённых операций",
-            "en": "No detected pending operations"
           }
         },
         {
@@ -1847,8 +1878,8 @@
         }
       ],
       "limitations": {
-        "ru": "Проверяются условия обновления уже подготовленного агента и панели в отдельном /data/zte-dashboard-runtime. Первичная подготовка WEB/ADB показана отдельно. Пароль не читается; службы не запускаются; точные payload/процессы проверяет установщик до изменений. Общий пассивный агент устанавливается отдельным путём диагностического доступа; этот адаптер обновления не применяется к непроверенной прошивке.",
-        "en": "Surveys updates of an already prepared agent and dashboard under private /data/zte-dashboard-runtime. Initial WEB/ADB preparation is separate. No password is read and no service starts; the installer checks exact payloads and processes before changes. The general passive agent uses the separate diagnostic-access path; this update adapter does not apply to unassessed firmware."
+        "ru": "Проверяются предпосылки обновления агента и веб-панели в приватном /data/zte-dashboard-runtime независимо от названия прошивки. Подготовка WEB/ADB выполняется отдельно. Пароль не читается, службы не запускаются. Установщик повторно проверяет платформу, файлы и процессы; доступность отдельных функций агента оценивается отдельно.",
+        "en": "Surveys agent and dashboard update prerequisites under private /data/zte-dashboard-runtime independently of firmware labels. Initial WEB/ADB preparation is separate. No password is read or service started. The installer repeats platform, file and process checks; individual agent functions are assessed separately."
       }
     },
     {
@@ -1893,15 +1924,6 @@
           "label": {
             "ru": "Безопасный каталог /etc",
             "en": "Safe /etc directory"
-          }
-        },
-        {
-          "probe": "pending-operations",
-          "fact": "no_pending_operations",
-          "equals": "1",
-          "label": {
-            "ru": "Нет обнаруженных незавершённых операций",
-            "en": "No detected pending operations"
           }
         },
         {
@@ -2266,8 +2288,8 @@
         }
       ],
       "limitations": {
-        "ru": "Наблюдаются условия общего Linux ARM64 доступа через уже доступный канал. Нет зависимости от Web API или метки прошивки. Установщик отдельно повторяет CID/boot, ABI, файлы, startup и транзакционные проверки. Это не разрешение записи и не проверка функций модема. Для ограничения проверки запуска payload установщик передаёт собственный проверенный ARM64-инструмент; наличие системной команды timeout не требуется.",
-        "en": "Observes general Linux ARM64 access prerequisites on an existing channel, independently of Web API or firmware labels. The installer separately repeats CID/boot, ABI, file, startup and transaction checks. This is neither write authorization nor modem-function validation. The installer supplies its own verified ARM64 tool to bound payload startup checks; a system timeout command is not required."
+        "ru": "Наблюдаются условия общего Linux ARM64 доступа через уже доступный канал. Нет зависимости от Web API или метки прошивки. Установщик отдельно повторяет CID/boot, ABI, файлы, startup и транзакционные проверки. Это не разрешение записи и не проверка функций модема. Для ограничения проверки запуска payload установщик передаёт собственный проверенный ARM64-инструмент; наличие системной команды timeout не требуется. Наличие сохранённого журнала само по себе не блокирует функцию: соответствующий журнал и активную блокировку повторно проверяет конкретная операция.",
+        "en": "Observes general Linux ARM64 access prerequisites on an existing channel, independently of Web API or firmware labels. The installer separately repeats CID/boot, ABI, file, startup and transaction checks. This is neither write authorization nor modem-function validation. The installer supplies its own verified ARM64 tool to bound payload startup checks; a system timeout command is not required. A saved journal alone does not block this feature; the actual operation rechecks its relevant journal and active lock."
       }
     },
     {
@@ -2276,9 +2298,7 @@
         "ru": "SSH: создание и удаление учётных записей",
         "en": "SSH account creation and removal"
       },
-      "profiles": [
-        "b31"
-      ],
+      "profiles": [],
       "requirements": [
         {
           "probe": "identity",
@@ -2314,15 +2334,6 @@
           "label": {
             "ru": "Безопасный каталог /etc",
             "en": "Safe /etc directory"
-          }
-        },
-        {
-          "probe": "pending-operations",
-          "fact": "no_pending_operations",
-          "equals": "1",
-          "label": {
-            "ru": "Нет обнаруженных незавершённых операций",
-            "en": "No detected pending operations"
           }
         },
         {
@@ -2369,11 +2380,29 @@
             "ru": "Команда flock",
             "en": "Command flock"
           }
+        },
+        {
+          "probe": "firmware-hashes",
+          "fact": "firmware_identity_valid",
+          "equals": "1",
+          "label": {
+            "ru": "Образ измерен либо его отсутствие подтверждено",
+            "en": "Image measured or its absence confirmed"
+          }
+        },
+        {
+          "probe": "firmware-hashes",
+          "fact": "router_identity_valid",
+          "equals": "1",
+          "label": {
+            "ru": "Идентичность diag-router измерена",
+            "en": "Measured diag-router identity"
+          }
         }
       ],
       "limitations": {
-        "ru": "Содержимое passwd/shadow, пароли, приватные ключи и список пользователей не читаются. Конфликты UID, владельцы конкретной учётной записи и активные сеансы проверяются перед операцией.",
-        "en": "Does not read passwd/shadow contents, passwords, private keys or user lists. UID conflicts, individual account ownership and active sessions are checked before a mutation."
+        "ru": "Содержимое passwd/shadow, пароли, приватные ключи и список пользователей не читаются. Конфликты UID, владельцы конкретной учётной записи и активные сеансы проверяются перед операцией. Наличие сохранённого журнала само по себе не блокирует функцию: соответствующий журнал и активную блокировку повторно проверяет конкретная операция.",
+        "en": "Does not read passwd/shadow contents, passwords, private keys or user lists. UID conflicts, individual account ownership and active sessions are checked before a mutation. A saved journal alone does not block this feature; the actual operation rechecks its relevant journal and active lock."
       }
     },
     {
@@ -2382,9 +2411,7 @@
         "ru": "IMEI: DIAG, NV550 и EFS /config",
         "en": "IMEI: DIAG, NV550 and EFS /config"
       },
-      "profiles": [
-        "b31"
-      ],
+      "profiles": [],
       "requirements": [
         {
           "probe": "identity",
@@ -2420,15 +2447,6 @@
           "label": {
             "ru": "Безопасный каталог /etc",
             "en": "Safe /etc directory"
-          }
-        },
-        {
-          "probe": "pending-operations",
-          "fact": "no_pending_operations",
-          "equals": "1",
-          "label": {
-            "ru": "Нет обнаруженных незавершённых операций",
-            "en": "No detected pending operations"
           }
         },
         {
@@ -2448,11 +2466,38 @@
             "ru": "Доступны DIAG router и libdiag",
             "en": "DIAG router and libdiag available"
           }
+        },
+        {
+          "probe": "firmware-hashes",
+          "fact": "firmware_identity_valid",
+          "equals": "1",
+          "label": {
+            "ru": "Образ измерен либо его отсутствие подтверждено",
+            "en": "Image measured or its absence confirmed"
+          }
+        },
+        {
+          "probe": "firmware-hashes",
+          "fact": "router_identity_valid",
+          "equals": "1",
+          "label": {
+            "ru": "Идентичность diag-router измерена",
+            "en": "Measured diag-router identity"
+          }
+        },
+        {
+          "probe": "firmware-hashes",
+          "fact": "router_sha256",
+          "equals": "55c54f74aaa427940254a2f16c36771e675a80a002363e4f10b0dfcb604d9c6f",
+          "label": {
+            "ru": "Совместимый ABI diag-router",
+            "en": "Compatible diag-router ABI"
+          }
         }
       ],
       "limitations": {
-        "ru": "Совпадение профиля и библиотек НЕ подтверждает запись IMEI. Исследование не открывает DIAG, не читает NV550 и EFS /config. Пара NV, длина и структура /config, API двух слотов и резервная копия проверяются штатной процедурой перед записью. Linux /config не является EFS /config.",
-        "en": "Matching hashes and libraries does NOT validate IMEI writes. Research does not open DIAG or read NV550/EFS /config. The normal operation validates the NV pair, /config length/structure, two-slot API and backup before writing. Linux /config is not EFS /config."
+        "ru": "Проверяется доступность DIAG и измеренный ABI diag-router, а не имя прошивки. Эти пассивные пробы не открывают DIAG и не подтверждают запись. Отдельный сбор данных для адаптации может включать безопасные сводки NV550/EFS без идентификаторов. Перед записью штатная операция заново проверяет одну или две фактически существующие записи NV550, EFS /config, API, резервную копию и привязку устройства. Неактивная NV1 не создаётся; ошибки транспорта не считаются отсутствием записи. Linux /config не является EFS /config.",
+        "en": "Observes DIAG availability and the measured diag-router ABI rather than the firmware name. These passive probes do not open DIAG or validate writes. The separate adaptation workflow may include identifier-free NV550/EFS summaries. Before writing, the normal operation revalidates the one or two existing NV550 records, EFS /config, API, backup and device binding. Inactive NV1 is never created; transport errors never mean an absent record. Linux /config is not EFS /config."
       }
     },
     {
@@ -2462,7 +2507,9 @@
         "en": "TTL: IPv4 rules and IPA acceleration"
       },
       "profiles": [
-        "b31"
+        "b31",
+        "b28",
+        "b04"
       ],
       "requirements": [
         {
@@ -2499,15 +2546,6 @@
           "label": {
             "ru": "Безопасный каталог /etc",
             "en": "Safe /etc directory"
-          }
-        },
-        {
-          "probe": "pending-operations",
-          "fact": "no_pending_operations",
-          "equals": "1",
-          "label": {
-            "ru": "Нет обнаруженных незавершённых операций",
-            "en": "No detected pending operations"
           }
         },
         {
@@ -2553,7 +2591,11 @@
           "label": {
             "ru": "Проверенный ipacm",
             "en": "Pinned ipacm"
-          }
+          },
+          "profiles": [
+            "b31",
+            "b04"
+          ]
         },
         {
           "probe": "tools-network",
@@ -2590,6 +2632,18 @@
             "ru": "Команда flock",
             "en": "Command flock"
           }
+        },
+        {
+          "probe": "ipa-runtime",
+          "fact": "ipacm_sha256",
+          "equals": "a8a90ee631a3e8de3266d1d4231e455c34fd0b0d1ad570e7c4d0dcd09eea1c54",
+          "label": {
+            "ru": "Проверенный ipacm",
+            "en": "Pinned ipacm"
+          },
+          "profiles": [
+            "b28"
+          ]
         }
       ],
       "limitations": {
@@ -2604,7 +2658,9 @@
         "en": "VPN installation and Guest Wi-Fi"
       },
       "profiles": [
-        "b31"
+        "b31",
+        "b28",
+        "b04"
       ],
       "requirements": [
         {
@@ -2644,15 +2700,6 @@
           }
         },
         {
-          "probe": "pending-operations",
-          "fact": "no_pending_operations",
-          "equals": "1",
-          "label": {
-            "ru": "Нет обнаруженных незавершённых операций",
-            "en": "No detected pending operations"
-          }
-        },
-        {
           "probe": "mounts",
           "fact": "data_install_mount",
           "equals": "1",
@@ -2681,20 +2728,20 @@
         },
         {
           "probe": "vpn-runtime",
-          "fact": "lua_uci",
-          "equals": "1",
+          "fact": "lua_module_file_uci",
+          "equals": "present",
           "label": {
-            "ru": "Lua UCI загружается",
-            "en": "Lua UCI loads"
+            "ru": "Файл модуля uci",
+            "en": "Module file uci"
           }
         },
         {
           "probe": "vpn-runtime",
-          "fact": "lua_luci_jsonc",
-          "equals": "1",
+          "fact": "lua_module_file_luci_jsonc",
+          "equals": "present",
           "label": {
-            "ru": "Lua luci.jsonc загружается",
-            "en": "Lua luci.jsonc loads"
+            "ru": "Файл модуля luci_jsonc",
+            "en": "Module file luci_jsonc"
           }
         },
         {
@@ -2798,8 +2845,8 @@
         }
       ],
       "limitations": {
-        "ru": "SSID, пароли Wi-Fi, профили и подписки VPN не читаются. Не меняются сеть, DNS и firewall; поддержка TPROXY, маршрутизации, конфликтов сетей и реальная передача трафика требуют транзакционных проверок установщика.",
-        "en": "Does not read SSIDs, Wi-Fi passwords, VPN profiles/subscriptions or change network/DNS/firewall. TPROXY, routing, network conflicts and real traffic still require installer transaction checks."
+        "ru": "SSID, пароли Wi-Fi, профили и подписки VPN не читаются. Не меняются сеть, DNS и firewall; поддержка TPROXY, маршрутизации, конфликтов сетей и реальная передача трафика требуют транзакционных проверок установщика. Наличие файлов Lua не подтверждает их загрузку: это проверяется установщиком.",
+        "en": "Does not read SSIDs, Wi-Fi passwords, VPN profiles/subscriptions or change network/DNS/firewall. TPROXY, routing, network conflicts and real traffic still require installer transaction checks. Lua module file presence does not prove loading; the installer verifies it."
       }
     },
     {
@@ -2808,9 +2855,7 @@
         "ru": "Launcher: установка плиток и настройки",
         "en": "Launcher tile installation and settings"
       },
-      "profiles": [
-        "b31"
-      ],
+      "profiles": [],
       "requirements": [
         {
           "probe": "identity",
@@ -2846,15 +2891,6 @@
           "label": {
             "ru": "Безопасный каталог /etc",
             "en": "Safe /etc directory"
-          }
-        },
-        {
-          "probe": "pending-operations",
-          "fact": "no_pending_operations",
-          "equals": "1",
-          "label": {
-            "ru": "Нет обнаруженных незавершённых операций",
-            "en": "No detected pending operations"
           }
         },
         {
@@ -2914,9 +2950,7 @@
         "ru": "Русификация экрана модема",
         "en": "Modem screen localization"
       },
-      "profiles": [
-        "b31"
-      ],
+      "profiles": [],
       "requirements": [
         {
           "probe": "identity",
@@ -2952,15 +2986,6 @@
           "label": {
             "ru": "Безопасный каталог /etc",
             "en": "Safe /etc directory"
-          }
-        },
-        {
-          "probe": "pending-operations",
-          "fact": "no_pending_operations",
-          "equals": "1",
-          "label": {
-            "ru": "Нет обнаруженных незавершённых операций",
-            "en": "No detected pending operations"
           }
         },
         {
@@ -3020,9 +3045,7 @@
         "ru": "Проверенный каталог диагностических приложений",
         "en": "Verified diagnostic application catalog"
       },
-      "profiles": [
-        "b31"
-      ],
+      "profiles": [],
       "requirements": [
         {
           "probe": "identity",
@@ -3058,15 +3081,6 @@
           "label": {
             "ru": "Безопасный каталог /etc",
             "en": "Safe /etc directory"
-          }
-        },
-        {
-          "probe": "pending-operations",
-          "fact": "no_pending_operations",
-          "equals": "1",
-          "label": {
-            "ru": "Нет обнаруженных незавершённых операций",
-            "en": "No detected pending operations"
           }
         },
         {
@@ -3228,9 +3242,7 @@
         "ru": "Изолированный адаптер opkg",
         "en": "Isolated opkg adapter"
       },
-      "profiles": [
-        "b31"
-      ],
+      "profiles": [],
       "requirements": [
         {
           "probe": "identity",
@@ -3266,15 +3278,6 @@
           "label": {
             "ru": "Безопасный каталог /etc",
             "en": "Safe /etc directory"
-          }
-        },
-        {
-          "probe": "pending-operations",
-          "fact": "no_pending_operations",
-          "equals": "1",
-          "label": {
-            "ru": "Нет обнаруженных незавершённых операций",
-            "en": "No detected pending operations"
           }
         },
         {
@@ -3454,9 +3457,7 @@
         "ru": "Резервная копия конфигурации",
         "en": "Configuration backup"
       },
-      "profiles": [
-        "b31"
-      ],
+      "profiles": [],
       "requirements": [
         {
           "probe": "identity",
@@ -3492,15 +3493,6 @@
           "label": {
             "ru": "Безопасный каталог /etc",
             "en": "Safe /etc directory"
-          }
-        },
-        {
-          "probe": "pending-operations",
-          "fact": "no_pending_operations",
-          "equals": "1",
-          "label": {
-            "ru": "Нет обнаруженных незавершённых операций",
-            "en": "No detected pending operations"
           }
         },
         {
@@ -3601,11 +3593,29 @@
             "ru": "Источники конфигурации существуют",
             "en": "Configuration sources exist"
           }
+        },
+        {
+          "probe": "firmware-hashes",
+          "fact": "firmware_identity_valid",
+          "equals": "1",
+          "label": {
+            "ru": "Образ измерен либо его отсутствие подтверждено",
+            "en": "Image measured or its absence confirmed"
+          }
+        },
+        {
+          "probe": "firmware-hashes",
+          "fact": "router_identity_valid",
+          "equals": "1",
+          "label": {
+            "ru": "Идентичность diag-router измерена",
+            "en": "Measured diag-router identity"
+          }
         }
       ],
       "limitations": {
-        "ru": "Файлы конфигурации и секреты не копируются в исследование. Согласованность живой системы, свободное место компьютера и контроль потока SHA256 проверяются настоящим резервным копированием.",
-        "en": "Configuration and secret contents are not copied into research. Live-system consistency, host free space and SHA256 stream verification belong to the real backup workflow."
+        "ru": "Файлы конфигурации и секреты не копируются в исследование. Согласованность живой системы, свободное место компьютера и контроль потока SHA256 проверяются настоящим резервным копированием. Наличие сохранённого журнала само по себе не блокирует функцию: соответствующий журнал и активную блокировку повторно проверяет конкретная операция.",
+        "en": "Configuration and secret contents are not copied into research. Live-system consistency, host free space and SHA256 stream verification belong to the real backup workflow. A saved journal alone does not block this feature; the actual operation rechecks its relevant journal and active lock."
       }
     },
     {
@@ -3614,9 +3624,7 @@
         "ru": "Резервная копия /data",
         "en": "User data backup"
       },
-      "profiles": [
-        "b31"
-      ],
+      "profiles": [],
       "requirements": [
         {
           "probe": "identity",
@@ -3652,15 +3660,6 @@
           "label": {
             "ru": "Безопасный каталог /etc",
             "en": "Safe /etc directory"
-          }
-        },
-        {
-          "probe": "pending-operations",
-          "fact": "no_pending_operations",
-          "equals": "1",
-          "label": {
-            "ru": "Нет обнаруженных незавершённых операций",
-            "en": "No detected pending operations"
           }
         },
         {
@@ -3761,11 +3760,29 @@
             "ru": "/data доступен для чтения",
             "en": "/data readable"
           }
+        },
+        {
+          "probe": "firmware-hashes",
+          "fact": "firmware_identity_valid",
+          "equals": "1",
+          "label": {
+            "ru": "Образ измерен либо его отсутствие подтверждено",
+            "en": "Image measured or its absence confirmed"
+          }
+        },
+        {
+          "probe": "firmware-hashes",
+          "fact": "router_identity_valid",
+          "equals": "1",
+          "label": {
+            "ru": "Идентичность diag-router измерена",
+            "en": "Measured diag-router identity"
+          }
         }
       ],
       "limitations": {
-        "ru": "Размер и согласованность полного содержимого /data здесь не проверяются; рекурсивное чтение файлов и секретов не выполняется.",
-        "en": "Does not validate the size or consistency of all /data contents; no recursive file or secret reads occur."
+        "ru": "Размер и согласованность полного содержимого /data здесь не проверяются; рекурсивное чтение файлов и секретов не выполняется. Наличие сохранённого журнала само по себе не блокирует функцию: соответствующий журнал и активную блокировку повторно проверяет конкретная операция.",
+        "en": "Does not validate the size or consistency of all /data contents; no recursive file or secret reads occur. A saved journal alone does not block this feature; the actual operation rechecks its relevant journal and active lock."
       }
     },
     {
@@ -3775,7 +3792,9 @@
         "en": "Modem partition backup"
       },
       "profiles": [
-        "b31"
+        "b31",
+        "b28",
+        "b04"
       ],
       "requirements": [
         {
@@ -3812,15 +3831,6 @@
           "label": {
             "ru": "Безопасный каталог /etc",
             "en": "Safe /etc directory"
-          }
-        },
-        {
-          "probe": "pending-operations",
-          "fact": "no_pending_operations",
-          "equals": "1",
-          "label": {
-            "ru": "Нет обнаруженных незавершённых операций",
-            "en": "No detected pending operations"
           }
         },
         {
@@ -3921,11 +3931,20 @@
             "ru": "Размеры modemst1/2, fsg, persist соответствуют B31",
             "en": "modemst1/2, fsg and persist layout matches B31"
           }
+        },
+        {
+          "probe": "firmware-hashes",
+          "fact": "firmware_image_present",
+          "equals": "1",
+          "label": {
+            "ru": "Проверенный образ радиопрошивки доступен",
+            "en": "Measured radio firmware image is present"
+          }
         }
       ],
       "limitations": {
-        "ru": "Сравниваются только sysfs-метаданные и типы узлов. Содержимое разделов, NV/EFS и радио-калибровки не читается.",
-        "en": "Compares sysfs metadata and node types only. Partition contents, NV/EFS and radio calibration are not read."
+        "ru": "Сравниваются только sysfs-метаданные и типы узлов. Содержимое разделов, NV/EFS и радио-калибровки не читается. Наличие сохранённого журнала само по себе не блокирует функцию: соответствующий журнал и активную блокировку повторно проверяет конкретная операция.",
+        "en": "Compares sysfs metadata and node types only. Partition contents, NV/EFS and radio calibration are not read. A saved journal alone does not block this feature; the actual operation rechecks its relevant journal and active lock."
       }
     },
     {
@@ -3935,7 +3954,9 @@
         "en": "Full eMMC and boot partition image"
       },
       "profiles": [
-        "b31"
+        "b31",
+        "b28",
+        "b04"
       ],
       "requirements": [
         {
@@ -3972,15 +3993,6 @@
           "label": {
             "ru": "Безопасный каталог /etc",
             "en": "Safe /etc directory"
-          }
-        },
-        {
-          "probe": "pending-operations",
-          "fact": "no_pending_operations",
-          "equals": "1",
-          "label": {
-            "ru": "Нет обнаруженных незавершённых операций",
-            "en": "No detected pending operations"
           }
         },
         {
@@ -4075,11 +4087,20 @@
             "ru": "Команда wc",
             "en": "Command wc"
           }
+        },
+        {
+          "probe": "firmware-hashes",
+          "fact": "firmware_image_present",
+          "equals": "1",
+          "label": {
+            "ru": "Проверенный образ радиопрошивки доступен",
+            "en": "Measured radio firmware image is present"
+          }
         }
       ],
       "limitations": {
-        "ru": "Исследование не читает блоковые устройства и не изменяет защиту. Проверка чтения потока, размеров и контрольных сумм выполняется при создании образа. Активная система не является атомарным снимком.",
-        "en": "Research does not read block devices or alter protection. Stream reads, sizes and hashes are verified when an image is created. A running system is not an atomic snapshot."
+        "ru": "Исследование не читает блоковые устройства и не изменяет защиту. Проверка чтения потока, размеров и контрольных сумм выполняется при создании образа. Активная система не является атомарным снимком. Наличие сохранённого журнала само по себе не блокирует функцию: соответствующий журнал и активную блокировку повторно проверяет конкретная операция.",
+        "en": "Research does not read block devices or alter protection. Stream reads, sizes and hashes are verified when an image is created. A running system is not an atomic snapshot. A saved journal alone does not block this feature; the actual operation rechecks its relevant journal and active lock."
       }
     },
     {
@@ -4089,7 +4110,9 @@
         "en": "Full image restoration"
       },
       "profiles": [
-        "b31"
+        "b31",
+        "b28",
+        "b04"
       ],
       "requirements": [
         {
@@ -4126,15 +4149,6 @@
           "label": {
             "ru": "Безопасный каталог /etc",
             "en": "Safe /etc directory"
-          }
-        },
-        {
-          "probe": "pending-operations",
-          "fact": "no_pending_operations",
-          "equals": "1",
-          "label": {
-            "ru": "Нет обнаруженных незавершённых операций",
-            "en": "No detected pending operations"
           }
         },
         {
@@ -4241,8 +4255,8 @@
         }
       ],
       "limitations": {
-        "ru": "Это исследование намеренно не подтверждает готовность записи. Нужны проверенный образ того же устройства, сверка разметки, отдельный план записи и проверки штатной процедуры восстановления. Узлы sensor_id/codec_id не читаются: даже чтение меняет защиту записи. В Windows восстановление пока не реализовано.",
-        "en": "Research intentionally cannot approve restoration writes. Requires a verified image for the same device, layout validation, a separate write plan and the restore workflow checks. sensor_id/codec_id are never read: reads themselves change write protection. Restoration is not implemented on Windows."
+        "ru": "Это исследование намеренно не подтверждает готовность записи. Нужны проверенный образ того же устройства, сверка разметки, отдельный план записи и проверки штатной процедуры восстановления. Узлы sensor_id/codec_id не читаются: даже чтение меняет защиту записи. В Windows восстановление пока не реализовано. Наличие сохранённого журнала само по себе не блокирует функцию: соответствующий журнал и активную блокировку повторно проверяет конкретная операция.",
+        "en": "Research intentionally cannot approve restoration writes. Requires a verified image for the same device, layout validation, a separate write plan and the restore workflow checks. sensor_id/codec_id are never read: reads themselves change write protection. Restoration is not implemented on Windows. A saved journal alone does not block this feature; the actual operation rechecks its relevant journal and active lock."
       },
       "platforms": [
         "macos"
@@ -4255,7 +4269,9 @@
         "en": "Profiles on a physical eUICC in SIM slot 1"
       },
       "profiles": [
-        "b31"
+        "b31",
+        "b28",
+        "b04"
       ],
       "requirements": [
         {
@@ -4284,11 +4300,20 @@
             "ru": "Наличие и доступность eUICC требуют отдельного чтения",
             "en": "eUICC presence and access require a separate read"
           }
+        },
+        {
+          "probe": "firmware-hashes",
+          "fact": "firmware_image_present",
+          "equals": "1",
+          "label": {
+            "ru": "Проверенный образ радиопрошивки доступен",
+            "en": "Measured radio firmware image is present"
+          }
         }
       ],
       "limitations": {
-        "ru": "Компоненты, экспортируемые имена и схема API не доказывают наличие eUICC, доступ к ISD-R или установку профиля. Исследование не читает EID/ICCID/профили, не отправляет APDU и не переключает SIM. Проверенный путь приложения — 9eSIM V0, физический слот 1, B31; интернет компьютера для desktop, интернет модема для веб-панели.",
-        "en": "Components, exported names and API schema do not prove eUICC presence, ISD-R access or profile installation. Research does not read EID/ICCID/profiles, send APDUs or switch SIMs. The tested application path is 9eSIM V0 in physical slot 1 on B31; desktop uses computer Internet, the web dashboard uses modem Internet."
+        "ru": "Профили B31/B28/B04 выбирают адаптер, но не доказывают наличие eUICC или ISD-R. Пассивные пробы не читают профили, не отправляют APDU и не переключают SIM; состояние остаётся неизвестным. Перед изменением профиля операция подтверждает физическую eUICC, текущий маршрут physical slot 1 → logical slot 1 и готовность радио, затем проверяет результат и восстановление связи. Аппаратно проверенный путь — 9eSIM V0 на B31; B28/B04 требуют проверки владельцами. Desktop использует интернет компьютера, веб-панель — модема.",
+        "en": "B31/B28/B04 profiles select an adapter but do not prove eUICC presence or ISD-R access. Passive probes do not read profiles, send APDUs or switch SIMs, so the result remains unknown. Before profile mutation the operation confirms a physical eUICC, the current physical-slot-1 to logical-slot-1 route and radio readiness, then verifies the result and radio restoration. The hardware-tested path is 9eSIM V0 on B31; B28/B04 need owner validation. Desktop uses computer Internet; the web dashboard uses modem Internet."
       }
     },
     {

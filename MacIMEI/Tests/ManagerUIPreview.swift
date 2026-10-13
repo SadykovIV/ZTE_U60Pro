@@ -19,7 +19,6 @@ import SwiftUI
         model.keyPath = "/preview/SSH/id_ed25519"
         model.knownHostsPath = "/preview/SSH/known_hosts"
         model.connectionsChecked = true // Suppress the preparation screen's passive discovery.
-        model.firmwareResearchLoaded = true // Never load real diagnostics in a synthetic preview.
         model.channelStatuses = ConnectionMode.discoveryOrder.map {
             ConnectionChannelStatus(mode: $0, state: .notChecked, message: "")
         }
@@ -30,6 +29,9 @@ import SwiftUI
         model.loadEsimPreview(force: true)
         let previewSnapshot = model.esimSnapshot
         model.agentInstallationStatus = AgentInstallationStatus(hash: BundledAgent.sha256, running: true, startupReady: true)
+        model.adbControlStatus = ADBControlStatus(enabled: true, supportsChange: true, descriptorsReady: true)
+        let previousAgentHash = "076824a90eec46702744ae0f383872841d3c4704216ae32de4725f906f86a550"
+        precondition(BundledAgent.supportedUpgradeHashes.contains(previousAgentHash) && previousAgentHash != BundledAgent.sha256)
         model.applicationInventory = .init(storage: [], memoryTotalKiB: 1048576,
             memoryAvailableKiB: 512000, installedPackages: [], opkgWritable: false,
             ssclashInstalled: false, ssclashRunning: false, architecture: "aarch64", release: "23.05.4",
@@ -40,21 +42,22 @@ import SwiftUI
             canRollback: false, generation: nil, previous: nil, running: false)
         let catalog = VerifiedCatalogStore(cacheURL: model.storage.appendingPathComponent("catalog-preview.json"))
         precondition(catalog.entries.map(\.id) == ["htop", "opkg"])
+        var vpn = VPNStatus()
+        vpn.installed = true; vpn.coreAvailable = true; vpn.configured = true
+        vpn.enabled = true; vpn.coreRunning = true; vpn.networkOk = true
+        vpn.ssid = "ZTE-VPN"; vpn.desiredSsid = "ZTE-VPN"; vpn.settingsSupported = true
+        let subscriptionID = "33333333-3333-3333-3333-333333333333"
+        vpn.profiles = [
+            .init(id: "11111111-1111-1111-1111-111111111111", name: "Amnezia · Helsinki", transport: "", warnings: [], active: true, protocolName: "amneziawg", subscriptionId: subscriptionID, updateAvailable: true),
+            .init(id: "22222222-2222-2222-2222-222222222222", name: "Home · WireGuard", transport: "", warnings: [], active: false, protocolName: "wireguard"),
+            .init(id: "44444444-4444-4444-4444-444444444444", name: "Europe · VLESS", transport: "tcp", warnings: [], active: false, protocolName: "vless", subscriptionId: subscriptionID),
+            .init(id: "55555555-5555-5555-5555-555555555555", name: "Travel · Hysteria2", transport: "", warnings: ["VPN_INSECURE_TLS"], active: false, protocolName: "hysteria2", removedFromSubscription: true)
+        ]
+        vpn.activeProfile = vpn.profiles[0].id
+        vpn.subscriptions = [.init(id: subscriptionID, name: "Demo subscription", host: "example.test", updatedAt: 1791900000, profileCount: 3)]
+        vpn.lastImport = .init(added: 3, updated: 1, removed: 0, duplicates: 2, retainedActive: 1, skipped: [.init(index: 5, code: "VPN_SUBSCRIPTION_FILE_REFERENCE")])
+        model.vpnInspection = .init(status: vpn, missingCapabilities: [], ssclashInstalled: false, helperReady: true)
         var paths: [String] = []
-        var syntheticResearch = FirmwareResearchReport(startedAt: "2026-09-27T12:00:00Z", finishedAt: "2026-09-27T12:02:08Z", specificationRevision: 7, transport: "ssh", outcome: "partial", profile: nil,
-            attempts: [.init(transport: "ssh", outcome: "available", detail: "Synthetic SSH fixture; no modem access")],
-            warnings: ["Synthetic report; no modem access"],
-            features: [
-                .init(id: "agent", title: .init(ru: "Установка агента и SSH", en: "Agent and SSH installation"), state: "prerequisites_met", evidence: [.init(ru: "Права root: выполнено", en: "Root privilege: met")], limitations: .init(ru: "Установка не выполнялась. Результат не даёт разрешения на запись.", en: "No installation was performed. This finding grants no write permission.")),
-                .init(id: "imei", title: .init(ru: "Изменение IMEI", en: "IMEI changes"), state: "unknown", evidence: [.init(ru: "Нет совпадения с проверенным профилем прошивки", en: "No matching verified firmware profile")], limitations: .init(ru: "NV/EFS не читаются и не меняются исследованием.", en: "Research does not read or change NV/EFS contents.")),
-                .init(id: "vpn", title: .init(ru: "Компоненты VPN", en: "VPN components"), state: "blocked", evidence: [.init(ru: "Требуемая функция ядра: не выполнено", en: "Required kernel feature: not met")], limitations: .init(ru: "Сетевая конфигурация не менялась.", en: "Network configuration was not changed."))], application: ["fixture": "synthetic; no modem access"])
-        syntheticResearch.bindingStrength = "transport-only"
-        syntheticResearch.authorization = "none"
-        syntheticResearch.observations = [
-                .init(id: "architecture", title: .init(ru: "Архитектура", en: "Architecture"), probe: "identity", fact: "architecture", state: "known", value: "aarch64", sourceStatus: "success", sourceExitCode: 0),
-                .init(id: "init", title: .init(ru: "Система запуска", en: "Init system"), probe: "init-runtime", fact: "init_comm", state: "known", value: "procd", sourceStatus: "success", sourceExitCode: 0),
-                .init(id: "hasher", title: .init(ru: "SHA-256", en: "SHA-256"), probe: "fingerprint", fact: "hasher", state: "known", value: "busybox-sha256sum", sourceStatus: "success", sourceExitCode: 0),
-                .init(id: "esim", title: .init(ru: "Интерфейс eSIM", en: "eSIM interface"), probe: "esim-components", fact: "esim_controller", state: "not-assessed", value: nil, sourceStatus: "skipped", reason: "No verified service schema")]
 
         for language in ["ru", "en"] {
             UserDefaults.standard.setVolatileDomain([L10n.preferenceKey: language], forName: UserDefaults.argumentDomain)
@@ -62,20 +65,22 @@ import SwiftUI
             let screens: [(String, AnyView)] = [
                 ("preparation", AnyView(ContentView(model: model, verifiedCatalog: catalog))),
                 ("connection-methods", AnyView(ContentView(model: model, verifiedCatalog: catalog, connectionMethodsExpanded: true))),
+                ("connection-methods-detail", AnyView(ZStack { StudioStyle.canvas; VStack(alignment: .leading, spacing: 18) { Text(L10n.text("Доступные способы подключения")).font(.title2); StudioCard { ContentView(model: model, verifiedCatalog: catalog).connectionMethodsContents }; Spacer() }.padding(36) })),
                 ("diagnostics", AnyView(ContentView(model: model, verifiedCatalog: catalog, preparationSection: .diagnostics))),
                 ("preparation-credentials", AnyView(ContentView(model: model, verifiedCatalog: catalog, preparationCredentialsExpanded: true))),
                 ("journal", AnyView(ContentView(model: model, verifiedCatalog: catalog, page: .administration, administrationSection: .activity))),
                 ("administration", AnyView(ContentView(model: model, verifiedCatalog: catalog, page: .administration))),
                 ("modem", AnyView(ContentView(model: model, verifiedCatalog: catalog, page: .modem))),
                 ("agent-esim", AnyView(ContentView(model: model, verifiedCatalog: catalog, preparationSection: .agent))),
+                ("agent-update", AnyView(ContentView(model: model, verifiedCatalog: catalog, preparationSection: .agent))),
                 ("esim", AnyView(ContentView(model: model, verifiedCatalog: catalog, page: .esim))),
                 ("esim-ordinary", AnyView(ContentView(model: model, verifiedCatalog: catalog, page: .esim))),
                 ("launcher-esim", AnyView(ContentView(model: model, verifiedCatalog: catalog, page: .display, launcherSection: .esim))),
                 ("esim-progress", AnyView(ContentView(model: model, verifiedCatalog: catalog, page: .esim))),
+                ("vpn", AnyView(ContentView(model: model, verifiedCatalog: catalog, page: .vpn))),
+                ("vpn-detail", AnyView(ZStack { StudioStyle.canvas; ContentView(model: model, verifiedCatalog: catalog).vpnPage.padding(36).frame(maxHeight: .infinity, alignment: .top) })),
                 ("catalog", AnyView(ContentView(model: model, verifiedCatalog: catalog, page: .applications, applicationSection: .available))),
                 ("terminal", AnyView(ContentView(model: model, verifiedCatalog: catalog, page: .applications, applicationSection: .opkg))),
-                ("firmware-research-empty", AnyView(ZStack { StudioStyle.canvas; VStack(alignment: .leading, spacing: 18) { Text(L10n.text("Подготовка модема · Диагностика", "Modem preparation · Diagnostics")).font(.title2); ContentView(model: model, verifiedCatalog: catalog).firmwareResearchCard; Spacer() }.padding(36) })),
-                ("firmware-research-result", AnyView(ZStack { StudioStyle.canvas; VStack(alignment: .leading, spacing: 18) { Text(L10n.text("Исследование прошивки · Пример отчёта", "Firmware research · Sample report")).font(.title2); ContentView(model: model, verifiedCatalog: catalog).firmwareResearchCard; Spacer() }.padding(36) })),
                 ("about", AnyView(ZStack {
                     StudioStyle.canvas
                     ContentView(model: model, verifiedCatalog: catalog).aboutSheet
@@ -96,17 +101,14 @@ import SwiftUI
                 model.progress = 0
                 model.status = model.busy ? "eSIM · download · +15.0 s · host_http_waiting id=1 duration_ms=5000" : ""
                 model.esimMessage = model.busy ? "Ожидаю HTTPS-ответ оператора…" : "Демонстрационные данные. Подключение и операции с картой отключены."
-                model.firmwareResearchReport = screen == "firmware-research-result" ? syntheticResearch : nil
-                model.firmwareResearchMessage = screen == "firmware-research-result" ? ResearchUI.outcome("partial") : ""
-                let currentView: AnyView
-                if screen.hasPrefix("firmware-research-") {
-                    // Construct after the fixture change: a computed card is a value snapshot.
-                    currentView = AnyView(ZStack { StudioStyle.canvas; VStack(alignment: .leading, spacing: 18) {
-                        Text(screen.hasSuffix("result") ? L10n.text("Исследование прошивки · Пример отчёта", "Firmware research · Sample report") : L10n.text("Подготовка модема · Диагностика", "Modem preparation · Diagnostics")).font(.title2)
-                        ContentView(model: model, verifiedCatalog: catalog).firmwareResearchCard
-                        Spacer()
-                    }.padding(36) })
-                } else { currentView = rootView }
+                model.agentInstallationStatus = AgentInstallationStatus(hash: screen == "agent-update" ? previousAgentHash : BundledAgent.sha256, running: true, startupReady: true)
+                if screen.hasPrefix("agent-") {
+                    model.agentInstallationStatus?.web = AgentWebStatus(url: "http://192.0.2.1:8080/",
+                        loopback: .init(code: "200", isHTML: true), lan: .init(code: "200", isHTML: true),
+                        computer: .init(code: screen == "agent-esim" ? "refused" : "200", isHTML: screen != "agent-esim"))
+                }
+                let size = screen == "vpn-detail" ? NSSize(width: 1280, height: 2000) : size
+                let currentView = rootView
                 let host = NSHostingView(rootView: currentView.frame(width: size.width, height: size.height))
                 host.frame = NSRect(origin: .zero, size: size)
                 let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless], backing: .buffered, defer: false)
@@ -132,7 +134,7 @@ import SwiftUI
                 print("Rendered \(name): \(bitmap.pixelsWide)x\(bitmap.pixelsHigh)")
             }
         }
-        let metadata: [String: Any] = ["source": "production SwiftUI views", "data": "synthetic fixture", "network": "none; disconnected model", "pixelSize": [1280, 900], "screens": paths]
+        let metadata: [String: Any] = ["source": "production SwiftUI views", "data": "synthetic fixture", "network": "none; disconnected model", "pixelSize": [1280, 900], "fullVPNPanelPixelSize": [1280, 2000], "screens": paths]
         try JSONSerialization.data(withJSONObject: metadata, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("macos-preview-manifest.json"))
         print("PASS: \(paths.count) production SwiftUI screens rendered without modem operations")
     }

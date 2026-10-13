@@ -16,7 +16,7 @@ extension ContentView {
                 OperationInfoButton(topic: .firmwareSupport)
                 Spacer()
             }
-            Text(L10n.text("Сведения об устройстве, проверки функций программы, структура прошивки и исходные файлы её компонентов — в одном ZIP. Подробные результаты сохраняются в архиве."))
+            Text(L10n.text("Сведения об устройстве, файлы прошивки и результаты чтения DIAG/QMI для исследования IMEI и SIM/eSIM — в одном ZIP. Подробные проверки остаются в архиве."))
                 .font(.system(size: 12)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
             Button(L10n.text("Собрать данные для адаптации прошивки")) { model.collectFirmwareSupport() }
                 .buttonStyle(StudioButtonStyle(prominent: true)).disabled(!model.canCollectFirmwareSupport)

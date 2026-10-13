@@ -35,8 +35,8 @@ class ProbeTests(unittest.TestCase):
         out=self.runProbe();self.assertIn('FR_FACT esim_method_get_sim_info=1',out)
         self.assertIn('SDK_SYMBOL ZTD_GetCurrentSimSlot',out)
         self.assertIn(hashlib.sha256(self.files['/data/zte-agent'].read_bytes()).hexdigest(),out)
-    def test_api_failure_is_unknown(self):
-        self.setUbus(True);self.assertIn('FR_FACT esim_method_inventory=unknown',self.runProbe())
+    def test_api_failure_is_not_assessed(self):
+        self.setUbus(True);self.assertIn('FR_FACT esim_method_inventory=not-assessed',self.runProbe())
     def test_oversized_binary_is_not_read(self):
         with self.files['/usr/bin/qcrilNrd'].open('wb') as f:f.truncate(67108865)
         self.assertIn('FR_FACT esim_qcril_sha256=not-assessed',self.runProbe())

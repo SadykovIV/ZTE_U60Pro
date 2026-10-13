@@ -76,6 +76,8 @@ elif fmt=='%t %T':
 else:sys.exit(1)
 ''')
         self.command('sha256sum', '''
+if len(sys.argv)>1 and sys.argv[1].endswith('/firmware/image/modem.b16') and os.environ.get('MOCK_FIRMWARE_SHA'):
+ print(os.environ['MOCK_FIRMWARE_SHA']+'  '+sys.argv[1]);sys.exit(0)
 h=hashlib.sha256()
 source=open(sys.argv[1],'rb') if len(sys.argv)>1 else sys.stdin.buffer
 while True:
@@ -186,6 +188,21 @@ os.execv('/bin/dd',['dd',*sys.argv[1:]])
         self.assertIn(b'BACKUP_ERROR READ', result.stderr)
         self.assertNotIn(b'BACKUP_RESULT', result.stderr)
         self.assertFalse((self.base / 'flash-events').exists())
+
+    def test_live_b28_b04_capture_is_read_only_and_unknown_profile_is_rejected(self):
+        self.put('proc/self/mountinfo', '1 0 179:0 / / rw - ext4 /dev/root rw\n')
+        self.assertFalse(self.inventory()['offline'])
+        for image in ['5a4489882538b5ab1d3e0049371f1b620d28d262a429923299b4f2626d40d478',
+                      'c57e063d390983229dfc53aa87380b3d4655ee8daa1c748e1a032ac90cd0df81']:
+            with self.subTest(image=image):
+                result = self.call('capture', 'mmcblk0', MOCK_FIRMWARE_SHA=image)
+                self.assertEqual(self.ok(result), (self.base / 'dev/mmcblk0').read_bytes())
+                self.assertIn(b'BACKUP_RESULT sha256=', result.stderr)
+                self.assertFalse((self.base / 'flash-events').exists())
+        result = self.call('capture', 'mmcblk0', MOCK_FIRMWARE_SHA='0' * 64)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b'BACKUP_ERROR PROFILE', result.stderr)
+        self.assertEqual(result.stdout, b'')
 
     def test_restore_writes_bounded_chunk_relocks_and_reads_back(self):
         self.ok(self.chunk(offset=1024))

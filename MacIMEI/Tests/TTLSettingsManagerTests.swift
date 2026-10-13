@@ -14,9 +14,12 @@ private func rejects(_ contains: String, _ body: () throws -> Void) throws {
 
 private final class MockTTL: RemoteTransport {
     var commands = [String](), invocations = [[String]](), uploaded = [String: Data]()
+    var managerHash = TTLSettingsManager.resourceHashes["manager.sh"]!
+    var failUpgrade = false
     var installed = false, locked = false, cleaned = false, stage = ""
     var configuration = TTLConfiguration.disabled
     var capability = "supported", stateOverride: String?, persistenceOverride: String?
+    var firmwareHash = ModemEngine.firmwareHash
     var badFirmware = false, badUpload = false, wrongUploadPath = false, badManager = false
     var failMutation = false, loseAcknowledgement = false, wrongResult = false
     var identityCalls = 0, changeIdentityAt = 0
@@ -46,6 +49,12 @@ private final class MockTTL: RemoteTransport {
         }
         try check(locked, "Mutation without shared remote lock")
         if failMutation { return reply("TTL_ERROR TEST_FAILURE", code: 1) }
+        if action == "upgrade" {
+            try check(staged && arguments == ["upgrade", stage, cid], "Unexpected upgrade")
+            if failUpgrade { return reply("TTL_ERROR UPGRADE_PENDING", code: 1) }
+            managerHash = TTLSettingsManager.resourceHashes["manager.sh"]!
+            return status()
+        }
         if action == "disable" {
             try check(!staged && arguments == ["disable", cid], "Disable not independent of capability")
             configuration = .disabled
@@ -67,10 +76,11 @@ private final class MockTTL: RemoteTransport {
     }
     func run(_ command: String, input: Data?, timeout: TimeInterval) throws -> CommandResult {
         commands.append(command)
-        if command.hasPrefix("sha256sum /firmware/image/modem.b16") {
+        if command == TTLSettingsManager.installedManagerHashCommand { return reply(managerHash) }
+        if command == AccessIdentity.command {
             identityCalls += 1
             let actualCID = changeIdentityAt > 0 && identityCalls >= changeIdentityAt ? String(repeating: "b", count: 32) : cid
-            return reply((badFirmware ? String(repeating: "0", count: 64) : ModemEngine.firmwareHash) + "  /firmware/image/modem.b16\n" + ModemEngine.routerHash + "  /usr/bin/diag-router\n" + actualCID + "\n12345678-1234-1234-1234-123456789abc\n")
+            return reply((badFirmware ? String(repeating: "0", count: 64) : firmwareHash) + "  /firmware/image/modem.b16\n" + ModemEngine.routerHash + "  /usr/bin/diag-router\n" + actualCID + "\n12345678-1234-1234-1234-123456789abc\n")
         }
         if command.contains("if mkdir /tmp/zte-imei-app.lock") { locked = true; return reply("") }
         if command.contains("&& rm /tmp/zte-imei-app.lock/owner") { locked = false; return reply("") }
@@ -173,6 +183,17 @@ private final class MockTTL: RemoteTransport {
                 try check(Data(contentsOf: value.engine.root.appendingPathComponent(name)) == Data("preserved".utf8), "TTL changed unrelated journal")
             }
         }
+        test("pending ADB recovery does not block read-only TTL status") {
+            for installed in [false, true] {
+                let mock = MockTTL(); mock.installed = installed; let value = try manager(mock)
+                let journal = value.engine.root.appendingPathComponent("adb-access-pending.json")
+                try savePrivate(Data("preserved".utf8), journal)
+                _ = try perform(value)
+                try check(mock.invocations == [["status", mock.cid]] && mock.installed == installed && !mock.locked,
+                          "Read-only TTL status changed settings or acquired a write lock")
+                try check(Data(contentsOf: journal) == Data("preserved".utf8), "Status modified the recovery journal")
+            }
+        }
         test("active access recovery blocks TTL writes") {
             let mock = MockTTL(), value = try manager(mock)
             try savePrivate(Data(), value.engine.root.appendingPathComponent("adb-access-pending.json"))
@@ -188,10 +209,52 @@ private final class MockTTL: RemoteTransport {
             try rejects("Повреждён встроенный") { _ = try perform(manager(mock, resourceRoot: altered)) }
             try check(mock.commands.isEmpty, "Untrusted script reached modem")
         }
-        test("firmware mismatch blocks before remote lock or staging") {
-            let mock = MockTTL(); mock.badFirmware = true
-            try rejects("Прошивка отличается") { _ = try perform(manager(mock), TTLConfiguration(outbound: 64, inboundIncrement: 1)) }
-            try check(mock.commands.count == 1 && mock.stage.isEmpty, "Unknown firmware mutated")
+        test("B28 TTL reaches its component helper without a B31 override") {
+            let mock = MockTTL(); mock.firmwareHash = "5a4489882538b5ab1d3e0049371f1b620d28d262a429923299b4f2626d40d478"
+            let result = try perform(manager(mock), TTLConfiguration(outbound: 64, inboundIncrement: 1))
+            try check(result.state == .configured && mock.invocations.first?.first == "install", "B28 stopped at unrelated B31 gate")
+        }
+        test("B04 captured modem image reaches the independently checked TTL component") {
+            let mock = MockTTL(); mock.firmwareHash = "c57e063d390983229dfc53aa87380b3d4655ee8daa1c748e1a032ac90cd0df81"
+            let result = try perform(manager(mock), TTLConfiguration(outbound: 64, inboundIncrement: 1))
+            try check(result.state == .configured && mock.invocations.first?.first == "install", "B04 stopped at unrelated modem image gate")
+        }
+        test("previous 1.24.20 refresh stays read-only") {
+            let mock = MockTTL(); mock.installed = true; mock.managerHash = TTLSettingsManager.previous12420ManagerHash
+            _ = try perform(manager(mock))
+            try check(mock.uploaded.isEmpty && mock.invocations == [["status", mock.cid]] && mock.managerHash == TTLSettingsManager.previous12420ManagerHash, "Refresh upgraded a manager")
+        }
+        test("explicit apply upgrades 1.24.20 once before changing settings") {
+            let mock = MockTTL(); mock.installed = true; mock.managerHash = TTLSettingsManager.previous12420ManagerHash
+            let value = try manager(mock)
+            _ = try perform(value, TTLConfiguration(outbound: 65, inboundIncrement: 2))
+            try check(mock.invocations.map { $0[0] } == ["upgrade", "apply"] && mock.uploaded.count == 4 && mock.cleaned, "Old manager not upgraded before apply")
+            _ = try perform(value, TTLConfiguration(outbound: 66, inboundIncrement: 2))
+            try check(mock.invocations.map { $0[0] } == ["upgrade", "apply", "apply"], "Upgraded helper installed repeatedly")
+        }
+        test("explicit apply and disable upgrade every exact known manager; refresh does not") {
+            for hash in TTLSettingsManager.upgradableManagerHashes {
+                for configuration in [TTLConfiguration.disabled, TTLConfiguration(outbound: 65, inboundIncrement: 2)] {
+                    let mock = MockTTL(); mock.installed = true; mock.managerHash = hash
+                    let value = try manager(mock)
+                    _ = try perform(value)
+                    try check(mock.managerHash == hash && mock.uploaded.isEmpty, "Refresh upgraded a previous manager")
+                    _ = try perform(value, configuration)
+                    try check(mock.invocations.map { $0[0] } == ["status", "upgrade", configuration == .disabled ? "disable" : "apply"], "Known previous manager not upgraded for mutation")
+                }
+            }
+        }
+        test("failed upgrade prevents configuration changes") {
+            let mock = MockTTL(); mock.installed = true; mock.managerHash = TTLSettingsManager.previous12420ManagerHash; mock.failUpgrade = true
+            try rejects("UPGRADE_PENDING") { _ = try perform(manager(mock), TTLConfiguration(outbound: 65, inboundIncrement: 2)) }
+            try check(mock.invocations.map { $0[0] } == ["upgrade"] && mock.configuration == .disabled && mock.cleaned, "Failure still applied TTL")
+        }
+        test("installed B31 manager stays usable without staging or replacement") {
+            let mock = MockTTL(); mock.installed = true
+            _ = try perform(manager(mock), TTLConfiguration(outbound: 64, inboundIncrement: 1))
+            try check(mock.stage.isEmpty && mock.commands.contains { $0.contains(TTLSettingsManager.previousManagerHash) }, "Previous B31 helper no longer trusted")
+            try check(mock.commands.contains { $0.contains(TTLSettingsManager.previous12418ManagerHash) }, "1.24.18 B31/B28 helper no longer trusted")
+            try check(mock.commands.contains { $0.contains(TTLSettingsManager.previous12420ManagerHash) }, "1.24.20 B31/B28/B04 helper no longer trusted")
         }
         test("CID change after upload prevents all staged execution") {
             let mock = MockTTL(); mock.changeIdentityAt = 2

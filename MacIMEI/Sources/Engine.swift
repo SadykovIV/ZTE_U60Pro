@@ -118,15 +118,24 @@ final class ModemEngine: @unchecked Sendable {
         }
     }
     func identity() throws -> (Identity, String) { try readIdentity(enforceFirmware: true) }
+    private func imeiIdentity() throws -> (Identity, String) {
+        let observed = try measuredIdentity()
+        try require(observed.routerHash == Self.routerHash, "Чтение NV требует совместимый diag-router. Соберите данные для адаптации прошивки.")
+        try require(observed.identity.firmwareHash != "absent", "Для записи IMEI нужен измеренный хэш прошивки для привязки бэкапа и журнала")
+        // Write eligibility comes from fresh NV/config contracts below. Keep the
+        // real image identity, but do not equate a firmware name with its format.
+        return (observed.identity, observed.bootID)
+    }
     /// Read-only diagnosis does not grant any write capability or change the connection policy.
     func diagnosticIdentity() throws -> (Identity, String) { try readIdentity(enforceFirmware: false) }
     private func readIdentity(enforceFirmware: Bool) throws -> (Identity, String) {
-        let raw = try text("sha256sum /firmware/image/modem.b16 /usr/bin/diag-router; cat /sys/block/mmcblk0/device/cid /proc/sys/kernel/random/boot_id")
+        let raw = try text(AccessIdentity.command)
         let lines = raw.split(separator: "\n").map(String.init)
         try require(lines.count == 4, "Не удалось прочитать идентификаторы модема")
-        let firmware = try FirmwareCheck.hash(lines[0], path: "/firmware/image/modem.b16")
-        let router = try FirmwareCheck.hash(lines[1], path: "/usr/bin/diag-router")
+        let firmware = try AccessIdentity.observedHash(lines[0], path: "/firmware/image/modem.b16")
+        let router = try AccessIdentity.observedHash(lines[1], path: "/usr/bin/diag-router")
         try ActivityJournal(root: root).record(operationID: logDirectory.lastPathComponent, category: "firmware", title: "Сверка прошивки", result: firmware == Self.firmwareHash && router == Self.routerHash ? "completed" : "warning", details: ["firmwareSHA256":firmware, "routerSHA256":router, "expectedFirmwareSHA256": Self.firmwareHash, "expectedRouterSHA256": Self.routerHash, "readOnlyProbe": String(!enforceFirmware)])
+        try require(!enforceFirmware || (firmware != "absent" && router != "absent"), "Для записи NV и системных копий этой прошивки ещё нужен отдельный адаптер. Чтение IMEI и независимые компоненты доступны отдельно.")
         try require(!enforceFirmware || connection.skipFirmwareCheck || (firmware == Self.firmwareHash && router == Self.routerHash), "Прошивка отличается от проверенной MU5250 B31. Операции остановлены.")
         try require(lines[2].count == 32 && lines[2].utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }, "Не удалось определить уникальный eMMC CID модема")
         try require(UUID(uuidString: lines[3]) != nil, "Не удалось прочитать boot ID")
@@ -158,7 +167,7 @@ final class ModemEngine: @unchecked Sendable {
         return text
     }
     func snapshot() throws -> [Data] {
-        let output = try helper("zte_nv", "--snapshot")
+        let output = try helper("zte_nv", "--snapshot-available")
         var records: [Int: Data] = [:]
         for line in output.split(separator: "\n") where line.hasPrefix("APP_NV ") {
             let fields = line.split(separator: " "); try require(fields.count == 3, "Неполный ответ NV")
@@ -166,11 +175,13 @@ final class ModemEngine: @unchecked Sendable {
             try require(records[index] == nil, "Повтор NV в ответе")
             records[index] = try Data(hex: String(fields[2].dropFirst(5)))
         }
-        try require(records.count == 2, "Не получена полная пара NV после освобождения сессии")
-        let pair = [records[0]!, records[1]!]; for r in pair { _ = try IMEI.decode(r) }; return pair
+        let topology = output.split(separator: "\n").filter { $0.hasPrefix("APP_NV_TOPOLOGY ") }
+        let count = topology == ["APP_NV_TOPOLOGY count=1 secondary=not-active-status5"] ? 1 : topology == ["APP_NV_TOPOLOGY count=2 secondary=active"] ? 2 : 0
+        try require(count > 0 && records.count == count && records[0] != nil && (count == 1 || records[1] != nil), "Не подтверждено число активных NV550")
+        let available = (0..<count).map { records[$0]! }; for r in available { _ = try IMEI.decode(r) }; return available
     }
-    func apiPair() throws -> [String] {
-        try ["get_imei", "get_imei2"].map { method in
+    func apiPair(count: Int) throws -> [String] {
+        try ["get_imei", "get_imei2"].prefix(count).map { method in
             let data = try remote("ubus call zwrt_zte_mdm.api " + method)
             guard let values = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw IMEIError.message("Неверный ответ API IMEI") }
             let imeis = values.values.compactMap { $0 as? String }.filter(IMEI.valid)
@@ -190,35 +201,63 @@ final class ModemEngine: @unchecked Sendable {
         }
         try require(complete, "Не получен полный config"); _ = try ConfigFile.validate(data); return data
     }
+    func readIMEI() throws -> IMEIReadState {
+        update("Читаю доступные IMEI через DIAG и сверяю с API модема…", 0.08)
+        let before = try measuredIdentity()
+        try require(before.routerHash == Self.routerHash, "Чтение NV требует совместимый diag-router. Соберите данные для адаптации прошивки.")
+        try acquireRemoteLock()
+        let (primary, secondary) = try IMEIReadState.parse(helper("zte_nv", "--read-imei"))
+        let expected = secondary.map { [primary, $0] } ?? [primary]
+        for (index, value) in expected.enumerated() {
+            let method = index == 0 ? "get_imei" : "get_imei2"
+            let data = try remote("ubus call zwrt_zte_mdm.api " + method)
+            guard let values = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw IMEIError.message("Неверный ответ API IMEI") }
+            let imeis = values.values.compactMap { $0 as? String }.filter(IMEI.valid)
+            try require(imeis == [value], "IMEI в API и NV отличаются")
+        }
+        try require(try measuredIdentity() == before, "Модем или его загрузка изменились во время чтения IMEI")
+        let result = IMEIReadState(identity: before.identity, boot: before.bootID, primary: primary, secondary: secondary)
+        update(result.detail, 1)
+        return result
+    }
     func inspect() throws -> DeviceState {
-        update(connection.skipFirmwareCheck ? "Проверка подключения. Сверка прошивки с B31 отключена." : "Проверка подключения и прошивки…", 0.08)
-        let (id, boot) = try identity(); try acquireRemoteLock()
+        update("Читаю IMEI через DIAG и сверяю с API модема…", 0.08)
+        let before = try measuredIdentity()
+        try require(before.routerHash == Self.routerHash, "Чтение NV требует совместимый diag-router. Соберите данные для адаптации прошивки.")
+        let id = before.identity, boot = before.bootID
+        try acquireRemoteLock()
         let records = try snapshot(), imeis = try records.map(IMEI.decode)
-        try require(try apiPair() == imeis, "IMEI в API и NV отличаются")
-        update("Модем подключён. Оба IMEI прочитаны и проверены.", 1)
+        try require(try apiPair(count: imeis.count) == imeis, "IMEI в API и NV отличаются")
+        try require(try measuredIdentity() == before, "Модем или его загрузка изменились во время чтения IMEI")
+        update("Модем подключён. Активные IMEI прочитаны и проверены.", 1)
         return DeviceState(identity: id, boot: boot, records: records, imeis: imeis)
     }
     func makeBackup(_ state: DeviceState) throws -> URL {
-        update("Сохраняю полные NV обоих слотов и config…", 0.15)
+        update("Сохраняю полные активные NV и config…", 0.15)
         let config = try readConfig(); try require(try ConfigFile.validate(config) == 0, "Config содержит активный флаг записи. Продолжите незавершённую операцию.")
         try require(try snapshot() == state.records, "NV изменился во время создания бэкапа")
         let id = UUID().uuidString.lowercased(), url = backupsURL.appendingPathComponent(id); try secureDirectory(url)
-        let files = ["nv0.bin": state.records[0], "nv1.bin": state.records[1], "config.bin": config]
+        let files = backupFiles(state.records, config: config)
         for (name, data) in files { try savePrivate(data, url.appendingPathComponent(name)) }
-        let manifest = BackupManifest(id: id, created: ISO8601DateFormatter().string(from: Date()), identity: state.identity, imeis: state.imeis, hashes: files.mapValues(digest))
+        let manifest = BackupManifest(schema: state.records.count == 1 ? 2 : 1, id: id, created: ISO8601DateFormatter().string(from: Date()), identity: state.identity, imeis: state.imeis, hashes: files.mapValues(digest))
         try saveJSON(manifest, url.appendingPathComponent("manifest.json")); _ = try loadBackup(url)
         update("Бэкап создан и проверен: \(id.prefix(8)).", 0.25); return url
     }
+    private func backupFiles(_ records: [Data], config: Data) -> [String: Data] {
+        var files = Dictionary(uniqueKeysWithValues: records.enumerated().map { ("nv\($0.offset).bin", $0.element) })
+        files["config.bin"] = config
+        return files
+    }
     func loadBackup(_ url: URL) throws -> (BackupManifest, [Data], Data) {
         let m = try readJSON(BackupManifest.self, url.appendingPathComponent("manifest.json"))
-        try require(m.schema == 1 && UUID(uuidString: m.id) != nil && m.imeis.count == 2 && m.hashes.count == 3, "Неверный формат бэкапа")
+        try require(((m.schema == 1 && m.imeis.count == 2) || (m.schema == 2 && m.imeis.count == 1)) && UUID(uuidString: m.id) != nil && Set(m.hashes.keys) == Set((0..<m.imeis.count).map { "nv\($0).bin" } + ["config.bin"]), "Неверный формат бэкапа")
         var files: [String:Data] = [:]
-        for name in ["nv0.bin", "nv1.bin", "config.bin"] {
+        for name in (0..<m.imeis.count).map({ "nv\($0).bin" }) + ["config.bin"] {
             let file = url.appendingPathComponent(name), values = try file.resourceValues(forKeys: [.isSymbolicLinkKey, .isRegularFileKey])
             try require(values.isSymbolicLink == false && values.isRegularFile == true, "В бэкапе допускаются только обычные файлы")
             let data = try Data(contentsOf: file); try require(m.hashes[name] == digest(data), "Повреждён бэкап: \(name)"); files[name] = data
         }
-        let records = [files["nv0.bin"]!, files["nv1.bin"]!], config = files["config.bin"]!
+        let records = (0..<m.imeis.count).map { files["nv\($0).bin"]! }, config = files["config.bin"]!
         try require(try records.map(IMEI.decode) == m.imeis, "IMEI в бэкапе не совпадают с манифестом")
         try require(try ConfigFile.validate(config) == 0, "Config в бэкапе не является исходным")
         return (m, records, config)
@@ -228,20 +267,22 @@ final class ModemEngine: @unchecked Sendable {
         try require(!fm.fileExists(atPath: root.appendingPathComponent("adb-toggle-pending.json").path), "Сначала проверьте незавершённое переключение ADB")
         try require(!fm.fileExists(atPath: root.appendingPathComponent("setup-pending.json").path), "Сначала завершите первоначальную настройку модема")
         try require(!fm.fileExists(atPath: pendingURL.path), "Сначала продолжите незавершённую операцию")
+        _ = try imeiIdentity() // Reading NV does not grant permission to write on another firmware.
         let state = try inspect(); let desired: [Data]
         if let restore {
             let (m, records, _) = try loadBackup(restore)
             try require(m.identity == state.identity, "Бэкап относится к другому модему или прошивке")
-            for i in 0...1 { try require(records[i].dropFirst(9) == state.records[i].dropFirst(9), "Остальные байты NV отличаются от бэкапа; восстановление остановлено") }
+            try require(records.count == state.records.count, "Число активных NV550 не совпадает с бэкапом")
+            for i in records.indices { try require(records[i].dropFirst(9) == state.records[i].dropFirst(9), "Остальные байты NV отличаются от бэкапа; восстановление остановлено") }
             desired = records
         } else {
-            try require(targets?.count == 2 && targets![0] != targets![1], "Введите два разных IMEI")
-            desired = try (0...1).map { try IMEI.encode(targets![$0], preserving: state.records[$0]) }
+            try require(targets?.count == state.records.count && Set(targets ?? []).count == state.records.count, "Введите IMEI для каждой активной записи NV550")
+            desired = try state.records.indices.map { try IMEI.encode(targets![$0], preserving: state.records[$0]) }
         }
-        try require(try IMEI.decode(desired[0]) != IMEI.decode(desired[1]), "Для двух слотов нужны разные IMEI")
-        try require(desired != state.records, "Эта пара IMEI уже записана")
+        try require(try Set(desired.map(IMEI.decode)).count == desired.count, "Для двух слотов нужны разные IMEI")
+        try require(desired != state.records, "Эти IMEI уже записаны")
         let backupURL = try makeBackup(state)
-        let t = Transaction(id: UUID().uuidString.lowercased(), backupID: backupURL.lastPathComponent, identity: state.identity, targetHex: desired.map(\.hex), connection: connection, phase: "prepared")
+        let t = Transaction(schema: desired.count == 1 ? 2 : 1, id: UUID().uuidString.lowercased(), backupID: backupURL.lastPathComponent, identity: state.identity, targetHex: desired.map(\.hex), connection: connection, phase: "prepared")
         try saveJSON(t, pendingURL)
         return try resume()
     }
@@ -254,7 +295,7 @@ final class ModemEngine: @unchecked Sendable {
         while Date() < deadline {
             Thread.sleep(forTimeInterval: 3)
             if Date().timeIntervalSince(lastAnnouncement) > 20 { update("Модем перезагружается; ожидаю SSH…", 0.6); lastAnnouncement = Date() }
-            if let (id, newBoot) = try? identity(), newBoot != boot {
+            if let (id, newBoot) = try? imeiIdentity(), newBoot != boot {
                 try require(id == expected, "После перезагрузки подключён другой модем")
                 remoteLockToken = nil
                 try acquireRemoteLock(); return newBoot
@@ -264,31 +305,33 @@ final class ModemEngine: @unchecked Sendable {
     }
     func resume() throws -> DeviceState {
         var t = try readJSON(Transaction.self, pendingURL)
-        try require(t.schema == 1 && UUID(uuidString: t.backupID) != nil && t.targetHex.count == 2, "Повреждён журнал операции")
+        try require(((t.schema == 1 && t.targetHex.count == 2) || (t.schema == 2 && t.targetHex.count == 1)) && UUID(uuidString: t.backupID) != nil, "Повреждён журнал операции")
         let (m, original, config) = try loadBackup(backupsURL.appendingPathComponent(t.backupID))
-        try require(m.identity == t.identity, "Бэкап и журнал относятся к разным устройствам")
-        let initialIdentity = try identity(); let id = initialIdentity.0; var boot = initialIdentity.1; try require(id == t.identity, "Подключён другой модем"); try acquireRemoteLock()
+        try require(m.identity == t.identity && original.count == t.targetHex.count, "Бэкап и журнал относятся к разным устройствам")
+        let initialIdentity = try imeiIdentity(); let id = initialIdentity.0; var boot = initialIdentity.1; try require(id == t.identity, "Подключён другой модем"); try acquireRemoteLock()
         let desired = try t.targetHex.map { try Data(hex: $0) }
-        for i in 0...1 { _ = try IMEI.decode(desired[i]); try require(desired[i].dropFirst(9) == original[i].dropFirst(9), "Журнал изменяет посторонние байты NV") }
-        try require(try IMEI.decode(desired[0]) != IMEI.decode(desired[1]), "В журнале одинаковые IMEI")
+        for i in desired.indices { _ = try IMEI.decode(desired[i]); try require(desired[i].dropFirst(9) == original[i].dropFirst(9), "Журнал изменяет посторонние байты NV") }
+        try require(try Set(desired.map(IMEI.decode)).count == desired.count, "В журнале одинаковые IMEI")
         let candidate = try ConfigFile.candidate(config), configPlan = config + candidate
         var current = try snapshot()
-        for i in 0...1 { try require(current[i] == original[i] || current[i] == desired[i], "Текущий NV не совпал ни с исходным, ни с целевым. Операция остановлена.") }
+        try require(current.count == original.count, "Число активных NV550 изменилось")
+        for i in current.indices { try require(current[i] == original[i] || current[i] == desired[i], "Текущий NV не совпал ни с исходным, ни с целевым. Операция остановлена.") }
         let diskConfig = try readConfig(); try require(diskConfig == config || diskConfig == candidate, "Config изменился посторонним образом. Операция остановлена.")
         if current != desired {
             update("Включаю разрешение записи…", 0.35); t.phase = "enabling"; try saveJSON(t, pendingURL)
             _ = try helper("zte_config", "--enable-flag", plan: configPlan)
             t.phase = "rebooting-to-enable"; try saveJSON(t, pendingURL)
             boot = try reboot(from: boot, expected: t.identity)
-            let identityAfter = try identity(); try require(identityAfter.0 == t.identity, "После перезагрузки подключён другой модем")
+            let identityAfter = try imeiIdentity(); try require(identityAfter.0 == t.identity, "После перезагрузки подключён другой модем")
             let afterConfig = try readConfig(); try require(afterConfig == config || afterConfig == candidate, "После перезагрузки config не совпал с известным")
             current = try snapshot()
-            for i in 0...1 { try require(current[i] == original[i] || current[i] == desired[i], "NV изменился во время перезагрузки") }
-            let plan = current[0] + current[1] + desired[0] + desired[1]
+            try require(current.count == original.count, "Число активных NV550 изменилось")
+            for i in current.indices { try require(current[i] == original[i] || current[i] == desired[i], "NV изменился во время перезагрузки") }
+            let plan = (current + desired).reduce(Data(), +)
             try savePrivate(plan, logDirectory.appendingPathComponent("nv-plan.bin"))
-            t.phase = "writing"; try saveJSON(t, pendingURL); update("Записываю пару IMEI с проверкой каждого шага…", 0.72)
+            t.phase = "writing"; try saveJSON(t, pendingURL); update("Записываю активные IMEI с проверкой каждого шага…", 0.72)
             _ = try helper("zte_nv", "--apply-plan", plan: plan)
-            try require(try snapshot() == desired && apiPair() == desired.map(IMEI.decode), "Проверка новых IMEI не прошла")
+            try require(try snapshot() == desired && apiPair(count: desired.count) == desired.map(IMEI.decode), "Проверка новых IMEI не прошла")
             t.phase = "written"; try saveJSON(t, pendingURL)
         }
         update("Проверяю исходный config и сохранность IMEI…", 0.82)
@@ -301,9 +344,9 @@ final class ModemEngine: @unchecked Sendable {
         _ = try helper("zte_config", "--check-original", plan: configPlan)
         t.phase = "complete"; t.completed = true
         try saveJSON(t, logDirectory.appendingPathComponent("completed.json"))
-        try saveJSON(["imei1": final.imeis[0], "imei2": final.imeis[1], "bootID": final.boot, "verified": "NV + API + original config after reboot"], logDirectory.appendingPathComponent("result.json"))
+        try saveJSON(["imei1": final.imeis[0], "imei2": final.imeis.count == 2 ? final.imeis[1] : "inactive", "bootID": final.boot, "verified": "NV + API + original config after reboot"], logDirectory.appendingPathComponent("result.json"))
         try fm.removeItem(at: pendingURL)
-        update("Готово. Оба IMEI подтверждены после перезагрузки.", 1)
+        update("Готово. Активные IMEI подтверждены после перезагрузки.", 1)
         return final
     }
     func importBackup(_ source: URL) throws -> URL {
@@ -311,11 +354,12 @@ final class ModemEngine: @unchecked Sendable {
             let (m, records, config) = try loadBackup(source), state = try inspect()
             try require(m.identity == state.identity, "Бэкап относится к другому модему")
             let id = UUID().uuidString.lowercased(), dest = backupsURL.appendingPathComponent(id); try secureDirectory(dest)
-            for (name,data) in ["nv0.bin":records[0], "nv1.bin":records[1], "config.bin":config] { try savePrivate(data, dest.appendingPathComponent(name)) }
+            for (name,data) in backupFiles(records, config: config) { try savePrivate(data, dest.appendingPathComponent(name)) }
             var copied = m; copied.id = id; try saveJSON(copied, dest.appendingPathComponent("manifest.json")); return dest
         }
         // Import the original project backup using exact records, not only the text IMEIs.
         let state = try inspect()
+        try require(state.records.count == 2, "Старый парный бэкап не соответствует числу активных NV550")
         let records = try (0...1).map { try Data(contentsOf: source.appendingPathComponent("diag-nv550/original-index\($0).bin")) }
         let imeis = try records.map(IMEI.decode)
         let sums = try String(contentsOf: source.appendingPathComponent("diag-nv550/SHA256SUMS"), encoding: .utf8)

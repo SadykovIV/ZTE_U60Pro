@@ -61,6 +61,8 @@ private func snapshot() -> ConnectionOverviewSnapshot {
             try check(m.operationTask == nil && !m.busy && !m.connected, "IMEI started preparation while disconnected")
             m.acceptChannelSelection(selection(.ssh))
             m.webPassword = ""; m.agentPassword = ""
+            try check(!m.canApply, "Unknown NV count authorized a write")
+            m.imeiRecordCount = 2
             try check(m.canApply && m.agentInstallationStatus == nil, "IMEI requires optional agent or Web credentials after SSH connection")
         }
         try test("Firmware adaptation collection requires only the selected SSH session and stays passive") {
@@ -97,7 +99,7 @@ private func snapshot() -> ConnectionOverviewSnapshot {
             try secureDirectory(m.storage.appendingPathComponent("SSH"))
             try savePrivate(Data("fixture-key".utf8),URL(fileURLWithPath:m.keyPath))
             try savePrivate(Data("fixture-host".utf8),URL(fileURLWithPath:m.knownHostsPath))
-            m.imei1 = "356938035643809"; m.imei2 = "353490068701222"
+            m.imei1 = "356938035643809"; m.imei2 = "353490068701222"; m.imeiRecordCount = 2
             try check(m.canApply, "Fixture did not allow IMEI mutation before journals")
             let pending = m.storage.appendingPathComponent("setup-pending.json")
             let imeiPending = m.storage.appendingPathComponent("pending.json")
@@ -396,10 +398,10 @@ private func snapshot() -> ConnectionOverviewSnapshot {
             m.markConnectionUnavailable(""); m.webPassword = ""; m.channelStatuses = []; m.diagnosticADBPending = true
             try check(m.canEnableDiagnosticADB && !m.canPrepareModem, "Diagnostic resume requires Web password or permits competing setup")
         }
-        try test("ADB checkbox never sends a write for unknown state or another pending operation") {
+        try test("ADB checkbox requires known state; explicit disable remains available") {
             let m = try model(); m.acceptChannelSelection(selection(.ssh))
-            m.setADBEnabled(false)
-            try check(m.adbControlStatus == nil && !m.canChangeADB && m.operationTask == nil && !m.busy, "Unknown state toggled ADB")
+            m.setADBEnabled(true)
+            try check(m.adbControlStatus == nil && !m.canChangeADB && m.canDisableADB && m.operationTask == nil && !m.busy, "Unknown state enabled ADB or hid explicit disable")
             m.adbControlStatus = .init(enabled: true, supportsChange: true, descriptorsReady: true)
             try check(m.canChangeADB, "Confirmed adapter remained disabled")
             m.adbTogglePending = true; m.setADBEnabled(false)
@@ -565,6 +567,34 @@ private func snapshot() -> ConnectionOverviewSnapshot {
                 do { try m.acceptIMEIRead(changed) } catch { rejected = true }
                 try check(rejected && m.channelSession === chosen.session && m.currentIMEI1 == imei, "IMEI refresh accepted changed device identity/boot")
             }
+        }
+        try await testAsync("IMEI read failure does not disconnect the verified SSH session") {
+            let m = try model()
+            try secureDirectory(m.storage)
+            let key = m.storage.appendingPathComponent("synthetic-ssh-file")
+            try Data("synthetic".utf8).write(to: key)
+            m.keyPath = key.path; m.knownHostsPath = key.path
+            let chosen = selection(.ssh); m.acceptChannelSelection(chosen); m.acceptConnectionOverview(snapshot())
+            // Fail before transport, inside the same catch as helper/DIAG errors.
+            try FileManager.default.createDirectory(at: m.storage.appendingPathComponent("operation.lock"), withIntermediateDirectories: false)
+            m.readIMEI(); await m.operationTask?.value
+            try check(m.log.contains("локальную блокировку") && !m.busy, "Fixture did not reach operation failure")
+            try check(m.connected && m.canManage && m.channelSession === chosen.session && m.modemInformation != nil, "Independent IMEI error disconnected SSH")
+        }
+        try test("Partial IMEI read keeps session and clears a stale second IMEI") {
+            let m = try model(); let chosen = selection(.ssh)
+            m.acceptChannelSelection(chosen); m.acceptConnectionOverview(snapshot())
+            m.currentIMEI2 = "490154203237526"; m.ttlOutboundValue = "117"
+            try m.acceptIMEIRead(IMEIReadState(identity: identity, boot: boot, primary: imei, secondary: nil))
+            try check(m.currentIMEI1 == imei && m.currentIMEI2.isEmpty && m.imeiRecordCount == 1 && m.imeiReadNote.contains("статус 5"), "Partial read reused or fabricated IMEI2")
+            try check(m.connected && m.channelSession === chosen.session && m.ttlOutboundValue == "117", "Partial read disconnected or refreshed other sections")
+            m.imei1 = "356938035643809"; m.imei2 = "invalid stale second value"
+            try check(m.canApply, "Single IMEI still requires a second target")
+            var rejected = false
+            do { try m.acceptIMEIRead(IMEIReadState(identity: identity, boot: UUID().uuidString, primary: imei, secondary: nil)) } catch { rejected = true }
+            try check(rejected && m.currentIMEI2.isEmpty, "Partial read ignored changed boot")
+            try m.acceptIMEIRead(IMEIReadState(identity: identity, boot: boot, primary: imei, secondary: "490154203237526"))
+            try check(m.imeiReadNote.isEmpty && m.imeiRecordCount == 2 && !m.canApply, "Recovered pair retained single-slot write permission")
         }
         try test("Information refresh refuses stale ADB state before any transport call") {
             let m = try model(); m.host = "invalid host for isolated test"
@@ -747,6 +777,17 @@ private func snapshot() -> ConnectionOverviewSnapshot {
             try check(!m.hasOrdinarySIM && !m.canWriteEsim && m.esimCardStatus.contains("ещё не проверен"), "Ordinary card result survived target change")
             m.clearEsim()
             try check(m.esimCard == nil && m.esimSnapshot == nil && m.esimAuthorization == nil, "Card state survived clear")
+        }
+        try test("SIM writes require SSH write access and exclude active recovery, without depending on agent or IMEI") {
+            let m = try model(); m.acceptChannelSelection(selection(.ssh))
+            m.esimSnapshot = EsimSnapshot(ok: true, eid: String(repeating: "1", count: 32), profiles: [])
+            m.esimAuthorization = m.esimTargetKey
+            m.pendingOperation = true; m.setupPending = true
+            try check(m.canWriteEsim, "Independent IMEI/setup state blocked eSIM with valid SSH")
+            for guardName in ["adb", "restore", "access"] {
+                m.adbTogglePending = guardName == "adb"; m.systemRestorePending = guardName == "restore"; m.accessReady = guardName != "access"
+                try check(m.canReadEsim && !m.canWriteEsim, "eSIM writes escaped " + guardName + " guard")
+            }
         }
         try test("SIM read does not depend on firmware override or unrelated recovery flags") {
             let m = try model(); m.acceptChannelSelection(selection(.ssh))

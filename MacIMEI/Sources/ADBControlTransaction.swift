@@ -16,8 +16,29 @@ struct ADBControlManager {
     var now: () -> Date = Date.init
     var wait: (TimeInterval) -> Void = Thread.sleep
     // Updated only from the reviewed bundled source, never learned from a modem.
-    static let scriptHash = "4e24dd2e15fa567c8a22efaafdc0f01345fb226c2b1fef7f921ec77d67ebe2f7"
-    static let capabilityCommand = "set -eu; for t in sh stat readlink sha256sum cut awk sed sort pidof nohup sleep cat mv rm rmdir mkdir ln id uname; do command -v \"$t\" >/dev/null 2>&1 || exit 71; done; test -d /tmp && test ! -L /tmp && test -w /tmp && test -r /tmp && test -x /tmp && test \"$(stat -c %u /tmp)\" = 0 || exit 71; test -f /sbin/adbd && test ! -L /sbin/adbd && test \"$(stat -c %u /sbin/adbd)\" = 0 && test \"$(sha256sum /sbin/adbd | cut -d ' ' -f 1)\" = 6d42bf97ae1f761ba3c5a0ee48deb84db0b19e4766b6b538b71741743d5b3f90 || exit 71; printf 'ADB_CAPABILITY_READY\\n'"
+    static let scriptHash = "0ca5d10426c8398bab5e35af525782c490dce30f841a073e2cc64e3dc49c27dd"
+    static let b04FirmwareHash = "c57e063d390983229dfc53aa87380b3d4655ee8daa1c748e1a032ac90cd0df81"
+    static let b28FirmwareHash = "5a4489882538b5ab1d3e0049371f1b620d28d262a429923299b4f2626d40d478"
+    static func known(firmware: String, router: String) -> Bool {
+        [ModemEngine.firmwareHash, b28FirmwareHash, b04FirmwareHash, "absent"].contains(firmware) && router == ModemEngine.routerHash
+    }
+    static let capabilityCommand = "set -eu; for t in sh stat readlink sha256sum cut awk sed sort pidof nohup sleep cat mv rm rmdir mkdir ln id uname cmp chmod; do command -v \"$t\" >/dev/null 2>&1 || exit 71; done; test -d /tmp && test ! -L /tmp && test -w /tmp && test -r /tmp && test -x /tmp && test \"$(stat -c %u /tmp)\" = 0 || exit 71; test -f /sbin/adbd && test ! -L /sbin/adbd && test \"$(stat -c %u /sbin/adbd)\" = 0 || exit 71; printf 'ADB_CAPABILITY_READY\\n'"
+    // The captured B04 image or its absence is only a candidate: native identity is measured
+    // in the capability check and again by the transaction before every write.
+    static let b04CapabilityCommand = #"""
+if test -e /firmware/image/modem.b16 || test -L /firmware/image/modem.b16; then
+  test -f /firmware/image/modem.b16 && test ! -L /firmware/image/modem.b16 && test "$(stat -c %u /firmware/image/modem.b16)" = 0 || exit 71
+  test "$(sha256sum /firmware/image/modem.b16 | cut -d ' ' -f 1)" = c57e063d390983229dfc53aa87380b3d4655ee8daa1c748e1a032ac90cd0df81 || exit 71
+fi
+  test -f /usr/bin/zte_topsw_mdm && test ! -L /usr/bin/zte_topsw_mdm && test "$(stat -c %u /usr/bin/zte_topsw_mdm)" = 0 || exit 71
+  test "$(sha256sum /usr/bin/zte_topsw_mdm | cut -d ' ' -f 1)" = 93a346e7d69024503caf9ad42f14c97e1514dd7d04c7b5ebef4e30473b5d5c64 || exit 71
+  info=$(ubus -t 5 call zwrt_web device_info '{}') || exit 71
+  test "$(printf '%s' "$info" | jsonfilter -e '@.integrate_version')" = XCBZ_HK_MU5250V1.0.0B04 || exit 71
+  test "$(printf '%s' "$info" | jsonfilter -e '@.wa_inner_version')" = BD_XCBZHKMU5250V1.0.0B04 || exit 71
+"""#
+    private func capabilityCommand(_ firmware: String) -> String {
+        ["absent", Self.b04FirmwareHash].contains(firmware) ? "set -eu; " + Self.b04CapabilityCommand + "; " + Self.capabilityCommand : Self.capabilityCommand
+    }
     var pendingURL: URL { engine.root.appendingPathComponent("adb-toggle-pending.json") }
     private var scriptURL: URL { engine.resources.appendingPathComponent("Onboarding/adb-toggle.sh") }
     private func script() throws -> Data {
@@ -29,7 +50,7 @@ struct ADBControlManager {
         if engine.fm.fileExists(atPath: pendingURL.path) {
             let (bytes, truncated) = try DiagnosticArchive.readRegular(root: engine.root, relative: "adb-toggle-pending.json", limit: 4096)
             let pending = try JSONDecoder().decode(ADBControlPending.self, from: bytes)
-            try require(!truncated && pending.schema == 1 && pending.token.range(of: #"^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$"#, options: .regularExpression) != nil && pending.cid.range(of: #"^[0-9a-f]{32}$"#, options: .regularExpression) != nil && UUID(uuidString: pending.boot) != nil && pending.firmware == ModemEngine.firmwareHash && pending.router == ModemEngine.routerHash, "Некорректная сохранённая операция ADB")
+            try require(!truncated && pending.schema == 1 && pending.token.range(of: #"^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$"#, options: .regularExpression) != nil && pending.cid.range(of: #"^[0-9a-f]{32}$"#, options: .regularExpression) != nil && UUID(uuidString: pending.boot) != nil && Self.known(firmware: pending.firmware, router: pending.router), "Некорректная сохранённая операция ADB")
             try same(pending)
             if !pending.dispatched {
                 let absent = "set -eu; test -d /tmp && test ! -L /tmp && test -r /tmp && test -x /tmp && test \"$(stat -c %u /tmp)\" = 0 || exit 71; test ! -e " + shellQuote(pending.stage) + "; test ! -L " + shellQuote(pending.stage) + "; test ! -e /tmp/zte-imei-app.lock; test ! -L /tmp/zte-imei-app.lock; printf 'ADB_STAGE_ABSENT\\n'"
@@ -67,10 +88,10 @@ struct ADBControlManager {
         try require(result.status == 0, "Не удалось прочитать состояние ADB через SSH")
         var state = try ADBControlProtocol.parse(result.stdout)
         state.supportsChange = state.enabled != nil && state.descriptorsReady
-            && before.identity.firmwareHash == ModemEngine.firmwareHash && before.routerHash == ModemEngine.routerHash
+            && Self.known(firmware: before.identity.firmwareHash, router: before.routerHash)
             && !engine.fm.fileExists(atPath: pendingURL.path) && (try? script()) != nil
         if state.supportsChange {
-            state.supportsChange = (try? run(Self.capabilityCommand)) == "ADB_CAPABILITY_READY\n"
+            state.supportsChange = (try? run(capabilityCommand(before.identity.firmwareHash))) == "ADB_CAPABILITY_READY\n"
         }
         try require(try engine.measuredIdentity() == before, "Устройство или сеанс загрузки изменились при чтении ADB")
         return state
@@ -106,7 +127,7 @@ struct ADBControlManager {
         let stage = shellQuote(pending.stage)
         // Never recurse and never remove a lock. The worker releases its own
         // lock before publishing a terminal receipt.
-        let files = ["adb-toggle.sh", "phase", "before", "after", "udc", "daemon", "name", "target", "desired", "original", "ack", "worker.log"]
+        let files = ["adb-toggle.sh", "phase", "before", "after", "udc", "daemon", "name", "target", "desired", "original", "ack", "worker.log", "rc.before", "rc.after", "rc.mode"]
         let inventoryGuard = "for p in " + stage + "/* " + stage + "/.[!.]* " + stage + "/..?*; do test -e \"$p\" || test -L \"$p\" || continue; case \"${p##*/}\" in " + files.joined(separator: "|") + "|apply-once|decision) :;; *) exit 71;; esac; done; " +
             "for d in " + shellQuote(pending.stage + "/apply-once") + " " + shellQuote(pending.stage + "/decision") + "; do if test -e \"$d\" || test -L \"$d\"; then test -d \"$d\" && test ! -L \"$d\" && test \"$(stat -c '%u:%a' \"$d\")\" = 0:700 || exit 71; for p in \"$d\"/* \"$d\"/.[!.]* \"$d\"/..?*; do if test -e \"$p\" || test -L \"$p\"; then exit 71; fi; done; fi; done; "
         let command = "set -eu; test ! -e " + shellQuote(pending.stage + "/prepare-active") + "; test ! -L " + shellQuote(pending.stage + "/prepare-active") + "; test -d " + stage + " && test ! -L " + stage + " || exit 71; test \"$(stat -c '%u:%a' " + stage + ")\" = 0:700; " + inventoryGuard +
@@ -124,9 +145,11 @@ struct ADBControlManager {
         let proof = try engine.measuredIdentity()
         let initial = try status()
         try require(try engine.measuredIdentity() == proof, "Устройство или сеанс загрузки изменились во время переключения ADB")
-        try require(initial.supportsChange, "Безопасное переключение ADB для этой конфигурации не подтверждено")
-        if initial.enabled == enabled { return initial }
-        try require(proof.identity.firmwareHash == ModemEngine.firmwareHash && proof.routerHash == ModemEngine.routerHash, "Изменения ADB для этой прошивки не подтверждены")
+        let persistenceOnly = !enabled && initial.enabled == false
+            && Self.known(firmware: proof.identity.firmwareHash, router: proof.routerHash)
+            && (try? run(capabilityCommand(proof.identity.firmwareHash))) == "ADB_CAPABILITY_READY\n"
+        try require(initial.supportsChange || persistenceOnly, "Безопасное переключение ADB для этой конфигурации не подтверждено. Для включения нужны готовые USB-дескрипторы ADB; выключение уже отсутствующего ADB доступно через SSH.")
+        try require(Self.known(firmware: proof.identity.firmwareHash, router: proof.routerHash), "Изменения ADB для этой прошивки не подтверждены")
         var pending = ADBControlPending(schema: 1, token: UUID().uuidString.lowercased(), cid: proof.identity.cid, boot: proof.bootID, firmware: proof.identity.firmwareHash, router: proof.routerHash, enabled: enabled, dispatched: false)
         try savePrivate(JSONEncoder().encode(pending), pendingURL)
         let stage = shellQuote(pending.stage)

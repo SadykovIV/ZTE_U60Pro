@@ -1,5 +1,8 @@
+mod awg;
+mod catalog;
 mod profile;
 mod screen;
+mod subscription;
 mod wifi;
 use profile::Result;
 use serde::Deserialize;
@@ -17,7 +20,14 @@ use std::{
 const ROOT: &str = "/data/zte-vpn";
 const OWNER: &str = "zte-vpn-v1";
 const CORE_SHA: &str = "1b315bc038d05f84ee86d232f3c3d2b020b5044e9b971bb8fe215b6e6a2148f3";
-const FW_SHA: &str = "604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263";
+// Captured B31/B28 modem image identities. B04 also requires its
+// userspace profile below uses the same measured network init and VPN UCI schema.
+const FW_SHAS: &[&str] = &[
+    "604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263", // CN B31
+    "5a4489882538b5ab1d3e0049371f1b620d28d262a429923299b4f2626d40d478", // FLY B28 / public B13
+];
+const B04_FW_SHA: &str = "c57e063d390983229dfc53aa87380b3d4655ee8daa1c748e1a032ac90cd0df81";
+const B04_MDM_SHA: &str = "93a346e7d69024503caf9ad42f14c97e1514dd7d04c7b5ebef4e30473b5d5c64";
 const FILES: &[(&str, &[u8])] = &[
     (
         "manager.sh",
@@ -128,12 +138,28 @@ fn integrity() -> Result<()> {
     if hash(&read(&path("mihomo"), 200 * 1024 * 1024)?) != CORE_SHA {
         return Err("VPN_CORE_INTEGRITY");
     }
-    if hash(&fs::read("/firmware/image/modem.b16").map_err(|_| "VPN_UNSUPPORTED_FIRMWARE")?)
-        != FW_SHA
-    {
-        return Err("VPN_UNSUPPORTED_FIRMWARE");
+    let firmware = match fs::symlink_metadata("/firmware/image/modem.b16") {
+        Ok(metadata) if metadata.is_file() => Some(hash(&fs::read("/firmware/image/modem.b16").map_err(|_| "VPN_UNSUPPORTED_FIRMWARE")?)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        _ => return Err("VPN_UNSUPPORTED_FIRMWARE"),
+    };
+    if let Some(image) = firmware.as_deref() {
+        if verify_firmware_hash(image).is_ok() { return Ok(()); }
+        if image != B04_FW_SHA { return Err("VPN_UNSUPPORTED_FIRMWARE"); }
     }
-    Ok(())
+    let mdm = hash(&read(Path::new("/usr/bin/zte_topsw_mdm"), 1024 * 1024)?);
+    let router = hash(&read(Path::new("/usr/bin/diag-router"), 1024 * 1024)?);
+    verify_b04_profile(firmware.as_deref(), &mdm, &router)
+}
+// This path is also used before netifd/vendor RPC startup. Match measured
+// binaries rather than adding a dependency on zwrt_web being available.
+fn verify_b04_profile(firmware: Option<&str>, mdm: &str, router: &str) -> Result<()> {
+    if (firmware.is_none() || firmware == Some(B04_FW_SHA)) && mdm == B04_MDM_SHA && router == "55c54f74aaa427940254a2f16c36771e675a80a002363e4f10b0dfcb604d9c6f" {
+        Ok(())
+    } else { Err("VPN_UNSUPPORTED_FIRMWARE") }
+}
+fn verify_firmware_hash(firmware: &str) -> Result<()> {
+    if FW_SHAS.contains(&firmware) { Ok(()) } else { Err("VPN_UNSUPPORTED_FIRMWARE") }
 }
 fn run(program: &str, args: &[&str], seconds: u64) -> Result<Vec<u8>> {
     let output = process_runner::output(
@@ -157,6 +183,11 @@ fn run(program: &str, args: &[&str], seconds: u64) -> Result<Vec<u8>> {
 const ERRORS: &[&str] = &[
     "VPN_MESH_CONFLICT",
     "VPN_IPA_ENABLED",
+    "VPN_IPA_UNSUPPORTED",
+    "VPN_IPA_NOT_RUNNING",
+    "VPN_IPA_PREPARE_FAILED",
+    "VPN_IPA_RESTORE_FAILED",
+    "VPN_IPA_STATE_INVALID",
     "VPN_GUEST_IN_USE",
     "VPN_OTHER_PROXY",
     "VPN_SUBNET_CONFLICT",
@@ -164,6 +195,7 @@ const ERRORS: &[&str] = &[
     "VPN_PENDING_CHANGES",
     "VPN_BRIDGE_NOT_READY",
     "VPN_CORE_NOT_READY",
+    "VPN_DHCP_NOT_READY",
     "VPN_WIFI_NOT_READY",
     "VPN_CONFIGURATION_PENDING",
     "VPN_NO_ACTIVE_PROFILE",
@@ -184,16 +216,15 @@ struct Lock {
 }
 impl Lock {
     fn check_transactions() -> Result<()> {
-        for p in [
-            "/data/local/tmp/zte-imei-installations/active",
-            "/data/local/tmp/open-u60-transactions/active",
-            "/tmp/fota_install_processing",
-        ] {
-            if fs::symlink_metadata(p).is_ok() {
-                return Err("VPN_OTHER_TRANSACTION");
-            }
+        Self::check_transactions_at(Path::new("/"))
+    }
+    fn check_transactions_at(root: &Path) -> Result<()> {
+        // Current operations coordinate through the shared application lock.
+        // A saved legacy SSH/agent deployment journal does not own VPN files.
+        match fs::symlink_metadata(root.join("tmp/fota_install_processing")) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            _ => Err("VPN_OTHER_TRANSACTION"),
         }
-        Ok(())
     }
     fn borrowed(token: &str) -> Result<Self> {
         Self::check_transactions()?;
@@ -248,13 +279,21 @@ impl Drop for Lock {
         }
     }
 }
-fn active() -> String {
-    String::from_utf8(read(&path("active"), 64).unwrap_or_default())
-        .unwrap_or_default()
-        .trim()
-        .into()
+fn active() -> Result<String> {
+    active_at(&path("active"))
 }
-fn profiles() -> Result<Vec<Value>> {
+fn active_at(file: &Path) -> Result<String> {
+    match fs::symlink_metadata(file) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
+        Err(_) => return Err("VPN_INVALID_STATE"),
+        Ok(_) => (),
+    }
+    let value = String::from_utf8(read(file, 64)?).map_err(|_| "VPN_INVALID_STATE")?;
+    let value = value.trim();
+    if !profile::valid_id(value) { return Err("VPN_INVALID_STATE"); }
+    Ok(value.into())
+}
+fn legacy_profiles() -> Result<Vec<Value>> {
     let mut result = Vec::new();
     for entry in fs::read_dir(path("profiles")).map_err(|_| "VPN_INVALID_STATE")? {
         let entry = entry.map_err(|_| "VPN_INVALID_STATE")?;
@@ -263,12 +302,44 @@ fn profiles() -> Result<Vec<Value>> {
             let v = json_file(&p)?;
             result.push(v);
         }
-        if result.len() > 32 {
+        if result.len() > subscription::PROFILE_LIMIT {
             return Err("VPN_PROFILE_LIMIT");
         }
     }
     result.sort_by_key(|p| p["name"].as_str().unwrap_or("").to_lowercase());
     Ok(result)
+}
+fn catalog() -> Result<catalog::Catalog> {
+    let value = match fs::symlink_metadata(path("catalog.json")) {
+        Ok(_) => serde_json::from_slice(&read(&path("catalog.json"), 32 * 1024 * 1024)?)
+            .map_err(|_| "VPN_INVALID_STATE")?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => catalog::Catalog::legacy(legacy_profiles()?),
+        Err(_) => return Err("VPN_INVALID_STATE"),
+    };
+    value.check()?;
+    Ok(value)
+}
+fn save_catalog(catalog: &catalog::Catalog) -> Result<()> {
+    catalog.check()?;
+    let data = serde_json::to_vec(catalog).map_err(|_| "VPN_WRITE_FAILED")?;
+    if data.len() > 32 * 1024 * 1024 { return Err("VPN_PROFILE_LIMIT"); }
+    atomic(&path("catalog.json"), &data)
+}
+fn new_id() -> Result<String> {
+    let id = fs::read_to_string("/proc/sys/kernel/random/uuid").map_err(|_| "VPN_WRITE_FAILED")?;
+    let id = id.trim();
+    if !profile::valid_id(id) { return Err("VPN_WRITE_FAILED"); }
+    Ok(id.into())
+}
+fn import_profile(mut p: Value) -> Result<()> {
+    let mut catalog = catalog()?;
+    if catalog.profiles.iter().any(|old| old["proxy"] == p["proxy"]) { return Err("VPN_PROFILE_EXISTS"); }
+    if catalog.profiles.len() >= subscription::PROFILE_LIMIT { return Err("VPN_PROFILE_LIMIT"); }
+    validate(p["proxy"].clone())?;
+    let id = new_id()?; p["id"] = json!(id);
+    audit("import", &id)?;
+    catalog.profiles.push(p);
+    save_catalog(&catalog)
 }
 fn core_running() -> bool {
     let Some(pid) = fs::read_to_string(path("core.pid"))
@@ -391,24 +462,26 @@ fn status() -> Result<Value> {
         } else {
             wifi::PasswordMode::Main
         });
-    let active = active();
+    let active = active()?;
     let mut list = Vec::new();
-    for p in profiles()? {
-        list.push(json!({"id":p["id"],"name":p["name"],"transport":p["proxy"]["network"],"warnings":p["warnings"],"active":p["id"].as_str()==Some(&active)}));
+    let catalog = catalog()?;
+    let live = json_file(&path("config.json")).ok();
+    for p in &catalog.profiles {
+        let selected = p["id"].as_str()==Some(&active);
+        list.push(json!({"id":p["id"],"name":p["name"],"transport":p["proxy"]["network"].as_str().unwrap_or(""),"protocol":subscription::protocol(&p["proxy"]),"warnings":p["warnings"],"active":selected,"subscription_id":p["subscription_id"],"update_available":selected&&live.as_ref().is_some_and(|v| v["proxies"][0]!=p["proxy"]),"removed_from_subscription":p["removed_from_subscription"]==true}));
     }
+    list.sort_by_key(|p| p["name"].as_str().unwrap_or("").to_lowercase());
+    let subscriptions: Vec<Value> = catalog.subscriptions.iter().map(|s| json!({"id":s["id"],"name":s["name"],"host":s["host"],"updated_at":s["updated_at"],"profile_count":catalog.profiles.iter().filter(|p|p["subscription_id"]==s["id"]).count()})).collect();
     Ok(
-        json!({"schema_version":1,"installed":true,"version":env!("CARGO_PKG_VERSION"),"core_version":"1.19.31","core_available":path("mihomo").is_file(),"configured":configured,"enabled":configured&&network["enabled"]==true,"core_running":core_running(),"network_ok":configured&&network["network_ok"]==true,"mesh_conflict":network["mesh"],"ssid":network["ssid"],"ssid_2g":network["ssid_2g"],"ssid_5g":network["ssid_5g"],"main_ssid":network["main_ssid"],"desired_ssid":desired_ssid,"password_mode":password_mode,"wifi_settings_pending":!configured||path("wifi-settings.pending").exists(),"settings_supported":true,"profiles":list,"active_profile":active,"screen":screen::status(),"recovery_pending":path("transaction").exists()}),
+        json!({"schema_version":1,"installed":true,"version":env!("CARGO_PKG_VERSION"),"core_version":"1.19.31","core_available":path("mihomo").is_file(),"configured":configured,"enabled":configured&&network["enabled"]==true,"core_running":core_running(),"network_ok":configured&&network["network_ok"]==true,"mesh_conflict":network["mesh"],"ssid":network["ssid"],"ssid_2g":network["ssid_2g"],"ssid_5g":network["ssid_5g"],"main_ssid":network["main_ssid"],"desired_ssid":desired_ssid,"password_mode":password_mode,"wifi_settings_pending":!configured||path("wifi-settings.pending").exists(),"settings_supported":true,"profiles":list,"subscriptions":subscriptions,"active_profile":active,"screen":screen::status(),"recovery_pending":path("transaction").exists()}),
     )
 }
-fn profile_path(id: &str) -> Result<PathBuf> {
-    if !profile::valid_id(id) {
-        return Err("VPN_INVALID_PROFILE_ID");
-    }
-    Ok(path(&format!("profiles/{id}.json")))
-}
 fn validate(proxy: Value) -> Result<()> {
+    validate_config(profile::config(proxy, true))
+}
+fn validate_config(config: Value) -> Result<()> {
     let p = path("validate.json");
-    write_json(&p, &profile::config(proxy, true))?;
+    write_json(&p, &config)?;
     let out = process_runner::output(
         Command::new(path("mihomo")).args(["-t", "-d", ROOT, "-f", p.to_str().unwrap()]),
         None,
@@ -427,6 +500,9 @@ fn validate(proxy: Value) -> Result<()> {
     Ok(())
 }
 fn audit(action: &str, id: &str) -> Result<()> {
+    audit_event(action, id, None)
+}
+fn audit_event(action: &str, id: &str, code: Option<&str>) -> Result<()> {
     let mut f = OpenOptions::new()
         .append(true)
         .create(true)
@@ -438,7 +514,9 @@ fn audit(action: &str, id: &str) -> Result<()> {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    writeln!(f, "{}", json!({"time":now,"action":action,"profile_id":id}))
+    let mut event = json!({"time":now,"action":action,"profile_id":id});
+    if let Some(code) = code { event["code"] = json!(code); }
+    writeln!(f, "{}", event)
         .map_err(|_| "VPN_AUDIT_FAILED")?;
     f.sync_all().map_err(|_| "VPN_AUDIT_FAILED")
 }
@@ -450,6 +528,11 @@ enum Request {
         uri: String,
         name: Option<String>,
     },
+    ImportConfig { config: String, name: Option<String> },
+    SubscriptionImport { url: String, name: Option<String>, documents: Option<Vec<String>> },
+    SubscriptionUpdate { id: String, documents: Option<Vec<String>> },
+    SubscriptionDelete { id: String },
+    SubscriptionDetails { id: String },
     Activate {
         id: String,
     },
@@ -479,13 +562,32 @@ enum Request {
     ScreenClose,
 }
 fn dispatch(req: Request) -> Result<Value> {
+    let updating = match &req {
+        Request::SubscriptionUpdate { id, .. } if profile::valid_id(id) => Some(id.clone()),
+        _ => None,
+    };
+    let result = dispatch_inner(req);
+    if let (Some(id), Err(code)) = (updating, &result) {
+        if base().is_ok() {
+            let _ = audit_event("subscription_update_failed", &id, Some(code));
+        }
+    }
+    result
+}
+fn dispatch_inner(req: Request) -> Result<Value> {
     if matches!(req, Request::Status) {
         return status();
     }
     if let Request::Details { id } = req {
         base()?;
-        let p = json_file(&profile_path(&id)?)?;
-        return Ok(json!({"schema_version":1,"profile":p,"active":active()==id}));
+        let catalog = catalog()?;
+        let p = catalog.profile(&id)?;
+        return Ok(json!({"schema_version":1,"profile":p,"active":active()?==id}));
+    }
+    if let Request::SubscriptionDetails { id } = req {
+        base()?;
+        let catalog = catalog()?;
+        return Ok(json!({"schema_version":1,"subscription":catalog.subscription(&id)?}));
     }
     if let Request::ScreenOpen { page } = req {
         return screen::open(&page);
@@ -508,6 +610,7 @@ fn dispatch(req: Request) -> Result<Value> {
     {
         manager("recover")?;
     }
+    let mut summary = None;
     match req {
         Request::ConfigureWifi {
             ssid,
@@ -523,44 +626,62 @@ fn dispatch(req: Request) -> Result<Value> {
         }
         Request::Import { uri, name } => {
             let (name, proxy, warnings) = profile::parse(&uri, name.as_deref())?;
-            let existing = profiles()?;
-            if existing.iter().any(|p| p["proxy"] == proxy) {
-                return Err("VPN_PROFILE_EXISTS");
-            }
-            if existing.len() >= 32 {
-                return Err("VPN_PROFILE_LIMIT");
-            }
-            validate(proxy.clone())?;
-            let id = String::from_utf8(
-                fs::read("/proc/sys/kernel/random/uuid").map_err(|_| "VPN_WRITE_FAILED")?,
-            )
-            .map_err(|_| "VPN_WRITE_FAILED")?
-            .trim()
-            .to_string();
-            audit("import", &id)?;
-            write_json(
-                &profile_path(&id)?,
-                &json!({"id":id,"name":name,"proxy":proxy,"warnings":warnings,"source_uri":uri}),
-            )?;
+            import_profile(json!({"name":name,"protocol":subscription::protocol(&proxy),"proxy":proxy,"warnings":warnings,"source_uri":uri}))?;
+        }
+        Request::ImportConfig { config, name } => {
+            let parsed = awg::parse(&config)?;
+            let name = profile::name(name.as_deref().unwrap_or(parsed.protocol))?;
+            import_profile(json!({"name":name,"protocol":parsed.protocol,"proxy":parsed.proxy,"warnings":parsed.warnings,"source_config":config}))?;
+        }
+        Request::SubscriptionImport { url, name, documents } => {
+            let host = subscription::host(&url)?;
+            let mut catalog = catalog()?;
+            if catalog.subscriptions.iter().any(|s| s["url"] == url) { return Err("VPN_SUBSCRIPTION_EXISTS"); }
+            let name = profile::name(name.as_deref().unwrap_or(&host))?;
+            let id = new_id()?;
+            let parsed = subscription_input(&url, documents)?;
+            summary = Some(catalog.update(json!({"id":id,"url":url,"host":host,"name":name,"updated_at":timestamp()}), parsed, &active()?, new_id)?);
+            audit("subscription_import", &id)?;
+            save_catalog(&catalog)?;
+        }
+        Request::SubscriptionUpdate { id, documents } => {
+            let mut catalog = catalog()?;
+            let mut sub = catalog.subscription(&id)?.clone();
+            let url = sub["url"].as_str().ok_or("VPN_INVALID_STATE")?;
+            let parsed = subscription_input(url, documents)?;
+            sub["updated_at"] = json!(timestamp());
+            summary = Some(catalog.update(sub, parsed, &active()?, new_id)?);
+            audit("subscription_update", &id)?;
+            save_catalog(&catalog)?;
+        }
+        Request::SubscriptionDelete { id } => {
+            let mut catalog = catalog()?;
+            catalog.detach(&id)?;
+            audit("subscription_delete", &id)?;
+            save_catalog(&catalog)?;
         }
         Request::Rename { id, name } => {
-            let path = profile_path(&id)?;
-            let mut p = json_file(&path)?;
+            let mut catalog = catalog()?;
+            let mut p = catalog.profile(&id)?.clone();
             profile::rename(&mut p, &name)?;
+            p["custom_name"] = json!(true);
             audit("rename", &id)?;
-            write_json(&path, &p)?;
+            *catalog.profiles.iter_mut().find(|old| old["id"] == id).unwrap() = p;
+            save_catalog(&catalog)?;
         }
         Request::Delete { id } => {
-            if active() == id {
+            if active()? == id {
                 return Err("VPN_ACTIVE_PROFILE_DELETE");
             }
-            let p = profile_path(&id)?;
-            let _ = json_file(&p)?;
+            let mut catalog = catalog()?;
+            catalog.profile(&id)?;
             audit("delete", &id)?;
-            fs::remove_file(p).map_err(|_| "VPN_WRITE_FAILED")?;
+            catalog.profiles.retain(|p| p["id"] != id);
+            save_catalog(&catalog)?;
         }
         Request::Activate { id } => {
-            let p = json_file(&profile_path(&id)?)?;
+            let catalog = catalog()?;
+            let p = catalog.profile(&id)?;
             validate(p["proxy"].clone())?;
             let first = !path("configured").exists();
             audit("activate_requested", &id)?;
@@ -606,7 +727,7 @@ fn dispatch(req: Request) -> Result<Value> {
             if enabled && path("wifi-settings.pending").exists() {
                 return Err("VPN_WIFI_SETTINGS_PENDING");
             }
-            audit(if enabled { "enable" } else { "disable" }, &active())?;
+            audit(if enabled { "enable" } else { "disable" }, &active()?)?;
             manager(if enabled { "enable" } else { "disable" })?;
         }
         Request::Recover => {
@@ -614,10 +735,29 @@ fn dispatch(req: Request) -> Result<Value> {
         }
         Request::Status
         | Request::Details { .. }
+        | Request::SubscriptionDetails { .. }
         | Request::ScreenOpen { .. }
         | Request::ScreenClose => unreachable!(),
     }
-    status()
+    let mut status = status()?;
+    if let Some(summary) = summary { status["last_import"] = summary; }
+    Ok(status)
+}
+
+fn timestamp() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()
+}
+fn subscription_input(url: &str, documents: Option<Vec<String>>) -> Result<subscription::Parsed> {
+    let parsed = if let Some(documents) = documents { subscription::select(&documents)? } else { subscription::fetch(url)? };
+    // One parser-only core invocation checks an entire feed without connecting.
+    let mut config = profile::config(parsed.profiles[0]["proxy"].clone(), true);
+    config["proxies"] = Value::Array(parsed.profiles.iter().enumerate().map(|(i,p)| {
+        let mut proxy = p["proxy"].clone(); if i != 0 { proxy["name"] = json!(format!("Node-{i}")); } proxy
+    }).collect());
+    // Do not multiply a failed 30-second validation by the number of nodes.
+    // Any core rejection leaves the entire existing catalog unchanged.
+    validate_config(config)?;
+    Ok(parsed)
 }
 
 fn hook_network() -> Result<()> {
@@ -681,11 +821,11 @@ fn main() {
             Some("request") => {
                 let mut input = Vec::new();
                 std::io::stdin()
-                    .take(65537)
+                    .take(subscription::REQUEST_LIMIT as u64 + 1)
                     .read_to_end(&mut input)
                     .map_err(|_| "VPN_INVALID_REQUEST")?;
-                if input.len() > 65536 {
-                    return Err("VPN_PROFILE_TOO_LARGE");
+                if input.len() > subscription::REQUEST_LIMIT {
+                    return Err("VPN_REQUEST_TOO_LARGE");
                 }
                 let req: Request =
                     serde_json::from_slice(&input).map_err(|_| "VPN_INVALID_REQUEST")?;
@@ -706,6 +846,64 @@ fn main() {
 #[cfg(test)]
 mod wifi_request_tests {
     use super::*;
+    #[test]
+    fn legacy_deployment_journals_do_not_block_vpn_but_firmware_update_does() {
+        let root = std::env::temp_dir().join(format!("zte-vpn-transactions-{}", std::process::id()));
+        fs::create_dir_all(root.join("tmp")).unwrap();
+        for legacy in ["data/local/tmp/zte-imei-installations", "data/local/tmp/open-u60-transactions"] {
+            fs::create_dir_all(root.join(legacy)).unwrap();
+            fs::write(root.join(legacy).join("active"), b"saved-deployment").unwrap();
+        }
+        assert!(Lock::check_transactions_at(&root).is_ok());
+        let fota = root.join("tmp/fota_install_processing");
+        fs::write(&fota, b"active").unwrap();
+        assert_eq!(Lock::check_transactions_at(&root), Err("VPN_OTHER_TRANSACTION"));
+        fs::remove_file(&fota).unwrap();
+        std::os::unix::fs::symlink("missing-update-state", &fota).unwrap();
+        assert_eq!(Lock::check_transactions_at(&root), Err("VPN_OTHER_TRANSACTION"));
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn unreadable_or_corrupt_active_profile_is_not_treated_as_missing() {
+        let root = std::env::temp_dir().join(format!("zte-vpn-active-{}", std::process::id()));
+        DirBuilder::new().mode(0o700).create(&root).unwrap();
+        let file = root.join("active");
+        assert_eq!(active_at(&file).unwrap(), "");
+        for bytes in [b"".as_slice(), b"invalid", &[255,254]] {
+            atomic(&file,bytes).unwrap(); assert!(active_at(&file).is_err());
+        }
+        atomic(&file,b"20000000-0000-0000-0000-000000000000\n").unwrap();
+        assert_eq!(active_at(&file).unwrap(), "20000000-0000-0000-0000-000000000000");
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o666)).unwrap();
+        assert!(active_at(&file).is_err());
+        fs::remove_file(&file).unwrap();
+        std::os::unix::fs::symlink("missing", &file).unwrap();
+        assert!(active_at(&file).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn captured_b04_requires_both_userspace_binaries() {
+        let router = "55c54f74aaa427940254a2f16c36771e675a80a002363e4f10b0dfcb604d9c6f";
+        assert!(verify_b04_profile(None, B04_MDM_SHA, router).is_ok());
+        assert!(verify_b04_profile(Some(B04_FW_SHA), B04_MDM_SHA, router).is_ok());
+        assert!(verify_b04_profile(Some(B04_FW_SHA), &"0".repeat(64), router).is_err());
+        assert!(verify_b04_profile(Some(B04_FW_SHA), B04_MDM_SHA, &"0".repeat(64)).is_err());
+        assert!(verify_b04_profile(Some(&"0".repeat(64)), B04_MDM_SHA, router).is_err());
+        assert!(verify_firmware_hash(B04_FW_SHA).is_err()); // Image alone is not the B04 profile.
+        assert!(verify_b04_profile(None, &"0".repeat(64), router).is_err());
+        assert!(verify_b04_profile(None, B04_MDM_SHA, &"0".repeat(64)).is_err());
+        assert!(verify_b04_profile(None, "BD_XCBZHKMU5250V1.0.0B04", router).is_err());
+    }
+    #[test]
+    fn captured_b28_and_b31_firmware_are_supported_but_unknown_is_not() {
+        for firmware in [
+            "5a4489882538b5ab1d3e0049371f1b620d28d262a429923299b4f2626d40d478",
+            "604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263",
+        ] { assert!(verify_firmware_hash(firmware).is_ok()); }
+        for firmware in ["", "B28", "B31", &"f".repeat(64)] {
+            assert_eq!(verify_firmware_hash(firmware), Err("VPN_UNSUPPORTED_FIRMWARE"));
+        }
+    }
     #[test]
     fn strict_wifi_request_accepts_explicit_modes_without_revealing_password() {
         let req: Request = serde_json::from_str(

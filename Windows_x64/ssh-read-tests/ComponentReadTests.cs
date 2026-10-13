@@ -86,8 +86,8 @@ static class ComponentReadTests
             if(ScreenOwned&&command.Contains("/manager.sh | cut")&&!command.Contains("; sh "))return Task.FromResult(Reply((string)typeof(DeviceFeatureService).GetField("ScreenManagerHash",BindingFlags.NonPublic|BindingFlags.Static)!.GetRawConstantValue()!));
             if(ScreenOwned&&command.Contains("; sh /data/zte-imei-screen-ru/manager.sh"))
             {
-                if(command.Contains("'enable'")){Enables++;return Task.FromResult(Reply("SCREEN_RU_STATUS state=enabled language=cn mounted=3 boot=1 pid=3 revision=20261006"));}
-                return Task.FromResult(Reply("SCREEN_RU_STATUS state="+(ScreenError?"error":"disabled")+" language=en mounted=0 boot=0 pid=3 revision=20261006"));
+                if(command.Contains("'enable'")){Enables++;return Task.FromResult(Reply("SCREEN_RU_STATUS state=enabled language=cn mounted=3 boot=1 pid=3 revision=20261013"));}
+                return Task.FromResult(Reply("SCREEN_RU_STATUS state="+(ScreenError?"error":"disabled")+" language=en mounted=0 boot=0 pid=3 revision=20261013"));
             }
             if(command.Contains("SCREEN_RU_STATUS"))return Task.FromResult(Reply("SCREEN_RU_STATUS state="+(ScreenError?"error":"absent")+" language=en mounted=0 boot=0 pid=3 revision=20260924\n"));
             if(command.Contains("reason=STATUS_UNVERIFIED"))return Task.FromResult(Reply(ScreenOwned?"BOOT_HOOK_MISSING\n":"STOCK_INIT_MISSING\n"));

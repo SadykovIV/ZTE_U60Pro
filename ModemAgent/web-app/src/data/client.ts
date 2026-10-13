@@ -40,7 +40,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   TTL_SCHEMA_UPGRADE_REQUIRED: 'The TTL interface has changed. Reload this page to continue.',
   TTL_INVALID_CONFIGURATION: 'TTL values must be whole numbers from 1 to 255, or disabled.',
   TTL_MANAGER_UNAVAILABLE: 'The shared TTL manager is not installed on this modem.',
-  TTL_MANAGER_INTEGRITY: 'The TTL manager version could not be verified. Reinstall it from the Mac app.',
+  TTL_MANAGER_INTEGRITY: 'The agent could not verify the TTL component. Check and update both the agent and TTL component in ZTE U60Pro Manager for macOS or Windows.',
   TTL_BUSY: 'Another modem operation is in progress. Try again when it finishes.',
   TTL_OTHER_TRANSACTION: 'Finish the pending modem operation before changing TTL.',
   TTL_TIMEOUT: 'The TTL operation timed out. Refresh its status before retrying.',

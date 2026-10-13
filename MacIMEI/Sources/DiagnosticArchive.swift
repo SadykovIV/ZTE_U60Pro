@@ -48,6 +48,44 @@ struct DiagnosticArchive {
         let data = try handle.read(upToCount: limit) ?? Data()
         return (data, truncated)
     }
+    /// Inspect only the fixed allowlist depth. Do not stop an unordered directory
+    /// walk before sorting: old traces must not hide newer files beyond a scan cap.
+    func candidateFiles(issue: (String) -> Void) -> [(relative: String, modified: Date)] {
+        let fm = FileManager.default
+        var result = [(relative: String, modified: Date)]()
+        func children(_ relative: String) -> [String] {
+            let directory = root.appendingPathComponent(relative)
+            guard let values = try? directory.resourceValues(forKeys: [.isSymbolicLinkKey, .isDirectoryKey]) else { return [] }
+            if values.isSymbolicLink == true { issue(relative + ": ссылка пропущена"); return [] }
+            guard values.isDirectory == true else { return [] }
+            do { return try fm.contentsOfDirectory(atPath: directory.path).filter { !$0.hasPrefix(".") } }
+            catch { issue(relative + ": " + error.localizedDescription); return [] }
+        }
+        func append(_ relative: String) {
+            guard Self.allowed(relative) else { return }
+            let file = root.appendingPathComponent(relative)
+            guard let values = try? file.resourceValues(forKeys: [.isSymbolicLinkKey, .isRegularFileKey, .contentModificationDateKey]) else {
+                issue(relative + ": файл недоступен"); return
+            }
+            if values.isSymbolicLink == true { issue(relative + ": ссылка пропущена"); return }
+            if values.isRegularFile == true { result.append((relative, values.contentModificationDate ?? .distantPast)) }
+        }
+        for name in children("Activity") {
+            if name == "Traces" {
+                for operation in children("Activity/Traces") where operation.range(of: #"^[A-Za-z0-9_-]{1,128}$"#, options: .regularExpression) != nil {
+                    let folder = "Activity/Traces/" + operation
+                    for file in children(folder) { append(folder + "/" + file) }
+                }
+            } else { append("Activity/" + name) }
+        }
+        for folder in ["Diagnostics", "Logs", "SetupBackups"] {
+            for id in children(folder) where UUID(uuidString: id) != nil {
+                let directory = folder + "/" + id
+                for file in children(directory) { append(directory + "/" + file) }
+            }
+        }
+        return result
+    }
     func export(to destination: URL, context: [String: String]) throws -> DiagnosticArchiveResult {
         let fm = FileManager.default
         let work = fm.temporaryDirectory.appendingPathComponent("zte-support-" + UUID().uuidString.lowercased())
@@ -64,31 +102,18 @@ struct DiagnosticArchive {
         }
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         try write(encoder.encode(context.mapValues(ActivityJournal.sanitize)), "application.json")
-        var candidates = [(String, Date)]()
-        for folder in ["Activity", "Diagnostics", "Logs", "SetupBackups"] {
-            let base = root.appendingPathComponent(folder)
-            if (try? base.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true { issue(folder + ": ссылка пропущена"); continue }
-            guard let enumerator = fm.enumerator(atPath: base.path) else { continue }
-            var scanned = 0
-            for case let child as String in enumerator {
-                scanned += 1
-                if scanned > 20000 { issue(folder + ": достигнут предел обхода файлов"); break }
-                // The path enumerator returns names relative to base, avoiding
-                // macOS URL alias normalization (/var vs /private/var) altogether.
-                if child.split(separator: "/").contains(where: { $0.hasPrefix(".") }) {
-                    if enumerator.fileAttributes?[.type] as? FileAttributeType == .typeDirectory { enumerator.skipDescendants() }
-                    continue
-                }
-                let relative = folder + "/" + child
-                let file = root.appendingPathComponent(relative)
-                let values = try? file.resourceValues(forKeys: [.isSymbolicLinkKey, .isRegularFileKey, .contentModificationDateKey])
-                // DirectoryEnumerator does not descend symlinks. Calling
-                // skipDescendants on a file can skip its remaining siblings on macOS.
-                if values?.isSymbolicLink == true { issue(relative + ": ссылка пропущена"); continue }
-                if values?.isRegularFile == true && Self.allowed(relative) { candidates.append((relative, values?.contentModificationDate ?? .distantPast)) }
+        let freshReportID = context["freshReportID"].flatMap { UUID(uuidString: $0) == nil ? nil : $0 }
+        let candidates = candidateFiles(issue: issue).sorted { lhs, rhs in
+            func priority(_ path: String) -> Int {
+                if let freshReportID, path.hasPrefix("Diagnostics/" + freshReportID + "/") { return 0 }
+                return path.hasPrefix("Activity/Traces/") ? 2 : 1
             }
+            let left = priority(lhs.relative), right = priority(rhs.relative)
+            if left != right { return left < right }
+            if lhs.modified != rhs.modified { return lhs.modified > rhs.modified }
+            return lhs.relative < rhs.relative
         }
-        for (relative, _) in candidates.sorted(by: { $0.1 > $1.1 }) {
+        for (relative, _) in candidates {
             if entries.count >= 10000 || total >= Self.totalLimit { issue(relative + ": достигнут предел архива"); continue }
             do {
                 let (raw, truncated) = try Self.readRegular(root: root, relative: relative, limit: Self.fileLimit)
@@ -131,7 +156,14 @@ struct DiagnosticArchive {
         имена устройств и пути могут оставаться в диагностике. Просмотрите файлы перед передачей.
         Произвольные секреты без узнаваемого формата автоматически распознать невозможно.
 
-        Пределы: 2 МиБ на файл, 64 МиБ и 10000 файлов на набор. Сначала новые файлы.
+        Пределы: 2 МиБ на исходный файл, 64 МиБ данных и до 10000 файлов данных;
+        README.txt и итоговый manifest.json добавляются отдельно.
+        Сначала свежий набор Diagnostics, указанный в application.json, затем дневные
+        Activity, сохранённые Diagnostics, Logs и installation.log; подробные Traces — последними.
+        В каждой группе сначала новые файлы; при одинаковом времени — по имени.
+        При достижении пределов старая история может не войти. warningCount учитывает все
+        пропуски и сокращения; warnings содержит первые 500 подробностей. complete=false
+        означает неполный экспорт истории, даже если свежие журналы модема получены целиком.
         Журнал при сокращении сохраняет последние записи, прочие файлы — начало.
         Отсутствующие службы и несовместимые методы отмечены кодами ошибок в отчётах.
         Незавершённый запрос может иметь только событие started. Старые сеансы до 1.9.0
@@ -141,7 +173,7 @@ struct DiagnosticArchive {
         Свежесть каждого набора определяется его created; экспорт без сбора не обращается к модему.
         """
         try write(Data(readme.utf8), "README.txt")
-        let manifest: [String: Any] = ["schema": 1, "created": ISO8601DateFormatter().string(from: Date()), "files": entries, "warnings": issues, "warningCount": omitted, "totalUncompressedBytes": total, "sessionID": DiagnosticsContext.sessionID]
+        let manifest: [String: Any] = ["schema": 1, "created": ISO8601DateFormatter().string(from: Date()), "complete": omitted == 0, "files": entries, "warnings": issues, "warningCount": omitted, "warningDetailsTruncated": omitted > issues.count, "totalUncompressedBytes": total, "sessionID": DiagnosticsContext.sessionID]
         try savePrivate(JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys]), snapshot.appendingPathComponent("manifest.json"))
         let zip = work.appendingPathComponent("diagnostics.zip"), runner = HostProcessRunner()
         let packed = try runner.run(URL(fileURLWithPath: "/usr/bin/ditto"), ["-c", "-k", "--keepParent", "--norsrc", "--noextattr", snapshot.path, zip.path], timeout: 90)

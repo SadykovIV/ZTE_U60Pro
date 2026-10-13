@@ -1,5 +1,6 @@
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
+use base64::{engine::general_purpose, Engine};
 
 pub type Result<T> = std::result::Result<T, &'static str>;
 
@@ -72,6 +73,10 @@ pub fn parse(uri: &str, label: Option<&str>) -> Result<(String, Value, Vec<&'sta
     if uri.len() > 32768 {
         return Err("VPN_PROFILE_TOO_LARGE");
     }
+    let trimmed = uri.trim();
+    if trimmed.starts_with("hy2://") || trimmed.starts_with("hysteria2://") {
+        return parse_hysteria2(trimmed, label);
+    }
     let uri = uri
         .trim()
         .replace("\\:", ":")
@@ -115,6 +120,7 @@ pub fn parse(uri: &str, label: Option<&str>) -> Result<(String, Value, Vec<&'sta
         "host",
         "path",
         "mode",
+        "headerType",
         "extra",
         "x_padding_bytes",
         "flow",
@@ -149,6 +155,9 @@ pub fn parse(uri: &str, label: Option<&str>) -> Result<(String, Value, Vec<&'sta
     let network = get("type", "tcp");
     if !["tcp", "xhttp", "ws", "grpc"].contains(&network.as_str()) {
         return Err("VPN_UNSUPPORTED_TRANSPORT");
+    }
+    if !["", "none"].contains(&get("headerType", "").as_str()) {
+        return Err("VPN_UNSUPPORTED_OPTION");
     }
     let packet = get("packetEncoding", "xudp");
     if !["xudp", "packetaddr", ""].contains(&packet.as_str()) {
@@ -241,7 +250,8 @@ pub fn parse(uri: &str, label: Option<&str>) -> Result<(String, Value, Vec<&'sta
         }
         "grpc" => {
             proxy["grpc-opts"] = json!({"grpc-service-name":get("serviceName","")});
-            if q.contains_key("authority") {
+            if q.get("authority").is_some_and(|v| !v.is_empty())
+                || !["", "gun"].contains(&get("mode", "gun").as_str()) {
                 return Err("VPN_UNSUPPORTED_OPTION");
             }
         }
@@ -252,7 +262,7 @@ pub fn parse(uri: &str, label: Option<&str>) -> Result<(String, Value, Vec<&'sta
         }
     }
     if network != "xhttp"
-        && (q.contains_key("extra") || q.contains_key("mode") || q.contains_key("x_padding_bytes"))
+        && (q.contains_key("extra") || (network != "grpc" && q.contains_key("mode")) || q.contains_key("x_padding_bytes"))
     {
         return Err("VPN_UNSUPPORTED_OPTION");
     }
@@ -270,12 +280,94 @@ pub fn parse(uri: &str, label: Option<&str>) -> Result<(String, Value, Vec<&'sta
     Ok((title, proxy, warnings))
 }
 
+// Hysteria's shared URI contains only connection settings. In particular,
+// local files, bandwidth, client listeners and routing are not URI options.
+// https://v2.hysteria.network/docs/developers/URI-Scheme/
+fn parse_hysteria2(uri: &str, label: Option<&str>) -> Result<(String, Value, Vec<&'static str>)> {
+    if uri.chars().any(char::is_control) { return Err("VPN_INVALID_URI"); }
+    let body = uri.strip_prefix("hy2://").or_else(|| uri.strip_prefix("hysteria2://"))
+        .ok_or("VPN_INVALID_URI")?;
+    let (body, fragment) = body.split_once('#').unwrap_or((body, "Hysteria2"));
+    let (authority, query) = body.split_once('?').unwrap_or((body, ""));
+    let authority = authority.strip_suffix('/').unwrap_or(authority);
+    let (password, address) = if let Some((auth, address)) = authority.split_once('@') {
+        (decode(auth)?, address)
+    } else { (String::new(), authority) };
+    let (server, ports) = if let Some(address) = address.strip_prefix('[') {
+        let (host, rest) = address.split_once(']').ok_or("VPN_INVALID_SERVER")?;
+        if host.parse::<std::net::Ipv6Addr>().is_err() { return Err("VPN_INVALID_SERVER"); }
+        let ports = if rest.is_empty() { "443" } else { rest.strip_prefix(':').ok_or("VPN_INVALID_PORT")? };
+        (host, ports)
+    } else {
+        let (host, ports) = address.split_once(':').unwrap_or((address, "443"));
+        if host.is_empty() || host.len() > 253 || !host.bytes().all(|c| c.is_ascii_alphanumeric() || b".-_".contains(&c)) {
+            return Err("VPN_INVALID_SERVER");
+        }
+        (host, ports)
+    };
+    let port = |text: &str| -> Result<u16> {
+        if text.is_empty() || !text.bytes().all(|c| c.is_ascii_digit()) { return Err("VPN_INVALID_PORT"); }
+        text.parse::<u16>().ok().filter(|n| *n != 0).ok_or("VPN_INVALID_PORT")
+    };
+    let mut first_port = None;
+    for part in ports.split(',') {
+        let (first, last) = part.split_once('-').unwrap_or((part, part));
+        let (first, last) = (port(first)?, port(last)?);
+        if first > last { return Err("VPN_INVALID_PORT"); }
+        first_port.get_or_insert(first);
+    }
+    let mut options = BTreeMap::new();
+    if !query.is_empty() {
+        for entry in query.split('&') {
+            let (key, value) = entry.split_once('=').ok_or("VPN_INVALID_URI")?;
+            let key = decode(&key.replace('+', " "))?;
+            let value = decode(&value.replace('+', " "))?;
+            if !["obfs", "obfs-password", "sni", "insecure", "pinSHA256", "ech"].contains(&key.as_str()) {
+                return Err("VPN_UNSUPPORTED_OPTION");
+            }
+            if options.insert(key, value).is_some() { return Err("VPN_DUPLICATE_OPTION"); }
+        }
+    }
+    let insecure = match options.get("insecure").map(String::as_str).unwrap_or("0") {
+        "0" => false, "1" => true, _ => return Err("VPN_UNSUPPORTED_SECURITY"),
+    };
+    let mut proxy = json!({"name":"VPN","type":"hysteria2","server":server,"port":first_port.unwrap(),"password":password,"skip-cert-verify":insecure});
+    if ports.contains([',', '-']) { proxy["ports"] = json!(ports); }
+    if let Some(sni) = options.get("sni") {
+        if sni.len() > 253 || sni.chars().any(char::is_whitespace) { return Err("VPN_INVALID_SERVER"); }
+        proxy["sni"] = json!(sni);
+    }
+    let obfs = options.get("obfs").map(String::as_str).unwrap_or("");
+    let obfs_password = options.get("obfs-password").map(String::as_str).unwrap_or("");
+    match obfs {
+        "" if obfs_password.is_empty() => (),
+        "salamander" | "gecko" if !obfs_password.is_empty() => {
+            proxy["obfs"] = json!(obfs);
+            proxy["obfs-password"] = json!(obfs_password);
+        }
+        _ => return Err("VPN_UNSUPPORTED_OPTION"),
+    }
+    if let Some(pin) = options.get("pinSHA256") {
+        let compact = pin.replace(':', "");
+        if compact.len() != 64 || !compact.bytes().all(|c| c.is_ascii_hexdigit()) { return Err("VPN_INVALID_KEY"); }
+        proxy["fingerprint"] = json!(compact.to_ascii_lowercase());
+    }
+    if let Some(ech) = options.get("ech") {
+        if general_purpose::STANDARD.decode(ech).ok().filter(|bytes| !bytes.is_empty()).is_none() { return Err("VPN_INVALID_KEY"); }
+        proxy["ech-opts"] = json!({"enable":true,"config":ech});
+    }
+    let warnings = if insecure && !options.contains_key("pinSHA256") { vec!["VPN_INSECURE_TLS"] } else { vec![] };
+    Ok((name(label.unwrap_or(&decode(fragment)?))?, proxy, warnings))
+}
+
 pub fn config(proxy: Value, probe: bool) -> Value {
     let mut result = json!({"socks-port":17890,"allow-lan":!probe,"bind-address":if probe {"127.0.0.1"} else {"*"},"mode":"rule","log-level":"warning","ipv6":false,"proxies":[proxy],"rules":["MATCH,VPN"]});
     if !probe {
         result["redir-port"] = json!(17893);
         result["tun"] = json!({"enable":true,"device":"zvpn-tun","stack":"gvisor","auto-route":false,"auto-redirect":false,"auto-detect-interface":false,"dns-hijack":[],"mtu":1500});
-        result["dns"] = json!({"enable":true,"listen":"0.0.0.0:17874","ipv6":false,"enhanced-mode":"redir-host","use-hosts":false,"use-system-hosts":false,"nameserver":["udp://1.1.1.1:53#VPN"],"fallback":[],"proxy-server-nameserver":["https://1.1.1.1/dns-query"]});
+        // DNS follows the selected VPN over TCP. Requiring proxy UDP here
+        // makes TCP-capable profiles look offline when their server rejects XUDP.
+        result["dns"] = json!({"enable":true,"listen":"0.0.0.0:17874","ipv6":false,"enhanced-mode":"redir-host","use-hosts":false,"use-system-hosts":false,"nameserver":["https://1.1.1.1/dns-query#VPN"],"fallback":[],"proxy-server-nameserver":["https://1.1.1.1/dns-query"]});
     }
     result
 }
@@ -283,6 +375,68 @@ pub fn config(proxy: Value, probe: bool) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn hysteria2_default_port_auth_and_fragment_are_preserved() {
+        let (n, p, warnings) = parse("hy2://user:p%40ss%3A%2F+word@example.org/#%D0%A2%D0%B5%D1%81%D1%82", None).unwrap();
+        assert_eq!(n, "Тест");
+        assert_eq!(p["password"], "user:p@ss:/+word");
+        assert_eq!(p["type"], "hysteria2");
+        assert_eq!(p["server"], "example.org");
+        assert_eq!(p["port"], 443);
+        assert_eq!(p["skip-cert-verify"], false);
+        assert!(p.get("ports").is_none());
+        assert!(warnings.is_empty());
+        let (n, p, _) = parse("hysteria2://[2001:db8::1]", Some("IPv6")).unwrap();
+        assert_eq!(n, "IPv6"); assert_eq!(p["server"], "2001:db8::1"); assert_eq!(p["password"], "");
+    }
+    #[test]
+    fn hysteria2_hopping_obfs_and_explicit_tls_policy_are_preserved() {
+        let (_, p, w) = parse("hysteria2://secret@[2001:db8::1]:443,5000-6000/?obfs=salamander&obfs-password=p%2Bq+r&sni=peer.example&insecure=1", None).unwrap();
+        assert_eq!(p["server"], "2001:db8::1"); assert_eq!(p["port"], 443);
+        assert_eq!(p["ports"], "443,5000-6000"); assert_eq!(p["obfs-password"], "p+q r");
+        assert_eq!(p["sni"], "peer.example"); assert_eq!(p["skip-cert-verify"], true);
+        assert_eq!(w, vec!["VPN_INSECURE_TLS"]);
+        let pin = vec!["AB";32].join(":");
+        let (_, p, w) = parse(&format!("hy2://p@host:8443?pinSHA256={pin}&ech=AAECAw%3D%3D&insecure=1&obfs=gecko&obfs-password=p"), None).unwrap();
+        assert_eq!(p["fingerprint"], "ab".repeat(32));
+        assert_eq!(p["ech-opts"], json!({"enable":true,"config":"AAECAw=="}));
+        assert_eq!(p["obfs"], "gecko"); assert!(w.is_empty());
+    }
+    #[test]
+    fn hysteria2_invalid_or_unrepresentable_options_fail_explicitly() {
+        for uri in ["hy2://host:0", "hy2://host:65536", "hy2://host:", "hy2://host:443,", "hy2://host:443-1", "hy2://host:+443", "hy2://2001:db8::1", "hy2://[bad]:443", "hy2://host/path", "hy2://p@host?insecure=true", "hy2://p@host?insecure=0&insecure=1", "hy2://p@host?obfs=salamander", "hy2://p@host?obfs=unknown&obfs-password=p", "hy2://p@host?obfs-password=p", "hy2://p@host?pinSHA256=deadbeef", "hy2://p@host?ech=/tmp/ech.txt", "hy2://p@host?ech=", "hy2://p@host?ca=/private/cert", "hy2://p@host?up=100", "hy2://p@host?dialer-proxy=DIRECT", "hy2://p%0A@host", "hy2://p@host#bad%00name"] {
+            assert!(parse(uri, None).is_err(), "{uri}");
+        }
+        assert_eq!(parse("hy2://p@host?ca=cert", None).unwrap_err(), "VPN_UNSUPPORTED_OPTION");
+        assert_eq!(parse("hy2://p@host?insecure=1&insecure=0", None).unwrap_err(), "VPN_DUPLICATE_OPTION");
+    }
+    #[test]
+    #[ignore = "requires matching Mihomo binary in ZTE_HY2_CORE; parser-only, no traffic"]
+    fn hysteria2_matching_core_accepts_synthetic_profiles() {
+        use std::{fs, os::unix::fs::DirBuilderExt, process::Command};
+        let core = std::env::var("ZTE_HY2_CORE").expect("matching core path");
+        let directory = std::env::temp_dir().join(format!("zte-hy2-core-{}", std::process::id()));
+        fs::DirBuilder::new().mode(0o700).create(&directory).unwrap();
+        let pin = "ab".repeat(32);
+        let uris = ["hy2://password@example.invalid".to_owned(), "hysteria2://user:password@[2001:db8::1]:443,5000-6000/?sni=peer.invalid&obfs=salamander&obfs-password=synthetic&insecure=1".into(), format!("hy2://password@example.invalid?pinSHA256={pin}&ech=AAECAw%3D%3D"), "hy2://password@example.invalid:443-445?obfs=gecko&obfs-password=synthetic".into()];
+        for (index, uri) in uris.iter().enumerate() {
+            let (_, proxy, _) = parse(uri, None).unwrap();
+            let file = directory.join(format!("{index}.json"));
+            fs::write(&file, serde_json::to_vec(&config(proxy, true)).unwrap()).unwrap();
+            let result = Command::new(&core).args(["-t", "-d"]).arg(&directory).arg("-f").arg(&file).output().unwrap();
+            assert!(result.status.success(), "case {index}: {}{}", String::from_utf8_lossy(&result.stdout), String::from_utf8_lossy(&result.stderr));
+        }
+        fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
+    fn grpc_gun_links_allow_empty_exporter_placeholders() {
+        let uri = "vless://00000000-0000-0000-0000-000000000001@example.org:443?security=tls&type=grpc&mode=gun&authority=&headerType=&serviceName=service#Example";
+        let (_, proxy, _) = parse(uri, None).unwrap();
+        assert_eq!(proxy["grpc-opts"]["grpc-service-name"], "service");
+        for bad in [uri.replace("mode=gun", "mode=multi"), uri.replace("authority=&", "authority=override.example&"), uri.replace("headerType=&", "headerType=http&")] {
+            assert!(parse(&bad, None).is_err());
+        }
+    }
     const URI:&str="vless://12345678-1234-1234-1234-123456789abc@example.com:443?security=tls&type=ws&path=%2Ftest#Test";
     #[test]
     fn renaming_preserves_connection_and_accepts_unicode_boundaries() {
@@ -299,6 +453,16 @@ mod tests {
         }
         rename(&mut renamed, "  Основной VPN  ").unwrap();
         assert_eq!(renamed["name"], "Основной VPN");
+    }
+
+    #[test]
+    fn client_dns_uses_https_through_vpn_without_direct_fallback() {
+        let (_, proxy, _) = parse(URI, None).unwrap();
+        let config = config(proxy, false);
+        assert_eq!(config["dns"]["nameserver"], json!(["https://1.1.1.1/dns-query#VPN"]));
+        assert_eq!(config["dns"]["fallback"], json!([]));
+        assert_eq!(config["rules"], json!(["MATCH,VPN"]));
+        assert_eq!(config["dns"]["proxy-server-nameserver"], json!(["https://1.1.1.1/dns-query"]));
     }
 
     #[test]

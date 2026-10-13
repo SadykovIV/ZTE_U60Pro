@@ -106,7 +106,7 @@ struct SystemRestoreTransaction: Codable, Sendable {
 /// formats. A verified transport hash is not a promise of live-disk consistency.
 final class SystemBackups {
     static let chunkBytes = 8 * 1024 * 1024
-    static let helperHash = "1614c2834530441daa2ae9927625be4dac2718709de98e214d5e0ac7bcf83aef"
+    static let helperHash = "651cdd19a081df9a9fd86f3683eb432cdd84bf1e374453956134425f87e4da65"
     static let targetNames = ["mmcblk0", "mmcblk0boot0", "mmcblk0boot1"]
     static let pendingName = "system-restore-pending.json"
     let engine: ModemEngine
@@ -126,8 +126,8 @@ final class SystemBackups {
     static func validate(_ value: SystemInventory) throws {
         try require(value.schema == 1 && value.cid.count == 32 && value.cid.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }, "Неверный CID полной копии")
         try require(validID(value.bootID) && DeviceBackups.validHash(value.layoutHash), "Неверный идентификатор загрузки или разметки")
-        try require(value.firmwareHash.isEmpty || value.firmwareHash == ModemEngine.firmwareHash, "Прошивка полной копии отличается от проверенной B31")
-        try require(value.offline || value.firmwareHash == ModemEngine.firmwareHash, "Для снимка работающего модема обязательна проверенная B31")
+        try require(value.firmwareHash.isEmpty || DeviceBackups.supportedModemFirmwareHashes.contains(value.firmwareHash), "Прошивка полной копии не входит в проверенные профили")
+        try require(value.offline || DeviceBackups.supportedModemFirmwareHashes.contains(value.firmwareHash), "Для снимка работающего модема нужна прошивка с проверенной разметкой")
         try require(value.offlineReason.utf8.count <= 4096 && value.devices.map(\.name) == targetNames, "Неверный состав eMMC")
         for device in value.devices {
             try require(device.source == "/dev/" + device.name && device.bytes > 0 && device.bytes <= DeviceBackups.maximumBytes && device.bytes % 512 == 0, "Неверный размер или путь области eMMC")
@@ -144,11 +144,11 @@ final class SystemBackups {
             }
         }
     }
-    private func locked() throws {
+    private func locked(readOnlyCapture: Bool = false) throws {
         try require(engine.lockFD >= 0, "Полная копия требует блокировки операции")
         try engine.connection.validate()
         try DeviceBackups.directory(engine.root)
-        for name in ["pending.json", "setup-pending.json", "adb-access-pending.json"] {
+        for name in readOnlyCapture ? ["adb-access-pending.json"] : ["pending.json", "setup-pending.json", "adb-access-pending.json"] {
             try require(!engine.fm.fileExists(atPath: engine.root.appendingPathComponent(name).path), "Сначала завершите незавершённую операцию модема")
         }
         // A recovery runtime may expose a different SSH address. Keep the same
@@ -204,7 +204,7 @@ final class SystemBackups {
         try? ActivityJournal(root: engine.root).record(operationID: engine.logDirectory.lastPathComponent, category: "system-backup", title: title, result: result, details: details)
     }
     func create(cancelled: @escaping @Sendable () -> Bool = { false }) throws -> SystemBackupItem {
-        try locked()
+        try locked(readOnlyCapture: true)
         try require(!Self.hasPendingRestore(root: engine.root), "Сначала завершите незавершённое полное восстановление")
         return try capture(cancelled: cancelled)
     }

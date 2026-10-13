@@ -18,8 +18,18 @@ import unittest
 REPO = Path(__file__).resolve().parents[2]
 RESOURCE = REPO / "MacIMEI/Resources/TTL"
 CID = "0123456789abcdef0123456789abcdef"
+OLD_MANAGER = "a70afc13c3645f64b5fd937162e7d403e133bcfa0a2da0e565d39a693f9ab488"
+OLD_MANAGERS = (OLD_MANAGER,
+    "e4684cb0fa040de0525d0248897da01a5af2c4ee8509a851719afe9c970e9194",
+    "79d5a2e696613f966fe2dff3fe59a0366455fe16681284c65d8ddb36c5e35b5a",
+    "b6588072c82ddd7678093a29b983ec4417c6807562819e3bda69cd6534637b7c")
 TOKEN = "11111111-2222-3333-4444-555555555555"
 FW = "604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263"
+B28_FW = "5a4489882538b5ab1d3e0049371f1b620d28d262a429923299b4f2626d40d478"
+B04_FW = "c57e063d390983229dfc53aa87380b3d4655ee8daa1c748e1a032ac90cd0df81"
+B04_MDM = "93a346e7d69024503caf9ad42f14c97e1514dd7d04c7b5ebef4e30473b5d5c64"
+B31_IPACM = "95385816da7b2edb9a977cee328c091753463fcd4a70a67fa1676e8b335c11c0"
+B28_IPACM = "a8a90ee631a3e8de3266d1d4231e455c34fd0b0d1ad570e7c4d0dcd09eea1c54"
 ROUTER = "55c54f74aaa427940254a2f16c36771e675a80a002363e4f10b0dfcb604d9c6f"
 
 MOCK = r'''
@@ -42,6 +52,7 @@ elif name=='sleep':pass
 elif name=='sync':
  base=r/'data/zte-imei-ttl';settings=(base/'settings').read_text() if (base/'settings').exists() else ''
  event('sync '+settings.replace('\n',' '))
+ if os.environ.get('MOCK_CRASH')=='upgrade-metadata' and (base/'manager.sh').exists() and hashlib.sha256((base/'manager.sh').read_bytes()).hexdigest()==os.environ.get('MOCK_OLD_MANAGER_SHA') and (base/'manager.sha256').read_text().strip()!=os.environ['MOCK_OLD_MANAGER_VERSION']:os.kill(os.getppid(),signal.SIGKILL)
  if os.environ.get('MOCK_CRASH')=='pending' and (base/'.pending').exists():os.kill(os.getppid(),signal.SIGKILL)
 elif name=='stat':
  p=Path(a[-1]);s=p.stat();fmt=a[a.index('-c')+1]
@@ -49,14 +60,18 @@ elif name=='stat':
 elif name=='sha256sum':
  for path in a:
   p=Path(path)
-  if str(p).endswith('/firmware/image/modem.b16'):h=os.environ.get('MOCK_FW',os.environ['FW'])
+  if str(p).endswith('/firmware/image/modem.b16'):
+   if not p.exists():sys.exit(1)
+   h=os.environ.get('MOCK_FW',os.environ['FW'])
+  elif str(p).endswith('/usr/bin/zte_topsw_mdm'):h=os.environ.get('MDM','0'*64)
   elif str(p).endswith('/usr/bin/diag-router'):h=os.environ['ROUTER']
   elif str(p).endswith('/sbin/ipacm_switch.sh'):h='8947eee9c554453dc8eeb77df933cd12899f447c8c03df3505c57c7b526d22b9'
-  elif str(p).endswith('/usr/bin/ipacm'):h='95385816da7b2edb9a977cee328c091753463fcd4a70a67fa1676e8b335c11c0'
+  elif str(p).endswith('/usr/bin/ipacm'):h=os.environ['IPACM']
   else:
    b=p.read_bytes().replace(str(r).encode(),b'')
    b=b.replace(os.environ['MOCK_PATH_LINE'].encode(),b'export PATH=/usr/sbin:/usr/bin:/sbin:/bin')
    h=hashlib.sha256(b).hexdigest()
+   if hashlib.sha256(p.read_bytes()).hexdigest()==os.environ.get('MOCK_OLD_MANAGER_SHA'):h=os.environ['MOCK_OLD_MANAGER_VERSION']
   print(h+'  '+path)
 elif name=='ip':
  assert a==['-4','route','show','default'],a
@@ -155,7 +170,7 @@ else:raise RuntimeError(name)
 
 
 class Fixture:
-    def __init__(self, acceleration=True):
+    def __init__(self, acceleration=True, profile="b31"):
         self.temp = tempfile.TemporaryDirectory(prefix="zte-ttl-fixture-")
         self.root = Path(self.temp.name)
         self.bin = self.root / "mock-bin"
@@ -176,6 +191,8 @@ class Fixture:
         self.path("ipa-pending").write_text('')
         self.path("etc/config/zwrt_router").write_text("config tmp_router 'tmp_router'\n option close_ipa_acce '0'\n")
         self.path("usr/bin/ipacm").write_text('fixture')
+        if profile in ('b04', 'b04-image'): self.path('usr/bin/zte_topsw_mdm').write_text('fixture')
+        if profile != 'b04': self.path('firmware/image/modem.b16').write_text('fixture')
         self.path("sbin/ipacm_switch.sh").write_text('#!/bin/sh\nexec ipa-switch "$@"\n')
         self.path("proc/self/mountinfo").write_text(f"20 1 8:2 / {self.path('data')} rw,relatime - ext4 /dev/userdata rw\n")
         self.path("routes").write_text("default via 10.0.0.1 dev rmnet_data0 proto static\n")
@@ -186,12 +203,12 @@ class Fixture:
         self.stage = self.path(f"tmp/zte-imei-ttl-{TOKEN}")
         self.stage.mkdir(mode=0o700)
         self.path_line = "export PATH=" + str(self.bin) + ":/usr/sbin:/usr/bin:/sbin:/bin"
-        self.env = dict(os.environ, MOCK_ROOT=str(self.root), FW=FW, ROUTER=ROUTER, MOCK_PATH_LINE=self.path_line)
+        self.env = dict(os.environ, MOCK_ROOT=str(self.root), FW=B28_FW if profile == "b28" else B04_FW if profile == "b04-image" else FW, MDM=B04_MDM if profile in ("b04", "b04-image") else "0" * 64, IPACM=B28_IPACM if profile == "b28" else B31_IPACM, ROUTER=ROUTER, MOCK_PATH_LINE=self.path_line)
         self.env["PATH"] = str(self.bin) + ":" + os.environ.get("PATH", "")
         for p in RESOURCE.glob("*.sh"):
             text = p.read_text()
             text = text.replace('kill -USR1 ', 'mock-kill -USR1 ').replace('kill -USR2 ', 'mock-kill -USR2 ')
-            text = re.sub(r"(?<![A-Za-z0-9_])/(?:data|etc|tmp|proc|sys|firmware|usr/bin/diag-router|usr/bin/ipacm|sbin/ipacm_switch.sh)(?=[^A-Za-z0-9_.-]|$)", lambda m: str(self.root) + m.group(), text)
+            text = re.sub(r"(?<![A-Za-z0-9_])/(?:data|etc|tmp|proc|sys|firmware|usr/bin/diag-router|usr/bin/ipacm|usr/bin/zte_topsw_mdm|sbin/ipacm_switch.sh)(?=[^A-Za-z0-9_.-]|$)", lambda m: str(self.root) + m.group(), text)
             text = text.replace("export PATH=/usr/sbin:/usr/bin:/sbin:/bin", self.path_line)
             (self.stage / p.name).write_text(text)
             (self.stage / p.name).chmod(0o600)
@@ -205,7 +222,7 @@ class Fixture:
     def rules(self): return json.loads(self.path("rules.json").read_text())
     def close(self): self.temp.cleanup()
     def run(self, command, *args, env=None, success=True):
-        script = self.stage / "manager.sh" if command == "install" else self.path("data/zte-imei-ttl/manager.sh")
+        script = self.stage / "manager.sh" if command in ("install", "upgrade") else self.path("data/zte-imei-ttl/manager.sh")
         if not script.exists(): script = self.stage / "manager.sh"
         a = ["sh", str(script), command] + list(args)
         result = subprocess.run(a, env=dict(self.env, **(env or {})), text=True, capture_output=True, timeout=90)
@@ -224,6 +241,104 @@ class Fixture:
         return pairs
 
 
+class TTLUpgradeTests(unittest.TestCase):
+    def setUp(self):
+        self.f = Fixture(profile="b04-image")
+        self.f.install()
+        manager = self.f.path("data/zte-imei-ttl/manager.sh")
+        # The mock recognizes exactly these previous-release bytes by their hash.
+        # All upgrade checks and both filesystem renames execute in the real shell.
+        manager.write_text(manager.read_text() + "\n# previous-release fixture\n")
+        self.f.env["MOCK_OLD_MANAGER_VERSION"] = OLD_MANAGER
+        self.f.env["MOCK_OLD_MANAGER_SHA"] = hashlib.sha256(manager.read_bytes()).hexdigest()
+        self.f.path("data/zte-imei-ttl/manager.sha256").write_text(OLD_MANAGER + "\n")
+        self.backup = self.f.path("data/zte-imei-ttl-upgrade-" + OLD_MANAGER)
+    def tearDown(self): self.f.close()
+    def preserved(self):
+        return {str(p.relative_to(self.f.root)): p.read_bytes() for p in self.f.root.rglob("*")
+                if p.is_file() and (str(p.relative_to(self.f.root)).startswith("etc/") or
+                    (str(p.relative_to(self.f.root)).startswith("data/zte-imei-ttl/") and p.name not in ("manager.sh", "manager.sha256")) or p.name == "rules.json")}
+    def upgrade(self, **kw): return self.f.run("upgrade", str(self.f.stage), CID, **kw)
+    def test_upgrade_preserves_settings_hooks_and_rules(self):
+        before = self.preserved()
+        self.upgrade()
+        self.assertEqual(self.preserved(), before)
+        self.assertEqual(self.f.path("data/zte-imei-ttl/manager.sh").read_bytes(), (self.f.stage/"manager.sh").read_bytes())
+        self.assertEqual((self.backup/"manager.sha256").read_text().strip(), OLD_MANAGER)
+        self.assertEqual(hashlib.sha256((self.backup/"manager.sh").read_bytes()).hexdigest(), self.f.env["MOCK_OLD_MANAGER_SHA"])
+        self.f.run("apply", CID, "65", "2")
+        self.assertEqual(self.f.status()["outbound"], "65")
+    def test_power_loss_between_renames_recovers_on_next_apply(self):
+        before = self.preserved()
+        self.upgrade(env={"MOCK_CRASH": "upgrade-metadata"}, success=False)
+        self.assertEqual(hashlib.sha256(self.f.path("data/zte-imei-ttl/manager.sh").read_bytes()).hexdigest(), self.f.env["MOCK_OLD_MANAGER_SHA"])
+        self.assertNotEqual(self.f.path("data/zte-imei-ttl/manager.sha256").read_text().strip(), OLD_MANAGER)
+        self.assertEqual(self.preserved(), before)
+        # A refresh must report the interrupted state without repairing it.
+        self.assertEqual(self.f.status()["state"], "error")
+        self.assertEqual(self.preserved(), before)
+        self.upgrade()
+        self.assertEqual(self.preserved(), before)
+        self.f.run("apply", CID, "65", "2")
+        self.assertEqual(self.f.status()["outbound"], "65")
+        self.assertTrue((self.backup/"manager.sh").is_file())
+    def test_all_known_managers_upgrade_without_touching_configuration(self):
+        for old in OLD_MANAGERS:
+            with self.subTest(old=old):
+                self.f.close(); self.setUp()
+                self.f.env["MOCK_OLD_MANAGER_VERSION"] = old
+                self.f.path("data/zte-imei-ttl/manager.sha256").write_text(old + "\n")
+                before = self.preserved(); self.upgrade()
+                self.assertEqual(self.preserved(), before)
+                backup = self.f.path("data/zte-imei-ttl-upgrade-" + old)
+                self.assertEqual((backup/"manager.sha256").read_text().strip(), old)
+                self.assertEqual(self.f.path("data/zte-imei-ttl/manager.sh").read_bytes(), (self.f.stage/"manager.sh").read_bytes())
+    def test_latest_previous_manager_recovers_interrupted_upgrade(self):
+        old = OLD_MANAGERS[1]
+        self.f.env["MOCK_OLD_MANAGER_VERSION"] = old
+        self.f.path("data/zte-imei-ttl/manager.sha256").write_text(old + "\n")
+        before = self.preserved()
+        self.upgrade(env={"MOCK_CRASH": "upgrade-metadata"}, success=False)
+        self.assertEqual(self.f.status()["state"], "error")
+        self.upgrade(); self.assertEqual(self.preserved(), before)
+        self.f.run("disable", CID)
+        self.assertEqual(self.f.status()["state"], "disabled")
+    def test_unrelated_deployment_journals_do_not_block_upgrade_or_apply(self):
+        markers = [self.f.path("data/local/tmp/" + name + "/active") for name in ["zte-imei-installations", "open-u60-transactions"]]
+        for marker in markers:
+            marker.parent.mkdir(parents=True, exist_ok=True); marker.write_text("foreign-owned-state\n")
+        self.upgrade(); self.f.run("apply", CID, "65", "2")
+        self.assertEqual(self.f.status()["outbound"], "65")
+        for marker in markers: self.assertEqual(marker.read_text(), "foreign-owned-state\n")
+    def test_fota_and_real_lock_block_mutation_without_upgrading(self):
+        before = self.preserved(); self.f.path("tmp/fota_install_processing").write_text("active\n")
+        self.assertIn("OTHER_TRANSACTION", self.upgrade(success=False).stderr)
+        self.assertEqual(self.preserved(), before)
+        self.f.path("tmp/fota_install_processing").unlink()
+        self.assertIn("BUSY", self.upgrade(env={"MOCK_BUSY": "1"}, success=False).stderr)
+        self.assertFalse(self.backup.exists())
+    def test_unknown_manager_refused(self):
+        manager = self.f.path("data/zte-imei-ttl/manager.sh")
+        manager.write_text(manager.read_text()+"# unknown\n")
+        before = manager.read_bytes()
+        self.assertIn("UPGRADE_VERSION", self.upgrade(success=False).stderr)
+        self.assertEqual(manager.read_bytes(), before)
+        self.assertFalse(self.backup.exists())
+    def test_pending_transaction_refused(self):
+        pending = self.f.path("data/zte-imei-ttl/.pending")
+        pending.write_text("reconcile\n"); pending.chmod(0o600)
+        before = self.preserved()
+        self.assertIn("UPGRADE_PENDING", self.upgrade(success=False).stderr)
+        self.assertEqual(self.preserved(), before)
+        self.assertFalse(self.backup.exists())
+    def test_changed_backup_refuses_recovery(self):
+        self.upgrade(env={"MOCK_CRASH": "upgrade-metadata"}, success=False)
+        (self.backup/"target.sha256").write_text("0"*64+"\n")
+        before = self.f.path("data/zte-imei-ttl/manager.sh").read_bytes()
+        self.assertIn("UPGRADE_BACKUP", self.upgrade(success=False).stderr)
+        self.assertEqual(self.f.path("data/zte-imei-ttl/manager.sh").read_bytes(), before)
+
+
 class TTLManagerTests(unittest.TestCase):
     def setUp(self): self.f = Fixture()
     def tearDown(self): self.f.close()
@@ -231,6 +346,15 @@ class TTLManagerTests(unittest.TestCase):
         current = self.f.rules()
         self.assertEqual([c for c in current["chains"] if not c.startswith("ZTE_IMEI_TTL_")], self.f.baseline["chains"])
         self.assertEqual([r for r in current["rules"] if "ZTE_IMEI_TTL_" not in r], self.f.baseline["rules"])
+    def test_fota_blocks_all_changes_but_allows_read_only_status(self):
+        marker = self.f.path("tmp/fota_install_processing"); marker.write_text("active\n")
+        self.assertIn("OTHER_TRANSACTION", self.f.install(success=False).stderr)
+        marker.unlink(); self.f.install(); before = self.f.rules()
+        marker.write_text("active\n")
+        self.assertEqual(self.f.status()["state"], "configured")
+        for action,args in [("apply", (CID,"65","2")), ("disable", (CID,)), ("reapply", ())]:
+            self.assertIn("OTHER_TRANSACTION", self.f.run(action,*args,success=False).stderr)
+        self.assertEqual(self.f.rules(), before)
     def test_install_apply_and_disable(self):
         self.f.install()
         self.assertEqual(self.f.status(), dict(state="configured", outbound="64", inbound_inc="1", capability="supported", verification="unverified", persistence="boot"))
@@ -417,11 +541,62 @@ class TTLManagerTests(unittest.TestCase):
         self.f.install(); self.f.run("disable", CID)
         self.assertIn('uci-revert-target', self.f.path('calls').read_text())
         self.assertEqual(self.f.path("ipa-pending").read_text(), '')
+    def test_unsupported_firmware_does_not_leave_partial_install(self):
+        result = self.f.install(env={"MOCK_FW": "0" * 64}, success=False)
+        self.assertIn("UNSUPPORTED_PROFILE", result.stderr)
+        self.assertFalse(self.f.path("data/zte-imei-ttl").exists())
+        self.assertFalse(self.f.path("etc/hotplug.d/iface/99-zte-imei-ttl").exists())
+        self.assertEqual(self.f.rules(), self.f.baseline)
+    def test_firmware_and_ipacm_profiles_cannot_be_mixed(self):
+        for firmware, ipacm in ((FW, B28_IPACM), (B28_FW, B31_IPACM), (B28_FW, "0" * 64)):
+            result = self.f.install(env={"FW": firmware, "IPACM": ipacm}, success=False)
+            self.assertIn("ACCELERATION_UNVERIFIED", result.stderr)
+            self.assertFalse(self.f.path("data/zte-imei-ttl").exists())
+            self.assertEqual(self.f.rules(), self.f.baseline)
+    def test_windows_helper_has_identical_bytes(self):
+        self.assertEqual((RESOURCE / "manager.sh").read_bytes(),
+                         (REPO / "Windows_x64/Resources/TTL/manager.sh").read_bytes())
     def test_same_named_foreign_empty_chain_refused(self):
         value = self.f.rules(); value['chains'].append('ZTE_IMEI_TTL_OUT')
         self.f.path('rules.json').write_text(json.dumps(value))
         self.f.install(success=False)
         self.assertEqual(self.f.rules(), value)
+
+
+class TTLManagerB28Tests(TTLManagerTests):
+    """Run every lifecycle, rollback and ownership regression on the B28 pair."""
+    def setUp(self): self.f = Fixture(profile="b28")
+
+
+class TTLManagerB04Tests(TTLManagerTests):
+    """The captured B04 userspace profile has no modem.b16 and B31 IPA bytes."""
+    def setUp(self): self.f = Fixture(profile="b04")
+    def test_firmware_change_cleans_owned_rules_without_reenable(self):
+        self.f.install()
+        self.f.run("reapply", env={"MDM": "0" * 64}, success=False)
+        self.assertEqual(self.f.rules(), self.f.baseline)
+    def test_unsupported_firmware_does_not_leave_partial_install(self):
+        for env in ({"MDM": "0" * 64}, {"ROUTER": "0" * 64}):
+            result = self.f.install(env=env, success=False)
+            self.assertIn("UNSUPPORTED_PROFILE", result.stderr)
+            self.assertFalse(self.f.path("data/zte-imei-ttl").exists())
+            self.assertEqual(self.f.rules(), self.f.baseline)
+    def test_firmware_and_ipacm_profiles_cannot_be_mixed(self):
+        for ipacm in (B28_IPACM, "0" * 64):
+            result = self.f.install(env={"IPACM": ipacm}, success=False)
+            self.assertIn("ACCELERATION_UNVERIFIED", result.stderr)
+            self.assertFalse(self.f.path("data/zte-imei-ttl").exists())
+            self.assertEqual(self.f.rules(), self.f.baseline)
+    def test_existing_unknown_modem_image_is_not_overridden_by_b04_names(self):
+        self.f.path('firmware/image/modem.b16').write_text('unexpected')
+        result = self.f.install(env={"MOCK_FW": "0" * 64}, success=False)
+        self.assertIn("UNSUPPORTED_PROFILE", result.stderr)
+        self.assertFalse(self.f.path("data/zte-imei-ttl").exists())
+
+
+class TTLManagerB04ImageTests(TTLManagerB04Tests):
+    """B04 with the newly captured modem.b16 retains the same userspace/IPA proof."""
+    def setUp(self): self.f = Fixture(profile="b04-image")
 
 
 if __name__ == "__main__": unittest.main(verbosity=2)

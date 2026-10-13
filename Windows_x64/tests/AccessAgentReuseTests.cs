@@ -23,6 +23,7 @@ internal static class AccessAgentReuseTests
                 await Test("PrepareAsync existing reuse "+scenario,async()=>
                 {
                     var storage=Path.Combine(root,scenario);Directory.CreateDirectory(Path.Combine(storage,"SSH"));File.WriteAllText(Path.Combine(storage,"SSH","id_ed25519"),"synthetic-key");File.WriteAllText(Path.Combine(storage,"SSH","known_hosts"),"synthetic-host");
+                    foreach(var journal in new[]{"imei-pending.json","pending.json"}) File.WriteAllText(Path.Combine(storage,journal),"saved NV recovery untouched");
                     var wire=new Web();var remote=new Remote(scenario);var adbCalls=0;
                     var adb=new AdbTransport((_,_,_)=>{adbCalls++;throw new Exception("Unexpected ADB/install fallback");});
                     var engine=new OnboardingEngine("192.168.0.1",storage,Path.GetFullPath("Windows_x64/Resources"),adb)
@@ -39,6 +40,7 @@ internal static class AccessAgentReuseTests
                     Need(adbCalls==0 && wire.Backups==0 && remote.Uploads==0 && !Directory.Exists(Path.Combine(storage,"SetupBackups")) && !File.Exists(Path.Combine(storage,"setup-pending.json")));
                     Need(remote.Commands.All(x=>!x.Contains("diag-router -",StringComparison.Ordinal)&&!x.Contains("dd ",StringComparison.Ordinal)&&!x.Contains("setup-agent",StringComparison.Ordinal)));
                     Need(remote.PasswordOnlyInStdin);
+                    Need(new[]{"imei-pending.json","pending.json"}.All(journal=>File.ReadAllText(Path.Combine(storage,journal))=="saved NV recovery untouched"));
                     if(scenario is "unknown-hash" or "mapped-mismatch" or "generic-old" or "duplicate-process")Need(remote.AuthCalls==0);
                 });
             await Test("PrepareAsync sole USB can reuse exact B31 without Web or uploads",async()=>

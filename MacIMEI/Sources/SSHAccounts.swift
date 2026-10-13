@@ -40,7 +40,7 @@ final class SSHAccountManager: @unchecked Sendable {
     private func checkPending() throws {
         for name in ["adb-access-pending.json"] {
             try require(!FileManager.default.fileExists(atPath: root.appendingPathComponent(name).path),
-                        "Сначала завершите текущую настройку или смену IMEI")
+                        "Сначала завершите включение ADB")
         }
     }
     func readStateUnlocked() throws -> SSHAccountState {

@@ -16,6 +16,35 @@ internal static class ComponentCleanupTests
         void Check(bool ok,string label){if(!ok)throw new Exception("FAIL "+label);passed++;Console.WriteLine("PASS "+label);}
         try
         {
+            foreach(var scenario in new[]{"prepared","verified","same-boot","wrong-cid","wrong-firmware","wrong-router","wrong-host","corrupt-backup","dispatched","complete","foreign-setup"})
+            {
+                var storage=Path.Combine(root,"reset-"+scenario);var id=Guid.NewGuid().ToString();var backup=Path.Combine(storage,"SetupBackups",id);Directory.CreateDirectory(backup);
+                var pending=new ComponentCleanupPending{Id=id,Cid=Cid,BootId=Boot,FirmwareHash="absent",RouterHash=ImeiEngine.RouterHash,Host=scenario=="wrong-host"?"192.0.2.2":"192.0.2.1",KeyPath=Path.Combine(storage,"SSH/id_ed25519"),KnownHostsPath=Path.Combine(storage,"SSH/known_hosts"),BackupDirectory=backup,SetupReceipt=Path.Combine(backup,"setup-result.json"),Profile="linux-arm64-access",Token=Guid.NewGuid().ToString()};
+                if(scenario is "verified" or "corrupt-backup" or "dispatched" or "complete")
+                {
+                    pending.Phase=scenario=="dispatched"?"clean-requested":scenario=="complete"?"complete":"backup-verified";
+                    pending.ArchiveSha=Sha(Archive);pending.ArchiveBytes=Archive.Length;
+                    await File.WriteAllBytesAsync(Path.Combine(backup,"components.tar"),scenario=="corrupt-backup"?Encoding.UTF8.GetBytes("corrupt"):Archive);
+                }
+                var path=Path.Combine(storage,OnboardingEngine.CleanupPendingName);var original=Encoding.UTF8.GetBytes(JsonSerializer.Serialize(pending));await File.WriteAllBytesAsync(path,original);
+                if(scenario=="foreign-setup")await File.WriteAllTextAsync(Path.Combine(storage,"setup-pending.json"),"{}");
+                var proof=new DeviceIdentity(scenario=="wrong-cid"?new string('b',32):Cid,scenario=="wrong-firmware"?new string('c',64):"absent",scenario=="same-boot"?Boot:"22222222-2222-2222-2222-222222222222",scenario=="wrong-router"?new string('d',64):ImeiEngine.RouterHash);
+                var calls=0;var engine=new OnboardingEngine("192.0.2.1",storage,"unused",new AdbTransport((_,_,_)=>{calls++;throw new Exception("Unexpected ADB");})){WebFactory=()=>{calls++;throw new Exception("Unexpected Web");},CleanupSshFactory=()=>{calls++;throw new Exception("Unexpected SSH");}};
+                var retired=false;
+                try
+                {
+                    var eligible=await engine.LoadUndispatchedCleanupRecoveryAsync();
+                    Check((eligible is not null)==(scenario is not ("dispatched" or "complete")),"Only predispatch cleanup is eligible for reset retirement: "+scenario);
+                    retired=await engine.ArchiveUndispatchedCleanupAfterRebootAsync(proof);
+                }
+                catch(Exception e)when(e is InvalidDataException or IOException or JsonException){}
+                var allowed=scenario is "prepared" or "verified";
+                Check(retired==allowed&&File.Exists(path)==!allowed,"Only same-device new boot retires undispatched cleanup: "+scenario);
+                var histories=Directory.GetFiles(backup,"cleanup-before-reset-*.json");
+                Check(histories.Length==(allowed?1:0)&&File.ReadAllBytes(allowed?histories[0]:path).SequenceEqual(original),"Exact cleanup journal retained: "+scenario);
+                if(pending.ArchiveSha is not null)Check(File.ReadAllBytes(Path.Combine(backup,"components.tar")).SequenceEqual(scenario=="corrupt-backup"?Encoding.UTF8.GetBytes("corrupt"):Archive),"Downloaded archive untouched: "+scenario);
+                Check(calls==0,"Reset retirement uses supplied identity and never contacts the modem: "+scenario);
+            }
             foreach(var scenario in new[]{"committed-before-intent","fresh","partial-prepare","verified","interrupted-clean","complete","remote-regressed","unrequested-complete","lost-clean-reply","wrong-boot","wrong-host","wrong-stream","bad-local-file","tampered-backup","remote-hash-changed","cancelled-stream","invalid-status","missing-backup","bad-setup"})
             {
                 var storage=Path.Combine(root,scenario);var resources=Path.Combine(storage,"resources");Directory.CreateDirectory(Path.Combine(resources,"Onboarding"));
@@ -40,7 +69,7 @@ internal static class ComponentCleanupTests
                     return new RemoteFileResult(0,Archive.Length,scenario=="wrong-stream"?new string('f',64):Sha(Archive),Encoding.UTF8.GetBytes("BACKUP_RESULT sha256="+Sha(Archive)+" bytes="+Archive.Length+"\n"));
                 }};
                 OnboardingResult? result=null;string? error=null;
-                try{result=await engine.PrepareAsync("","","",forceReinstall:false,cleanComponents:false);}catch(Exception e) when(e is IOException or InvalidDataException or InvalidOperationException or OperationCanceledException){error=e.Message;}
+                try{result=await engine.PrepareAsync("","","",forceReinstall:false,cleanComponents:scenario=="verified");}catch(Exception e) when(e is IOException or InvalidDataException or InvalidOperationException or OperationCanceledException){error=e.Message;}
                 var success=scenario is "committed-before-intent" or "fresh" or "partial-prepare" or "verified" or "interrupted-clean" or "complete";
                 Check((result?.ComponentsCleaned==true)==success,"explicit cleanup result: "+scenario);
                 if(success)

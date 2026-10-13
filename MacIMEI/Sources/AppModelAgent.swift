@@ -15,8 +15,13 @@ import AppKit
     }
     func refreshAgent() {
         runManaged("Проверяю агент и возможность восстановления…", readOnly: true, work: { engine in
-            try engine.locked { try AgentInstallationManager(engine: engine).inspect() }
-        }, finish: { [weak self] value in self?.agentInstallationStatus = value; self?.append("Состояние агента обновлено") })
+            var value = try engine.locked { try AgentInstallationManager(engine: engine).inspect() }
+            value.web = AgentWebDiagnostics.collect(engine: engine)
+            return value
+        }, finish: { [weak self] value in
+            self?.agentInstallationStatus = value; self?.append("Состояние агента обновлено")
+            if let web = value.web { self?.append(web.log) }
+        })
     }
     func installAgent(custom: Bool) {
         guard canManage else { return }
@@ -33,21 +38,27 @@ import AppKit
         agentInstallationStatus = nil; vpnInspection = nil; modemInformation = nil
         clearEsim()
         runManaged(custom ? "Устанавливаю выбранный агент…" : "Устанавливаю агент из комплекта приложения…", work: { engine in
-            try engine.locked {
+            var value = try engine.locked {
                 let manager = AgentInstallationManager(engine: engine)
                 return try custom ? manager.install(candidate) : manager.installBundled(candidate)
             }
+            value.web = AgentWebDiagnostics.collect(engine: engine)
+            return value
         }, finish: { [weak self] value in
             self?.agentInstallationStatus = value; self?.vpnInspection = nil; self?.modemInformation = nil
             self?.append(custom ? "Выбранный агент установлен и запущен" : "Агент с eSIM и веб-панель установлены")
+            if let web = value.web { self?.append(web.log) }
         })
     }
     func restoreAgent() {
         runManaged("Восстанавливаю предыдущий агент…", work: { engine in
-            try engine.locked { try AgentInstallationManager(engine: engine).restore() }
+            var value = try engine.locked { try AgentInstallationManager(engine: engine).restore() }
+            value.web = AgentWebDiagnostics.collect(engine: engine)
+            return value
         }, finish: { [weak self] value in
             self?.agentInstallationStatus = value; self?.vpnInspection = nil; self?.modemInformation = nil
             self?.append("Предыдущий агент восстановлен и запущен")
+            if let web = value.web { self?.append(web.log) }
         })
     }
 }

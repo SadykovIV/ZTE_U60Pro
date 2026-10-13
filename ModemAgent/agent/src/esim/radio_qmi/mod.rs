@@ -107,7 +107,7 @@ fn bcd_iccid(data: &[u8]) -> Result<String> {
     }
     Ok(digits)
 }
-fn slot1(data: &[u8]) -> Result<String> {
+fn slot1_iccid_bytes(data: &[u8]) -> Result<&[u8]> {
     let Some(&count) = data.first() else {
         return Err(Error::new("modem_readback_failed"));
     };
@@ -156,7 +156,21 @@ fn slot1(data: &[u8]) -> Result<String> {
     if card != 2 {
         return Err(Error::new("modem_readback_failed"));
     }
-    bcd_iccid(iccid)
+    Ok(iccid)
+}
+fn slot1(data: &[u8]) -> Result<String> {
+    bcd_iccid(slot1_iccid_bytes(data)?)
+}
+fn selected_slot1(data: &[u8]) -> Result<()> {
+    let iccid = slot1_iccid_bytes(data)?;
+    // A removable eUICC with no enabled profile can have no ICCID yet.
+    // The physical/logical route still has to be present and unambiguous.
+    if !iccid.is_empty() { bcd_iccid(iccid)?; }
+    Ok(())
+}
+pub fn selection() -> Result<()> {
+    let values = read(qrtr::SERVICE_UIM, 0x47).map_err(|_| Error::new("modem_readback_failed"))?;
+    selected_slot1(field(&values, 0x10).map_err(|_| Error::new("modem_readback_failed"))?)
 }
 pub fn iccid() -> Result<String> {
     let values = read(qrtr::SERVICE_UIM, 0x47).map_err(|_| Error::new("modem_readback_failed"))?;
@@ -319,6 +333,22 @@ mod tests {
         assert_eq!(bcd_iccid(&x).unwrap().len(), 19);
         x[0] = 0xf8;
         assert!(bcd_iccid(&x).is_err());
+    }
+    #[test]
+    fn empty_profile_route_is_valid_but_iccid_readback_still_requires_digits() {
+        let mut value = vec![1];
+        value.extend(row(1, &[]));
+        assert!(selected_slot1(&value).is_ok());
+        assert!(slot1(&value).is_err());
+        value[9] = 2;
+        assert_eq!(selected_slot1(&value).unwrap_err().code, "modem_slot_mismatch");
+        let mut value = vec![2];
+        value.extend(row(1, &[]));
+        value.extend(row(1, &[0x98; 10]));
+        assert_eq!(selected_slot1(&value).unwrap_err().code, "modem_slot_mismatch");
+        let mut value = vec![1];
+        value.extend(row(1, &[0x98; 9]));
+        assert!(selected_slot1(&value).is_err());
     }
     #[test]
     fn refuses_truncation_duplicates_and_trailing_data() {

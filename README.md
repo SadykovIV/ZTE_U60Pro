@@ -6,28 +6,36 @@ Manage the **ZTE U60 Pro / MU5250**: access preparation, backups, IMEI, TTL,
 Russian screen localization, VPN over a separate Wi-Fi network, removable
 physical eUICC cards, and diagnostics.
 
-Version **1.24.14** (macOS build **55**, Windows FileVersion **1.24.14.0**),
-agent **2.9.0-esim.6**. [Changes and verification limits](docs/RELEASE-1.24.14.md).
+Version **1.25** (macOS build **64**, Windows FileVersion **1.25.0.0**),
+agent **2.9.0-esim.12**, VPN controller **1.4.1**.
+[Download macOS ARM64](https://github.com/SadykovIV/ZTE_U60Pro/releases/download/v1.25/ZTE-U60Pro-Manager-1.25-macOS-arm64.zip) ·
+[Download Windows x64](https://github.com/SadykovIV/ZTE_U60Pro/releases/download/v1.25/ZTE-U60Pro-Manager-1.25-Windows-x64-portable.zip) ·
+[Release and checksums](https://github.com/SadykovIV/ZTE_U60Pro/releases/tag/v1.25).
 
-[Download 1.24.14](https://github.com/SadykovIV/ZTE_U60Pro/releases/tag/v1.24.14):
-macOS and Windows applications, separate agent, build dependencies and corresponding sources.
-[Preparation details and limits](docs/PREPARATION-1.24.7.md).
+## Changes since the previous GitHub release, 1.24.14
 
-## What changed in 1.24.14
+- Added WireGuard, AmneziaWG 2/3.1, Hysteria2 and HTTPS subscriptions alongside
+  VLESS. Profiles remain shared by desktop, agent and Launcher; the agent and
+  modem screen can refresh subscriptions without changing the running connection.
+- Extended B28/B04 component profiles and fixed preparation after a factory reset,
+  SSH access and agent Web checks. ADB can be disabled after SSH is verified,
+  including its autostart entry.
+- IMEI backup, change and restore use the actual one or two active records;
+  a read error is not treated as an absent second IMEI.
+- Fixed updates of TTL/VPN components and agent compatibility. VPN updates replace
+  the complete runtime with rollback; IPA preparation is automatic, and VPN Wi-Fi
+  keeps its selected state after reboot.
+- Expanded firmware adaptation capture, improved log export and removed more
+  unrelated preparation/IMEI blockers from independent SSH operations. Added
+  measured B28/B04 profiles for backups and physical-eUICC radio refresh.
 
-Diagnostics now has two actions: **Logs and journals** and **Firmware adaptation
-data**. Logs include preparation, connections, application operations and available
-modem logs. Adaptation collects the fresh technical survey and firmware files in
-one ZIP, without a long checklist on screen.
+[Full changes and verification limits](docs/RELEASE-1.25.md).
 
-Desktop VPN management now imports, lists, activates, renames and deletes the same
-profiles used by the agent. VPN, agent and Launcher installations are separate.
-IMEI changes run only from the desktop app after SSH connection. TTL, eSIM and
-VPN desktop operations do not require the permanent agent.
-
-Exact B31 and FLY B28 screen profiles remain included. Full B28 operation,
-including VPN/TTL and modem writes, still needs hardware verification.
-[Changes and verification limits](docs/RELEASE-1.24.14.md) ·
+Live verification uses **CN_ZTE_MU5250V1.0.0B31 /
+BD_CNMU5250V1.0.0B31**. B28/B04 coverage comes from captured files and local
+regression tests; native Windows still needs verification. The owner confirmed
+Wi-Fi VPN internet access on B31 from a phone with mobile data disabled.
+[Detailed limits](docs/RELEASE-1.25.md#what-was-checked) ·
 [Operation requirements](docs/OPERATION-DEPENDENCIES.md) ·
 [Collect firmware adaptation data](docs/FIRMWARE-ADAPTATION-DATA.md).
 
@@ -69,13 +77,28 @@ The project includes two desktop applications and a standalone modem agent:
 | Modem platform | Linux ARM64 |
 | Physical eUICC | Removable **9eSIM V0** in the SIM slot was tested previously; the built-in ZTE eSIM is not supported |
 
-On this B31 device, checks for 1.24.9 on **6 October 2026** covered a clean installation after a
-user-performed factory reset, authentication with the new agent password, SSH on
-port 2222, a verified component backup, and restored Russian screen localization.
-One connection test took about **0.72 seconds**; this is an observed result, not a
-connection-time guarantee. B28 hardware and native Windows execution have not
-been tested. The B31 results do not establish compatibility of every feature with
-other firmware versions.
+On this B31 device, the **1.25** audit verified component updates, dashboard
+access, applying/restoring TTL settings, VPN enable/disable, Launcher page order
+and screen localization. AWG 2/3.1 carried HTTPS through the core's local SOCKS
+listener; subscriptions refreshed without changing the active selection. IMEI
+read/backup and configuration, radio-partition and `/data` copies passed their
+checks. All 15 desktop read/status operations passed; two outgoing packets had
+TTL 64. After a normal reboot, SSH reconnect and ADB disable were checked.
+After fixing VPN startup, two further reboots preserved enabled and disabled
+Wi-Fi states, the selected profile, core/network readiness, current-boot IPA
+state, firewall rules and HTTPS through the local proxy.
+The final catalogue, including AWG 2/3.1 and three subscriptions, was kept on
+the modem with the user's selected active profile. The Launcher model accepted
+all 72 profiles. On **14 October 2026**, the owner confirmed internet access from
+a phone on Wi-Fi with VPN with mobile data disabled, AWG/subscription profiles
+on the modem screen, and the absence of the previous agent VPN error.
+
+These results do not verify throughput, every imported profile, incoming TTL,
+fresh factory-reset preparation, IMEI writes, full-image restore or eUICC writes
+in this audit. B28/B04 hardware and native Windows execution remain untested.
+Diagnostic archives prioritize main journals; large historical exports can be
+partial, with the omissions listed in the archive.
+[Full verification scope](docs/RELEASE-1.25.md#what-was-checked).
 
 **[Download the applications and agent](https://github.com/SadykovIV/ZTE_U60Pro/releases/latest)** ·
 [Application guide](docs/APPLICATION.md) · [Agent guide](docs/AGENT.md) ·
@@ -233,14 +256,16 @@ starts with 1.24.4; earlier closed sessions cannot be recovered.
 
 ### USB ADB checkbox
 
-**Enable ADB** reads and changes state through SSH only on the verified B31/configfs
-configuration. It changes the ADB function link and checks the other USB functions
-before and after the operation. USB connectivity, including networking, may be
-interrupted briefly. Without SSH confirmation, the modem attempts to restore the
-original state after 60 seconds; an unknown outcome blocks another write. The
-change lasts until reboot and does not alter startup settings. Unknown state is
-shown separately from disabled state. This is a limited adapter, not a promise of
-universal ADB switching on every firmware version.
+**Enable ADB** reads and changes state through SSH on the measured B31/B28/B04
+USB configurations. It changes the ADB function link and the application's exact
+ADB autostart entry, with a backup of `rc.local`; unrelated startup lines remain.
+Other USB functions are checked before and after the operation. USB connectivity,
+including networking, may be interrupted briefly. Without confirmation over SSH,
+the modem attempts to restore the original USB and startup state after 60 seconds.
+An unknown result blocks another write. **Disable ADB and autostart** is also
+available separately. Preparation attempts this step only after SSH is verified.
+Unknown state is shown separately from disabled state; other USB layouts need
+adaptation before switching is allowed.
 
 ## Quick start
 

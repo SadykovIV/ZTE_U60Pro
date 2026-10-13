@@ -6,14 +6,41 @@ struct VPNProfile: Decodable, Identifiable, Sendable {
     var transport: String
     var warnings: [String]
     var active: Bool
+    var protocolName: String? = nil
+    var subscriptionId: String? = nil
+    var updateAvailable: Bool? = nil
+    var removedFromSubscription: Bool? = nil
+    var canActivate: Bool { !active || updateAvailable == true }
+    enum CodingKeys: String, CodingKey { case id, name, transport, warnings, active, protocolName = "protocol", subscriptionId, updateAvailable, removedFromSubscription }
+}
+struct VPNSubscription: Decodable, Identifiable, Sendable {
+    var id: String
+    var name: String
+    var host: String
+    var updatedAt: UInt64
+    var profileCount: Int
+}
+struct VPNImportSummary: Decodable, Sendable {
+    struct Skipped: Decodable, Sendable { var index: Int; var code: String }
+    var added: Int; var updated: Int; var removed: Int; var duplicates: Int; var retainedActive: Int
+    var skipped: [Skipped]
 }
 /// Profile credentials exist only in the request body sent through SSH stdin.
 enum VPNOperation: Sendable {
     case importProfile(uri: String, name: String)
+    case importConfiguration(config: String, name: String)
+    case importSubscription(url: String, name: String, documents: [String]? = nil)
+    case updateSubscription(String, documents: [String]? = nil)
+    case deleteSubscription(String)
     case activate(String)
     case rename(String, String)
     case delete(String)
     case setEnabled(Bool)
+
+    static func isProfileLink(_ value: String) -> Bool {
+        let value = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return ["vless://", "hy2://", "hysteria2://"].contains { value.hasPrefix($0) }
+    }
 
     var request: [String: Any] {
         switch self {
@@ -21,6 +48,20 @@ enum VPNOperation: Sendable {
             var value: [String: Any] = ["action": "import", "uri": uri.trimmingCharacters(in: .whitespacesAndNewlines)]
             if !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { value["name"] = name.trimmingCharacters(in: .whitespacesAndNewlines) }
             return value
+        case .importConfiguration(let config, let name):
+            var value: [String: Any] = ["action": "import_config", "config": config]
+            if !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { value["name"] = name.trimmingCharacters(in: .whitespacesAndNewlines) }
+            return value
+        case .importSubscription(let url, let name, let documents):
+            var value: [String: Any] = ["action": "subscription_import", "url": url.trimmingCharacters(in: .whitespacesAndNewlines)]
+            if !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { value["name"] = name.trimmingCharacters(in: .whitespacesAndNewlines) }
+            if let documents { value["documents"] = documents }
+            return value
+        case .updateSubscription(let id, let documents):
+            var value: [String: Any] = ["action": "subscription_update", "id": id]
+            if let documents { value["documents"] = documents }
+            return value
+        case .deleteSubscription(let id): return ["action": "subscription_delete", "id": id]
         case .activate(let id): return ["action": "activate", "id": id]
         case .rename(let id, let name): return ["action": "rename", "id": id, "name": name.trimmingCharacters(in: .whitespacesAndNewlines)]
         case .delete(let id): return ["action": "delete", "id": id]
@@ -29,7 +70,10 @@ enum VPNOperation: Sendable {
     }
     var message: String {
         switch self {
-        case .importProfile: return "Профиль VPN импортирован"
+        case .importProfile, .importConfiguration: return "Профиль VPN импортирован"
+        case .importSubscription: return "Подписка VPN импортирована"
+        case .updateSubscription: return "Подписка VPN обновлена; действующее подключение сохранено"
+        case .deleteSubscription: return "Подписка VPN удалена; её профили сохранены"
         case .activate: return "Активный профиль VPN изменён"
         case .rename: return "Название профиля VPN сохранено"
         case .delete: return "Профиль VPN удалён"
@@ -43,15 +87,28 @@ enum VPNOperation: Sendable {
             try require(!name.isEmpty && name.unicodeScalars.count <= 64 && !name.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }), VPNSettingsManager.message("VPN_INVALID_NAME"))
         }
         if let uri = value["uri"] as? String {
-            try require(uri.hasPrefix("vless://") && uri.utf8.count <= 32768 && !uri.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }), "Нужна одна ссылка vless:// длиной не больше 32 КиБ.")
+            try require(Self.isProfileLink(uri) && uri.utf8.count <= 32768 && !uri.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }), "Нужна одна ссылка vless://, hy2:// или hysteria2:// длиной не больше 32 КиБ.")
+        }
+        if let config = value["config"] as? String {
+            try require(!config.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && config.utf8.count <= 8 * 1024 * 1024 && !config.contains("\0"), "Нужна конфигурация WireGuard или AmneziaWG в формате .conf, не больше 8 МиБ.")
+        }
+        if let url = value["url"] as? String { _ = try VPNSubscriptionDownload.validatedURL(url) }
+        if let documents = value["documents"] as? [String] {
+            try require((1...2).contains(documents.count) && documents.allSatisfy { !$0.isEmpty && $0.utf8.count <= 8 * 1024 * 1024 }, "Содержимое подписки превышает 8 МиБ или пусто.")
         }
     }
     func verify(before: VPNStatus, after: VPNStatus) throws {
         let confirmed: Bool
         switch self {
-        case .importProfile:
+        case .importProfile, .importConfiguration:
             confirmed = after.profiles.count == before.profiles.count + 1 && after.profiles.filter { profile in !before.profiles.contains { $0.id == profile.id } }.count == 1
-        case .activate(let id): confirmed = after.activeProfile == id && after.profiles.contains { $0.id == id && $0.active }
+        case .importSubscription:
+            confirmed = (after.subscriptions?.count ?? 0) == (before.subscriptions?.count ?? 0) + 1 && after.lastImport != nil && after.activeProfile == before.activeProfile && after.enabled == before.enabled
+        case .updateSubscription(let id, _):
+            confirmed = after.subscriptions?.contains { $0.id == id } == true && after.lastImport != nil && after.activeProfile == before.activeProfile && after.enabled == before.enabled
+        case .deleteSubscription(let id):
+            confirmed = after.subscriptions?.contains { $0.id == id } != true && Set(after.profiles.map(\.id)) == Set(before.profiles.map(\.id)) && after.activeProfile == before.activeProfile && after.enabled == before.enabled
+        case .activate(let id): confirmed = after.activeProfile == id && after.profiles.contains { $0.id == id && $0.active && $0.updateAvailable != true }
         case .rename(let id, let name): confirmed = after.profiles.contains { $0.id == id && $0.name == name.trimmingCharacters(in: .whitespacesAndNewlines) }
         case .delete(let id): confirmed = !after.profiles.contains { $0.id == id }
         case .setEnabled(let enabled): confirmed = after.enabled == enabled
@@ -82,6 +139,8 @@ struct VPNStatus: Decodable, Sendable {
     var profiles: [VPNProfile] = []
     var activeProfile = ""
     var recoveryPending = false
+    var subscriptions: [VPNSubscription]?
+    var lastImport: VPNImportSummary?
 
     var actualSSID: String { [ssid5G, ssid2G, Optional(ssid)].compactMap { $0 }.first { !$0.isEmpty } ?? "" }
     var editableSSID: String { desiredSsid.flatMap { $0.isEmpty ? nil : $0 } ?? (configured ? actualSSID : "ZTE-VPN") }
@@ -157,6 +216,16 @@ struct VPNInspection: Sendable {
     var agentReady: Bool = false
     var dashboardReady: Bool = false
     var launcherReady: Bool = false
+
+    /// Status requests contain no import receipt. Keep the latest receipt only
+    /// for this model's current device; selection changes clear vpnInspection.
+    func preservingImportSummary(from previous: VPNInspection?) -> VPNInspection {
+        var result = self
+        if status.installed && previous?.status.installed == true && status.lastImport == nil {
+            result.status.lastImport = previous?.status.lastImport
+        }
+        return result
+    }
 }
 
 enum VPNRequestFailure: LocalizedError, Equatable {
@@ -182,18 +251,53 @@ enum VPNRequestFailure: LocalizedError, Equatable {
 /// Both the desktop and agent send private JSON on stdin to the same modem helper.
 final class VPNSettingsManager {
     static let root = "/data/zte-vpn"
-    static let launcherHash = "c04c5c1d0cccb0a2964a1500e6fdc3c549c9eac6125fe591b9cdf25d39dff3c2"
+    static let launcherHash = "eb01a6f3c6cb914ded0e2f069f6f5072cd8445245b9b7f0d5f572f6662e9dc70"
     static let agentHash = BundledAgent.sha256
-    static let dashboardIndexHash = "c804a8ecced9ed3478ee50021b95d3bcd02394f23ba09f10c5c3691f44cd9546"
-    static let helperHash = "f5e1c9e627e3e978ff535de79b95ff920d7318e7ea3ce713e5b174efe313ca0c"
+    static let dashboardIndexHash = "e7362584a399d4acd292c5ca896295cd4d50fa79eff63549b6dfbf97a91a9a2c"
+    static let helperHash = "8aaece533e2503c7a501497bb1bf191f37a0ffbba067e7a7ff3a4c6f9623673f"
+    // Exact previously shipped controllers may serve read-only status before upgrade.
+    // Mutations continue to require the current controller hash.
+    static let supportedStatusHashes: Set<String> = [
+        helperHash,
+        "e00749ed2a6273c95a4b0563212313c81e54928f6564fdbd8f9616d12a4df6ba",
+        "b5f581427afd423be3931473db2ce4b496a387b685ab3c48adf26cc597000f9a",
+        "82a8b6655ff6cd43938ffe3735e8841599ef6116bf33079d8d203db9415ca3f2",
+        "fe1f6d535ccee6ec0f9333c01108b00f35006209850ed641023dbb937dd30b48",
+        "b2c3fcfafeccd50fa3000ad5f8f66f1e42ff157b295cdda11dddd31571612af7",
+        "cf15a6290316dd6832873e35972831a590d70cf0734eb93dbcd96aab87fab6f1",
+        "f5e1c9e627e3e978ff535de79b95ff920d7318e7ea3ce713e5b174efe313ca0c",
+        "7a8b84c3502e711c6b66c943f883a984dd9ed82da41455fc083ed0cc7d44b6fb",
+        "1cc33e3825a556a825e83392675c254ef22f738660d1016ae1413f7669f88231",
+        "f620dab27f951c7de2de77a89376975b51c79f57f8a8a24cec95392c9c61eea4",
+        "3142fb503e64ddba79d523be3c87f0344d6efa78673e30a4b740714d8e9389ca",
+        "cdb01d27775d61bcb3ae14a8d124ccbab683f940f1dcfd2adffa43a6b7b462f0",
+        "9e8b1a737888468a4be6a010a915524b84440037802c6cfc6a5e251abf0e81ce",
+        "9c2e3c21eecace7031c4029c969efdec44241f000716447df805f3020dfce95e",
+        "8f9e82ca45177fc19ffd4d7663764fa44750e05eed86ef83567ed2dec5ce7827",
+        "96a4717fe085a80479675486d23b260c3254084638d195d933d4d9d944b98e88",
+        "48b9af93098b4b1b31754a48707ac066a39977bcc0db0cc438ead64c62322bd4",
+        "572e2e1133cebb690584bda8b5ac047336451bc26c6a5e37522a756b6254fac5",
+        "80f16fafe203d661d6a90686c90a25c61eea38cf9e83e002c1cdffea85d02f23",
+        "3c8a139d9ba6f3372b009e9e0fb5ed9ff27faf1675dcb654f09eedec851661f3"
+    ]
     let engine: ModemEngine
     init(engine: ModemEngine) { self.engine = engine }
+
+    static func warning(_ code: String) -> String? {
+        switch code {
+        case "VPN_SPX_PRESERVED": return "Параметр spx сохранён в исходной ссылке, но не используется этим ядром VPN."
+        case "NAME_TRUNCATED": return "Название профиля сокращено до 64 символов."
+        case "VPN_INSECURE_TLS": return "В ссылке отключена проверка TLS-сертификата"
+        case "VPN_IPV6_GUEST_DISABLED": return "Сеть Wi-Fi с VPN использует IPv4. Параметры IPv6 туннеля сохранены."
+        default: return nil
+        }
+    }
 
     static func message(_ code: String) -> String {
         let messages = [
             "VPN_BUSY": "На модеме выполняется другая операция. Повторите после её завершения.",
             "VPN_OTHER_TRANSACTION": "Сначала завершите обновление или настройку модема.",
-            "VPN_VLESS_ONLY": "Вставьте ссылку профиля, начинающуюся с vless://.",
+            "VPN_VLESS_ONLY": "Вставьте ссылку профиля VLESS или Hysteria2 (vless://, hy2://, hysteria2://).",
             "VPN_INVALID_URI": "Ссылка профиля повреждена. Скопируйте её полностью.",
             "VPN_INVALID_UUID": "В профиле неверный идентификатор VLESS.",
             "VPN_INVALID_KEY": "В профиле неверный ключ шифрования или short ID.",
@@ -205,12 +309,12 @@ final class VPNSettingsManager {
             "VPN_DUPLICATE_OPTION": "В ссылке повторяется параметр. Исправьте профиль.",
             "VPN_VALIDATION_FAILED": "Ядро VPN не приняло конфигурацию. Действующий профиль сохранён.",
             "VPN_PROFILE_EXISTS": "Этот профиль уже импортирован.",
-            "VPN_PROFILE_LIMIT": "Можно хранить до 32 профилей. Удалите ненужный профиль.",
+            "VPN_PROFILE_LIMIT": "Можно хранить до 1024 профилей. Удалите ненужные профили.",
             "VPN_ACTIVE_PROFILE_DELETE": "Активный профиль удалить нельзя. Сначала выберите другой.",
             "VPN_NO_ACTIVE_PROFILE": "Сначала импортируйте и активируйте профиль.",
             "VPN_GUEST_IN_USE": "Гостевой Wi-Fi уже используется. Выключите его перед первой настройкой VPN.",
             "VPN_MESH_CONFLICT": "VPN-сеть использует гостевые интерфейсы. Сначала выключите Mesh.",
-            "VPN_IPA_ENABLED": "Для защищённой VPN-сети требуется отключённое аппаратное ускорение IPA.",
+            "VPN_IPA_ENABLED": "Обновите компоненты VPN для автоматического переключения IPA.",
             "VPN_OTHER_PROXY": "Другое ядро прокси уже работает. Остановите его перед настройкой.",
             "VPN_SUBNET_CONFLICT": "Подсеть 192.168.50.0/24 уже занята.",
             "VPN_OPERATION_TIMEOUT": "Операция ещё не подтверждена. Обновите состояние перед повтором.",
@@ -223,7 +327,51 @@ final class VPNSettingsManager {
             "VPN_WIFI_CONFIGURATION_CHANGED": "Настройки Wi-Fi на модеме изменились. Обновите состояние перед повтором.",
             "VPN_WIFI_SETTINGS_PENDING": "Предыдущее сохранение сети не завершено. Проверьте параметры и сохраните их заново; до этого Wi-Fi с VPN не включится.",
             "VPN_WIFI_SETTINGS_ENABLED": "Сначала выключите Wi-Fi с VPN на модеме или в агенте. Настройки сети можно менять только после выключения.",
-            "VPN_WIFI_NOT_READY": "VPN-сеть не запустилась вовремя и была выключена. Настройки сохранены для проверки."
+            "VPN_DHCP_NOT_READY": "Не запустилась служба выдачи IP-адресов VPN. Откройте «Логи и журналы»: подробности сохранены в vpn.log.",
+            "VPN_WIFI_NOT_READY": "VPN-сеть не запустилась вовремя и была выключена. Настройки сохранены для проверки.",
+            "VPN_SUBSCRIPTION_FILE_REFERENCE": "Профиль подписки ссылается на локальный файл сертификата или ключа. Нужны встроенные данные PEM.",
+            "VPN_SUBSCRIPTION_EXISTS": "Такая подписка уже добавлена.",
+            "VPN_AWG_DUPLICATE_OPTION": "Некорректный параметр в файле WireGuard/AmneziaWG. Проверьте исходную конфигурацию.",
+            "VPN_AWG_DUPLICATE_PEER": "Некорректный параметр в файле WireGuard/AmneziaWG. Проверьте исходную конфигурацию.",
+            "VPN_AWG_HEADER_PADDING_REQUIRED": "Для защиты заголовков AWG значения S1–S4 должны быть не меньше 12.",
+            "VPN_AWG_INVALID_ADDRESS": "Некорректный параметр в файле WireGuard/AmneziaWG. Проверьте исходную конфигурацию.",
+            "VPN_AWG_INVALID_BOOLEAN": "Некорректный параметр в файле WireGuard/AmneziaWG. Проверьте исходную конфигурацию.",
+            "VPN_AWG_INVALID_CONFIG": "Некорректный параметр в файле WireGuard/AmneziaWG. Проверьте исходную конфигурацию.",
+            "VPN_AWG_INVALID_DNS": "Некорректный параметр в файле WireGuard/AmneziaWG. Проверьте исходную конфигурацию.",
+            "VPN_AWG_INVALID_ENDPOINT": "Некорректный параметр в файле WireGuard/AmneziaWG. Проверьте исходную конфигурацию.",
+            "VPN_AWG_INVALID_JUNK_SIZE": "Некорректный параметр в файле WireGuard/AmneziaWG. Проверьте исходную конфигурацию.",
+            "VPN_AWG_INVALID_KEY": "Некорректный параметр в файле WireGuard/AmneziaWG. Проверьте исходную конфигурацию.",
+            "VPN_AWG_INVALID_LIST": "Некорректный параметр в файле WireGuard/AmneziaWG. Проверьте исходную конфигурацию.",
+            "VPN_AWG_INVALID_MTU": "Некорректный параметр в файле WireGuard/AmneziaWG. Проверьте исходную конфигурацию.",
+            "VPN_AWG_INVALID_NUMBER": "Некорректный параметр в файле WireGuard/AmneziaWG. Проверьте исходную конфигурацию.",
+            "VPN_AWG_INVALID_RANGE": "Некорректный параметр в файле WireGuard/AmneziaWG. Проверьте исходную конфигурацию.",
+            "VPN_AWG_INVALID_SECTION": "Некорректный параметр в файле WireGuard/AmneziaWG. Проверьте исходную конфигурацию.",
+            "VPN_AWG_INVALID_SIGNATURE": "Некорректный параметр в файле WireGuard/AmneziaWG. Проверьте исходную конфигурацию.",
+            "VPN_AWG_IPV4_ADDRESS_REQUIRED": "Для VPN-сети модема требуется IPv4-адрес туннеля.",
+            "VPN_AWG_IPV6_ADDRESS_REQUIRED": "IPv6 DNS требует IPv6-адрес туннеля.",
+            "VPN_AWG_MISSING_FIELD": "Некорректный параметр в файле WireGuard/AmneziaWG. Проверьте исходную конфигурацию.",
+            "VPN_AWG_MULTIPLE_LOCAL_ADDRESSES": "Это VPN-ядро поддерживает один локальный IPv4 и один IPv6-адрес туннеля.",
+            "VPN_AWG_OVERLAPPING_HEADERS": "Диапазоны заголовков AWG H1–H4 пересекаются.",
+            "VPN_AWG_OVERLAPPING_PEERS": "Маршруты разных узлов WireGuard пересекаются.",
+            "VPN_AWG_PEER_KEEPALIVE_DIFFERS": "Это VPN-ядро требует одинаковый PersistentKeepalive для всех узлов.",
+            "VPN_AWG_SIGNATURE_TOO_LARGE": "Некорректный параметр в файле WireGuard/AmneziaWG. Проверьте исходную конфигурацию.",
+            "VPN_AWG_UNSUPPORTED_OPTION": "Файл WireGuard/AmneziaWG содержит неподдерживаемый параметр. Он не был импортирован.",
+            "VPN_IPA_NOT_RUNNING": "Служба IPA не найдена. Проверьте журнал модема.",
+            "VPN_IPA_PREPARE_FAILED": "Не удалось автоматически отключить IPA для VPN. Подробности — в журнале модема.",
+            "VPN_IPA_RESTORE_FAILED": "Не удалось восстановить параметры IPA. Подробности — в журнале модема.",
+            "VPN_IPA_STATE_INVALID": "Сохранённые параметры IPA повреждены. Проверьте журнал модема.",
+            "VPN_IPA_UNSUPPORTED": "Реализация IPA в этой прошивке ещё не поддерживается.",
+            "VPN_PROFILE_NOT_FOUND": "Профиль не найден. Обновите список.",
+            "VPN_REQUEST_TOO_LARGE": "Запрос VPN превышает 32 МиБ.",
+            "VPN_SUBSCRIPTION_DOCUMENT": "Документ подписки пуст или превышает 8 МиБ.",
+            "VPN_SUBSCRIPTION_EMPTY": "В подписке нет поддерживаемых профилей.",
+            "VPN_SUBSCRIPTION_ENTRY": "Запись подписки повреждена или не поддерживается.",
+            "VPN_SUBSCRIPTION_FETCH": "Не удалось загрузить подписку. Проверьте доступ к интернету и ссылку.",
+            "VPN_SUBSCRIPTION_FORMAT": "Формат подписки не распознан. Нужен список ссылок, Base64 или конфигурация Mihomo.",
+            "VPN_SUBSCRIPTION_NOT_FOUND": "Подписка не найдена. Обновите список.",
+            "VPN_SUBSCRIPTION_ROUTING": "Профиль подписки задаёт собственную маршрутизацию и не может быть применён к VPN-сети модема.",
+            "VPN_SUBSCRIPTION_URL": "Нужна корректная HTTPS-ссылка подписки без имени пользователя и фрагмента.",
+            "VPN_UNSUPPORTED_PROTOCOL": "Протокол профиля не поддерживается.",
         ]
         return messages[code] ?? "Не удалось завершить настройку VPN. Обновите состояние (VPN_OPERATION_FAILED)."
     }
@@ -249,12 +397,14 @@ final class VPNSettingsManager {
     fi
     true
     """#
-    func inspect() throws -> VPNInspection {
+    func inspect() throws -> VPNInspection { try inspect(readControllerStatus: true) }
+
+    private func inspect(readControllerStatus: Bool) throws -> VPNInspection {
         _ = try engine.diagnosticIdentity()
         let probe = try engine.text("for c in lua nft iptables ip6tables ebtables dnsmasq ip ubus flock jsonfilter; do command -v \"$c\" >/dev/null 2>&1 || printf 'MISSING:%s\\n' \"$c\"; done; test -c /dev/net/tun || echo MISSING:TUN; test ! -e /data/zte-imei-apps/ssclash/bin/ssclash || echo SSCLASH; test ! -e /data/zte-vpn || echo VPN; test ! -e /data/zte-vpn/controller-upgrade || echo UPGRADE_PENDING; sha256sum /data/zte-vpn/vpnctl 2>/dev/null | awk '{print \"HELPER:\" $1}'; " + Self.helperReadinessCommand)
         let lines = probe.split(separator: "\n").map(String.init)
         var status = VPNStatus()
-        if lines.contains("UPGRADE_PENDING") { status.installed = true }
+        if lines.contains("UPGRADE_PENDING") || (!readControllerStatus && lines.contains("VPN")) { status.installed = true }
         else if lines.contains("VPN") { status = try request(["action": "status"]) }
         return VPNInspection(status: status,
             missingCapabilities: lines.filter { $0.hasPrefix("MISSING:") }.map { String($0.dropFirst(8)) },
@@ -262,11 +412,28 @@ final class VPNSettingsManager {
             helperReady: lines.contains("HELPER:" + Self.helperHash) && lines.contains("HELPER_LAYOUT_READY") && !lines.contains("UPGRADE_PENDING"))
     }
     func request(_ value: [String: Any], expectedTarget: (Identity, String)? = nil) throws -> VPNStatus {
+        let payload = try requestPayload(value, expectedTarget: expectedTarget)
+        let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let status = try decoder.decode(VPNStatus.self, from: JSONSerialization.data(withJSONObject: payload))
+        try require(status.schemaVersion == 1 && status.profiles.count <= 1024, "Неизвестный формат состояния VPN")
+        return status
+    }
+    func subscriptionURL(_ id: String) throws -> String {
+        try VPNOperation.updateSubscription(id).validate()
+        let target = try engine.diagnosticIdentity()
+        let payload = try requestPayload(["action": "subscription_details", "id": id], expectedTarget: target)
+        let current = try engine.diagnosticIdentity()
+        try require(current.0 == target.0 && current.1 == target.1, "Модем изменился или перезагрузился. Обновите состояние VPN.")
+        guard let subscription = payload["subscription"] as? [String: Any], subscription["id"] as? String == id, let url = subscription["url"] as? String else { throw VPNRequestFailure.invalidResponse }
+        _ = try VPNSubscriptionDownload.validatedURL(url)
+        return url
+    }
+    private func requestPayload(_ value: [String: Any], expectedTarget: (Identity, String)? = nil) throws -> [String: Any] {
         let current = try engine.diagnosticIdentity()
         if let expectedTarget { try require(current.0 == expectedTarget.0 && current.1 == expectedTarget.1, "Модем изменился или перезагрузился. Проверьте подключение заново.") }
         let data = try JSONSerialization.data(withJSONObject: value)
-        try require(data.count <= 65536, "Ссылка профиля слишком длинная")
-        let accepted = value["action"] as? String == "status" ? [Self.helperHash, "7a8b84c3502e711c6b66c943f883a984dd9ed82da41455fc083ed0cc7d44b6fb", "1cc33e3825a556a825e83392675c254ef22f738660d1016ae1413f7669f88231", "f620dab27f951c7de2de77a89376975b51c79f57f8a8a24cec95392c9c61eea4", "3142fb503e64ddba79d523be3c87f0344d6efa78673e30a4b740714d8e9389ca", "cdb01d27775d61bcb3ae14a8d124ccbab683f940f1dcfd2adffa43a6b7b462f0", "9e8b1a737888468a4be6a010a915524b84440037802c6cfc6a5e251abf0e81ce", "9c2e3c21eecace7031c4029c969efdec44241f000716447df805f3020dfce95e", "8f9e82ca45177fc19ffd4d7663764fa44750e05eed86ef83567ed2dec5ce7827", "96a4717fe085a80479675486d23b260c3254084638d195d933d4d9d944b98e88", "48b9af93098b4b1b31754a48707ac066a39977bcc0db0cc438ead64c62322bd4", "572e2e1133cebb690584bda8b5ac047336451bc26c6a5e37522a756b6254fac5", "80f16fafe203d661d6a90686c90a25c61eea38cf9e83e002c1cdffea85d02f23", "3c8a139d9ba6f3372b009e9e0fb5ed9ff27faf1675dcb654f09eedec851661f3"].joined(separator: "|") : Self.helperHash
+        try require(data.count <= 32 * 1024 * 1024, "Запрос VPN превышает 32 МиБ.")
+        let accepted = value["action"] as? String == "status" ? Self.supportedStatusHashes.sorted().joined(separator: "|") : Self.helperHash
         let targetGuard = expectedTarget.map { target in
             "test \"$(cat /sys/block/mmcblk0/device/cid)\" = " + shellQuote(target.0.cid) + "; test \"$(cat /proc/sys/kernel/random/boot_id)\" = " + shellQuote(target.1) + "; "
         } ?? ""
@@ -275,6 +442,7 @@ final class VPNSettingsManager {
             "case \"$(sha256sum /data/zte-vpn/vpnctl | cut -d ' ' -f1)\" in " + accepted +
             ") ;; *) printf 'VPN_REQUEST_GUARD controller_hash\\n' >&2; exit 78;; esac; exec /data/zte-vpn/vpnctl request"
         let result = try engine.transport.run(command, input: data, timeout: 240)
+        try require(result.stdout.count <= 2 * 1024 * 1024, "Ответ VPN превышает 2 МиБ.")
         if result.status == 78 {
             switch CommandText.decode(result.stderr).trimmingCharacters(in: .whitespacesAndNewlines) {
             case "VPN_REQUEST_GUARD unsafe_layout": throw VPNRequestFailure.unsafeControllerLayout
@@ -295,13 +463,10 @@ final class VPNSettingsManager {
         guard let reply = try? JSONSerialization.jsonObject(with: result.stdout) as? [String: Any] else {
             throw VPNRequestFailure.invalidResponse
         }
-        guard reply["ok"] as? Bool == true, let payload = reply["data"] else {
+        guard reply["ok"] as? Bool == true, let payload = reply["data"] as? [String: Any] else {
             throw IMEIError.message(Self.message(reply["code"] as? String ?? "VPN_OPERATION_FAILED"))
         }
-        let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase
-        let status = try decoder.decode(VPNStatus.self, from: JSONSerialization.data(withJSONObject: payload))
-        try require(status.schemaVersion == 1 && status.profiles.count <= 32, "Неизвестный формат состояния VPN")
-        return status
+        return payload
     }
     func perform(_ operation: VPNOperation) throws -> VPNInspection {
         try operation.validate()
@@ -321,7 +486,7 @@ final class VPNSettingsManager {
 
     func configureWiFi(_ configuration: VPNWiFiConfiguration) throws -> VPNInspection {
         try require(engine.lockFD >= 0, "Настройка Wi-Fi требует блокировки операции")
-        let target = try engine.identity()
+        let target = try engine.diagnosticIdentity()
         try engine.acquireRemoteLock()
         let before = try inspect()
         try require(before.status.installed && before.helperReady && before.status.settingsSupported == true, "Сначала установите или обновите компоненты VPN.")
@@ -329,7 +494,7 @@ final class VPNSettingsManager {
         try configuration.validate(configured: before.status.configured)
         var requestBody = configuration.request; requestBody["lock_token"] = engine.remoteLockToken
         let after = try request(requestBody, expectedTarget: target)
-        let confirmed = try engine.identity()
+        let confirmed = try engine.diagnosticIdentity()
         try require(confirmed.0 == target.0 && confirmed.1 == target.1, "Модем изменился или перезагрузился. Обновите состояние VPN.")
         try require(after.installed && after.settingsSupported == true && !after.enabled && after.configured == before.status.configured && after.activeProfile == before.status.activeProfile && after.desiredSsid == configuration.ssid && after.passwordMode == configuration.passwordMode, "Модем не подтвердил сохранение настроек Wi-Fi. Обновите состояние VPN перед повтором.")
         if after.configured {
@@ -340,7 +505,9 @@ final class VPNSettingsManager {
     }
 
     func install() throws -> VPNInspection {
-        let before = try inspect()
+        // The pinned upgrade script checks old controller hashes and layout.
+        // An old status implementation must not block its own explicit upgrade.
+        let before = try inspect(readControllerStatus: false)
         try require(before.missingCapabilities.isEmpty, "В прошивке отсутствуют необходимые компоненты: " + before.missingCapabilities.joined(separator: ", "))
         try engine.acquireRemoteLock()
         if before.status.installed {
@@ -378,7 +545,7 @@ final class VPNSettingsManager {
     }
 
     private func upgradeController() throws {
-        let names = ["upgrade-controller.sh", "vpnctl", "manager.sh", "configure.lua"]
+        let names = ["upgrade-controller.sh", "vpnctl", "manager.sh", "firewall.sh", "configure.lua", "nft-guard.nft", "dnsmasq.conf", "service.sh"]
         try runInstaller(names: names, prefix: "zte-vpn-agent", script: "upgrade-controller.sh", receipt: "VPN_CONTROLLER_UPDATED")
     }
 
@@ -409,11 +576,38 @@ final class VPNSettingsManager {
         cleanupSafe = false
         let result = try engine.transport.run("set -eu; test \"$(cat /tmp/zte-imei-app.lock/owner)\" = " + shellQuote(lockToken) + "; test \"$(cat /sys/block/mmcblk0/device/cid)\" = " + shellQuote(target.0.cid) + "; test \"$(cat /proc/sys/kernel/random/boot_id)\" = " + shellQuote(target.1) + "; sh " + shellQuote(stage + "/" + script) + " " + shellQuote(stage), input: nil, timeout: 180)
         cleanupSafe = result.status >= 0 && result.status < 255
-        if result.status != 0, let refusal = Self.upgradeFailure(result) { throw IMEIError.message(refusal) }
+        if result.status != 0, let refusal = Self.installFailure(result) ?? Self.upgradeFailure(result) { throw IMEIError.message(refusal) }
         try require(result.status == 0 && String(decoding: result.stdout, as: UTF8.self).split(separator: "\n").contains(Substring(receipt)),
                     "Установка компонентов VPN не подтверждена (exit \(result.status)). Подробности — в журнале. При потере связи файлы восстановления сохранены.")
         let confirmed = try engine.diagnosticIdentity()
         try require(confirmed.0 == target.0 && confirmed.1 == target.1, "Модем изменился или перезагрузился. Обновите состояние VPN.")
+    }
+
+    static func installFailure(_ result: CommandResult) -> String? {
+        guard result.status > 0 && result.status < 255 else { return nil }
+        let messages = [
+            "INVALID_STAGE": "Не удалось проверить путь временных файлов установки VPN.",
+            "PLATFORM": "Для установки VPN нужны root и ARM64.",
+            "UNSAFE_STAGE": "Временные файлы VPN не прошли проверку владельца и прав.",
+            "ALREADY_PRESENT": "Компоненты или служба VPN уже существуют. Обновите состояние и выполните обновление компонентов.",
+            "UNSUPPORTED_FIRMWARE": "Компоненты VPN рассчитаны на исследованные MU5250 CN B31, FLY B28 (B13) и XCBZ HK B04. Соберите данные для адаптации этой прошивки.",
+            "RUNTIME_TOOLS": "В прошивке отсутствует одна из необходимых команд VPN: lua, nft, iptables, ip6tables, ebtables, dnsmasq, ip, ubus, sha256sum или flock.",
+            "TUN_UNAVAILABLE": "Для VPN недоступно устройство /dev/net/tun.",
+            "LUA_MODULES": "Не удалось загрузить модули Lua uci и luci.jsonc, необходимые для настройки VPN.",
+            "NO_SPACE": "Для установки VPN требуется не менее 128 МиБ свободного места в /data.",
+            "PAYLOAD": "Файлы установки VPN отсутствуют или не прошли проверку контрольной суммы.",
+            "WRITE": "Не удалось записать компоненты VPN в /data. Проверьте место и доступность записи.",
+            "INTEGRITY": "Записанные компоненты VPN не прошли проверку целостности.",
+            "SERVICE": "Не удалось установить службу или автозапуск VPN. Обновите состояние и повторите обновление компонентов."
+        ]
+        let prefix = "VPN_INSTALL_ERROR "
+        let codes = Set(CommandText.decode(result.stderr).split(separator: "\n").compactMap { line -> String? in
+            guard line.hasPrefix(prefix) else { return nil }
+            let code = String(line.dropFirst(prefix.count))
+            return messages[code] == nil ? nil : code
+        })
+        guard codes.count == 1, let code = codes.first, let message = messages[code] else { return nil }
+        return message + " (VPN_INSTALL_" + code + ")"
     }
 
     /// A verified script emits a finite error catalog. Arbitrary stderr remains

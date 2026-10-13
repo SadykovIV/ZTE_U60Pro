@@ -6,11 +6,16 @@ final class TTLSettingsManager {
     static let remoteRoot = "/data/zte-imei-ttl"
     // Updated from reviewed resources before each release.
     static let resourceHashes: [String: String] = [
-        "manager.sh": "b6588072c82ddd7678093a29b983ec4417c6807562819e3bda69cd6534637b7c",
+        "manager.sh": "7e629d347d1dc1777cb6322430de0d4188b442d624108efbaba8ad110f012666",
         "firewall.sh": "7610ef7955d21dd21532ce7149a57418daedd7dfcac1887350eb3223ba943600",
         "hotplug.sh": "5943e73d5f09a19b920f0ca3687a4f4a3215f9bd972d619af3a0b7d780dee30a",
         "boot.sh": "d13e69f8b9471ac6ab11fbace62cac1d5b64a16770c02d728bbebae3bd898040"
     ]
+    static let previousManagerHash = "b6588072c82ddd7678093a29b983ec4417c6807562819e3bda69cd6534637b7c"
+    static let previous12420ManagerHash = "a70afc13c3645f64b5fd937162e7d403e133bcfa0a2da0e565d39a693f9ab488"
+    static let previous12418ManagerHash = "79d5a2e696613f966fe2dff3fe59a0366455fe16681284c65d8ddb36c5e35b5a"
+    static let previous12422ManagerHash = "e4684cb0fa040de0525d0248897da01a5af2c4ee8509a851719afe9c970e9194"
+    static let upgradableManagerHashes: Set<String> = [previousManagerHash, previous12418ManagerHash, previous12420ManagerHash, previous12422ManagerHash]
     let engine: ModemEngine
     init(engine: ModemEngine) { self.engine = engine }
 
@@ -26,13 +31,15 @@ final class TTLSettingsManager {
         return result
     }
 
+    static let installedManagerHashCommand = "test -f /data/zte-imei-ttl/manager.sh && test ! -L /data/zte-imei-ttl/manager.sh && sha256sum /data/zte-imei-ttl/manager.sh | cut -d ' ' -f1"
+
     static func managerCommand(arguments: [String], hash: String) -> String {
         let manager = remoteRoot + "/manager.sh"
         return "set -eu; " +
             "for dir in /data " + remoteRoot + "; do test -d \"$dir\"; test ! -L \"$dir\"; test \"$(stat -c '%u' \"$dir\")\" = 0; mode=$(stat -c '%a' \"$dir\"); test \"$((0$mode & 022))\" = 0; done; " +
             "test -f " + manager + "; test ! -L " + manager + "; test \"$(stat -c '%u' " + manager + ")\" = 0; " +
             "mode=$(stat -c '%a' " + manager + "); test \"$((0$mode & 022))\" = 0; " +
-            "test \"$(sha256sum " + manager + " | cut -d ' ' -f1)\" = " + shellQuote(hash) + "; " +
+            "manager_hash=$(sha256sum " + manager + " | cut -d ' ' -f1); case \"$manager_hash\" in " + shellQuote(hash) + "|" + shellQuote(previousManagerHash) + "|" + shellQuote(previous12418ManagerHash) + "|" + shellQuote(previous12420ManagerHash) + "|" + shellQuote(previous12422ManagerHash) + ") ;; *) exit 1;; esac; " +
             "sh " + manager + " " + arguments.map(shellQuote).joined(separator: " ")
     }
 
@@ -49,18 +56,25 @@ final class TTLSettingsManager {
     func perform(configuration: TTLConfiguration?) throws -> TTLStatus {
         try engine.connection.validate()
         try configuration?.validate()
-        try require(!FileManager.default.fileExists(atPath: engine.root.appendingPathComponent("adb-access-pending.json").path), "Сначала завершите включение ADB")
+        if configuration != nil {
+            try require(!FileManager.default.fileExists(atPath: engine.root.appendingPathComponent("adb-access-pending.json").path), "Сначала завершите включение ADB")
+        }
         let bundle = try assets()
-        let identity = try engine.identity().0
+        let identity = try engine.diagnosticIdentity().0
         if configuration != nil { try engine.acquireRemoteLock() }
         let installed = try engine.text("if test -e " + Self.remoteRoot + " || test -L " + Self.remoteRoot + "; then printf installed; else printf absent; fi")
         let hash = Self.resourceHashes["manager.sh"]!
         if installed == "installed" {
             let arguments: [String]
             if let configuration {
+                if Self.upgradableManagerHashes.contains(try engine.text(Self.installedManagerHashCommand)) {
+                    _ = try withStage(bundle, identity: identity) { stage in
+                        try invoke("sh " + shellQuote(stage + "/manager.sh") + " " + ["upgrade", stage, identity.cid].map(shellQuote).joined(separator: " "))
+                    }
+                }
                 arguments = configuration.isDisabled ? ["disable", identity.cid] :
                     ["apply", identity.cid, configuration.outbound.map(String.init) ?? "off", configuration.inboundIncrement.map(String.init) ?? "off"]
-                try require(try engine.identity().0 == identity, "Перед изменением подключён другой модем")
+                try require(try engine.diagnosticIdentity().0 == identity, "Перед изменением подключён другой модем")
                 engine.update("Применяю настройки TTL", 0.6)
             } else {
                 arguments = ["status", identity.cid]
@@ -73,6 +87,21 @@ final class TTLSettingsManager {
         try require(installed == "absent", "Не удалось проверить установку TTL")
         // A staged status command is read-only on the device, so an inspection
         // does not silently install hooks or turn on the initial field values.
+        let result = try withStage(bundle, identity: identity) { stage in
+            let arguments: [String]
+            if let configuration, !configuration.isDisabled {
+                engine.update("Сохраняю настройки TTL на модеме", 0.8)
+                arguments = ["install", stage, identity.cid, configuration.outbound.map(String.init) ?? "off", configuration.inboundIncrement.map(String.init) ?? "off"]
+            } else {
+                arguments = ["status", identity.cid]
+            }
+            return try invoke("sh " + shellQuote(stage + "/manager.sh") + " " + arguments.map(shellQuote).joined(separator: " "))
+        }
+        try validate(result, requested: configuration)
+        return result
+    }
+
+    private func withStage(_ bundle: [String: Data], identity: Identity, action: (String) throws -> TTLStatus) throws -> TTLStatus {
         let stage = "/tmp/zte-imei-ttl-" + UUID().uuidString.lowercased()
         _ = try engine.remote("umask 077; mkdir " + shellQuote(stage))
         defer {
@@ -84,17 +113,8 @@ final class TTLSettingsManager {
             let fields = String(decoding: response, as: UTF8.self).split(whereSeparator: \.isWhitespace)
             try require(fields.count == 2 && fields[0] == Substring(digest(bytes)) && fields[1] == Substring(path), "При передаче повреждён файл TTL: " + name)
         }
-        try require(try engine.identity().0 == identity, "После передачи подключён другой модем")
-        let arguments: [String]
-        if let configuration, !configuration.isDisabled {
-            engine.update("Сохраняю настройки TTL на модеме", 0.8)
-            arguments = ["install", stage, identity.cid, configuration.outbound.map(String.init) ?? "off", configuration.inboundIncrement.map(String.init) ?? "off"]
-        } else {
-            arguments = ["status", identity.cid]
-        }
-        let result = try invoke("sh " + shellQuote(stage + "/manager.sh") + " " + arguments.map(shellQuote).joined(separator: " "))
-        try validate(result, requested: configuration)
-        return result
+        try require(try engine.diagnosticIdentity().0 == identity, "После передачи подключён другой модем")
+        return try action(stage)
     }
 
     private func validate(_ status: TTLStatus, requested: TTLConfiguration?) throws {

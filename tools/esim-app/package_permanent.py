@@ -6,44 +6,54 @@ ROOT=Path(__file__).resolve().parents[2]
 def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()
 def manifest(base):
     (base/'SHA256.json').write_text(json.dumps({str(p.relative_to(base)):sha(p) for p in sorted(base.rglob('*')) if p.is_file() and p.name!='SHA256.json'},indent=2)+'\n')
-def retain_previous_agent_hash(source, new_sha):
+def retain_previous_hash(source, new_sha, pin_name="sha256", registry_name="supportedUpgradeHashes"):
     """Retain the reviewed source pin; never derive upgrade trust from a device."""
     if not re.fullmatch(r'[0-9a-f]{64}', new_sha):
         raise ValueError('Invalid new agent hash')
-    pins = re.findall(r'static let sha256 = "([0-9a-f]{64})"', source)
-    registries = list(re.finditer(r'static let supportedUpgradeHashes:\s*Set<String>\s*=\s*\[(.*?)\]', source, re.S))
+    pins = re.findall(r'static let ' + re.escape(pin_name) + r' = "([0-9a-f]{64})"', source)
+    registries = list(re.finditer(r'static let ' + re.escape(registry_name) + r':\s*Set<String>\s*=\s*\[(.*?)\]', source, re.S))
     if len(pins) != 1 or len(registries) != 1:
         raise ValueError('Missing or ambiguous Swift agent registry')
     registry = registries[0]
     body = registry[1]
     tokens = [part.strip() for part in re.sub(r'//[^\n]*', '', body).split(',')]
     if tokens and not tokens[-1]: tokens.pop()
-    if tokens.count('sha256') != 1 or any(token != 'sha256' and not re.fullmatch(r'"[0-9a-f]{64}"', token) for token in tokens):
+    if tokens.count(pin_name) != 1 or any(token != pin_name and not re.fullmatch(r'"[0-9a-f]{64}"', token) for token in tokens):
         raise ValueError('Unsupported Swift agent registry expression')
     previous = pins[0]
     if previous == new_sha or '"' + previous + '"' in tokens:
         return source
     # Keep comments and historical entries intact. The current pin stays first.
-    first = re.match(r'\s*sha256(?=\s*(?:,|$))', body)
+    first = re.match(r'\s*' + re.escape(pin_name) + r'(?=\s*(?:,|$))', body)
     if not first:
         raise ValueError('Expected current Swift agent pin first')
     body = body[:first.end()] + ',\n        "' + previous + '"' + body[first.end():]
     return source[:registry.start(1)] + body + source[registry.end(1):]
+
+def retain_previous_agent_hash(source, new_sha):
+    return retain_previous_hash(source, new_sha)
 
 def main():
     ap=argparse.ArgumentParser();ap.add_argument('--agent',type=Path,required=True);ap.add_argument('--sha256',required=True);args=ap.parse_args()
     if sha(args.agent)!=args.sha256:raise SystemExit('Agent SHA mismatch')
     swift_path=ROOT/'MacIMEI/Sources/BundledAgent.swift'
     swift_source=retain_previous_agent_hash(swift_path.read_text(),args.sha256)
-    version='2.9.0-esim.6';mac=ROOT/'MacIMEI/Resources';win=ROOT/'Windows_x64/Resources';dist=ROOT/'ModemAgent/web-app/dist'
+    helper=ROOT/'ModemAgent/target/aarch64-unknown-linux-musl/release/zte-vpnctl'
+    vpn_path=ROOT/'MacIMEI/Sources/VPNSettings.swift'
+    vpn_source=retain_previous_hash(vpn_path.read_text(),sha(helper),'helperHash','supportedStatusHashes')
+    version='2.9.0-esim.12';mac=ROOT/'MacIMEI/Resources';win=ROOT/'Windows_x64/Resources';dist=ROOT/'ModemAgent/web-app/dist'
     if not (dist/'index.html').is_file():raise SystemExit('Build dashboard first')
     helper=ROOT/'ModemAgent/target/aarch64-unknown-linux-musl/release/zte-vpnctl'
     shutil.copy2(helper,mac/'VPN/vpnctl')
+    shutil.copy2(ROOT/'ModemAgent/vpnctl/THIRD-PARTY.txt',mac/'VPN/Subscription-LICENSES.txt')
     p=mac/'VPN/upgrade-controller.sh';s=p.read_text()
     old=re.search(r'(?m)^helper_sha=([a-f0-9]{64})$',s).group(1)
     if old!=sha(helper) and '|'+old+'|' not in s:s=s.replace('|"$helper_sha")','|'+old+'|"$helper_sha")',1)
-    for key,value in [('helper_sha',sha(helper)),('manager_sha',sha(mac/'VPN/manager.sh')),('configure_sha',sha(mac/'VPN/configure.lua'))]:
-        s=re.sub(r'(?m)^'+key+r'=.*',key+'='+value,s)
+    for key,name in [('helper_sha','vpnctl'),('manager_sha','manager.sh'),('configure_sha','configure.lua'),
+                     ('firewall_sha','firewall.sh'),('nft_guard_sha','nft-guard.nft'),
+                     ('dnsmasq_sha','dnsmasq.conf'),('service_sha','service.sh')]:
+        s,n=re.subn(r'(?m)^'+key+r'=.*',key+'='+sha(mac/'VPN'/name),s)
+        if n!=1:raise SystemExit('Missing or ambiguous VPN upgrade pin '+key)
     p.write_text(s)
     license_source=ROOT/'ModemAgent/web-app/node_modules/jsqr/LICENSE'
     shutil.copyfile(license_source,dist/'LICENSE-jsQR-Apache-2.0.txt')
@@ -90,7 +100,7 @@ def main():
         s,n=re.subn(r'(static let '+key+r' = ")[^"]+(")',lambda m:m[1]+value+m[2],s)
         if n!=1:raise SystemExit('Missing Swift pin '+key)
     p.write_text(s)
-    p=ROOT/'MacIMEI/Sources/VPNSettings.swift';s=p.read_text()
+    p=vpn_path;s=vpn_source
     for key,value in [('launcherHash',sha(mac/'VPN/launcher.so')),('helperHash',sha(helper)),('dashboardIndexHash',sha(dist/'index.html'))]:
         s,n=re.subn(r'(static let '+key+r' = ")[a-f0-9]+(")',lambda m:m[1]+value+m[2],s)
         if n!=1:raise SystemExit('Missing VPN pin '+key)

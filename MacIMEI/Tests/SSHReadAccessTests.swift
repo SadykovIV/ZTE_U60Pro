@@ -51,7 +51,8 @@ private final class Remote: RemoteTransport {
                 let engine = try OnboardingEngine(root:root.appendingPathComponent("reuse-" + uid),resources:root.appendingPathComponent("missing-resources"),connection:connection,sshFactory:{ _ in remote })
                 let result = try engine.run(webPassword:"",agentPassword:"")
                 try check(result.identity == nil && result.state == nil && result.connection.host == connection.host, "Reuse fabricated identity/readiness")
-                try check(remote.calls == [SSHReadProof.command, SSHReadProof.command], "Reuse needed installer/agent/HTTP")
+                try check(remote.calls == [SSHReadProof.command, SSHReadProof.command, AccessIdentity.command], "Reuse performed more than read proofs and the optional ADB-disable preflight")
+                try check(result.adbWarning != nil, "Unavailable ADB-disable proof must be reported without undoing usable SSH")
             }
         }
         try test("unknown all optional facts is valid; malformed known facts are refused") {

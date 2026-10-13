@@ -36,6 +36,48 @@ public sealed partial class OnboardingEngine
     internal Func<IRemoteShell>? CleanupSshFactory { get; init; }
     internal Func<IRemoteShell, string, byte[], string, long, CancellationToken, Task<RemoteFileResult>>? CleanupStream { get; init; }
 
+    internal async Task<ComponentCleanupPending?> LoadUndispatchedCleanupRecoveryAsync(CancellationToken ct = default)
+    {
+        RejectReparsePoint(CleanupPendingPath);
+        if (!File.Exists(CleanupPendingPath))
+        {
+            if (Directory.Exists(CleanupPendingPath)) throw new InvalidDataException("Повреждён журнал очистки компонентов.");
+            return null;
+        }
+        if (new FileInfo(CleanupPendingPath).Length is < 1 or > 65536) throw new InvalidDataException("Повреждён журнал очистки компонентов.");
+        var plan = JsonSerializer.Deserialize<ComponentCleanupPending>(await File.ReadAllBytesAsync(CleanupPendingPath, ct).ConfigureAwait(false))
+            ?? throw new InvalidDataException("Повреждён журнал очистки компонентов.");
+        ValidateCleanupPending(plan);
+        return plan.Phase is "prepared" or "backup-verified" ? plan : null;
+    }
+
+    // Caller holds operation.lock and supplies freshly repeated USB identity.
+    // No component command is dispatched and existing archives stay untouched.
+    internal async Task<bool> ArchiveUndispatchedCleanupAfterRebootAsync(DeviceIdentity proof, CancellationToken ct = default)
+    {
+        var plan = await LoadUndispatchedCleanupRecoveryAsync(ct).ConfigureAwait(false);
+        if (plan is null) return false;
+        var original = await File.ReadAllBytesAsync(CleanupPendingPath, ct).ConfigureAwait(false);
+        var current = JsonSerializer.Deserialize<ComponentCleanupPending>(original);
+        if (current is null || JsonSerializer.Serialize(current) != JsonSerializer.Serialize(plan))
+            throw new InvalidDataException("Журнал очистки изменился; он сохранён для проверки.");
+        if (proof.Cid != plan.Cid || proof.FirmwareHash != plan.FirmwareHash || proof.RouterHash != plan.RouterHash ||
+            !Guid.TryParseExact(proof.BootId, "D", out var boot) || proof.BootId != boot.ToString("D"))
+            throw new InvalidDataException("После перезагрузки обнаружено другое устройство или прошивка; журнал очистки сохранён.");
+        if (proof.BootId == plan.BootId) return false;
+        var setup = File.Exists(PendingPath) ? await LoadPendingAsync(ct).ConfigureAwait(false) : null;
+        if (setup is not null) ValidateCleanupSetup(setup, plan);
+        if (plan.ArchiveSha is not null && !await CleanupArchiveMatchesAsync(Path.Combine(plan.BackupDirectory, "components.tar"), plan.ArchiveSha, plan.ArchiveBytes, ct).ConfigureAwait(false))
+            throw new InvalidDataException("Копия компонентов повреждена; журнал очистки сохранён.");
+        Directory.CreateDirectory(plan.BackupDirectory);
+        if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(plan.BackupDirectory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        RejectReparsePoint(CleanupPendingPath);
+        if (!(await File.ReadAllBytesAsync(CleanupPendingPath, ct).ConfigureAwait(false)).AsSpan().SequenceEqual(original))
+            throw new InvalidDataException("Журнал очистки изменился; он сохранён для проверки.");
+        File.Move(CleanupPendingPath, Path.Combine(plan.BackupDirectory, "cleanup-before-reset-" + Guid.NewGuid().ToString("D") + ".json"));
+        return true;
+    }
+
     internal static bool HasComponentCleanupPending(string storage)
     {
         var path = Path.Combine(storage, CleanupPendingName);

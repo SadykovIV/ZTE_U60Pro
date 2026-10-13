@@ -71,27 +71,13 @@ public sealed partial class DeviceFeatureService
 
     public async Task<DeviceIdentity> ReadIdentityAsync(bool requireSupportedFirmware = false, CancellationToken ct = default)
     {
-        if (requireSupportedFirmware && _skipFirmwareCheck)
-        {
-            var platform = await RunTextAsync("set -eu; id -u; uname -s; uname -m", ct: ct);
-            Check(platform == "0\nLinux\naarch64", "Для этой операции нужны root, Linux и ARM64.");
-        }
-        const string command = "set -eu; sha256sum /firmware/image/modem.b16 /usr/bin/diag-router; cat /sys/block/mmcblk0/device/cid /proc/sys/kernel/random/boot_id";
-        var lines = (await RunTextAsync(command, ct: ct)).Split('\n', StringSplitOptions.TrimEntries);
-        Check(lines.Length == 4, "Не удалось прочитать идентификаторы модема.");
-        var firmware = ParseHashLine(lines[0], "/firmware/image/modem.b16");
-        var router = ParseHashLine(lines[1], "/usr/bin/diag-router");
-        Check(CidPattern.IsMatch(lines[2]) && Guid.TryParse(lines[3], out _), "Некорректный CID или boot ID модема.");
+        // Access identity also represents an absent modem.b16 (for example HK B04).
+        // Feature managers validate their own files and ABI before mutation.
+        var measured = await Core.AccessIdentity.ReadAsync(_shell, ct);
         if (requireSupportedFirmware && !_skipFirmwareCheck)
-            Check(firmware == FirmwareHash && router == RouterHash, "Изменения поддерживаются только на проверенной прошивке MU5250 B31.");
-        return new DeviceIdentity(lines[2], lines[3], firmware, router);
-    }
-
-    private static string ParseHashLine(string line, string path)
-    {
-        var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        Check(parts.Length == 2 && parts[1] == path && HashPattern.IsMatch(parts[0]), "Некорректная контрольная сумма прошивки.");
-        return parts[0];
+            Check(measured.FirmwareHash == FirmwareHash && measured.RouterHash == RouterHash,
+                "Для этой операции не подтверждена совместимость прошивки. Соберите данные для адаптации.");
+        return new DeviceIdentity(measured.Cid, measured.BootId, measured.FirmwareHash, measured.RouterHash);
     }
 
     internal async Task VerifyIdentityAsync(DeviceIdentity expected, CancellationToken ct)

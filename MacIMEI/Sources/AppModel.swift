@@ -37,6 +37,8 @@ import AppKit
     @Published var imei2 = ""
     @Published var currentIMEI1 = ""
     @Published var currentIMEI2 = ""
+    @Published var imeiRecordCount: Int?
+    @Published var imeiReadNote = ""
     @Published var firmware = ""
     @Published var status = "Подключите модем, чтобы управлять устройством"
     @Published var progress: Double = 0
@@ -142,14 +144,15 @@ import AppKit
     var operationTask: Task<Void, Never>?
     var connectionMonitorTask: Task<Void, Never>?
     var validationMessage: String {
-        if imei1.isEmpty && imei2.isEmpty { return "Введите два IMEI или сгенерируйте второй на основе первого" }
+        if imeiRecordCount == nil { return "Прочитайте IMEI, чтобы определить число активных записей NV550" }
+        if imeiRecordCount == 1 { return !IMEI.valid(imei1) ? "IMEI 1: нужны 15 цифр и корректная контрольная сумма Luhn" : imei1 == currentIMEI1 ? "Эти IMEI уже записаны" : "IMEI корректен по формату и контрольной сумме" }
         if !IMEI.valid(imei1) { return "IMEI 1: нужны 15 цифр и корректная контрольная сумма Luhn" }
         if !IMEI.valid(imei2) { return "IMEI 2: нужны 15 цифр и корректная контрольная сумма Luhn" }
         if imei1 == imei2 { return "Для двух слотов нужны разные IMEI" }
         if imei1 == currentIMEI1 && imei2 == currentIMEI2 { return "Эта пара уже записана на модеме" }
         return "Оба IMEI корректны по формату и контрольной сумме"
     }
-    var canApply: Bool { canManage && !pendingOperation && !setupPending && !diagnosticADBPending && IMEI.valid(imei1) && IMEI.valid(imei2) && imei1 != imei2 && (imei1 != currentIMEI1 || imei2 != currentIMEI2) }
+    var canApply: Bool { canManage && !pendingOperation && !setupPending && !diagnosticADBPending && imeiRecordCount != nil && IMEI.valid(imei1) && (imeiRecordCount == 1 ? imei1 != currentIMEI1 : IMEI.valid(imei2) && imei1 != imei2 && (imei1 != currentIMEI1 || imei2 != currentIMEI2)) }
     var canManage: Bool { connected && activeChannel == .ssh && accessReady && permitsSSHOperations && !busy && !terminalActive && !adbTogglePending && !systemRestorePending }
     var ttlValidationMessage: String {
         do {
@@ -232,28 +235,40 @@ import AppKit
         channelSession = nil; channelSummary = nil; connectedWebIdentity = nil
         mergeChannelStatuses([ConnectionChannelStatus(mode: .ssh, state: .available, message: "SSH и устройство проверены")])
         connectedIMEI = state.imeis[0]
-        currentIMEI1 = state.imeis[0]; currentIMEI2 = state.imeis[1]
+        currentIMEI1 = state.imeis[0]; currentIMEI2 = state.imeis.count == 2 ? state.imeis[1] : ""; imeiRecordCount = state.imeis.count; imeiReadNote = state.imeis.count == 1 ? "NV550: активна только первая запись. Второй IMEI не создаётся." : ""
         firmware = state.identity.firmwareHash == ModemEngine.firmwareHash ? "CN_ZTE_MU5250V1.0.0B31" : "Непроверенная прошивка"; connected = true
     }
     func acceptIMEIRead(_ state: DeviceState) throws {
-        try require(state.imeis.count == 2, "Модем не вернул оба IMEI")
-        guard connected, let session = channelSession else { accept(state); return }
-        guard activeChannel == .ssh, session.mode == .ssh, let proof = session.diagnosticSession?.readProof else {
-            throw IMEIError.message("Устройство, прошивка или сеанс загрузки изменились во время чтения IMEI")
+        try require((1...2).contains(state.imeis.count), "Не подтверждено число активных NV550")
+        try acceptIMEIRead(IMEIReadState(identity: state.identity, boot: state.boot, primary: state.imeis[0], secondary: state.imeis.count == 2 ? state.imeis[1] : nil))
+    }
+    func acceptIMEIRead(_ state: IMEIReadState) throws {
+        try require(IMEI.valid(state.primary) && (state.secondary.map(IMEI.valid) ?? true), "Некорректный IMEI в ответе чтения")
+        if connected, let session = channelSession {
+            guard activeChannel == .ssh, session.mode == .ssh, let proof = session.diagnosticSession?.readProof else {
+                throw IMEIError.message("Устройство, прошивка или сеанс загрузки изменились во время чтения IMEI")
+            }
+            try require((connectedIdentity == nil || state.identity == connectedIdentity) &&
+                        (connectedReadCID == nil || state.identity.cid == connectedReadCID) &&
+                        (proof.cid == nil || state.identity.cid == proof.cid) &&
+                        (proof.firmwareHash == nil || state.identity.firmwareHash == proof.firmwareHash) &&
+                        (proof.bootID == nil || state.boot == proof.bootID),
+                        "Устройство, прошивка или сеанс загрузки изменились во время чтения IMEI")
+            if let connectedIMEI {
+                try require(state.primary == connectedIMEI, "IMEI выбранного модема изменился. Проверьте подключение заново.")
+            }
+        } else {
+            connectionMonitorTask?.cancel(); connectionMonitorTask = nil
+            accessReady = true; activeChannel = .ssh
+            channelSession = nil; channelSummary = nil; connectedWebIdentity = nil
+            mergeChannelStatuses([ConnectionChannelStatus(mode: .ssh, state: .available, message: "SSH и устройство проверены")])
+            firmware = state.identity.firmwareHash == ModemEngine.firmwareHash ? "CN_ZTE_MU5250V1.0.0B31" : "Непроверенная прошивка"
+            connected = true
         }
-        try require((connectedIdentity == nil || state.identity == connectedIdentity) &&
-                    (connectedReadCID == nil || state.identity.cid == connectedReadCID) &&
-                    (proof.cid == nil || state.identity.cid == proof.cid) &&
-                    (proof.firmwareHash == nil || state.identity.firmwareHash == proof.firmwareHash) &&
-                    (proof.bootID == nil || state.boot == proof.bootID),
-                    "Устройство, прошивка или сеанс загрузки изменились во время чтения IMEI")
-        if let connectedIMEI {
-            try require(state.imeis[0] == connectedIMEI, "IMEI выбранного модема изменился. Проверьте подключение заново.")
-        }
-        // A read does not replace the verified session, its monitor, or any
-        // other section. Mutations use accept(_:) and rehydrate after reboot.
-        currentIMEI1 = state.imeis[0]; currentIMEI2 = state.imeis[1]
-        connectedIdentity = state.identity; connectedReadCID = state.identity.cid; connectedIMEI = state.imeis[0]
+        // Display values do not replace full NV records required before writes.
+        currentIMEI1 = state.primary; currentIMEI2 = state.secondary ?? ""; imeiRecordCount = state.secondary == nil ? 1 : 2
+        imeiReadNote = state.secondary == nil ? state.detail : ""
+        connectedIdentity = state.identity; connectedReadCID = state.identity.cid; connectedIMEI = state.primary
     }
     func perform(continuingIMEIOperation: Bool = false, _ work: @escaping @Sendable (ModemEngine) throws -> DeviceState?) {
         guard !busy && !terminalActive && !systemRestorePending && permitsSSHOperations else { return }
@@ -312,20 +327,20 @@ import AppKit
                     }
                     return try engine.locked {
                         try target.verify(engine)
-                        let state = try engine.inspect()
+                        let state = try engine.readIMEI()
                         try target.verify(engine)
                         return state
                     }
                 }.value
                 try acceptIMEIRead(state)
-            } catch { markConnectionUnavailable(error.localizedDescription); append("Остановлено: " + error.localizedDescription) }
+            } catch { append("Остановлено: " + error.localizedDescription) }
             busy = false; refreshBackups(); operationTask = nil
         }
     }
     func backup() { perform { engine in let state = try engine.inspect(); _ = try engine.makeBackup(state); engine.update("Бэкап сохранён; контрольные суммы совпали.", 1); return state } }
     func apply() {
         guard canApply else { return }
-        let targets = [imei1, imei2]
+        let targets = imeiRecordCount == 1 ? [imei1] : [imei1, imei2]
         perform { try $0.begin(targets: targets) }
     }
     func restore() {
@@ -503,16 +518,17 @@ import AppKit
         }
     }
     func generateSecond() {
+        guard imeiRecordCount == 2 else { return }
         do { imei2 = try IMEI.second(imei1); checkIMEI() } catch { imeiCheckResult = error.localizedDescription }
     }
     func checkIMEI() {
         var lines: [String] = []
-        for (i, number) in [imei1, imei2].enumerated() {
+        for (i, number) in (imeiRecordCount == 1 ? [imei1] : [imei1, imei2]).enumerated() {
             if IMEI.valid(number) {
                 lines.append("IMEI \(i+1): корректен · TAC \(number.prefix(8)) · serial \(number.dropFirst(8).prefix(6)) · контрольная цифра \(number.suffix(1))")
             } else { lines.append("IMEI \(i+1): неверный формат или контрольная сумма Luhn") }
         }
-        if !imei1.isEmpty && imei1 == imei2 { lines.append("Ошибка: номера двух слотов совпадают") }
+        if imeiRecordCount != 1 && !imei1.isEmpty && imei1 == imei2 { lines.append("Ошибка: номера двух слотов совпадают") }
         lines.append("Проверка локальная. Выделение номера, модель по TAC и чёрные списки операторов не проверяются.")
         imeiCheckResult = lines.joined(separator: "\n")
     }
@@ -526,8 +542,8 @@ import AppKit
         let dir = storage.appendingPathComponent("Backups")
         let urls = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
         backups = urls.compactMap { url in
-            guard let m = try? readJSON(BackupManifest.self, url.appendingPathComponent("manifest.json")), m.imeis.count == 2 else { return nil }
-            return BackupItem(id: m.id, date: m.created, imei1: m.imeis[0], imei2: m.imeis[1], url: url)
+            guard let m = try? readJSON(BackupManifest.self, url.appendingPathComponent("manifest.json")), ((m.schema == 1 && m.imeis.count == 2) || (m.schema == 2 && m.imeis.count == 1)) else { return nil }
+            return BackupItem(id: m.id, date: m.created, imei1: m.imeis[0], imei2: m.imeis.count == 2 ? m.imeis[1] : "", url: url)
         }.sorted { $0.date > $1.date }
         if selectedBackupID == nil || !backups.contains(where: { $0.id == selectedBackupID }) { selectedBackupID = backups.first?.id }
     }

@@ -167,16 +167,76 @@ private final class FakeRunner: ResearchProcessRunning {
         try check(unsupported.allSatisfy { $0.state == "blocked" }, "A known firmware profile excluded by current operation is a confirmed blocker")
         let bundledResources = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("Resources")
         let bundled = try ResearchSpecification.load(bundledResources)
-        try check(bundled.probes.count == 57 && bundled.features.count == 19 && bundled.revision == 11 && bundled.observations?.count == 76, "Bundled reviewed specification")
+        try check(bundled.probes.count == 57 && bundled.features.count == 19 && bundled.revision == 13 && bundled.observations?.count == 76, "Bundled reviewed specification")
         var values = [String: [String: String]]()
-        for feature in bundled.features { for requirement in feature.requirements { values[requirement.probe, default: [:]][requirement.fact] = requirement.equals } }
+        for feature in bundled.features { for requirement in feature.requirements where requirement.profiles == nil || requirement.profiles!.contains("b31") { values[requirement.probe, default: [:]][requirement.fact] = requirement.equals } }
         values["boot-protection"]?["restore_readiness"] = "not-assessed"
         values["esim-components"]?["physical_euicc_management"] = "not-assessed"
         values["esim-components"]?["native_isdr_access"] = "not-assessed"
         let prerequisites = bundled.probes.map { probe in ResearchProbeResult(id: probe.id, title: probe.title, category: probe.category, command: probe.command, outcome: "success", exitCode: 0, stdout: "", stderr: "", durationSeconds: 0, facts: values[probe.id] ?? [:]) }
         let realB31 = bundled.profiles.first { $0.id == "b31" }!
-        let hashProbe = ResearchProbeResult(id:"firmware-hashes", title:title, category:"identity", command:"", outcome:"success", exitCode:0, stdout:"", stderr:"", durationSeconds:0, facts:["firmware_sha256":realB31.firmwareSHA256,"router_sha256":realB31.routerSHA256])
+        let hashProbe = ResearchProbeResult(id:"firmware-hashes", title:title, category:"identity", command:"", outcome:"success", exitCode:0, stdout:"", stderr:"", durationSeconds:0, facts:["firmware_sha256":realB31.firmwareSHA256!,"router_sha256":realB31.routerSHA256])
         try check(FirmwareResearchCollector.profile(bundled, results:[identityProbe,hashProbe]) == "b31", "Successful B31 identity and pinned hashes select the exact profile")
+        func replacingFact(_ probe: ResearchProbeResult, _ key: String, _ value: String) -> ResearchProbeResult {
+            var facts = probe.facts; facts[key] = value
+            return ResearchProbeResult(id:probe.id,title:probe.title,category:probe.category,command:probe.command,outcome:probe.outcome,exitCode:probe.exitCode,stdout:probe.stdout,stderr:probe.stderr,durationSeconds:probe.durationSeconds,facts:facts)
+        }
+        func profileResults(_ id: String) -> [ResearchProbeResult] {
+            let profile = bundled.profiles.first { $0.id == id }!
+            var facts = ["identity": ["architecture": "aarch64"], "firmware-hashes": ["firmware_sha256": profile.firmwareSHA256 ?? "not-assessed", "router_sha256": profile.routerSHA256]]
+            for requirement in profile.identityRequirements ?? [] { facts[requirement.probe, default: [:]][requirement.fact] = requirement.equals }
+            return facts.map { key, value in ResearchProbeResult(id:key, title:title, category:"identity", command:"", outcome:"success", exitCode:0, stdout:"", stderr:"", durationSeconds:0, facts:value) }
+        }
+        for id in ["b31", "b28", "b04"] {
+            try check(FirmwareResearchCollector.profile(bundled, results:profileResults(id)) == id, "Measured identity selects " + id)
+        }
+        for requirement in bundled.profiles.first(where: { $0.id == "b04" })!.identityRequirements! {
+            for value in ["not-assessed", "wrong"] {
+                var results = profileResults("b04")
+                let index = results.firstIndex { $0.id == requirement.probe }!
+                results[index] = replacingFact(results[index], requirement.fact, value)
+                try check(FirmwareResearchCollector.profile(bundled, results:results) == nil, "B04 missing or wrong identity evidence cannot match")
+            }
+        }
+        let b04Incomplete = profileResults("b04").filter { $0.id != "release" }
+        try check(FirmwareResearchCollector.profile(bundled, results:b04Incomplete) == nil, "B04 binary without version observation is unidentified")
+        var unbound = specification()
+        unbound = ResearchSpecification(schemaVersion:1, revision:1, profiles:[.init(id:"invalid",firmwareSHA256:nil,routerSHA256:"router",architecture:"aarch64")],probes:unbound.probes,features:[])
+        try check((try? unbound.validate()) == nil, "Hash-free profile must have explicit identity prerequisites")
+        for id in ["b31", "b28", "b04"] {
+            var featureFacts = [String: [String:String]]()
+            for feature in bundled.features { for requirement in feature.requirements where requirement.profiles == nil || requirement.profiles!.contains(id) { featureFacts[requirement.probe,default:[:]][requirement.fact] = requirement.equals } }
+            var results = bundled.probes.map { probe in ResearchProbeResult(id:probe.id,title:probe.title,category:probe.category,command:"",outcome:"success",exitCode:0,stdout:"",stderr:"",durationSeconds:0,facts:featureFacts[probe.id] ?? [:]) }
+            // Feed the actual passive observations; profile identity alone must
+            // never certify card management or full restore readiness.
+            for (probe, key) in [("esim-components", "physical_euicc_management"), ("esim-components", "native_isdr_access"), ("boot-protection", "restore_readiness")] {
+                let index = results.firstIndex { $0.id == probe }!
+                results[index] = replacingFact(results[index], key, "not-assessed")
+            }
+            let pending = results.firstIndex { $0.id == "pending-operations" }!
+            results[pending] = replacingFact(results[pending], "no_pending_operations", "0")
+            let supported = FirmwareResearchCollector.assess(bundled,results:results,profile:id)
+            try check(supported.filter { ["ttl","vpn","agent","launcher","screen-localization","diagnostic-apps","opkg"].contains($0.id) }.allSatisfy { $0.state == "prerequisites_met" }, id + " independent supported components are assessed individually")
+            try check(supported.filter { ["preparation","generic-access","ssh","ssh-accounts","imei","config-backup","user-data-backup","modem-backup","full-backup"].contains($0.id) }.allSatisfy { $0.state == "prerequisites_met" }, id + " actual operation prerequisites are independent of stale journals and B31-only labels")
+            try check(supported.filter { ["physical-euicc","native-esim","full-restore"].contains($0.id) }.allSatisfy { $0.state == "unknown" }, id + " passive metadata never certifies card mutation or offline restore")
+            let measured = results.firstIndex { $0.id == "firmware-hashes" }!
+            for invalid in ["0", "not-assessed"] {
+                var bad = results
+                bad[measured] = replacingFact(bad[measured], "firmware_identity_valid", invalid)
+                let state = invalid == "0" ? "blocked" : "unknown"
+                try check(FirmwareResearchCollector.assess(bundled,results:bad,profile:id).filter { ["imei","ssh-accounts","config-backup","user-data-backup"].contains($0.id) }.allSatisfy { $0.state == state }, "Invalid measured identity cannot certify generic workflows")
+            }
+            var wrongRouter = results
+            wrongRouter[measured] = replacingFact(wrongRouter[measured], "router_sha256", "foreign")
+            try check(FirmwareResearchCollector.assess(bundled,results:wrongRouter,profile:id).first { $0.id == "imei" }?.state == "blocked", "IMEI retains exact DIAG router ABI")
+            var absentImage = results
+            absentImage[measured] = replacingFact(absentImage[measured], "firmware_image_present", "0")
+            try check(FirmwareResearchCollector.assess(bundled,results:absentImage,profile:id).filter { ["modem-backup","full-backup","physical-euicc"].contains($0.id) }.allSatisfy { $0.state == "blocked" }, "Known firmware label cannot replace missing required radio image")
+            try check(FirmwareResearchCollector.assess(bundled,results:results,profile:nil).filter { ["config-backup","user-data-backup","ssh-accounts","imei"].contains($0.id) }.allSatisfy { $0.state == "prerequisites_met" }, "Measured contracts do not require known firmware names")
+            let ipa = results.firstIndex { $0.id == "ipa-runtime" }!
+            results[ipa] = replacingFact(results[ipa], "ipacm_sha256", id == "b28" ? "95385816da7b2edb9a977cee328c091753463fcd4a70a67fa1676e8b335c11c0" : "a8a90ee631a3e8de3266d1d4231e455c34fd0b0d1ad570e7c4d0dcd09eea1c54")
+            try check(FirmwareResearchCollector.assess(bundled,results:results,profile:id).first { $0.id == "ttl" }?.state == "blocked", id + " rejects mismatched IPA daemon")
+        }
         let failedIdentity = ResearchProbeResult(id:"identity", title:title, category:"identity", command:"", outcome:"failed", exitCode:1, stdout:"", stderr:"", durationSeconds:0, facts:identityProbe.facts)
         try check(FirmwareResearchCollector.profile(bundled, results:[failedIdentity,hashProbe]) == nil, "Failed probes do not silently become trusted after the no-LF fix")
         try check(bundled.features.filter { ["config-backup","user-data-backup","modem-backup","full-backup","full-restore"].contains($0.id) }.allSatisfy { feature in feature.requirements.contains { $0.fact == "tmp_private_stage_parent" } && !feature.requirements.contains { $0.fact == "tmp_safe" } }, "Backup assessment accepts a sticky private-stage parent independently of installer parents")

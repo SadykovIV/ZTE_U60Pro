@@ -25,7 +25,7 @@ class AbiTests(unittest.TestCase):
 
     def test_exact_profile_registry_and_script_hashes_agree(self):
         hashes = {h for p in abi.PROFILES for h in p['uiSHA256']}
-        self.assertEqual(len(hashes), 4)
+        self.assertEqual(len(hashes), 6)
         for name in ('launcher-run.sh', 'install-launcher.sh'):
             source = (abi.HERE / 'scripts' / name).read_text()
             self.assertTrue(hashes <= set(re.findall(r'\b[0-9a-f]{64}\b', source)))
@@ -43,7 +43,7 @@ class AbiTests(unittest.TestCase):
                 abi.verify(data)
 
     def test_captured_reference_elves_and_mutation_refusal(self):
-        paths = [os.environ[k] for k in ('ZTE_STOCK_UI', 'ZTE_RUSSIAN_UI', 'ZTE_B28_STOCK_UI', 'ZTE_B28_RUSSIAN_UI') if os.environ.get(k)]
+        paths = [os.environ[k] for k in ('ZTE_STOCK_UI', 'ZTE_RUSSIAN_UI', 'ZTE_B28_STOCK_UI', 'ZTE_B28_RUSSIAN_UI', 'ZTE_B04_STOCK_UI', 'ZTE_B04_RUSSIAN_UI') if os.environ.get(k)]
         if not paths:
             self.skipTest('No private captured ELF paths supplied')
         for path in paths:

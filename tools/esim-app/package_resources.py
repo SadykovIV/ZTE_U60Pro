@@ -50,14 +50,16 @@ def source_archive():
         'ModemAgent/web-app/tsconfig.node.json','ModemAgent/web-app/index.html','ModemAgent/web-app/tailwind.config.js',
         'ModemAgent/web-app/postcss.config.js','ModemAgent/web-app/eslint.config.js',
         'tools/esim-app/fixtures', 'tools/esim-app/build_runtime.py','tools/esim-app/package_resources.py','tools/esim-app/package_permanent.py','tools/esim-app/verify_public_build.py','tools/esim-app/verify_public_release.py','tools/esim-app/test_source_packaging.py','tools/esim-app/test_agent_http.py',
-        'tools/build.py','tools/fetch_dependencies.py','tools/dependencies.json',
+        'tools/build.py','tools/test_build_pins.py','tools/fetch_dependencies.py','tools/dependencies.json',
+        'tools/radio-inspect', 'MacIMEI/DeviceHelpers/build_support.py', 'MacIMEI/DeviceHelpers/src',
         'MacIMEI/Sources/BundledAgent.swift','MacIMEI/Sources/VPNSettings.swift',
+        'MacIMEI/Sources/FirmwareRadioSupport.swift','Windows_x64/src/Diagnostics/FirmwareRadioSupport.cs',
         'Windows_x64/Resources/Onboarding/provenance.json',
         'Windows_x64/sync_public_resources.py',
         'docs/ESIM-APP-CONTRACT.md','docs/ESIM-DESKTOP.md','docs/DEVICE-DISCOVERY-CONTRACT.md','third_party/ESIM-SOURCES.md','LICENSE-SCOPE.md']
     # Include local installation recipes and manifests. Pinned baseline binaries
     # are obtained with tools/fetch_dependencies.py before the modem build.
-    for group in ['VPN','AgentInstallation','Onboarding','SSHAccounts']:
+    for group in ['VPN','AgentInstallation','Onboarding','SSHAccounts','TTL','DeviceBackups','SystemBackups']:
         base=ROOT/'MacIMEI/Resources'/group
         for path in sorted(base.rglob('*')):
             if path.is_file() and (path.suffix in {'.sh','.lua','.md','.txt','.json','.conf','.nft'} or path.name=='network.stock'):
@@ -94,14 +96,15 @@ def main():
     sources, count = source_archive()
     readme = '''# eSIM для физической eUICC
 
-Версия агента: 2.9.0-esim.6. Приложения: ZTE U60Pro Manager 1.24.14.
+Версия агента: 2.9.0-esim.12. Приложения: ZTE U60Pro Manager 1.25.
 
 Нужна съёмная физическая eUICC в SIM-слоте модема. Проверено: 9eSIM V0,
 ZTE MU5250, CN_ZTE_MU5250V1.0.0B31. Обычная SIM распознаётся отдельно:
 управление профилями для неё недоступно. Встроенная eSIM ZTE этим
 компонентом не поддерживается. Чтение, установка и удаление профилей
 проверяют доступ к eUICC через QMI. Переключение с перезапуском радио
-пока требует проверенной прошивки B31.
+проверяет точные компоненты B31, FLY B28 или XCBZ B04 и текущий маршрут SIM.
+На B28/B04 переключение требует дополнительной проверки на устройстве.
 
 Откройте eSIM в левом меню, подключитесь по SSH и запросите профили.
 Для установки вставьте LPA-код, выберите изображение QR или переключитесь
@@ -161,7 +164,7 @@ PROVENANCE.json и LICENSE-SCOPE.md уточняют состав и сферу 
         'LICENSE-SCOPE.md': (ROOT / 'LICENSE-SCOPE.md').read_bytes(),
     }
     provenance = {
-        'agent_version': '2.9.0-esim.6', 'agent_sha256': sha(agent),
+        'agent_version': '2.9.0-esim.12', 'agent_sha256': sha(agent),
         'lpac_version': '2.3.0 + pinned stdio backports',
         'lpac_commit': 'c2fcf5e4b21c712d54e35a11da2ad9ad134fb821',
         'lpac_linux_sha256': sha((ROOT/'ModemAgent/agent/resources/esim/lpac').read_bytes()),

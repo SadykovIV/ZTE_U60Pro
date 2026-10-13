@@ -42,12 +42,15 @@ private func snapshot(_ files: [String: Data], states: [String: String] = [:], v
     lines.append("FIRMWARE_SUPPORT_END")
     return Data((lines.joined(separator: "\n") + "\n").utf8)
 }
+private let radioFixture = Data("FIRMWARE_RADIO_V1\nPATH firmware_b16 state=missing\nSLOT mdm_get_sim_info value=0\nPOLICY nv_read=0 apdu_sent=0 radio_changed=0 profile_changed=0 private_identifiers_exported=0\nFIRMWARE_RADIO_END\n".utf8)
 private final class Wire: RemoteTransport, BackupStreamTransport {
     var files: [String: Data]
     var beforeProof = proof, afterProof = proof
     var states = [String: String]()
     var afterSnapshot: Data?
     var inspectOverride: Data?
+    var radioOverride: CommandResult?
+    var radioCount = 0
     var quickCount = 0, inspectCount = 0, streamCount = 0
     var streamFailure = false, badReceipt = false, tamperFile = false, noSpace = false
     var temporaryFile: URL?
@@ -59,6 +62,7 @@ private final class Wire: RemoteTransport, BackupStreamTransport {
     func run(_ command: String, input: Data?, timeout: TimeInterval) throws -> CommandResult {
         calls.append(command)
         if command == SSHReadProof.quickCommand { quickCount += 1; return CommandResult(status: 0, stdout: proofData(quickCount == 1 ? beforeProof : afterProof), stderr: Data()) }
+        if command == "sh -s -- radio" { radioCount += 1; inputs.append(input!); return radioOverride ?? CommandResult(status: 0, stdout: radioFixture, stderr: Data()) }
         try check(command == "sh -s -- inspect '192.0.2.1'" && input != nil, "unexpected command or absent helper")
         inspectCount += 1; inputs.append(input!)
         return CommandResult(status: 0, stdout: inspectOverride ?? (inspectCount == 2 ? afterSnapshot : nil) ?? snapshot(files, states: states), stderr: Data())
@@ -84,6 +88,7 @@ private final class Wire: RemoteTransport, BackupStreamTransport {
 private final class Fixture {
     let root: URL, output: URL, resources: URL, wire = Wire(), connection: Connection
     var survey: ((ResearchCancellation) throws -> FirmwareResearchReport)?
+    var radioSurvey: ((Bool, @escaping @Sendable () -> Bool) throws -> [String: Data])?
     init() throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent("zte-support-tests-" + UUID().uuidString.lowercased())
         try secureDirectory(root)
@@ -98,7 +103,7 @@ private final class Fixture {
         let session = ReadOnlyChannelSession(mode: mode, summary: ConnectionDeviceSummary(), diagnosticSession: diagnostic,
             sshEndpoint: endpoint ?? ConnectionRouter.sshEndpoint(connection), readSummary: { ConnectionDeviceSummary() })
         return try FirmwareSupportCollector(root: root, resources: resources, connection: connection, session: session, remote: wire, streamer: wire, secrets: ["KNOWN_PASSWORD_CANARY"], selectionIsCurrent: selectionIsCurrent,
-            researchSurvey: survey ?? { _ in researchReport(selected) })
+            researchSurvey: survey ?? { _ in researchReport(selected) }, radioSurvey: radioSurvey)
     }
     func payload(_ relative: String) throws -> Data {
         let reply = try HostProcessRunner().run(URL(fileURLWithPath: "/usr/bin/unzip"), ["-p", output.path, "ZTE-Firmware-Support/" + relative], timeout: 20)
@@ -134,9 +139,48 @@ private final class Fixture {
             let metadataData = try f.payload("metadata.json"), metadata = try JSONSerialization.jsonObject(with: metadataData) as! [String: Any]
             try check(metadata["writeAuthorization"] as? String == "none", "write authorization")
             try check(!String(decoding: metadataData, as: UTF8.self).contains(sampleCID) && !String(decoding: metadataData, as: UTF8.self).contains(sampleBoot), "private device identifiers exported")
-            try check(f.wire.quickCount == 2 && f.wire.inspectCount == 2 && f.wire.streamCount == 4 && f.wire.calls.count == 8, "unexpected calls")
+            try check(f.wire.quickCount == 2 && f.wire.inspectCount == 2 && f.wire.streamCount == 4 && f.wire.calls.count == 10 && f.wire.radioCount == 2, "unexpected calls")
             try check(f.wire.inputs.allSatisfy { digest($0) == FirmwareSupportCollector.helperSHA256 }, "unverified helper")
             try check(try DeviceBackups.hashFile(f.output).sha256 == result.sha256, "archive hash")
+        }
+        test("passive radio metadata rejects extra fields and never exports stderr") {
+            let good=CommandResult(status:0,stdout:radioFixture,stderr:Data())
+            try check(FirmwareSupportCollector.passiveRadioOutput(good)==radioFixture,"valid passive report changed")
+            for bytes in [Data("PRIVATE_CANARY".utf8),radioFixture+Data("PRIVATE_CANARY\n".utf8),Data(String(decoding:radioFixture,as:UTF8.self).replacingOccurrences(of:"SLOT mdm_get_sim_info value=0",with:"SLOT mdm_get_sim_info value=PRIVATE_CANARY").utf8)] {
+                let value=FirmwareSupportCollector.passiveRadioOutput(.init(status:0,stdout:bytes,stderr:Data()))
+                try check(String(decoding:value,as:UTF8.self)=="status=not_assessed reason=invalid_passive_output\n","invalid passive data escaped")
+            }
+            try check(FirmwareSupportCollector.passiveRadioOutput(.init(status:0,stdout:radioFixture,stderr:Data("PRIVATE_CANARY".utf8))) != radioFixture,"stderr accepted")
+        }
+        test("native read phase is automatic inside both SSH identity observations") {
+            let f=try Fixture();f.wire.beforeProof.uid="0";f.wire.afterProof=f.wire.beforeProof
+            var calls=0
+            f.radioSurvey={ root, cancelled in
+                calls += 1
+                try check(root && !cancelled() && f.wire.radioCount==1 && f.wire.quickCount==1 && f.wire.inspectCount==1,"native read outside selected capture")
+                return ["zte-support-nv.txt":Data("status=not_assessed reason=transport_or_probe_failure\n".utf8),
+                        "zte-support-config.txt":Data("SUPPORT_CONFIG_V1\nSUPPORT_CONFIG_LOAD library=1\nexit_code=0\n".utf8)]
+            }
+            _ = try f.collector(selected:f.wire.beforeProof).collect(to:f.output)
+            try check(calls==1 && f.wire.radioCount==2 && f.wire.quickCount==2,"native phase repeated or continuity absent")
+            try check(try f.payload("radio/passive-before.txt")==radioFixture && f.payload("radio/passive-after.txt")==radioFixture,"passive snapshots absent")
+            try check(String(decoding:try f.payload("radio/zte-support-nv.txt"),as:UTF8.self).contains("not_assessed"),"unsupported native response lost")
+            try check(String(decoding:try f.payload("radio/zte-support-config.txt"),as:UTF8.self).contains("library=1"),"one unsupported native probe hid another probe")
+        }
+        test("native projection excludes raw DIAG and QMI private values") {
+            let raw="SUPPORT_NV_V1\nSUPPORT_NV_LOAD library=1\nSUPPORT_NV_RECORD index=0 readable=1 encoding_valid=1\nPRIVATE_CANARY\nSUPPORT_NV_LOAD library=1 password=PRIVATE_CANARY\n"
+            let text=FirmwareRadioSupport.output(.init(status:20,stdout:Data(raw.utf8),stderr:Data("PRIVATE_CANARY".utf8)),header:"SUPPORT_NV_V1")
+            try check(text.contains("readable=1") && text.contains("exit_code=20") && !text.contains("PRIVATE_CANARY"),"raw DIAG bytes exported or failure lost")
+            let json = #"{"schema":1,"identifiers_exported":false,"radio_reset":false,"slot_switch":false,"profile_mutation":false,"apdu_performed":false,"iccid":"PRIVATE_CANARY","observations":{"cards":[{"state":1,"iccid":"PRIVATE_CANARY","applications":[{"type":2,"aid":"PRIVATE_CANARY","aid_length":16}]}]}}"#
+            let projected=FirmwareRadioSupport.output(.init(status:0,stdout:Data(json.utf8),stderr:Data("PRIVATE_CANARY".utf8)),header:"")
+            try check(projected.contains("aid_length") && !projected.contains("PRIVATE_CANARY") && !projected.contains("invalid_output"),"QMI projection lost safe metadata or exported identifiers")
+        }
+        test("invalid passive report is a ZIP status while final identity still protects export") {
+            let f=try Fixture();f.wire.radioOverride = .init(status:0,stdout:Data("PRIVATE_CANARY".utf8),stderr:Data())
+            _ = try f.collector().collect(to:f.output)
+            try check(String(decoding:try f.payload("radio/passive-before.txt"),as:UTF8.self)=="status=not_assessed reason=invalid_passive_output\n","private radio reply escaped")
+            let changed=try Fixture();changed.radioSurvey={ _,_ in changed.wire.afterProof.bootID="22222222-2222-4222-8222-222222222222";return [:] }
+            try rejects { _ = try changed.collector().collect(to:changed.output) };try changed.noArchive()
         }
         test("missing and unsafe required files export a marked incomplete dataset") {
             for state in ["missing", "not_assessed", "symlink", "not_regular", "unreadable", "empty"] {

@@ -6,10 +6,10 @@ class DashboardLayoutTests(unittest.TestCase):
     def test_isolated_layout(self):
         spec=json.loads((ROOT/'Resources/FirmwareResearch/probes.json').read_text())
         command=next(p['command'] for p in spec['probes'] if p['id']=='permissions')
-        fragment='dashboard_safe=1\n'+command.split('dashboard_safe=1\n',1)[1]
+        fragment=command[command.index('path_state() {'):command.index('\nneed stat')]+'\ndashboard_safe=1\n'+command.split('dashboard_safe=1\n',1)[1]
         for scenario,expected in [('absent',1),('private',1),('public',0),('link',0),('owner',0),('nested-public',0)]:
             with tempfile.TemporaryDirectory(prefix='research-dashboard-') as name:
-                base=pathlib.Path(name);runtime=base/'runtime';bin=base/'bin';bin.mkdir()
+                base=pathlib.Path(name).resolve();runtime=base/'runtime';bin=base/'bin';bin.mkdir()
                 if scenario!='absent':
                     if scenario=='link':(base/'elsewhere').mkdir();runtime.symlink_to(base/'elsewhere')
                     else: runtime.mkdir(mode=0o755 if scenario=='public' else 0o700)

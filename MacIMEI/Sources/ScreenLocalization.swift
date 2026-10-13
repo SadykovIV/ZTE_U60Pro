@@ -5,7 +5,7 @@ enum ScreenLocalizationState: String, Sendable {
 }
 
 struct ScreenLocalizationStatus: Sendable {
-    var revision: String = "20261006"
+    var revision: String = "20261013"
     var state: ScreenLocalizationState
     var language: String
     var detail: String = ""
@@ -53,13 +53,14 @@ struct ScreenFontPatch: Decodable {
 /// Runs inside ModemEngine.locked. Only screen resources, its service and language are changed.
 final class ScreenLocalization {
     static let remoteRoot = "/data/zte-imei-screen-ru"
-    static let revision = "20261006"
-    static let legacyManagerHashes = ["20260924": "810aae3c07c8019f2d0657f2bad6f1ee38f1dea5f1081210ab144478dd87c7b8", "20260922": "6aed6654afb7a4fde7792a5f6034aa41e15b0fd77d794ed04d3a12c111c95fd2", "20260923": "586a7727fb24a5701990c7cd82889887220c1c5566261c53ca21f3bb12549bfa"]
+    static let revision = "20261013"
+    static let legacyManagerHashes = ["20261006": "0ce40f0d3e4375165f5e4424db023b786f70f9cacf88bfe07c1c893cff12db7d", "20260924": "810aae3c07c8019f2d0657f2bad6f1ee38f1dea5f1081210ab144478dd87c7b8", "20260922": "6aed6654afb7a4fde7792a5f6034aa41e15b0fd77d794ed04d3a12c111c95fd2", "20260923": "586a7727fb24a5701990c7cd82889887220c1c5566261c53ca21f3bb12549bfa"]
     static let resourceHashes: [String: String] = [
-        "install.sh": "0ce40f0d3e4375165f5e4424db023b786f70f9cacf88bfe07c1c893cff12db7d",
+        "install.sh": "089b66525207d9dc9fec54112fbb5786196c4a663fb1609b9aa53d8f07bb15ba",
         "service.sh": "8b25166707a21bb3b55f77d9af34822a39aa5e8058b5c521431f0379386051e9",
         "English.ini": "d97925e40f9c119e05dd692e8fbce36593b55aa3faf718af373b2cb57075981a",
         "Chinese.ini": "5c4b6e3896593172608f2d8890da56c7ff521667129375d0a52383243bb760df",
+        "font.patch.b04.json": "f336d80b26ca3e914d86dda6365be87c2b80f8d57e775b902772f740b126c0ba",
         "font.patch.b28.json": "0f9300f77ea577332256fd34dce3d501be86e1fa00c7ebea41b32d3193954b18",
         "font.patch.json": "f171291a83b269e605e70747a7799eae53f35e1e6488db30a41d37dd87146e18"
     ]
@@ -141,7 +142,7 @@ final class ScreenLocalization {
     static func selectFontPatch(_ original: Data, files: [String: Data]) throws -> (Data, ScreenFontPatch) {
         let inputHash = digest(original)
         var matches = [(Data, ScreenFontPatch)]()
-        for name in ["font.patch.json", "font.patch.b28.json"] {
+        for name in ["font.patch.json", "font.patch.b28.json", "font.patch.b04.json"] {
             guard let bytes = files[name] else { throw IMEIError.message("Неполный встроенный комплект русификации") }
             let manifest = try JSONDecoder().decode(ScreenFontPatch.self, from: bytes)
             if manifest.inputSHA256 == inputHash && manifest.inputSize == original.count { matches.append((bytes, manifest)) }
@@ -151,7 +152,7 @@ final class ScreenLocalization {
     }
 
     private func assets() throws -> [String: Data] {
-        let required = Set(["install.sh", "service.sh", "English.ini", "Chinese.ini", "font.patch.json", "font.patch.b28.json"])
+        let required = Set(["install.sh", "service.sh", "English.ini", "Chinese.ini", "font.patch.json", "font.patch.b28.json", "font.patch.b04.json"])
         try require(Set(Self.resourceHashes.keys) == required, "Неполный встроенный комплект русификации")
         var files = [String: Data]()
         for name in required.sorted() {
@@ -176,7 +177,7 @@ final class ScreenLocalization {
         elif test "$(sha256sum /etc/init.d/zte_topsw_devui 2>/dev/null | awk '{print $1}')" != a30da6481637f1fd94e037373d406e574be7e722937a4965325086740be67e35; then state=error; reason=STOCK_INIT_CHANGED; fi
         pid=$(pidof zte_topsw_devui 2>/dev/null | awk '{print $1}' || true)
         case "$pid" in ''|*[!0-9]*) pid=0;; esac
-        printf 'SCREEN_RU_STATUS state=%s language=%s mounted=%s boot=0 pid=%s revision=20261006' "$state" "$language" "$mounted" "$pid"
+        printf 'SCREEN_RU_STATUS state=%s language=%s mounted=%s boot=0 pid=%s revision=20261013' "$state" "$language" "$mounted" "$pid"
         if test -n "$reason"; then printf ' reason=%s' "$reason"; fi
         printf '\n'
     fi

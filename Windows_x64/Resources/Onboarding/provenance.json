@@ -1,7 +1,7 @@
 {
   "source_release": "https://github.com/dklasens/MU5250-OpenUI/releases/tag/v2.4",
   "source_tree": "fabaf8b53678dc50e3c3fa2fa3de8b51061967cc",
-  "agent_sha256": "076824a90eec46702744ae0f383872841d3c4704216ae32de4725f906f86a550",
+  "agent_sha256": "1a691eeaa1b34859d934802135feb9b0310c65e03836a69228df2c91f296747a",
   "dropbear_package_url": "https://downloads.openwrt.org/releases/23.05.4/targets/armsr/armv8/packages/dropbear_2022.82-6_aarch64_generic.ipk",
   "dropbear_package_sha256": "4fadd1b8529f22fb5d64ee27159d11f4feb68224657953d298a1acf85a83a5c0",
   "files": {
@@ -13,14 +13,15 @@
     "dropbear-LICENSE.txt": "a99ce657d790b761c132ee7e0de18edb437ae6361e536d991c6a12f36e770445",
     "dropbear-libtomcrypt-LICENSE.txt": "8f196cb13afd271f5e267fd29543fc454596382ad580e7592709492843996ac8",
     "dropbear-libtommath-LICENSE.txt": "2fa64b163659f41965c9815882a8296d3d03ff546b76153e11445f9bdecf955a",
-    "setup-agent.sh": "2b0b3eba4347c64327e6dc62a02ab4ee2e9195409a68504df9cc9fd3e3bd280b",
+    "setup-agent.sh": "3f24677e43515a33645546ca372aa2582950e829b46c2beeb154f41932960553",
     "start_zte_imei_studio.sh": "81bd888f9eef0bb02f294b185f99029fbc54f5e29bd2a8f8c6ea0357f8884659",
-    "zte-agent": "076824a90eec46702744ae0f383872841d3c4704216ae32de4725f906f86a550",
+    "zte-agent": "1a691eeaa1b34859d934802135feb9b0310c65e03836a69228df2c91f296747a",
     "adb-stream.sh": "0692a6b053b7cadae5d4a754684e94062ecaa94067f8f103913c1191e9dc6a1c",
-    "clean-components.sh": "f87e0237c5d8e41e2ae6cba9b49639725ba5cc9a8759c35b5b619427c2d8f3c9"
+    "clean-components.sh": "127f185c4ffbb40d703a206f07c6c8ebaf4e61dbb3c76d278765b667aac66351",
+    "adb-toggle.sh": "0ca5d10426c8398bab5e35af525782c490dce30f841a073e2cc64e3dc49c27dd"
   },
-  "local_agent_version": "2.9.0-esim.6",
-  "local_agent_release": "ModemAgent/releases/2.9.0-esim.6",
+  "local_agent_version": "2.9.0-esim.12",
+  "local_agent_release": "ModemAgent/releases/2.9.0-esim.12",
   "local_changes": [
     "Authenticated TTL schema 2 adapter for the shared pinned modem TTL manager",
     "Legacy start_ttl.sh execution and conflicting TTL/HL handlers removed",
@@ -34,5 +35,5 @@
     "target": "aarch64-unknown-linux-musl"
   },
   "license": "MIT; both upstream copyright notices retained",
-  "onboarding_existing_installations": "Existing credentials are preserved. VPN settings has an explicit component installer that upgrades recognized agent builds with a durable backup."
+  "onboarding_existing_installations": "Normal access recovery preserves verified existing installations. Explicit clean reinstall archives recognized stale previous-boot state, installs agent and SSH with the supplied password, then backs up and clears owned optional components."
 }

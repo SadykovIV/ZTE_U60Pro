@@ -49,6 +49,10 @@ import AppKit
         if connected && activeChannel == .ssh { return adbControlStatus?.enabled != nil && adbControlStatus?.supportsChange == true && !diagnosticADBPending && !adbTogglePending }
         return canEnableDiagnosticADB
     }
+    var canDisableADB: Bool {
+        connected && activeChannel == .ssh && !busy && !terminalActive && !pendingOperation &&
+            !systemRestorePending && !setupPending && !diagnosticADBPending && !adbTogglePending
+    }
     func openModemBrowser(port: Int?) {
         do {
             let partsHost = host.split(separator: ".", omittingEmptySubsequences: false)
@@ -74,7 +78,7 @@ import AppKit
         }
     }
     func setADBEnabled(_ enabled: Bool) {
-        guard canChangeADB else { return }
+        guard enabled ? canChangeADB : canDisableADB else { return }
         guard connected && activeChannel == .ssh else { if enabled { enableDiagnosticADB() }; return }
         let config = connection, root = storage, assets = resources, target = sshSelectionContext
         busy = true; diagnosticADBMessage = ""
@@ -149,7 +153,7 @@ import AppKit
         vpnInspection = nil; vpnError = ""; displayInspection = nil; displaySavedLayout = nil; displaySavedPages = nil; displayError = ""
         if !preserveDisplayDraft { clearDisplayLayout() }
         sshAccounts = []; sshListenerReady = false; sshRecoveryPending = false; sshRecoveryKind = .none; sshAccountsLoaded = false
-        currentIMEI1 = ""; currentIMEI2 = ""; firmware = ""
+        currentIMEI1 = ""; currentIMEI2 = ""; imeiRecordCount = nil; imeiReadNote = ""; firmware = ""
         clearEsim()
         packagePreview = ""; packagePreviewName = ""
         sectionRefreshErrors = [:]; sectionsUpdatedAt = nil
@@ -215,7 +219,7 @@ import AppKit
         if let cid = summary.observedCID { connectedReadCID = cid }
         if let web = summary.webIdentity { connectedWebIdentity = web }
         if let imei = summary.primaryIMEI {
-            if currentIMEI1 != imei { currentIMEI2 = "" }
+            if currentIMEI1 != imei { currentIMEI2 = ""; imeiRecordCount = nil; imeiReadNote = "" }
             connectedIMEI = imei; currentIMEI1 = imei
         }
         if let version = summary.firmware { firmware = version }
@@ -239,7 +243,7 @@ import AppKit
             }
             displayError = value.errors[.display] ?? ""
         }
-        if value.sections.contains(.vpn) { vpnInspection = value.vpn; vpnError = value.errors[.vpn] ?? "" }
+        if value.sections.contains(.vpn) { vpnInspection = value.vpn?.preservingImportSummary(from: vpnInspection); vpnError = value.errors[.vpn] ?? "" }
         if value.sections.contains(.ttl) {
             ttlStatus = value.ttl
             if let ttl = value.ttl, ttl.state != .error && ttl.state != .unsupported {
@@ -566,6 +570,7 @@ import AppKit
                 prepared = true
                 forcePreparation = false
                 append("Подготовка завершена. Подключаюсь по SSH и обновляю все разделы…", progress: 1)
+                if let warning = result.adbWarning { preparationError = warning; append(warning) }
             } catch { preparationError = error.localizedDescription; append("Подготовка: " + error.localizedDescription) }
             firmwareResearchReport = try? FirmwareResearchArchive.latest(root: storage)
             busy = false; refreshBackups(); refreshActivity(); operationTask = nil

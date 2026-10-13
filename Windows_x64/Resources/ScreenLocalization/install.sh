@@ -17,7 +17,7 @@ english_target=/usr/ui/language/English.ini
 chinese_target=/usr/ui/language/Chinese.ini
 ui_target=/usr/bin/zte_topsw_devui
 cache_target=/cache/language.txt
-revision=20261006
+revision=20261013
 english_sha=d97925e40f9c119e05dd692e8fbce36593b55aa3faf718af373b2cb57075981a
 chinese_sha=5c4b6e3896593172608f2d8890da56c7ff521667129375d0a52383243bb760df
 patched_ui_sha=16eb92e27f54b5cf5c6b316a6e7a62b782053a2a609d0d4904a7f08a7bc0afa4
@@ -89,6 +89,11 @@ select_profile() {
         original_ui_sha=8d2ebbde880934f52195ad9595815d728f7aa4671bb0633d5a5149b09467ae90
         patched_ui_sha=d6c3cd409705d5aa9c12185c84074513b159088025f005da7dbf01c51e3c3715
         original_english_sha=24a1022bf9380cfadaf4c4a737f1f0ce8ecf1ad025563376f7dd83eb94e6ceae;;
+      dbe6eadc92d43a0cd7206264f9d75ab242df90e88c02ee2ba3ac65598b58523e)
+        screen_profile=xcbzhk-b04
+        original_ui_sha=dbe6eadc92d43a0cd7206264f9d75ab242df90e88c02ee2ba3ac65598b58523e
+        patched_ui_sha=0db2294b3e428fb53f4b6b725063ad8ffd9c396e5a27c54452f0ea479fa78f3b
+        original_english_sha=47348faa9783bc69109743eb9cfcc3bd3888508040e9eca51cb4a6460b7a70ce;;
       *) return 1;;
     esac
     test "$(hash "$profile_english")" = "$original_english_sha" && test "$(hash "$profile_chinese")" = "$original_chinese_sha"
@@ -334,6 +339,7 @@ if test "$mode" = install; then
         root_owned || fail UNKNOWN_INSTALLATION
         ! exists "$root/.transaction" || fail TRANSACTION_PENDING
         installed_manager=$(hash "$root/manager.sh")
+        legacy_b31_only=1
         case "$installed_manager" in
           6aed6654afb7a4fde7792a5f6034aa41e15b0fd77d794ed04d3a12c111c95fd2)
             prior_english=1f16a064f6caf5837e9bcea0afcc6d27873a2995cd70b7e4c0d3a254843572a5
@@ -343,10 +349,13 @@ if test "$mode" = install; then
             prior_chinese=92dd43aff9057ba801a4e41069168a658bd8ed5acd3a12fddee1e245b05c5d98;;
           810aae3c07c8019f2d0657f2bad6f1ee38f1dea5f1081210ab144478dd87c7b8)
             prior_english=$english_sha; prior_chinese=$chinese_sha;;
+          0ce40f0d3e4375165f5e4424db023b786f70f9cacf88bfe07c1c893cff12db7d)
+            legacy_b31_only=0
+            prior_english=$english_sha; prior_chinese=$chinese_sha;;
           *) prior_english=; prior_chinese=;;
         esac
         if test -n "$prior_english"; then
-            test "$screen_profile" = b31 || fail UNKNOWN_INSTALLATION
+            test "$legacy_b31_only" = 0 || test "$screen_profile" = b31 || fail UNKNOWN_INSTALLATION
             test "$(hash "$root/English.ini")" = "$prior_english" &&
             test "$(hash "$root/Chinese.ini")" = "$prior_chinese" &&
             test "$(hash "$root/zte_topsw_devui")" = "$patched_ui_sha" &&

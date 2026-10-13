@@ -14,7 +14,7 @@ private final class Probe: RemoteTransport {
             let boot = reboot && identities > 1 ? "3a2fb1c5-1bbf-4d3b-92a8-3daaf5510601" : "2a2fb1c5-1bbf-4d3b-92a8-3daaf5510601"
             return CommandResult(status: 0, stdout: Data(("ZTE_SSH_READ_V1\n0\nLinux\naarch64\n0123456789abcdef0123456789abcdef\n" + boot + "\n" + firmware + "\n" + ModemEngine.routerHash + "\n").utf8), stderr: Data())
         }
-        if command.hasPrefix("sha256sum /firmware") || command == DiagnosticTransportSelector.identityCommand {
+        if command == AccessIdentity.command || command == DiagnosticTransportSelector.identityCommand {
             identities += 1
             return CommandResult(status: 0, stdout: Data(((unknown ? String(repeating: "a", count: 64) : ModemEngine.firmwareHash) + " /firmware/image/modem.b16\n" + ModemEngine.routerHash + " /usr/bin/diag-router\n0123456789abcdef0123456789abcdef\n" + (reboot && identities > 1 ? "3a2fb1c5-1bbf-4d3b-92a8-3daaf5510601" : "2a2fb1c5-1bbf-4d3b-92a8-3daaf5510601") + "\n").utf8), stderr: Data())
         }
@@ -142,11 +142,11 @@ private final class Probe: RemoteTransport {
             let listed = try HostProcessRunner().run(URL(fileURLWithPath: "/usr/bin/unzip"), ["-p", zip.path, "ZTE-Diagnostics/Activity/" + file.lastPathComponent], timeout: 20)
             try check(String(decoding: listed.stdout, as: UTF8.self).contains("LATEST-EVENT"), "Recent event lost")
         }
-        try test("Logs-only collection reads three log sources without firmware survey or component operations") {
+        try test("Logs-only collection reads logs and installation state without firmware survey") {
             let probe = Probe()
             let actual = try engine(probe)
             let report = try actual.locked { try ModemInformationManager(engine: actual).collectDiagnostics(logsOnly: true) }
-            try check(report.files.map(\.name) == ["system.log", "kernel.log", "services.txt"], "Log collection included firmware survey")
+            try check(report.files.map(\.name) == ["system.log", "kernel.log", "setup-state.txt", "services.txt", "vpn.log", "vpn-runtime.txt"], "Log collection included firmware survey")
             try check(!probe.calls.contains { $0.contains("ubus -v list") || $0.contains("opkg list") || $0.contains("iptables-save") || $0.contains("zte_nv") }, "Unrelated operation was executed")
         }
         try test("Logs ZIP ignores saved firmware research and includes installer errors while hashes remain valid") {
@@ -173,6 +173,45 @@ private final class Probe: RemoteTransport {
             }.joined(separator: "\n")
             try check(text.contains("PREPARATION-FAILED") && text.contains("INSTALL-FAILED") && text.contains("SSH unavailable"), "Preparation or offline context lost")
             try check(!text.contains("TOP-SECRET") && !text.contains("MUST-NOT-EXPORT-FIRMWARE-RESEARCH"), "Secret or research copied into logs")
+        }
+        try test("Large trace history keeps summaries and selects newest files beyond the old scan cap") {
+            let root = temp.appendingPathComponent("history"), operation = "history-read", id = UUID().uuidString.lowercased()
+            let traces = root.appendingPathComponent("Activity/Traces/" + operation)
+            try secureDirectory(traces)
+            let base = Date(timeIntervalSince1970: 1_600_000_000)
+            func traceName(_ index: Int) -> String { String(format: "00000000-0000-4000-8000-%012d.json", index) }
+            let traceCount = 20_005
+            for index in 0..<traceCount {
+                let file = traces.appendingPathComponent(traceName(index))
+                try Data(#"{"result":"completed"}"#.utf8).write(to: file)
+                try fm.setAttributes([.modificationDate: base.addingTimeInterval(Double(index))], ofItemAtPath: file.path)
+            }
+            let summaries = ["Activity/2000-01-01.jsonl", "Diagnostics/" + id + "/system.log",
+                             "SetupBackups/" + id + "/installation.log", "Logs/" + id + "/operation.log"]
+            for path in summaries {
+                let file = root.appendingPathComponent(path)
+                try secureDirectory(file.deletingLastPathComponent())
+                try savePrivate(Data((path.hasSuffix(".jsonl") ? "{\"title\":\"MAIN-JOURNAL\"}\n" : "MAIN-SUMMARY\n").utf8), file)
+                try fm.setAttributes([.modificationDate: base.addingTimeInterval(-100)], ofItemAtPath: file.path)
+            }
+            let ignored = root.appendingPathComponent("Activity/unrelated/deep/private.json")
+            try secureDirectory(ignored.deletingLastPathComponent()); try savePrivate(Data("NEVER-EXPORT".utf8), ignored)
+            var issues = [String]()
+            let archive = DiagnosticArchive(root: root), candidates = archive.candidateFiles { issues.append($0) }
+            try check(issues.isEmpty && candidates.count == traceCount + summaries.count, "Allowlisted files lost at the old pre-sort scan limit")
+            try check(!candidates.contains { $0.relative.contains("unrelated") }, "Walk entered an unrelated hierarchy")
+            let zip = temp.appendingPathComponent("history.zip")
+            let result = try archive.export(to: zip, context: ["freshReportID":id])
+            let manifestData = try HostProcessRunner().run(URL(fileURLWithPath: "/usr/bin/unzip"), ["-p", zip.path, "ZTE-Diagnostics/manifest.json"], timeout: 30)
+            let manifest = try JSONSerialization.jsonObject(with: manifestData.stdout) as! [String:Any]
+            let entries = manifest["files"] as! [[String:String]], names = Set(entries.compactMap { $0["path"] })
+            try check(summaries.allSatisfy(names.contains), "Detailed traces displaced an older main journal or summary")
+            let selectedTraces = names.filter { $0.hasPrefix("Activity/Traces/") }
+            let expectedTraces = Set(((traceCount - selectedTraces.count)..<traceCount).map { "Activity/Traces/" + operation + "/" + traceName($0) })
+            try check(selectedTraces == expectedTraces, "Detailed traces are not the newest available files")
+            try check(entries[1]["path"] == summaries[1], "Explicit fresh modem report was not prioritized")
+            try check(result.fileCount == 10002 && result.warnings == traceCount + summaries.count - 9999, "Archive budget or omission accounting changed")
+            try check(manifest["complete"] as? Bool == false && manifest["warningDetailsTruncated"] as? Bool == true && (manifest["warnings"] as? [String])?.count == 500, "Partial history falsely marked complete")
         }
         print("\(count) diagnostic archive tests passed")
     }

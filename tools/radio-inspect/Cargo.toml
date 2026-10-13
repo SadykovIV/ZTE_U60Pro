@@ -1,0 +1,13 @@
+[package]
+name = "zte-support-qmi"
+version = "0.1.0"
+edition = "2021"
+publish = false
+[dependencies]
+libc = "=0.2.182"
+serde_json = "=1.0.149"
+[workspace]
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1

@@ -1,7 +1,8 @@
 #!/bin/sh
-# B31 eMMC backup helper bundled with the Windows read-only application.
-# The mode gate below permits only inventory and capture. It never boots,
-# formats, fscks, stops radio, or writes raw block devices in these modes.
+# B31 eMMC backup/recovery transport. No mode boots, formats, fscks or stops radio.
+# restore-chunk accepts only an already staged private file, at most 8 MiB.
+# SIGKILL/power loss cannot run traps: preserve this stage and call relock, then
+# hash-chunk to reconcile its journal before resuming. /tmp journal is volatile.
 set -eu
 umask 077
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C
@@ -14,9 +15,7 @@ uuid() { [ "${#1}" = 36 ] && case "$1" in *[!a-f0-9-]*) return 1;; esac; }
 plain() { [ -f "$1" ] && [ ! -L "$1" ] && [ "$(stat -c %u:%a "$1")" = 0:600 ] && [ "$(stat -c %h "$1")" = 1 ]; }
 private() { [ -d "$1" ] && [ ! -L "$1" ] && [ "$(stat -c %u:%a "$1")" = 0:700 ]; }
 mode=${1:-}; cid=${2:-}; token=${3:-}
-# The Windows application offers capture/verification only. Raw flash write
-# modes are deliberately unreachable in its bundled helper.
-case "$mode" in inventory|capture) ;; *) fail MODE;; esac
+case "$mode" in inventory|relock|capture|preflight|restore-chunk|hash-chunk|hash-device) ;; *) fail MODE;; esac
 if [ "$mode" = inventory ] && [ "$cid" = - ]; then cid=$(cat /sys/block/mmcblk0/device/cid); fi
 [ "${#cid}" = 32 ] && case "$cid" in *[!a-f0-9]*) false;; *) true;; esac || fail CID
 uuid "$token" || fail TOKEN
@@ -38,25 +37,10 @@ work=$stage/work
 [ ! -L "$work" ] || fail WORK
 if ! exists "$work"; then mkdir -m 700 "$work" || fail WORK; fi
 private "$work" || fail WORK
-# The stock B31 shell has no guaranteed flock applet. Atomic mkdir serializes
-# helpers across stages. A SIGKILL leaves this private lock in /tmp and future
-# captures fail closed until a reboot clears it; it is never stolen by PID age.
-helper_lock=/tmp/zte-system-backup-helper.lock
-helper_owned=0
-unlock_helper() {
- [ "$helper_owned" = 1 ] || return 0
- private "$helper_lock" || return 0
- if exists "$helper_lock/owner"; then
-  plain "$helper_lock/owner" && [ "$(cat "$helper_lock/owner")" = "$token $$" ] || return 0
-  rm "$helper_lock/owner" || return 0
- fi
- rmdir "$helper_lock" || true
-}
-trap unlock_helper EXIT
-mkdir -m 700 "$helper_lock" 2>/dev/null || fail HELPER_BUSY_OR_STALE
-helper_owned=1
-printf '%s %s\n' "$token" "$$" > "$helper_lock/owner" || fail HELPER_LOCK
-plain "$helper_lock/owner" || fail HELPER_LOCK
+# Serialize helper instances independently of the application operation lock.
+if exists "$stage/helper.lock"; then plain "$stage/helper.lock" || fail HELPER_LOCK; fi
+exec 9>"$stage/helper.lock"
+flock -n 9 || fail HELPER_BUSY
 journal=$stage/restore-journal.tsv
 protection_touched=0
 force_path=; force_before=
@@ -106,7 +90,6 @@ finish() {
  for file in stream.hash.pipe stream.hash stream.status readback.bin layout.tsv devices.tsv partitions.tsv block-ids; do
   if exists "$work/$file"; then [ ! -L "$work/$file" ] && rm -f "$work/$file" || true; fi
  done
- unlock_helper
  exit "$result"
 }
 trap finish EXIT
@@ -266,9 +249,14 @@ case "$mode" in
   [ "$#" = 4 ] || fail ARGUMENTS
   requested_target=$4; inventory; select_target "$requested_target"
   captured_boot=$boot_id; captured_layout=$layout_hash; captured_offline=$offline; captured_bytes=$target_bytes
-  # A live capture is allowed only on the exact known B31 profile. Offline
+  # A live capture uses the captured B31/B28/B04 firmware profiles. Offline
   # recovery can read the same CID without a mounted /firmware filesystem.
-  if [ "$offline" != true ]; then [ "$firmware_hash" = 604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263 ] || fail PROFILE; fi
+  if [ "$offline" != true ]; then
+    case "$firmware_hash" in
+      604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263|5a4489882538b5ab1d3e0049371f1b620d28d262a429923299b4f2626d40d478|c57e063d390983229dfc53aa87380b3d4655ee8daa1c748e1a032ac90cd0df81) ;;
+      *) fail PROFILE;;
+    esac
+  fi
   for file in stream.hash stream.status; do fresh "$work/$file"; done
   [ ! -e "$work/stream.hash.pipe" ] && [ ! -L "$work/stream.hash.pipe" ] || fail PIPE
   mkfifo -m 600 "$work/stream.hash.pipe"

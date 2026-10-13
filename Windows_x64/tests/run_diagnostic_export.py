@@ -21,7 +21,7 @@ files = sorted({*source.glob('WindowsModemService*.cs'), *(source / 'Core').glob
     *(source / 'Research').glob('*.cs'), *(source / 'Diagnostics').glob('*.cs'),
     *((source / 'Esim').glob('*.cs'))} - {source / 'Esim/EsimQr.cs'})
 files += [source / name for name in ('IModemService.cs', 'TerminalSession.cs', 'VerifiedCatalog.cs')]
-files += [Path(__file__).with_name('DiagnosticExportTests.cs')]
+files += [Path(__file__).resolve().with_name('DiagnosticExportTests.cs')]
 project = stage / 'DiagnosticExportTests.csproj'
 project.write_text('''<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>
 <OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings>

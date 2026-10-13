@@ -6,7 +6,7 @@ private final class Remote: RemoteTransport {
     var boot = "11111111-2222-3333-4444-555555555555", firmware = ModemEngine.firmwareHash
     var active = "none", previous = "unset", packages = "", corruptUpload = false, failCommand = false, reboot = false
     var commands: [String] = [], archives = 0, timeoutUploads = 0
-    var measuredReads = 0, platformFailure = false
+    var measuredReads = 0, platformFailure = false, preflightFailure = false
     var badTimeoutUpload = false
     var feeds = "src/gz official_base https://downloads.openwrt.org/releases/23.05.4/packages/aarch64_cortex-a53/base\n"
     var uploadedFeeds: String?
@@ -20,7 +20,7 @@ private final class Remote: RemoteTransport {
             if platformFailure { return result("PLATFORM", 71) }
             return result(firmware + "  /firmware/image/modem.b16\n" + ModemEngine.routerHash + "  /usr/bin/diag-router\n" + cid + "\n" + boot + "\n")
         }
-        if command.hasPrefix("sha256sum /firmware/image/modem.b16") { return result(firmware + "  /firmware/image/modem.b16\n" + ModemEngine.routerHash + "  /usr/bin/diag-router\n" + cid + "\n" + boot + "\n") }
+        if command == AccessIdentity.command || command.hasPrefix("sha256sum /firmware/image/modem.b16") { return result(firmware + "  /firmware/image/modem.b16\n" + ModemEngine.routerHash + "  /usr/bin/diag-router\n" + cid + "\n" + boot + "\n") }
         if let input, command.contains("cat > '") {
             let path = command.components(separatedBy: "cat > '")[1].components(separatedBy: "'")[0]
             if path.hasSuffix("runtime.tar.gz") { archives += 1 }
@@ -31,6 +31,7 @@ private final class Remote: RemoteTransport {
         if command.contains("; sh '") || command.hasPrefix("sh -s -- ") {
             let pinned = command.hasPrefix("sh -s -- ") ? input.map(digest) == ExperimentalOpkgManager.helperHash : command.contains(ExperimentalOpkgManager.helperHash)
             try check(pinned && command.contains(cid) && command.contains(boot), "Helper omitted hash/device proof")
+            if command.contains(" 'preflight' ") { return result(preflightFailure ? "OPKG_ERROR PLATFORM" : "OPKG_PREFLIGHT_OK\n", preflightFailure ? 1 : 0) }
             if failCommand { return result("OPKG_ERROR FEED_SIGNATURE", 1) }
             if command.contains(" 'install-adapter' ") { try check(archives == 1, "Runtime not uploaded");previous = active;active = "g-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" }
             if command.contains(" 'remove-adapter' ") { previous = active;active = "none";packages = "" }
@@ -146,10 +147,18 @@ private final class Fixture {
             try rejects { _ = try f.engine.locked { try m.installAdapter() } }
             try check(f.remote.timeoutUploads == 1 && f.remote.archives == 0 && !f.remote.commands.contains { $0.contains("; sh '") }, "Corrupt supervisor reached remote execution")
         }
-        try test("Unknown firmware refuses but unrelated IMEI and preparation journals are preserved") {
-            let unknown = try Fixture(); unknown.remote.firmware = String(repeating:"b",count:64)
+        try test("B31 and B28 mutations use the runtime contract without firmware override") {
+            for firmware in [ModemEngine.firmwareHash, String(repeating:"b", count:64)] {
+                let f = try Fixture();f.remote.firmware = firmware
+                try check(!f.engine.connection.skipFirmwareCheck, "Fixture enabled firmware override")
+                _ = try f.engine.locked { try ExperimentalOpkgManager(engine:f.engine).installAdapter() }
+                try check(f.remote.archives == 1 && f.remote.measuredReads >= 2 && f.remote.commands.contains { $0.hasPrefix("sh -s -- 'preflight'") }, "Runtime contract was not checked")
+            }
+        }
+        try test("Unsupported runtime stops before upload; unrelated journals remain independent") {
+            let unknown = try Fixture();unknown.remote.firmware = String(repeating:"b",count:64);unknown.remote.preflightFailure = true
             try rejects { _ = try unknown.engine.locked { try ExperimentalOpkgManager(engine: unknown.engine).installAdapter() } }
-            try check(unknown.remote.archives == 0, "Unknown firmware reached transfer")
+            try check(unknown.remote.archives == 0 && unknown.remote.timeoutUploads == 0, "Unsupported runtime reached transfer")
             let f = try Fixture()
             for name in ["pending.json", "setup-pending.json"] { try Data("preserved".utf8).write(to:f.root.appendingPathComponent(name)) }
             _ = try f.engine.locked { try ExperimentalOpkgManager(engine:f.engine).installAdapter() }

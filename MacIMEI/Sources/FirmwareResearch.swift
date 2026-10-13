@@ -2,15 +2,15 @@ import Foundation
 import Darwin
 
 struct ResearchText: Codable, Sendable { let ru: String; let en: String; func text(_ language: String) -> String { language == "en" ? en : ru } }
-struct ResearchProfile: Codable, Sendable { let id: String; let firmwareSHA256: String; let routerSHA256: String; let architecture: String }
+struct ResearchProfile: Codable, Sendable { let id: String; let firmwareSHA256: String?; let routerSHA256: String; let architecture: String; var identityRequirements: [ResearchRequirement]? = nil }
 struct ResearchProbe: Codable, Sendable { let id: String; let title: ResearchText; let category: String; let command: String; let timeoutSeconds: Int; let maxBytes: Int }
-struct ResearchRequirement: Codable, Sendable { let probe: String; let fact: String; let equals: String; let label: ResearchText; var platforms: [String]? = nil }
+struct ResearchRequirement: Codable, Sendable { let probe: String; let fact: String; let equals: String; let label: ResearchText; var platforms: [String]? = nil; var profiles: [String]? = nil }
 struct ResearchFeature: Codable, Sendable { let id: String; let title: ResearchText; let profiles: [String]; let platforms: [String]?; let requirements: [ResearchRequirement]; let limitations: ResearchText }
 struct ResearchObservation: Codable, Sendable { let id: String; let title: ResearchText; let probe: String; let fact: String }
 struct ResearchObservationResult: Codable, Sendable, Identifiable { let id: String; let title: ResearchText; let probe: String; let fact: String; let state: String; let value: String?; var sourceStatus: String? = nil; var sourceExitCode: Int32? = nil; var reason: String? = nil }
 struct ResearchSpecification: Codable, Sendable {
     // Updated only when the reviewed, bundled command allowlist changes.
-    static let expectedSHA256 = "88a58d72e3dda052d6468ac933099a2cf2c6d48f7a872727f73155bb9d7c9845"
+    static let expectedSHA256 = "95250f95a4c03ec98c41ab9fd7933f2c339869b76fab198d6ade46cccb117efd"
     let schemaVersion: Int; let revision: Int; let profiles: [ResearchProfile]; let probes: [ResearchProbe]; let features: [ResearchFeature]
     var observations: [ResearchObservation]? = nil
     static func load(_ resources: URL) throws -> Self {
@@ -35,7 +35,14 @@ struct ResearchSpecification: Codable, Sendable {
         }
         try require(Set((observations ?? []).map(\.id)).count == (observations ?? []).count && (observations ?? []).count <= 256, "Invalid research observations")
         for item in observations ?? [] { try require(ids.contains(item.probe) && item.fact.range(of: #"^[a-z0-9_]{1,80}$"#, options: .regularExpression) != nil, "Unknown observation source") }
-        for feature in features { for requirement in feature.requirements { try require(ids.contains(requirement.probe), "Unknown research prerequisite") } }
+        try require(Set(profiles.map(\.id)).count == profiles.count, "Duplicate research profile")
+        for profile in profiles {
+            try require(profile.firmwareSHA256 != nil || !(profile.identityRequirements ?? []).isEmpty, "Research profile has no identity evidence")
+            for item in profile.identityRequirements ?? [] { try require(ids.contains(item.probe) && item.fact.range(of: #"^[a-z0-9_]{1,80}$"#, options: .regularExpression) != nil && !item.equals.isEmpty && item.profiles == nil && item.platforms == nil, "Invalid profile identity prerequisite") }
+        }
+        for feature in features { for requirement in feature.requirements {
+            try require(ids.contains(requirement.probe) && (requirement.profiles ?? []).allSatisfy { wanted in profiles.contains { $0.id == wanted } }, "Unknown research prerequisite")
+        } }
     }
 }
 
@@ -353,7 +360,15 @@ final class FirmwareResearchCollector {
     }
     static func profile(_ specification: ResearchSpecification, results: [ResearchProbeResult]) -> String? {
         guard let identity = results.first(where: { $0.id == "identity" && $0.outcome == "success" }), let hashes = results.first(where: { $0.id == "firmware-hashes" && $0.outcome == "success" }) else { return nil }
-        return specification.profiles.first { hashes.facts["firmware_sha256"] == $0.firmwareSHA256 && hashes.facts["router_sha256"] == $0.routerSHA256 && identity.facts["architecture"] == $0.architecture }?.id
+        let matches = specification.profiles.filter { profile in
+            guard hashes.facts["router_sha256"] == profile.routerSHA256 && identity.facts["architecture"] == profile.architecture else { return false }
+            if let firmware = profile.firmwareSHA256 { guard hashes.facts["firmware_sha256"] == firmware else { return false } }
+            else if (profile.identityRequirements ?? []).isEmpty { return false }
+            return (profile.identityRequirements ?? []).allSatisfy { requirement in
+                results.first { $0.id == requirement.probe && $0.outcome == "success" }?.facts[requirement.fact] == requirement.equals
+            }
+        }
+        return matches.count == 1 ? matches[0].id : nil
     }
     static func assess(_ specification: ResearchSpecification, results: [ResearchProbeResult], profile: String?, continuityLost: Bool = false, bindingComplete: Bool = true) -> [ResearchFeatureResult] {
         specification.features.filter { $0.platforms == nil || $0.platforms!.contains("macos") }.map { feature in
@@ -363,7 +378,7 @@ final class FirmwareResearchCollector {
                 if let profile { blocked = true; evidence.append(.init(ru: "Профиль " + profile + " не поддерживается этой операцией программы", en: "Profile " + profile + " is not supported by this application operation")) }
                 else { unknown = true; evidence.append(.init(ru: "Нет совпадения с проверенным профилем прошивки", en: "No matching verified firmware profile")) }
             }
-            for requirement in feature.requirements where requirement.platforms == nil || requirement.platforms!.contains("macos") {
+            for requirement in feature.requirements where (requirement.platforms == nil || requirement.platforms!.contains("macos")) && (requirement.profiles == nil || requirement.profiles!.contains(profile ?? "")) {
                 guard let result = results.first(where: { $0.id == requirement.probe }), result.outcome == "success", let value = result.facts[requirement.fact] else { unknown = true; evidence.append(.init(ru: requirement.label.ru + ": неизвестно", en: requirement.label.en + ": unknown")); continue }
                 if ["unknown", "not-assessed", "not-performed", "conflicting", ""].contains(value.lowercased()) { unknown = true; evidence.append(.init(ru: requirement.label.ru + ": не проверялось", en: requirement.label.en + ": not assessed")) }
                 else if value != requirement.equals { blocked = true; evidence.append(.init(ru: requirement.label.ru + ": не выполнено", en: requirement.label.en + ": not met")) }

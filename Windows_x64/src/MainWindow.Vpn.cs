@@ -9,7 +9,7 @@ namespace ZteImeiStudio.Windows;
 public sealed partial class MainWindow
 {
     private readonly List<(Button Button, Func<bool> Available)> _vpnActions = [];
-    private bool VpnConnected => !_busy && _snapshot?.IsConnected == true && _snapshot.ConnectionMode == "SSH" && _terminal?.IsConnected != true;
+    private bool VpnConnected => !_busy && _snapshot?.IsConnected == true && _snapshot.ConnectionMode == "SSH" && _terminal?.IsConnected != true && !_terminalOpening && SelectedConnectionMatches();
     private bool VpnReady => VpnConnected && _snapshot?.VpnPage?.ComponentsReady == true;
     private Button VpnButton(string title, Func<Task> work, Func<bool> available, bool prominent = false)
     {
@@ -48,16 +48,21 @@ public sealed partial class MainWindow
                 foreach (var profile in vpn.ProfileDetails ?? [])
                 {
                     var row = new StackPanel { Spacing = 8, Margin = new Avalonia.Thickness(0, 8, 0, 8) };
-                    row.Children.Add(ValueLine(profile.Name, profile.Transport + (profile.Active ? " · " + Localization.Translate("Активен") : "")));
+                    row.Children.Add(ValueLine(profile.Name, VpnProtocolLabel(profile.Protocol) + " · " + profile.Transport + (profile.Active ? " · " + Localization.Translate("Активен") : "")));
+                    if (profile.UpdateAvailable) row.Children.Add(Muted("Обновление сохранено. Примените его, чтобы переподключиться с новыми настройками."));
+                    if (profile.RemovedFromSubscription) row.Children.Add(Muted("Профиль удалён из подписки; активное подключение сохранено."));
+                    foreach (var warning in profile.Warnings ?? [])
+                        if (Features.VpnMessages.Warnings.TryGetValue(warning, out var message))
+                            row.Children.Add(Muted(message));
                     var renameKey = "vpn_rename_" + profile.Id;
                     if (! _form.ContainsKey(renameKey)) _form[renameKey] = profile.Name;
                     row.Children.Add(Field("Название профиля", renameKey, profile.Name));
                     var actions = new WrapPanel { Orientation = Orientation.Horizontal };
-                    actions.Children.Add(VpnButton("Сделать активным", async () =>
+                    actions.Children.Add(VpnButton(profile.UpdateAvailable ? "Применить обновление" : "Сделать активным", async () =>
                     {
                         if (await ConfirmAsync("Выбрать профиль VPN?", "При первой активации будет настроена и включена сеть Wi-Fi с VPN. При смене работающего профиля VPN переподключится."))
                             await ExecuteAsync(ModemOperation.ActivateVpnProfile, new Dictionary<string,string> { ["vpn_profile_id"] = profile.Id });
-                    }, () => VpnReady && !profile.Active));
+                    }, () => VpnReady && (!profile.Active || profile.UpdateAvailable)));
                     actions.Children.Add(VpnButton("Переименовать", async () =>
                     {
                         if (await ConfirmAsync("Переименовать профиль VPN?", "Сохранить новое название выбранного профиля VPN?"))
@@ -65,7 +70,7 @@ public sealed partial class MainWindow
                     }, () => VpnReady));
                     actions.Children.Add(VpnButton("Удалить профиль", async () =>
                     {
-                        if (await ConfirmAsync("Удалить профиль VPN?", "Для повторного импорта понадобится исходная ссылка."))
+                        if (await ConfirmAsync("Удалить профиль VPN?", "Для повторного импорта понадобится исходная ссылка или файл профиля."))
                             await ExecuteAsync(ModemOperation.DeleteVpnProfile, new Dictionary<string,string> { ["vpn_profile_id"] = profile.Id });
                     }, () => VpnReady && !profile.Active));
                     row.Children.Add(actions); panel.Children.Add(row);
@@ -73,17 +78,47 @@ public sealed partial class MainWindow
                 panel.Children.Add(Muted("Активный профиль можно удалить после выбора другого профиля."));
             }
         });
-        AddCard("Добавить профиль VPN", "Поддерживается одна ссылка VLESS: TCP, WebSocket, gRPC или XHTTP. Можно вставить ссылку или открыть текстовый файл с ней.", panel =>
+        if (vpn?.LastImport is { } summary)
+            AddCard("Результат импорта", "", panel =>
+            {
+                foreach (var item in new[] { ("Добавлено", summary.Added), ("Обновлено", summary.Updated), ("Удалено", summary.Removed), ("Дубликаты", summary.Duplicates), ("Пропущено", summary.Skipped.Count) })
+                    panel.Children.Add(ValueLine(item.Item1, item.Item2.ToString()));
+                if (summary.RetainedActive > 0) panel.Children.Add(Muted("Текущее подключение сохранено. Обновлённый профиль можно применить отдельно."));
+                foreach (var item in summary.Skipped) panel.Children.Add(Muted("#" + item.Index + " · " + item.Code));
+            });
+        AddCard("Добавить профиль VPN", "Ссылки VLESS и Hysteria2, файлы WireGuard, AmneziaWG 2 и 3.1. Импорт сохраняет профиль; активация выполняется отдельно.", panel =>
         {
-            panel.Children.Add(Field("Ссылка VLESS", "vpn_secret_uri", "vless://…", secret: true));
+            panel.Children.Add(Field("Ссылка или конфигурация VPN", "vpn_secret_uri", "vless://… / hy2://… / [Interface]", secret: true, multiline: true));
             panel.Children.Add(Field("Название профиля (необязательно)", "vpn_import_name", "Название"));
-            panel.Children.Add(VpnButton("Открыть файл со ссылкой", ReadVpnProfileFileAsync, () => !_busy));
+            panel.Children.Add(VpnButton("Открыть файл профиля", ReadVpnProfileFileAsync, () => !_busy));
             panel.Children.Add(VpnButton("Импортировать профиль", async () =>
             {
-                var uri = DeviceFeatureService.ValidateVpnUri(Get("vpn_secret_uri"));
-                await ExecuteAsync(ModemOperation.ImportVpnProfile, new Dictionary<string,string> { ["vpn_secret_uri"] = uri, ["vpn_profile_name"] = Get("vpn_import_name") });
+                var input = Get("vpn_secret_uri");
+                var config = DeviceFeatureService.IsVpnConfig(input);
+                if (!config) input = DeviceFeatureService.ValidateVpnUri(input);
+                await ExecuteAsync(config ? ModemOperation.ImportVpnConfig : ModemOperation.ImportVpnProfile,
+                    new Dictionary<string,string> { ["vpn_secret_uri"] = input, ["vpn_profile_name"] = Get("vpn_import_name") });
             }, () => VpnReady, true));
-            panel.Children.Add(Muted("Ссылка не записывается в журнал программы и очищается после отправки."));
+            panel.Children.Add(Muted("Данные профиля не записываются в журнал программы и очищаются после отправки."));
+        });
+        AddCard("Подписки VPN", "Программа загружает подписку через интернет компьютера. Все её профили появляются в общем списке на модеме.", panel =>
+        {
+            panel.Children.Add(Field("HTTPS-ссылка подписки", "vpn_subscription_url", "https://…", secret: true));
+            panel.Children.Add(Field("Название подписки (необязательно)", "vpn_subscription_name", "Название"));
+            panel.Children.Add(VpnButton("Добавить подписку", () => ExecuteAsync(ModemOperation.ImportVpnSubscription,
+                new Dictionary<string,string> { ["vpn_subscription_url"] = Get("vpn_subscription_url"), ["vpn_subscription_name"] = Get("vpn_subscription_name") }), () => VpnReady, true));
+            foreach (var subscription in vpn?.Subscriptions ?? [])
+            {
+                panel.Children.Add(ValueLine(subscription.Name, subscription.Host));
+                panel.Children.Add(ValueLine("Профили", subscription.ProfileCount.ToString()));
+                var actions = new WrapPanel { Orientation = Orientation.Horizontal };
+                actions.Children.Add(VpnButton("Обновить подписку", () => ExecuteAsync(ModemOperation.UpdateVpnSubscription,
+                    new Dictionary<string,string> { ["vpn_subscription_id"] = subscription.Id }), () => VpnReady));
+                actions.Children.Add(VpnButton("Удалить подписку", () => ExecuteAsync(ModemOperation.DeleteVpnSubscription,
+                    new Dictionary<string,string> { ["vpn_subscription_id"] = subscription.Id }), () => VpnReady));
+                panel.Children.Add(actions);
+            }
+            panel.Children.Add(Muted("Удаление подписки сохраняет её профили. Обновление не прерывает текущее VPN-подключение."));
         });
         AddCard("Настройки Wi-Fi с VPN", "Название и пароль можно менять, когда Wi-Fi с VPN выключен.", panel =>
         {
@@ -102,9 +137,11 @@ public sealed partial class MainWindow
             panel.Children.Add(VpnButton("Сохранить настройки сети", () => ExecuteAsync(ModemOperation.SaveVpnWifi, ["ssid", "password_mode", "custom_password", "confirm_password"]), () => VpnReady && vpn?.Enabled != true && vpn?.SettingsSupported == true));
         });
     }
+    private static string VpnProtocolLabel(string protocol) => protocol switch
+    { "vless" => "VLESS", "hysteria2" => "HY2", "wireguard" => "WireGuard", "amneziawg2" => "AWG 2", "amneziawg3" => "AWG 3", "amneziawg3.1" => "AWG 3.1", _ => protocol };
     private async Task ReadVpnProfileFileAsync()
     {
-        var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions { Title = Localization.Translate("Открыть файл со ссылкой"), AllowMultiple = false });
+        var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions { Title = Localization.Translate("Открыть файл профиля"), AllowMultiple = false });
         if (files.Count != 1) return;
         try
         {
@@ -116,10 +153,11 @@ public sealed partial class MainWindow
                 if (read == 0) break; size += read;
             }
             if (size > 32768) throw new InvalidDataException();
-            var uri = DeviceFeatureService.ValidateVpnUri(new UTF8Encoding(false, true).GetString(bytes, 0, size).TrimStart('\uFEFF'));
+            var uri = new UTF8Encoding(false, true).GetString(bytes, 0, size).TrimStart('\uFEFF');
+            if (!DeviceFeatureService.IsVpnConfig(uri)) uri = DeviceFeatureService.ValidateVpnUri(uri);
             _secretFields["vpn_secret_uri"].Text = uri;
         }
         catch (OperationCanceledException) { throw; }
-        catch { SetStatus("Нужен текстовый файл UTF-8 с одной ссылкой VLESS, не больше 32 КиБ.", true); }
+        catch { SetStatus("Нужен файл UTF-8 со ссылкой VLESS/Hysteria2 или конфигурацией WireGuard/AmneziaWG, не больше 32 КиБ.", true); }
     }
 }

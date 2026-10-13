@@ -8,6 +8,7 @@ from pathlib import Path
 import json
 import os
 import plistlib
+import re
 import shutil
 import subprocess
 import tempfile
@@ -40,10 +41,16 @@ with tempfile.TemporaryDirectory(prefix='manager-ui-', dir=root / '.build') as d
         shutil.copytree(root / 'Resources' / name, resources / name)
     (resources / 'DiagnosticTools').mkdir()
     shutil.copy2(root / 'Resources/DiagnosticTools/bundle.json', resources / 'DiagnosticTools/bundle.json')
+    build_source = (root / 'build.sh').read_text()
+    def bundle_value(name):
+        match = re.search(r"'" + name + r"'\s*:\s*'([^']+)'", build_source)
+        assert match, f'Missing bundle value in build.sh: {name}'
+        return match.group(1)
     with (app / 'Info.plist').open('wb') as handle:
         plistlib.dump({'CFBundleIdentifier': 'local.zte.manager-ui-preview',
                       'CFBundleExecutable': 'ManagerUIPreview', 'CFBundleName': 'Manager UI Preview',
-                      'CFBundleVersion': '46', 'CFBundleShortVersionString': '1.24.5',
+                      'CFBundleVersion': bundle_value('CFBundleVersion'),
+                      'CFBundleShortVersionString': bundle_value('CFBundleShortVersionString'),
                       'NSHighResolutionCapable': False, 'LSUIElement': True}, handle)
     binary = app / 'MacOS/ManagerUIPreview'
     sources = [str(p) for p in sorted((root / 'Sources').glob('*.swift')) if p.name not in ['AppModel.swift', 'AppModelConnections.swift', 'Main.swift']]

@@ -9,5 +9,7 @@
     <Compile Include="../src/Core/ImeiCodec.cs" Link="ImeiCodec.cs" />
     <Compile Include="../src/Core/ImeiEngine.cs" Link="ImeiEngine.cs" />
     <Compile Include="../src/Core/ImeiEngine.Transaction.cs" Link="ImeiEngine.Transaction.cs" />
+    <Compile Include="../src/Core/AccessIdentity.cs" Link="AccessIdentity.cs" />
+    <Compile Include="../src/Transport/AdbShellOutput.cs" Link="AdbShellOutput.cs" />
   </ItemGroup>
 </Project>

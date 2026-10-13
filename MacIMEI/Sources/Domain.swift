@@ -116,9 +116,32 @@ enum FirmwareCheck {
 }
 struct Identity: Codable, Equatable, Sendable { var cid: String; var firmwareHash: String }
 struct DeviceState: Sendable { var identity: Identity; var boot: String; var records: [Data]; var imeis: [String] }
+/// Display values are separate from the full NV records used for writes.
+struct IMEIReadState: Sendable {
+    var identity: Identity
+    var boot: String
+    var primary: String
+    var secondary: String?
+    var detail: String { secondary == nil ? "Первый IMEI подтверждён по NV и API. Второй IMEI: запись NV550 не активна (статус 5). Будет использоваться только первый IMEI." : "Оба IMEI подтверждены по NV и API." }
+    static func parse(_ output: String) throws -> (String, String?) {
+        let lines = output.split(separator: "\n").filter { $0.hasPrefix("APP_IMEI ") }.map(String.init)
+        try require(lines.count == 2, "Неполный или неоднозначный ответ чтения IMEI")
+        func value(_ line: String, index: Int) throws -> String {
+            let prefix = "APP_IMEI index=\(index) value="
+            try require(line.hasPrefix(prefix), "Неверный индекс в ответе чтения IMEI")
+            let result = String(line.dropFirst(prefix.count))
+            try require(IMEI.valid(result), "Некорректный IMEI в ответе чтения")
+            return result
+        }
+        let first = try value(lines[0], index: 0)
+        let second = lines[1] == "APP_IMEI index=1 state=not-active nv_status=5" ? nil : try value(lines[1], index: 1)
+        return (first, second)
+    }
+}
+
 struct BackupManifest: Codable, Sendable {
     var schema = 1; var id: String; var created: String; var identity: Identity; var imeis: [String]; var hashes: [String:String]
-    var scope = "Полные NV550 обоих слотов и EFS config. Не QCN и не образ всех разделов."
+    var scope = "Полные активные NV550 и EFS config. Не QCN и не образ всех разделов."
 }
 struct BackupItem: Identifiable, Sendable { var id: String; var date: String; var imei1: String; var imei2: String; var url: URL }
 struct Transaction: Codable, Sendable {

@@ -17,13 +17,23 @@ plain() { [ -f "$1" ] && [ ! -L "$1" ] && [ "$(stat -c %u:%h "$1")" = 0:1 ]; }
 oem_plain() { plain "$1"; }
 safe_dir() { [ -d "$1" ] && [ ! -L "$1" ] && [ "$(stat -c %u "$1")" = 0 ] || return 1; perm=$(stat -c %a "$1"); [ "$((0$perm & 022))" = 0 ]; }
 private_dir() { safe_dir "$1" && [ "$(stat -c %a "$1")" = 700 ]; }
+observed_file_matches() {
+ cursor=${1%/*}
+ while [ -n "$cursor" ]; do
+  [ ! -L "$cursor" ] || return 1
+  if [ -e "$cursor" ]; then [ -d "$cursor" ] && [ -r "$cursor" ] && [ -x "$cursor" ] || return 1; fi
+  cursor=${cursor%/*}
+ done
+ if [ "$2" = absent ]; then ! exists "$1"
+ else [ -f "$1" ] && [ ! -L "$1" ] && [ -r "$1" ] && [ "$(hash "$1")" = "$2" ]; fi
+}
 identity() {
  [ "$(id -u)" = 0 ] && [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ] || fail PLATFORM
  [ "$(cat /sys/block/mmcblk0/device/cid)" = "$cid" ] && [ "$(cat /proc/sys/kernel/random/boot_id)" = "$boot" ] || fail IDENTITY
- [ "$(hash /firmware/image/modem.b16)" = "$fw" ] && [ "$(hash /usr/bin/diag-router)" = "$router" ] || fail IDENTITY
+ observed_file_matches /firmware/image/modem.b16 "$fw" && observed_file_matches /usr/bin/diag-router "$router" || fail IDENTITY
 }
 case "$action" in prepare|status|stream|clean) ;; *) exit 64;; esac
-uuid_valid "$uuid" && uuid_valid "$boot" && uuid_valid "$token" && hex "$cid" 32 && hex "$fw" 64 && hex "$router" 64 || exit 64
+uuid_valid "$uuid" && uuid_valid "$boot" && uuid_valid "$token" && hex "$cid" 32 && { [ "$fw" = absent ] || hex "$fw" 64; } && { [ "$router" = absent ] || hex "$router" 64; } || exit 64
 [ "$tx" = "/data/zte-imei-studio/cleanup-$uuid" ] || exit 64
 identity
 for d in /data /etc /etc/init.d /etc/rc.d /etc/config; do safe_dir "$d" || fail LAYOUT; done
@@ -126,7 +136,8 @@ check_service() {
 launcher_service_sha=e0d5c80f061af69a8a7329476e33e6b4766a80b37a9a38e3d3217712551b4e90
 vpn_service_sha=3411d076729a717024d50ae8feb0777acf7ab792bb3878cb16ab7b282cbde63a
 stock_sha=093e5461be5ea5d23d24522374a27b9a134c4932df3c89b3b756274f123ac508
-configure_sha=a41e5de83268c6963a54760c8b5f5362ea2c5cdac81bede6ac281fea81e28543
+configure_sha=0c392c8302d83ef4a12ed5669092f95637b7d3c5153677a9525642d8601575e8
+vpn_manager_sha=f2cdcb76dca87cfe873374d5a7be83a6440a46042a0ef26a4586f803dac99075
 firewall_sha=6fd50b7d16b93a6d0964dfd937c328eb93273fdab42204e2edf5bb72b7ea0da3
 dashboard_sha=76f021c43a02eab5bb634b01461370fcb8bfb270b1f14e348e5b57acb43b1d12
 validate_components() {
@@ -164,7 +175,13 @@ vpn_check() {
  [ -d /data/zte-vpn ] || return 0
  v=/data/zte-vpn
  for f in configure.lua firewall.sh; do plain "$v/$f" || fail VPN_INTEGRITY; done
- [ "$(hash "$v/configure.lua")" = "$configure_sha" ] && [ "$(hash "$v/firewall.sh")" = "$firewall_sha" ] || fail VPN_INTEGRITY
+ case "$(hash "$v/configure.lua")" in "$configure_sha"|a41e5de83268c6963a54760c8b5f5362ea2c5cdac81bede6ac281fea81e28543) ;; *) fail VPN_INTEGRITY;; esac
+ [ "$(hash "$v/firewall.sh")" = "$firewall_sha" ] || fail VPN_INTEGRITY
+ if exists "$v/ipa-backup"; then
+  plain "$v/manager.sh" && [ "$(hash "$v/manager.sh")" = "$vpn_manager_sha" ] || fail VPN_INTEGRITY
+  [ "$(hash "$v/configure.lua")" = "$configure_sha" ] || fail VPN_INTEGRITY
+  sh "$v/manager.sh" ipa-check >/dev/null 2>&1 || fail VPN_CONFIGURATION
+ fi
  oem_plain /etc/init.d/network || fail VPN_NETWORK
  if [ "$(hash /etc/init.d/network)" = "$stock_sha" ]; then
   # A reset may leave stale private markers but must not leave live owned UCI.
@@ -209,6 +226,7 @@ list_roots() {
  for p in $owned_roots /etc/init.d/zte_vpn /etc/init.d/zte_launcher /etc/rc.d/S99zte_vpn /etc/rc.d/K01zte_vpn /etc/rc.d/S99zte_launcher /etc/rc.d/K01zte_launcher; do exists "$p" && printf '%s\n' "${p#/}"; done
  printf '%s\n' etc/rc.local
  if [ -d /data/zte-vpn ]; then for p in /etc/init.d/network /etc/config/network /etc/config/wireless /etc/config/firewall /etc/config/dhcp; do oem_plain "$p" || fail VPN_CONFIGURATION; printf '%s\n' "${p#/}"; done; fi
+ if exists /data/zte-vpn/ipa-backup; then oem_plain /etc/config/zwrt_router || fail VPN_CONFIGURATION; printf '%s\n' etc/config/zwrt_router; fi
 }
 # Validate every entry before archiving/moving. Only internal relative symlinks
 # are allowed in owned trees; service links have a fixed separately checked form.
@@ -323,7 +341,7 @@ if [ -d /data/zte-launcher ]; then
 fi
 # Service shutdown may take time. Recheck the archived OEM files immediately
 # before the first configuration/startup write; do not overwrite a newer change.
-for p in /etc/rc.local /etc/init.d/network /etc/config/network /etc/config/wireless /etc/config/firewall /etc/config/dhcp; do
+for p in /etc/rc.local /etc/init.d/network /etc/config/network /etc/config/wireless /etc/config/firewall /etc/config/dhcp /etc/config/zwrt_router; do
  expected=$(awk -F '	' -v p="$p" '$1=="F" && $4==p {print $3}' "$tx/before.manifest")
  if [ -n "$expected" ]; then oem_plain "$p" && [ "$(hash "$p")" = "$expected" ] || fail CHANGED; fi
 done
@@ -349,6 +367,9 @@ if [ "$vpn_mode" = configured ]; then
      ! printf '%s\n' "$routes" | grep -Eq '(^|[[:space:]])dev[[:space:]]+br-vpn([[:space:]]|$)'; then break; fi
   n=$((n+1)); [ "$n" -lt 20 ] || fail VPN_RESTORE; sleep 1
  done
+fi
+if exists /data/zte-vpn/ipa-backup; then
+ sh /data/zte-vpn/manager.sh ipa-restore >/dev/null 2>&1 || fail VPN_RESTORE
 fi
 # Preserve every unrelated byte of rc.local, including SSH/agent startup lines.
 awk -v lines="$(wc -l < /etc/rc.local)" '

@@ -6,10 +6,12 @@ import { Card } from '../../ui/primitives'
 import { toast } from '../../ui/feedback'
 import { VpnProfileDetails, type ProfileDetails } from './VpnProfileDetails'
 import { vpnErrors } from '../../locales/ru-vpn'
+import { activationConfirmed, profileImport, protocolLabel, updateSubscriptionsSequentially, warningText, type ImportSummary, type SubscriptionUpdate } from './vpnModel'
 
-type Profile = { id: string; name: string; transport: string; warnings: string[]; active: boolean }
+type Profile = { id: string; name: string; transport: string; warnings: string[]; active: boolean; protocol?: string; subscription_id?: string; update_available?: boolean; removed_from_subscription?: boolean }
+type Subscription = { id: string; name: string; host: string; updated_at: string | number; profile_count: number }
 type Status = { schema_version: number; installed: boolean; enabled?: boolean; core_running?: boolean;
-  configured?: boolean; network_ok?: boolean; ssid?: string; active_profile?: string; recovery_pending?: boolean; screen?: { installed?: boolean; integrated?: boolean; active: boolean; ready: boolean; last_error?: string }; profiles: Profile[] }
+  configured?: boolean; network_ok?: boolean; ssid?: string; active_profile?: string; recovery_pending?: boolean; screen?: { installed?: boolean; integrated?: boolean; active: boolean; ready: boolean; last_error?: string }; profiles: Profile[]; subscriptions?: Subscription[]; last_import?: ImportSummary }
 
 export default function VpnTab() {
   useI18n()
@@ -17,10 +19,15 @@ export default function VpnTab() {
   const [busy, setBusy] = useState(false)
   const [name, setName] = useState('')
   const [uri, setUri] = useState('')
+  const [subscriptionUrl, setSubscriptionUrl] = useState('')
+  const [subscriptionName, setSubscriptionName] = useState('')
+  const [lastImport, setLastImport] = useState<ImportSummary | null>(null)
   const [details, setDetails] = useState<ProfileDetails | null>(null)
   const [editing, setEditing] = useState('')
   const [editedName, setEditedName] = useState('')
   const [error, setError] = useState('')
+  const [subscriptionUpdates, setSubscriptionUpdates] = useState<SubscriptionUpdate[]>([])
+  const [updatingSubscriptions, setUpdatingSubscriptions] = useState(0)
   const generation = useRef(0)
   const changing = useRef(false)
   function showError(e: unknown) {
@@ -51,6 +58,9 @@ export default function VpnTab() {
     setBusy(true); setError('')
     try {
       const value = await req('POST', '/api/vpn/request', body, undefined, 240_000) as unknown as Status
+      if (body.action === 'activate' && !activationConfirmed(value, body.id)) {
+        setStatus(value); setError('The modem did not confirm profile activation. Refresh status before retrying.'); return
+      }
       if (body.action === 'screen_open' || body.action === 'screen_close') {
         setStatus(current => current ? { ...current, screen: value.screen } : current)
       } else setStatus(value)
@@ -59,11 +69,34 @@ export default function VpnTab() {
         setDetails(current => current && current.profile.id === body.id ? { ...current, profile: { ...current.profile, name: String(body.name).trim() } } : current)
       }
       if (body.action === 'delete') setDetails(current => current?.profile.id === body.id ? null : current)
-      if (body.action === 'import') { setUri(''); setName(''); toast(t('VPN profile checked and saved')) }
+      if (body.action === 'activate' || body.action === 'subscription_import' || body.action === 'subscription_update') setDetails(null)
+      if (value.last_import) setLastImport(value.last_import)
+      if (body.action === 'subscription_import') { setSubscriptionUrl(''); setSubscriptionName('') }
+      if (body.action === 'import' || body.action === 'import_config') { setUri(''); setName(''); toast(t('VPN profile checked and saved')) }
       else if (body.action === 'screen_open' || body.action === 'screen_close') toast(t('Page selected. Wake and unlock the modem display.'))
       else toast(t('VPN settings saved'))
     } catch (e) { showError(e) }
     finally { changing.current = false; setBusy(false) }
+  }
+  async function updateAllSubscriptions() {
+    if (changing.current || !status?.subscriptions?.length) return
+    const subscriptions = status.subscriptions
+    changing.current = true; generation.current++
+    setBusy(true); setError(''); setDetails(null); setLastImport(null)
+    setSubscriptionUpdates([]); setUpdatingSubscriptions(subscriptions.length)
+    try {
+      await updateSubscriptionsSequentially(subscriptions, async id => {
+        const value = await req('POST', '/api/vpn/request', { action: 'subscription_update', id }, undefined, 240_000) as unknown as Status
+        if (value.schema_version !== 1 || !Array.isArray(value.profiles) || !value.last_import) throw new Error('Invalid update result')
+        setStatus(value)
+        return value.last_import
+      }, error => error instanceof ApiError && error.code && vpnErrors[error.code] ? error.code : 'VPN_OPERATION_FAILED', setSubscriptionUpdates)
+      try {
+        const value = await req('GET', '/api/vpn/status') as unknown as Status
+        if (value.schema_version !== 1 || !Array.isArray(value.profiles)) throw new Error('Invalid status')
+        setStatus(value)
+      } catch { setError('Could not refresh the final VPN status. Individual subscription results are shown below.') }
+    } finally { changing.current = false; setBusy(false); setUpdatingSubscriptions(0) }
   }
   async function showDetails(id: string) {
     if (changing.current) return
@@ -83,7 +116,7 @@ export default function VpnTab() {
         <Button onClick={() => void refresh()} disabled={busy}>{t('Refresh')}</Button>
       </div>
       {error && <p className="mt-3 text-[13px] text-danger" role="alert">{t(error)}</p>}
-      {status && !status.installed && <p className="mt-3 text-[13px] text-ink2">{t('Open VPN settings in ZTE IMEI Studio, check the components and click Install required components. Then import a profile here.')}</p>}
+      {status && !status.installed && <p className="mt-3 text-[13px] text-ink2">{t('In ZTE U60Pro Manager for macOS or Windows, check and update the agent and VPN components. Then import a profile here.')}</p>}
     </Card>
     {status?.installed && <>
       <Card title={t('Wi-Fi with VPN')}>
@@ -104,13 +137,15 @@ export default function VpnTab() {
           {status.profiles.map(profile => <div key={profile.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
             <div className="min-w-0 flex-1">
               <p className="break-words text-sm font-semibold text-ink">{profile.name}</p>
-              <p className="text-xs text-ink2">{profile.active ? t('Active profile') + ' · ' : ''}{profile.transport.toUpperCase()}</p>
-              {profile.warnings?.length > 0 && <p className="mt-1 text-xs text-ink2">{t('The spx parameter is preserved in the source link but is not used by this VPN core.')}</p>}
+              <p className="text-xs text-ink2">{profile.active ? t('Active profile') + ' · ' : ''}{protocolLabel(profile.protocol)} · {profile.transport.toUpperCase()}</p>
+              {profile.warnings?.map(warningText).filter(Boolean).map(text => <p key={text} className="mt-1 text-xs text-ink2">{t(text!)}</p>)}
+              {profile.update_available && <p className="mt-1 text-xs text-ink2">{t('An update is saved. Apply it to reconnect with the new settings.')}</p>}
+              {profile.removed_from_subscription && <p className="mt-1 text-xs text-ink2">{t('This profile was removed from the subscription. Your active connection is preserved.')}</p>}
             </div>
             <div className="flex flex-wrap gap-2">
               <Button disabled={busy} onClick={() => void showDetails(profile.id)}>{t('Profile details')}</Button>
               <Button disabled={busy} onClick={() => { setEditing(profile.id); setEditedName(profile.name) }}>{t('Rename')}</Button>
-              <Button disabled={busy || profile.active} onClick={() => void change({ action: 'activate', id: profile.id })}>{t('Activate')}</Button>
+              <Button disabled={busy || (profile.active && !profile.update_available)} onClick={() => void change({ action: 'activate', id: profile.id })}>{t(profile.update_available ? 'Apply update' : 'Activate')}</Button>
               <Button disabled={busy || profile.active} onClick={() => void change({ action: 'delete', id: profile.id })}>{t('Delete')}</Button>
             </div>
             {editing === profile.id && <form className="flex w-full flex-wrap items-end gap-2" onSubmit={e => { e.preventDefault(); void change({ action: 'rename', id: profile.id, name: editedName }) }}>
@@ -123,13 +158,53 @@ export default function VpnTab() {
         </div>
       </Card>
       <Card title={t('Import VPN profile')}>
-        <form className="space-y-3" onSubmit={e => { e.preventDefault(); void change({ action: 'import', uri, ...(name.trim() ? { name: name.trim() } : {}) }) }}>
+        <form className="space-y-3" onSubmit={e => { e.preventDefault(); void change(profileImport(uri, name)) }}>
           <Field label={t('Profile name (optional)')}><Input value={name} onChange={e => setName(e.target.value)} maxLength={64} disabled={busy} autoComplete="off" /></Field>
-          <Field label={t('VLESS link')}><Input type="text" value={uri} onChange={e => setUri(e.target.value)} placeholder={t('VLESS link')} maxLength={32768} disabled={busy} autoComplete="off" autoCapitalize="none" spellCheck={false} /></Field>
-          <p className="text-xs text-ink2">{t('Supports VLESS with TCP, WebSocket, gRPC and XHTTP, including REALITY. Import checks and saves a profile; activation is a separate step.')}</p>
+          <Field label={t('VPN link or configuration')}><textarea className="min-h-28 w-full rounded-lg border border-line/15 bg-surface p-3 font-mono text-xs text-ink" value={uri} onChange={e => setUri(e.target.value)} placeholder={t('VPN link or configuration')} maxLength={32768} disabled={busy} autoComplete="off" autoCapitalize="none" spellCheck={false} /></Field>
+          <Field label={t('Open profile file')}><input type="file" accept=".conf,.txt,text/plain" disabled={busy} onChange={e => {
+            const file = e.currentTarget.files?.[0]; e.currentTarget.value = ''
+            if (!file) return
+            if (file.size > 32768) { setError('Use a UTF-8 profile file no larger than 32 KiB.'); return }
+            void file.arrayBuffer().then(bytes => setUri(new TextDecoder('utf-8', { fatal: true }).decode(bytes))).catch(() => setError('Use a UTF-8 profile file no larger than 32 KiB.'))
+          }} /></Field>
+          <p className="text-xs text-ink2">{t('Supports VLESS and Hysteria2 links, and WireGuard, AmneziaWG 2 and 3.1 files. Import saves a profile; activation is a separate step.')}</p>
           <Button type="submit" variant="primary" loading={busy} disabled={!uri.trim()}>{t('Check and import')}</Button>
         </form>
       </Card>
+      <Card title={t('VPN subscriptions')}>
+        <div className="mb-3 flex flex-wrap items-center gap-3">
+          <Button loading={updatingSubscriptions > 0} disabled={busy || !status.subscriptions?.length} onClick={() => void updateAllSubscriptions()}>{t('Update all subscriptions')}</Button>
+          {updatingSubscriptions > 0 && <p className="text-xs text-ink2" role="status">{t('Updating subscriptions')}: {subscriptionUpdates.length}/{updatingSubscriptions}</p>}
+        </div>
+        <p className="mb-3 text-xs text-ink2">{t('The modem downloads subscriptions using its internet connection. All profiles appear in the shared list.')}</p>
+        <form className="space-y-3" onSubmit={e => { e.preventDefault(); void change({ action: 'subscription_import', url: subscriptionUrl, ...(subscriptionName.trim() ? { name: subscriptionName.trim() } : {}) }) }}>
+          <Field label={t('HTTPS subscription URL')}><Input type="password" value={subscriptionUrl} onChange={e => setSubscriptionUrl(e.target.value)} disabled={busy} autoComplete="off" autoCapitalize="none" spellCheck={false} maxLength={8192} placeholder={t('HTTPS subscription URL')} /></Field>
+          <Field label={t('Subscription name (optional)')}><Input value={subscriptionName} onChange={e => setSubscriptionName(e.target.value)} maxLength={64} disabled={busy} autoComplete="off" /></Field>
+          <Button type="submit" variant="primary" disabled={busy || !subscriptionUrl.trim()}>{t('Add subscription')}</Button>
+        </form>
+        <div className="mt-3 divide-y divide-line/10">{status.subscriptions?.map(subscription => <div key={subscription.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
+          <div className="min-w-0"><p className="break-words text-sm font-semibold text-ink">{subscription.name}</p><p className="break-words text-xs text-ink2">{subscription.host} · {t('Profiles')}: {subscription.profile_count}</p></div>
+          <div className="flex flex-wrap gap-2">
+            <Button disabled={busy} onClick={() => void change({ action: 'subscription_update', id: subscription.id })}>{t('Update subscription')}</Button>
+            <Button disabled={busy} onClick={() => void change({ action: 'subscription_delete', id: subscription.id })}>{t('Remove subscription')}</Button>
+          </div>
+        </div>)}</div>
+        <p className="mt-3 text-xs text-ink2">{t('Removing a subscription keeps its profiles. Updating does not interrupt the active VPN connection.')}</p>
+        {subscriptionUpdates.length > 0 && <section className="mt-4 space-y-3" aria-label={t('Subscription update results')}>
+          <h3 className="text-[13px] font-semibold text-ink">{t('Subscription update results')}</h3>
+          {subscriptionUpdates.map(result => <div key={result.id} className="rounded-lg border border-line/10 p-3 text-xs">
+            <p className="break-words font-semibold text-ink">{result.name}</p>
+            <p className={result.ok ? 'mt-1 text-ink2' : 'mt-1 text-danger'}>{result.ok ? t('Subscription updated') : t(vpnErrors[result.code ?? ''] ?? 'Could not confirm this subscription update. Refresh status before retrying.')}</p>
+            {result.import && <p className="mt-1 text-ink2">{t('Added')}: {result.import.added} · {t('Updated')}: {result.import.updated} · {t('Removed')}: {result.import.removed} · {t('Skipped')}: {result.import.skipped.length}</p>}
+            {!!result.import?.skipped.length && <details className="mt-2 text-ink2"><summary className="cursor-pointer">{t('Skipped profiles')}</summary>{result.import.skipped.map((entry, i) => <p key={i} className="mt-1">#{entry.index} · {t(vpnErrors[entry.code] ?? 'This subscription entry is unsupported and was skipped.')}</p>)}</details>}
+          </div>)}
+        </section>}
+      </Card>
+      {lastImport && <Card title={t('Import result')}>
+        <div className="flex flex-wrap gap-x-4 gap-y-1 text-[13px] text-ink2">{([['Added', lastImport.added], ['Updated', lastImport.updated], ['Removed', lastImport.removed], ['Duplicates', lastImport.duplicates], ['Skipped', lastImport.skipped.length]] as const).map(([label, count]) => <p key={label}>{t(label)}: {count}</p>)}</div>
+        {lastImport.retained_active > 0 && <p className="mt-2 text-xs text-ink2">{t('Your current connection is preserved. Apply the updated profile separately.')}</p>}
+        {lastImport.skipped.map((entry, i) => <p key={i} className="mt-1 text-xs text-ink2">#{entry.index} · {t(vpnErrors[entry.code] ?? 'This subscription entry is unsupported and was skipped.')}</p>)}
+      </Card>}
       <Card title={t('Modem display')}>
         <p className="text-[13px] text-ink2">{t('Swipe through five pages in the stock launcher: Home, Settings, About modem, VPN and eSIM. Wake and unlock the display to see a page selected here.')}</p>
         <div className="mt-3 flex flex-wrap gap-2">
@@ -138,8 +213,8 @@ export default function VpnTab() {
           <Button disabled={busy || !status.screen?.ready} onClick={() => void change({ action: 'screen_open', page: 'esim' })}>{t('Show eSIM controls')}</Button>
           {status.screen?.active && <Button disabled={busy} onClick={() => void change({ action: 'screen_close' })}>{t('Show home screen')}</Button>}
         </div>
-        {status.screen?.last_error && <p className="mt-2 text-xs text-danger">{t('The launcher extension is unavailable. Reinstall the display component in ZTE IMEI Studio.')}</p>}
-        {!status.screen?.installed && <p className="mt-2 text-xs text-ink2">{t('Install the display component from VPN settings in ZTE IMEI Studio.')}</p>}
+        {status.screen?.last_error && <p className="mt-2 text-xs text-danger">{t('The launcher extension is unavailable. Reinstall the display component in ZTE U60Pro Manager.')}</p>}
+        {!status.screen?.installed && <p className="mt-2 text-xs text-ink2">{t('Install the display component from VPN settings in ZTE U60Pro Manager.')}</p>}
       </Card>
     </>}
   </div>

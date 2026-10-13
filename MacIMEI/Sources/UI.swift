@@ -48,7 +48,7 @@ enum StudioPage: String, CaseIterable, Identifiable {
         case .esim: return "Профили физической eUICC: QR, активация и удаление"
         case .ttl: return "Фиксация исходящего TTL и прибавка к входящему"
         case .applications: return "Установленные приложения и каталог"
-        case .vpn: return "Проверка и установка компонентов VPN"
+        case .vpn: return "Профили, подписки и Wi-Fi с VPN"
         case .administration: return "Доступы, резервные копии и журнал действий"
         }
     }
@@ -457,25 +457,28 @@ struct ContentView: View {
     var currentPair: some View {
         HStack(spacing: 14) {
             IMEICard(slot: "01", title: "ТЕКУЩИЙ IMEI 1", value: model.currentIMEI1)
-            IMEICard(slot: "02", title: "ТЕКУЩИЙ IMEI 2", value: model.currentIMEI2)
+            if model.imeiRecordCount != 1 { IMEICard(slot: "02", title: "ТЕКУЩИЙ IMEI 2", value: model.currentIMEI2) }
         }
     }
 
     var changePage: some View {
         VStack(alignment: .leading, spacing: 22) {
-            StudioNote(symbol: "simcard", text: "Приложение читает IMEI обоих слотов из NV550 и проверяет их формат. Перед сменой обязательно сохраняет NV550 и EFS config с контрольными суммами, записывает новую пару и после перезагрузки сверяет результат. Копии доступны во вкладке «Бэкапы IMEI».")
+            StudioNote(symbol: "simcard", text: "Приложение определяет одну или две активные записи NV550. Перед сменой сохраняет эти записи и EFS config, проверяет копию, затем записывает IMEI и сверяет результат после перезагрузки. Неактивная запись не создаётся.")
             HStack {
-                Text(L10n.text("Текущая пара")).font(.system(size: 18, weight: .semibold))
+                Text(L10n.text("Текущие IMEI")).font(.system(size: 18, weight: .semibold))
                 Spacer()
                 Button(L10n.text("Прочитать IMEI")) { model.readIMEI() }.buttonStyle(StudioButtonStyle()).disabled(!model.canManage)
             }
             currentPair
+            if !model.imeiReadNote.isEmpty {
+                Text(L10n.text(model.imeiReadNote)).font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
+            }
 
             StudioCard {
                 StudioSectionTitle(number: "01", title: "Новые IMEI", detail: "Каждый номер должен содержать 15 цифр и корректную контрольную цифру.")
                 HStack(alignment: .top, spacing: 16) {
                     StudioField(label: "IMEI 1", placeholder: "15 цифр", text: $model.imei1, large: true)
-                    VStack(alignment: .trailing, spacing: 10) {
+                    if model.imeiRecordCount == 2 { VStack(alignment: .trailing, spacing: 10) {
                         StudioField(label: "IMEI 2", placeholder: "15 цифр", text: $model.imei2, large: true)
                         Button(action: model.generateSecond) {
                             Label(L10n.text("Получить из первого"), systemImage: "wand.and.stars")
@@ -485,7 +488,7 @@ struct ContentView: View {
                         .foregroundStyle(StudioStyle.accent)
                         .disabled(model.busy || model.imei1.isEmpty)
                         .help(L10n.text("Сохранить TAC первого IMEI, увеличить серийную часть и пересчитать контрольную цифру"))
-                    }
+                    } }
                 }
                 .disabled(model.busy)
                 .padding(.top, 4)
@@ -512,13 +515,15 @@ struct ContentView: View {
             }
 
             StudioCard {
-                StudioSectionTitle(number: "02", title: "Обязательный бэкап перед записью", detail: "Перед каждой сменой приложение создаёт свежую копию NV550 обоих слотов и EFS config, затем проверяет контрольные суммы. Если бэкап не создан, запись не начнётся.")
+                StudioSectionTitle(number: "02", title: "Обязательный бэкап перед записью", detail: "Перед каждой сменой приложение создаёт свежую копию активных NV550 и EFS config, затем проверяет контрольные суммы. Если бэкап не создан, запись не начнётся.")
                 Button { imeiSection = .backups } label: { Label(L10n.text("Открыть бэкапы IMEI"), systemImage: "externaldrive") }
                     .buttonStyle(StudioButtonStyle())
                 HStack(spacing: 0) {
                     reviewColumn(label: "IMEI 1", oldValue: model.currentIMEI1, newValue: model.imei1)
-                    Rectangle().fill(StudioStyle.line).frame(width: 1, height: 58).padding(.horizontal, 24)
-                    reviewColumn(label: "IMEI 2", oldValue: model.currentIMEI2, newValue: model.imei2)
+                    if model.imeiRecordCount == 2 {
+                        Rectangle().fill(StudioStyle.line).frame(width: 1, height: 58).padding(.horizontal, 24)
+                        reviewColumn(label: "IMEI 2", oldValue: model.currentIMEI2, newValue: model.imei2)
+                    }
                 }
                 .padding(.vertical, 6)
                 Rectangle().fill(StudioStyle.line).frame(height: 1)
@@ -529,7 +534,7 @@ struct ContentView: View {
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
                     Button(action: model.apply) {
-                        Label(L10n.text("Записать оба IMEI"), systemImage: "arrow.up.right")
+                        Label(L10n.text("Записать IMEI"), systemImage: "arrow.up.right")
                     }
                     .buttonStyle(StudioButtonStyle(prominent: true))
                     .disabled(!model.canApply || model.busy)
@@ -594,10 +599,10 @@ struct ContentView: View {
 
             if let backup = selectedBackup {
                 StudioCard {
-                    StudioSectionTitle(number: "↩", title: "Восстановить выбранную пару", detail: backup.date)
+                    StudioSectionTitle(number: "↩", title: "Восстановить IMEI из копии", detail: backup.date)
                     HStack(spacing: 30) {
                         valueColumn(label: "IMEI 1 ИЗ БЭКАПА", value: backup.imei1)
-                        valueColumn(label: "IMEI 2 ИЗ БЭКАПА", value: backup.imei2)
+                        if !backup.imei2.isEmpty { valueColumn(label: "IMEI 2 ИЗ БЭКАПА", value: backup.imei2) }
                         Spacer(minLength: 0)
                     }
                     Text(L10n.text(backup.url.path))
@@ -607,7 +612,7 @@ struct ContentView: View {
                         .fixedSize(horizontal: false, vertical: true)
                     Rectangle().fill(StudioStyle.line).frame(height: 1)
                     HStack(spacing: 16) {
-                        Text(L10n.text("Будут восстановлены оба IMEI из этой копии. Перед записью приложение сохранит текущее состояние."))
+                        Text(L10n.text("Будут восстановлены активные IMEI из этой копии. Число записей должно совпадать с модемом. Перед записью приложение сохранит текущее состояние."))
                             .font(.system(size: 11))
                             .foregroundStyle(StudioStyle.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -988,7 +993,7 @@ struct ContentView: View {
                     Text(L10n.text(backup.date)).font(.system(size: 12, weight: .medium))
                     HStack(spacing: 18) {
                         Text(L10n.text("1  \(backup.imei1.isEmpty ? "—" : backup.imei1)"))
-                        Text(L10n.text("2  \(backup.imei2.isEmpty ? "—" : backup.imei2)"))
+                        if !backup.imei2.isEmpty { Text(L10n.text("2  \(backup.imei2)")) }
                     }
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(StudioStyle.secondary)

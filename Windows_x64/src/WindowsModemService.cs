@@ -100,14 +100,14 @@ public sealed partial class WindowsModemService : IModemService
             try
             {
                 var manifest = JsonSerializer.Deserialize<ImeiBackupManifest>(File.ReadAllText(Path.Combine(path,"manifest.json")));
-                if (manifest is { Schema: 1 } && Guid.TryParse(manifest.Id,out _))
+                if (manifest is not null && ((manifest.Schema == 1 && manifest.Imeis.Length == 2) || (manifest.Schema == 2 && manifest.Imeis.Length == 1)) && Guid.TryParse(manifest.Id,out _))
                     list.Add(new BackupInfo(manifest.Id, "IMEI " + string.Join(" / ",manifest.Imeis), "IMEI",manifest.Created,path,
                         new DirectoryInfo(path).EnumerateFiles().Sum(file => file.Length)));
             }
             catch { /* damaged backup never appears selectable */ }
         }
         foreach (var item in DeviceBackupManager.List(_storage))
-            list.Add(new BackupInfo(item.Manifest.Id,"Бэкап данных модема", "Устройство",
+            list.Add(new BackupInfo(item.Manifest.Id,DeviceBackupManager.Title(item.Manifest.Kind), "Устройство",
                 item.Manifest.CreatedAt,item.Path,item.Bytes));
         foreach (var item in SystemBackupManager.List(_storage))
             list.Add(new BackupInfo(item.Id, "Образ системы · " + item.Capture,
@@ -176,9 +176,9 @@ public sealed partial class WindowsModemService : IModemService
                 case ModemOperation.RefreshDevice: result = await RefreshDeviceAsync(cancellationToken); break;
                 case ModemOperation.ReadImei:
                     RequireSsh();
-                    var state = await _imei!.InspectAsync(cancellationToken);
-                    _snapshot = _snapshot with { Imei = string.Join(" / ",state.Imeis), Serial = state.Identity.Cid };
-                    result = "Оба IMEI подтверждены по NV и API.";
+                    var state = await _imei!.ReadImeiAsync(cancellationToken);
+                    _snapshot = _snapshot with { ImeiRecordCount = state.Secondary is null ? 1 : 2, Imei = state.Secondary is null ? state.Primary + " / IMEI 2: NV не активна" : state.Primary + " / " + state.Secondary, Serial = state.Identity.Cid };
+                    result = state.Detail;
                     break;
                 case ModemOperation.CreateImeiBackup:
                     RequireSsh(); result = "Проверенный бэкап IMEI: " + await _imei!.CreateBackupAsync(cancellationToken); break;
@@ -252,6 +252,10 @@ public sealed partial class WindowsModemService : IModemService
                         VpnSsid = vpn.Ssid, VpnPasswordMode = vpn.PasswordMode?.ToString().ToLowerInvariant() };
                     result = _snapshot.Vpn!; break;
                 case ModemOperation.ImportVpnProfile:
+                case ModemOperation.ImportVpnConfig:
+                case ModemOperation.ImportVpnSubscription:
+                case ModemOperation.UpdateVpnSubscription:
+                case ModemOperation.DeleteVpnSubscription:
                 case ModemOperation.ActivateVpnProfile:
                 case ModemOperation.RenameVpnProfile:
                 case ModemOperation.DeleteVpnProfile:
@@ -260,6 +264,10 @@ public sealed partial class WindowsModemService : IModemService
                     vpn = request.Operation switch
                     {
                         ModemOperation.ImportVpnProfile => await _features!.ImportVpnProfileAsync(Param(p,"vpn_secret_uri"), p?.GetValueOrDefault("vpn_profile_name"), cancellationToken),
+                        ModemOperation.ImportVpnConfig => await _features!.ImportVpnConfigAsync(Param(p,"vpn_secret_uri"), p?.GetValueOrDefault("vpn_profile_name"), cancellationToken),
+                        ModemOperation.ImportVpnSubscription => await _features!.ImportVpnSubscriptionAsync(Param(p,"vpn_subscription_url"), p?.GetValueOrDefault("vpn_subscription_name"), cancellationToken),
+                        ModemOperation.UpdateVpnSubscription => await _features!.UpdateVpnSubscriptionAsync(Param(p,"vpn_subscription_id"), cancellationToken),
+                        ModemOperation.DeleteVpnSubscription => await _features!.DeleteVpnSubscriptionAsync(Param(p,"vpn_subscription_id"), cancellationToken),
                         ModemOperation.ActivateVpnProfile => await _features!.ActivateVpnProfileAsync(Param(p,"vpn_profile_id"), cancellationToken),
                         ModemOperation.RenameVpnProfile => await _features!.RenameVpnProfileAsync(Param(p,"vpn_profile_id"), Param(p,"vpn_profile_name"), cancellationToken),
                         ModemOperation.DeleteVpnProfile => await _features!.DeleteVpnProfileAsync(Param(p,"vpn_profile_id"), cancellationToken),
@@ -269,7 +277,9 @@ public sealed partial class WindowsModemService : IModemService
                         VpnSsid = vpn.DesiredSsid ?? vpn.Ssid, VpnPasswordMode = vpn.PasswordMode };
                     result = request.Operation switch
                     {
-                        ModemOperation.ImportVpnProfile => "Профиль VPN импортирован",
+                        ModemOperation.ImportVpnProfile or ModemOperation.ImportVpnConfig => "Профиль VPN импортирован",
+                        ModemOperation.ImportVpnSubscription or ModemOperation.UpdateVpnSubscription => "Подписка VPN обновлена",
+                        ModemOperation.DeleteVpnSubscription => "Подписка VPN удалена; профили сохранены",
                         ModemOperation.ActivateVpnProfile => "Активный профиль VPN изменён",
                         ModemOperation.RenameVpnProfile => "Название профиля VPN сохранено",
                         ModemOperation.DeleteVpnProfile => "Профиль VPN удалён",
@@ -442,7 +452,7 @@ public sealed partial class WindowsModemService : IModemService
             status.HelperReady,
             status.Configured, status.Enabled,
             status.CoreRunning, status.Ssid, status.Profiles.Select(profile => profile.Name).ToArray(), active,
-            status.Profiles.Select(p => new VpnProfileSnapshot(p.Id, p.Name, p.Transport, p.Active)).ToArray(), status.SettingsSupported);
+            status.Profiles.Select(p => new VpnProfileSnapshot(p.Id, p.Name, p.Transport, p.Active, p.Protocol, p.SubscriptionId, p.UpdateAvailable, p.RemovedFromSubscription, p.Warnings)).ToArray(), status.SettingsSupported, status.Subscriptions, status.LastImport);
     }
     private async Task<IReadOnlyList<ModemAppInfo>> ListApplicationsCoreAsync(CancellationToken ct)
     {

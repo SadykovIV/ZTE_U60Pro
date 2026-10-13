@@ -10,7 +10,7 @@ namespace ZteImeiStudio.Windows.Core;
 public sealed record DeviceBackupEntry(string Name, string Source, long Bytes, string Sha256);
 public sealed record DeviceBackupManifest(int Schema, string Id, DateTimeOffset CreatedAt,
     string Cid, string FirmwareHash, string BootId, DeviceBackupEntry[] Files,
-    string Scope, bool Complete);
+    string Scope, bool Complete, string Kind = "all");
 
 /// <summary>
 /// Read-only data snapshot. The modem streams four NV partitions, /data,
@@ -19,6 +19,10 @@ public sealed record DeviceBackupManifest(int Schema, string Id, DateTimeOffset 
 public sealed class DeviceBackupManager(SshTransport shell, DeviceFeatureService features,
     string storageRoot)
 {
+    internal static bool SupportsModemImage(string hash) => hash is ImeiEngine.FirmwareHash or
+        "5a4489882538b5ab1d3e0049371f1b620d28d262a429923299b4f2626d40d478" or
+        "c57e063d390983229dfc53aa87380b3d4655ee8daa1c748e1a032ac90cd0df81";
+
     private const long Limit = 16L * 1024 * 1024 * 1024;
     private const long Reserve = 64L * 1024 * 1024;
     private string Root => Path.Combine(storageRoot, "DeviceBackups");
@@ -33,21 +37,46 @@ public sealed class DeviceBackupManager(SshTransport shell, DeviceFeatureService
     ];
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = true };
 
-    public async Task<string> CreateAsync(CancellationToken ct = default)
+    internal static bool ValidImageIdentity(string? value) => value == "absent" || value is { Length: 64 } &&
+        value.All(c => c is >= '0' and <= '9' or >= 'a' and <= 'f');
+
+    private static (string Name,string Mode,string Argument,string Source,long? ExactSize)[] FilesFor(string kind) => kind switch
     {
-        foreach (var pending in new[] { "imei-pending.json", "setup-pending.json", "adb-access-pending.json" })
+        "all" => Files,
+        "modem" => Files.Where(f => f.Mode == "partition").ToArray(),
+        "userData" or "configuration" => Files.Where(f => f.Mode == kind).ToArray(),
+        _ => throw new InvalidDataException("Неизвестный вид резервной копии."),
+    };
+
+    public static string Title(string kind) => kind switch
+    {
+        "modem" => "Модемная часть", "userData" => "Пользовательская часть", "configuration" => "Конфигурация",
+        _ => "Бэкап данных модема",
+    };
+
+    public async Task<string> CreateAsync(CancellationToken ct = default, string kind = "all")
+    {
+        var selectedFiles = FilesFor(kind);
+        foreach (var pending in new[] { "adb-access-pending.json" })
             if (File.Exists(Path.Combine(storageRoot,pending)))
                 throw new InvalidOperationException("Сначала завершите незавершённую операцию с модемом.");
+        Directory.CreateDirectory(storageRoot);
+        using var imeiOperation = new FileStream(Path.Combine(storageRoot,"imei-operation.lock"),
+            FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None);
         Directory.CreateDirectory(Root);
+        SystemBackupManager.SecureDirectory(Root);
         var id = Guid.NewGuid().ToString("D");
         var partial = Path.Combine(Root,".partial-" + id);
         var final = Path.Combine(Root,id);
         if (Directory.Exists(partial) || Directory.Exists(final)) throw new IOException("Имя резервной копии уже занято.");
         Directory.CreateDirectory(partial);
+        SystemBackupManager.SecureDirectory(partial);
         try
         {
             var manifest = await features.MutateAsync(async (identity, token) =>
             {
+                if (kind is "all" or "modem" ? !SupportsModemImage(identity.FirmwareHash) : !ValidImageIdentity(identity.FirmwareHash))
+                    throw new InvalidDataException("Для этой прошивки не подтверждена геометрия разделов NV. Соберите данные для адаптации.");
                 var bytes = await features.ResourceAsync("DeviceBackups","reader.sh",ct);
                 var stage = await features.StageAsync("zte-device-backup",new Dictionary<string,byte[]> { ["reader.sh"] = bytes },ct);
                 try
@@ -57,14 +86,14 @@ public sealed class DeviceBackupManager(SshTransport shell, DeviceFeatureService
                     var guard = DeviceFeatureService.Guard(identity,token) +
                         "test \"$(sha256sum " + DeviceFeatureService.Quote(script) + " | cut -d ' ' -f1)\" = " +
                         DeviceFeatureService.Quote(expectedScriptHash) + "; ";
-                    var userEstimate = await EstimateAsync(guard,script,identity.Cid,"userData",ct);
-                    var configEstimate = await EstimateAsync(guard,script,identity.Cid,"configuration",ct);
-                    var estimated = checked(20_971_520L + userEstimate + configEstimate);
+                    var userEstimate = selectedFiles.Any(f => f.Mode == "userData") ? await EstimateAsync(guard,script,identity.Cid,"userData",ct) : 0;
+                    var configEstimate = selectedFiles.Any(f => f.Mode == "configuration") ? await EstimateAsync(guard,script,identity.Cid,"configuration",ct) : 0;
+                    var estimated = checked(selectedFiles.Sum(f => f.ExactSize ?? 0) + userEstimate + configEstimate);
                     var free = new DriveInfo(Path.GetPathRoot(partial)!).AvailableFreeSpace;
                     if (free < Math.Min(Limit, estimated + Math.Max(Reserve, estimated / 2)) + Reserve)
                         throw new IOException("Недостаточно места для полного бэкапа и запаса 64 МиБ.");
                     var entries = new List<DeviceBackupEntry>();
-                    foreach (var file in Files)
+                    foreach (var file in selectedFiles)
                     {
                         ct.ThrowIfCancellationRequested();
                         var estimate = file.Mode switch
@@ -87,12 +116,12 @@ public sealed class DeviceBackupManager(SshTransport shell, DeviceFeatureService
                         entries.Add(new DeviceBackupEntry(file.Name,file.Source,stream.Bytes,stream.Sha256));
                     }
                     await features.VerifyIdentityAsync(identity,ct);
-                    return new DeviceBackupManifest(1,id,DateTimeOffset.UtcNow,identity.Cid,
+                    return new DeviceBackupManifest(kind == "all" ? 1 : 2,id,DateTimeOffset.UtcNow,identity.Cid,
                         identity.FirmwareHash,identity.BootId,entries.ToArray(),
-                        "modemst1, modemst2, fsg, persist, /data и конфигурация; снимок работающего устройства",true);
+                        string.Join(", ", selectedFiles.Select(f => f.Source)) + "; снимок работающего устройства",true,kind);
                 }
                 finally { await features.CleanupStageAsync(stage,["reader.sh"],CancellationToken.None); }
-            },ct);
+            },ct, measuredAgentPlatform: true);
             await using (var output = new FileStream(Path.Combine(partial,"manifest.json"),FileMode.CreateNew,
                 FileAccess.Write,FileShare.None,4096,FileOptions.WriteThrough))
             { await JsonSerializer.SerializeAsync(output,manifest,Json,ct); await output.FlushAsync(ct); }
@@ -164,19 +193,15 @@ public sealed class DeviceBackupManager(SshTransport shell, DeviceFeatureService
             throw new InvalidDataException("Манифест копии отсутствует или повреждён.");
         var manifest = JsonSerializer.Deserialize<DeviceBackupManifest>(await File.ReadAllTextAsync(manifestPath,ct))
             ?? throw new InvalidDataException("Неверный манифест копии.");
-        if (manifest.Schema != 1 || !manifest.Complete || manifest.Id != id || manifest.Files.Length != Files.Length ||
-            !Guid.TryParse(manifest.BootId,out _) || manifest.Cid.Length != 32 ||
-            manifest.Cid.Any(c => c is not (>= '0' and <= '9' or >= 'a' and <= 'f')) ||
-            manifest.FirmwareHash != ImeiEngine.FirmwareHash)
-            throw new InvalidDataException("Неверный формат полной копии.");
-        var names = Files.Select(x => x.Name).Append("manifest.json").ToHashSet(StringComparer.Ordinal);
+        var expectedFiles = ValidateManifest(manifest, id);
+        var names = expectedFiles.Select(x => x.Name).Append("manifest.json").ToHashSet(StringComparer.Ordinal);
         if (!Directory.EnumerateFileSystemEntries(directory).Select(Path.GetFileName).ToHashSet(StringComparer.Ordinal).SetEquals(names))
             throw new InvalidDataException("Состав файлов бэкапа отличается от ожидаемого.");
-        foreach (var expected in Files)
+        foreach (var expected in expectedFiles)
         {
             var entry = manifest.Files.SingleOrDefault(x => x.Name == expected.Name);
             if (entry is null || entry.Source != expected.Source || entry.Bytes < 1 || entry.Bytes > Limit ||
-                entry.Sha256.Length != 64 || entry.Sha256.Any(c => c is not (>= '0' and <= '9' or >= 'a' and <= 'f')) ||
+                entry.Sha256 is not { Length: 64 } || entry.Sha256.Any(c => c is not (>= '0' and <= '9' or >= 'a' and <= 'f')) ||
                 (expected.ExactSize is { } exact && exact != entry.Bytes))
                 throw new InvalidDataException("Неверное описание файла в копии: " + expected.Name);
             var path = Path.Combine(directory,expected.Name);
@@ -187,6 +212,19 @@ public sealed class DeviceBackupManager(SshTransport shell, DeviceFeatureService
             if (hash != entry.Sha256) throw new InvalidDataException("SHA-256 файла копии не совпал: " + expected.Name);
         }
         return manifest;
+    }
+
+    private static (string Name,string Mode,string Argument,string Source,long? ExactSize)[] ValidateManifest(DeviceBackupManifest manifest, string id)
+    {
+        var expected = FilesFor(manifest.Kind);
+        if ((manifest.Schema != 1 || manifest.Kind != "all") && (manifest.Schema != 2 || manifest.Kind == "all") ||
+            !manifest.Complete || manifest.Id != id || manifest.Files is null || manifest.Files.Length != expected.Length ||
+            manifest.Files.Any(f => f is null) || manifest.Files.Select(f => f.Name).Distinct().Count() != expected.Length ||
+            !Guid.TryParse(manifest.BootId,out _) || manifest.Cid is not { Length: 32 } ||
+            manifest.Cid.Any(c => c is not (>= '0' and <= '9' or >= 'a' and <= 'f')) ||
+            (manifest.Kind is "all" or "modem" ? !SupportsModemImage(manifest.FirmwareHash) : !ValidImageIdentity(manifest.FirmwareHash)))
+            throw new InvalidDataException("Неверный формат резервной копии.");
+        return expected;
     }
 
     public static IReadOnlyList<(DeviceBackupManifest Manifest,string Path,long Bytes)> List(string storageRoot)
@@ -204,8 +242,8 @@ public sealed class DeviceBackupManager(SshTransport shell, DeviceFeatureService
                 if ((File.GetAttributes(directory) & FileAttributes.ReparsePoint) != 0 ||
                     (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0) continue;
                 var manifest = JsonSerializer.Deserialize<DeviceBackupManifest>(File.ReadAllText(path));
-                if (manifest is not { Schema: 1, Complete: true } || manifest.Id != id ||
-                    manifest.Files.Length != Files.Length) continue;
+                if (manifest is null) continue;
+                _ = ValidateManifest(manifest,id);
                 result.Add((manifest,directory,manifest.Files.Sum(f => f.Bytes)));
             }
             catch { /* damaged entries are hidden until manual inspection */ }

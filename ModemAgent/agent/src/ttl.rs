@@ -14,16 +14,20 @@ use std::time::Duration;
 
 const ROOT: &str = "/data/zte-imei-ttl";
 const MANAGER: &str = "/data/zte-imei-ttl/manager.sh";
-const MANAGER_SHA: &str = "b6588072c82ddd7678093a29b983ec4417c6807562819e3bda69cd6534637b7c";
+const MANAGER_SHAS: &[&str] = &[
+    "7e629d347d1dc1777cb6322430de0d4188b442d624108efbaba8ad110f012666",
+    "e4684cb0fa040de0525d0248897da01a5af2c4ee8509a851719afe9c970e9194",
+    "a70afc13c3645f64b5fd937162e7d403e133bcfa0a2da0e565d39a693f9ab488",
+    "79d5a2e696613f966fe2dff3fe59a0366455fe16681284c65d8ddb36c5e35b5a",
+    // Already installed B31 helpers remain valid without a forced reinstall.
+    "b6588072c82ddd7678093a29b983ec4417c6807562819e3bda69cd6534637b7c",
+];
 const DEVICE_CID: &str = "/sys/block/mmcblk0/device/cid";
 const APP_LOCK: &str = "/tmp/zte-imei-app.lock";
 const TIMEOUT: Duration = Duration::from_secs(90);
 const OUTPUT_LIMIT: usize = 16 * 1024;
-const PENDING: &[&str] = &[
-    "/data/local/tmp/zte-imei-installations/active",
-    "/data/local/tmp/open-u60-transactions/active",
-    "/tmp/fota_install_processing",
-];
+// Legacy access/agent deployment journals do not own TTL state.
+const PENDING: &[&str] = &["/tmp/fota_install_processing"];
 
 type Result<T> = std::result::Result<T, Error>;
 
@@ -264,9 +268,9 @@ fn checked_file(path: &Path, uid: u32, limit: u64) -> Result<Vec<u8>> {
     }
     Ok(bytes)
 }
-fn check_manager(path: &Path, uid: u32, expected_hash: &str) -> Result<()> {
+fn check_manager(path: &Path, uid: u32, expected_hashes: &[&str]) -> Result<()> {
     let bytes = checked_file(path, uid, 128 * 1024)?;
-    if format!("{:x}", Sha256::digest(&bytes)) != expected_hash {
+    if !expected_hashes.contains(&format!("{:x}", Sha256::digest(&bytes)).as_str()) {
         return Err(integrity());
     }
     Ok(())
@@ -469,7 +473,7 @@ fn execute(configuration: Option<&Configuration>) -> Result<Status> {
     }
     safe_directory(Path::new("/data"), 0)?;
     safe_directory(Path::new(ROOT), 0)?;
-    check_manager(Path::new(MANAGER), 0, MANAGER_SHA)?;
+    check_manager(Path::new(MANAGER), 0, MANAGER_SHAS)?;
     let cid = cid()?;
     let arguments = configuration.map_or_else(
         || vec!["status".into(), cid.clone()],
@@ -729,6 +733,17 @@ mod tests {
         assert_eq!(interpret(result, None).unwrap_err().code, "TTL_MANAGER_IO");
     }
     #[test]
+    fn shipped_manager_and_previous_b31_hashes_are_trusted() {
+        let current = include_bytes!("../../../MacIMEI/Resources/TTL/manager.sh");
+        let digest = format!("{:x}", Sha256::digest(current));
+        assert!(MANAGER_SHAS.contains(&digest.as_str()));
+        assert!(MANAGER_SHAS.contains(&"b6588072c82ddd7678093a29b983ec4417c6807562819e3bda69cd6534637b7c"));
+        assert!(MANAGER_SHAS.contains(&"79d5a2e696613f966fe2dff3fe59a0366455fe16681284c65d8ddb36c5e35b5a"));
+        assert!(MANAGER_SHAS.contains(&"a70afc13c3645f64b5fd937162e7d403e133bcfa0a2da0e565d39a693f9ab488"));
+        assert!(MANAGER_SHAS.contains(&"e4684cb0fa040de0525d0248897da01a5af2c4ee8509a851719afe9c970e9194"));
+        assert_eq!(MANAGER_SHAS.len(), 5);
+    }
+    #[test]
     fn trust_checks_reject_modified_writable_or_linked_manager() {
         let temp = Temp::new();
         let uid = unsafe { libc::geteuid() };
@@ -737,13 +752,16 @@ mod tests {
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
         let hash = format!("{:x}", Sha256::digest(b"trusted"));
         assert!(safe_directory(&temp.0, uid).is_ok());
-        assert!(check_manager(&path, uid, &hash).is_ok());
-        assert!(check_manager(&path, uid, "incorrect").is_err());
+        assert!(check_manager(&path, uid, &[&hash]).is_ok());
+        assert!(check_manager(&path, uid, &["previous", &hash]).is_ok());
+        assert!(check_manager(&path, uid, &[&hash, "current"]).is_ok());
+        assert!(check_manager(&path, uid, &[]).is_err());
+        assert!(check_manager(&path, uid, &["incorrect"]).is_err());
         let link = temp.0.join("link");
         symlink(&path, &link).unwrap();
-        assert!(check_manager(&link, uid, &hash).is_err());
+        assert!(check_manager(&link, uid, &[&hash]).is_err());
         fs::set_permissions(&path, fs::Permissions::from_mode(0o666)).unwrap();
-        assert!(check_manager(&path, uid, &hash).is_err());
+        assert!(check_manager(&path, uid, &[&hash]).is_err());
         fs::set_permissions(&temp.0, fs::Permissions::from_mode(0o777)).unwrap();
         assert!(safe_directory(&temp.0, uid).is_err());
     }
@@ -762,6 +780,10 @@ mod tests {
         fs::write(path.join("owner"), "foreign").unwrap();
         drop(lock);
         assert_eq!(fs::read_to_string(path.join("owner")).unwrap(), "foreign");
+    }
+    #[test]
+    fn ttl_pending_scope_keeps_fota_without_independent_deployments() {
+        assert_eq!(PENDING, ["/tmp/fota_install_processing"]);
     }
     #[test]
     fn pending_guards_include_dangling_symlinks() {

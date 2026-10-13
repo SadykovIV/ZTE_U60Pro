@@ -76,3 +76,13 @@ Windows_x64/Resources/AgentDashboardInstall/dashboard-uhttpd
 !MacIMEI/Resources/Esim/gsma-rsp-roots.pem
 !Windows_x64/Resources/Esim/gsma-rsp-roots.pem
 ModemAgent/web-app/.npm-cache/
+
+# Firmware adaptation helpers are shipped in the pinned dependency archive.
+MacIMEI/Resources/FirmwareSupport/support-sources.tar.gz
+MacIMEI/Resources/FirmwareSupport/zte-support-config
+MacIMEI/Resources/FirmwareSupport/zte-support-nv
+MacIMEI/Resources/FirmwareSupport/zte-support-qmi
+Windows_x64/Resources/FirmwareSupport/support-sources.tar.gz
+Windows_x64/Resources/FirmwareSupport/zte-support-config
+Windows_x64/Resources/FirmwareSupport/zte-support-nv
+Windows_x64/Resources/FirmwareSupport/zte-support-qmi

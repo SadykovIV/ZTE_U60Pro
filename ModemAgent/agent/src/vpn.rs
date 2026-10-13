@@ -10,7 +10,23 @@ use std::{
     time::Duration,
 };
 const HELPER: &str = "/data/zte-vpn/vpnctl";
-const HELPER_SHA: &str = "f5e1c9e627e3e978ff535de79b95ff920d7318e7ea3ce713e5b174efe313ca0c";
+pub const REQUEST_LIMIT: usize = 32 * 1024 * 1024;
+const HELPER_SHA: &str = "8aaece533e2503c7a501497bb1bf191f37a0ffbba067e7a7ff3a4c6f9623673f";
+
+// Keep reviewed controllers usable when only the agent is updated. The build
+// retains the previous source pin here; no device-provided hash is accepted.
+const PREVIOUS_HELPER_SHAS: &[&str] = &[
+    "f5e1c9e627e3e978ff535de79b95ff920d7318e7ea3ce713e5b174efe313ca0c",
+    "cf15a6290316dd6832873e35972831a590d70cf0734eb93dbcd96aab87fab6f1",
+    "b2c3fcfafeccd50fa3000ad5f8f66f1e42ff157b295cdda11dddd31571612af7",
+    "fe1f6d535ccee6ec0f9333c01108b00f35006209850ed641023dbb937dd30b48",
+    "82a8b6655ff6cd43938ffe3735e8841599ef6116bf33079d8d203db9415ca3f2",
+    "b5f581427afd423be3931473db2ce4b496a387b685ab3c48adf26cc597000f9a",
+    "e00749ed2a6273c95a4b0563212313c81e54928f6564fdbd8f9616d12a4df6ba",
+];
+fn supported_helper(hash: &str) -> bool {
+    hash == HELPER_SHA || PREVIOUS_HELPER_SHAS.contains(&hash)
+}
 
 fn error(status: u16, code: &str) -> (u16, Value) {
     (
@@ -44,21 +60,21 @@ fn verified() -> bool {
     {
         return false;
     }
-    format!("{:x}", Sha256::digest(bytes)) == HELPER_SHA
+    supported_helper(&format!("{:x}", Sha256::digest(bytes)))
 }
 fn execute(body: &Value) -> (u16, Value) {
     if !verified() {
         return error(503, "VPN_NOT_INSTALLED");
     }
     let input = match serde_json::to_vec(body) {
-        Ok(b) if b.len() <= 65536 => b,
+        Ok(b) if b.len() <= REQUEST_LIMIT => b,
         _ => return error(400, "VPN_INVALID_REQUEST"),
     };
     let output = match process_runner::output(
         Command::new(HELPER).arg("request"),
         Some(&input),
         Duration::from_secs(220),
-        256 * 1024,
+        2 * 1024 * 1024,
     ) {
         Ok(o) => o,
         Err(_) => return error(504, "VPN_OPERATION_TIMEOUT"),
@@ -97,7 +113,7 @@ pub fn status() -> (u16, Value) {
     execute(&json!({"action":"status"}))
 }
 pub fn request(bytes: &[u8]) -> (u16, Value) {
-    if bytes.len() > 65536 {
+    if bytes.len() > REQUEST_LIMIT {
         return error(400, "VPN_INVALID_REQUEST");
     }
     let Ok(body) = serde_json::from_slice::<Value>(bytes) else {
@@ -108,6 +124,11 @@ pub fn request(bytes: &[u8]) -> (u16, Value) {
     };
     if ![
         "import",
+        "import_config",
+        "subscription_import",
+        "subscription_update",
+        "subscription_delete",
+        "subscription_details",
         "activate",
         "delete",
         "rename",
@@ -128,6 +149,20 @@ pub fn request(bytes: &[u8]) -> (u16, Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn previous_b31_controller_remains_supported_after_agent_update() {
+        assert!(supported_helper(HELPER_SHA));
+        for previous in PREVIOUS_HELPER_SHAS {
+            assert!(supported_helper(previous));
+        }
+        // Agent-only upgrades must retain the delivered 1.24.22 controller and
+        // the first reviewed 1.25 candidate already installed on the test modem.
+        assert!(supported_helper("b5f581427afd423be3931473db2ce4b496a387b685ab3c48adf26cc597000f9a"));
+        assert!(supported_helper("e00749ed2a6273c95a4b0563212313c81e54928f6564fdbd8f9616d12a4df6ba"));
+        assert!(!supported_helper(&"f".repeat(64)));
+        assert!(!supported_helper(""));
+        assert!(!supported_helper(&HELPER_SHA.to_uppercase()));
+    }
     #[test]
     fn rejects_internal_commands_before_execution() {
         for action in ["integrity", "hook-network", "shell", ""] {

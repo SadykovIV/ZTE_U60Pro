@@ -1,10 +1,13 @@
 #!/bin/sh
-# Runtime-only configfs ADB transaction. No usb_op, service, boot or UCI writes.
+# Configfs ADB transaction with persistent removal/restoration of our boot unlock.
+# USB network links are preserved; rc.local and USB roll back without a fresh SSH ACK.
 set -eu
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C
 BASE=/sys/kernel/config/usb_gadget/g1
 LOCK=/tmp/zte-imei-app.lock
-FIRMWARE=604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263
+RC=/etc/rc.local
+BACKUPS=/data/zte-imei-studio/adb-control
+BOOT_LINE='echo 1 > /sys/class/android_usb/android0/usb_op'
 ROUTER=55c54f74aaa427940254a2f16c36771e675a80a002363e4f10b0dfcb604d9c6f
 fail() { printf 'ADB_CONTROL_REFUSED\n' >&2; exit 71; }
 regular() { test -f "$1" && test ! -L "$1" && test "$(stat -c '%u:%a:%h' "$1")" = 0:600:1; }
@@ -14,14 +17,28 @@ read_saved() { regular "$STAGE/$1" && test "$(stat -c %s "$STAGE/$1")" -le 8192 
 binding() {
   test "$(id -u)" = 0 && test "$(uname -s)" = Linux && test "$(uname -m)" = aarch64 || fail
   test "$(cat /sys/block/mmcblk0/device/cid)" = "$CID" && test "$(cat /proc/sys/kernel/random/boot_id)" = "$BOOT" || fail
-  for component in /firmware/image/modem.b16 /usr/bin/diag-router /sbin/adbd; do
+  for component in /usr/bin/diag-router /sbin/adbd; do
     test -f "$component" && test ! -L "$component" && test "$(stat -c %u "$component")" = 0 || fail
   done
-  test "$(sha256sum /firmware/image/modem.b16 | cut -d ' ' -f 1)" = "$FIRMWARE" || fail
+  image=absent
+  if test -e /firmware/image/modem.b16 || test -L /firmware/image/modem.b16; then
+    test -f /firmware/image/modem.b16 && test ! -L /firmware/image/modem.b16 && test "$(stat -c %u /firmware/image/modem.b16)" = 0 || fail
+    image=$(sha256sum /firmware/image/modem.b16 | cut -d ' ' -f 1)
+  fi
+  case "$image" in
+    604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263|5a4489882538b5ab1d3e0049371f1b620d28d262a429923299b4f2626d40d478) :;;
+    c57e063d390983229dfc53aa87380b3d4655ee8daa1c748e1a032ac90cd0df81|absent)
+      test -f /usr/bin/zte_topsw_mdm && test ! -L /usr/bin/zte_topsw_mdm && test "$(stat -c %u /usr/bin/zte_topsw_mdm)" = 0 || fail
+      test "$(sha256sum /usr/bin/zte_topsw_mdm | cut -d ' ' -f 1)" = 93a346e7d69024503caf9ad42f14c97e1514dd7d04c7b5ebef4e30473b5d5c64 || fail
+      info=$(ubus -t 5 call zwrt_web device_info '{}') || fail
+      test "$(printf '%s' "$info" | jsonfilter -e '@.integrate_version')" = XCBZ_HK_MU5250V1.0.0B04 || fail
+      test "$(printf '%s' "$info" | jsonfilter -e '@.wa_inner_version')" = BD_XCBZHKMU5250V1.0.0B04 || fail;;
+    *) fail;;
+  esac
   test "$(sha256sum /usr/bin/diag-router | cut -d ' ' -f 1)" = "$ROUTER" || fail
 }
 layout() {
-  for directory in /sys/kernel/config /sys/kernel/config/usb_gadget "$BASE" "$BASE/configs" "$BASE/configs/c.1" "$BASE/functions" "$BASE/functions/ffs.adb"; do
+  for directory in /sys/kernel/config /sys/kernel/config/usb_gadget "$BASE" "$BASE/configs" "$BASE/configs/c.1" "$BASE/functions"; do
     test -d "$directory" && test -r "$directory" && test -x "$directory" && test ! -L "$directory" || fail
   done
   count=0
@@ -56,8 +73,10 @@ daemon() {
   pid=$(pidof adbd) || fail
   case "$pid" in ''|*[!0-9]*) fail;; esac
   test "$(readlink "/proc/$pid/exe")" = /sbin/adbd && test "$(stat -c %u "/proc/$pid")" = 0 || fail
-  test "$(sha256sum /sbin/adbd | cut -d ' ' -f 1)" = 6d42bf97ae1f761ba3c5a0ee48deb84db0b19e4766b6b538b71741743d5b3f90 || fail
-  test "$(sha256sum "/proc/$pid/exe" | cut -d ' ' -f 1)" = 6d42bf97ae1f761ba3c5a0ee48deb84db0b19e4766b6b538b71741743d5b3f90 || fail
+  # B28 has the same measured configfs layout. Verify its actual root daemon
+  # and open FunctionFS endpoints instead of mistaking the B31 binary pin for
+  # a USB capability. No firmware override can bypass the binding above.
+  test "$(sha256sum /sbin/adbd | cut -d ' ' -f 1)" = "$(sha256sum "/proc/$pid/exe" | cut -d ' ' -f 1)" || fail
   ep0=0; ep1=0; ep2=0; count=0
   for fd in "/proc/$pid"/fd/*; do
     test -L "$fd" || continue
@@ -71,15 +90,58 @@ daemon() {
   case "$start" in ''|*[!0-9]*) fail;; esac
   printf '%s:%s' "$pid" "$start"
 }
+rc_regular() { test -f "$RC" && test ! -L "$RC" && test "$(stat -c '%u:%h' "$RC")" = 0:1 && test -w "$RC"; }
+rc_matches() { rc_regular && cmp -s "$RC" "$STAGE/rc.$1"; }
+rc_prepare() {
+  rc_regular && sh -n "$RC" || fail
+  # Only our exact standalone boot activation is edited. OEM startup, SSH,
+  # agent and all unrelated lines remain intact. Never execute usb_op live.
+  test "$(awk '$0=="#!/bin/sh" {n++} END {print n+0}' "$RC")" = 1 || fail
+  cat "$RC" > "$STAGE/rc.before"
+  write rc.mode "$(stat -c %a "$RC")"
+  awk -v wanted="$WANT" -v line="$BOOT_LINE" '
+    $0 == line {next}
+    {print}
+    $0 == "#!/bin/sh" && wanted == 1 {print line}
+  ' "$RC" > "$STAGE/rc.after"
+  sh -n "$STAGE/rc.after" || fail
+}
+rc_install() (
+  source=$1; expected=$2
+  rc_matches "$expected" || fail
+  test ! -e "$RC.zte-adb-$TOKEN" && test ! -L "$RC.zte-adb-$TOKEN" || fail
+  trap 'test ! -L "$RC.zte-adb-$TOKEN" && rm -f "$RC.zte-adb-$TOKEN"' EXIT
+  cat "$STAGE/rc.$source" > "$RC.zte-adb-$TOKEN"
+  chmod "$(read_saved rc.mode)" "$RC.zte-adb-$TOKEN"
+  sh -n "$RC.zte-adb-$TOKEN" && cmp -s "$STAGE/rc.$source" "$RC.zte-adb-$TOKEN" || fail
+  rc_matches "$expected" || fail
+  mv "$RC.zte-adb-$TOKEN" "$RC"
+  trap - EXIT
+)
+rc_backup() {
+  for directory in /data /data/zte-imei-studio; do
+    test -d "$directory" && test ! -L "$directory" && test "$(stat -c %u "$directory")" = 0 || fail
+  done
+  if test ! -e "$BACKUPS" && test ! -L "$BACKUPS"; then mkdir -m 700 "$BACKUPS"; fi
+  private_dir "$BACKUPS" || fail
+  test ! -e "$BACKUPS/rc.local.$TOKEN.before" && test ! -L "$BACKUPS/rc.local.$TOKEN.before" || fail
+  cat "$STAGE/rc.before" > "$BACKUPS/rc.local.$TOKEN.before"
+  regular "$BACKUPS/rc.local.$TOKEN.before" && cmp -s "$STAGE/rc.before" "$BACKUPS/rc.local.$TOKEN.before" || fail
+}
 owned() { private_dir "$LOCK" && regular "$LOCK/owner" && test "$(cat "$LOCK/owner")" = "$TOKEN"; }
 release() { owned || return 1; rm "$LOCK/owner" && rmdir "$LOCK"; }
 phase() { write phase "$1"; }
 validate_current() {
   binding; layout
   test "$(udc)" = "$(read_saved udc)" || fail
-  test "$(daemon)" = "$(read_saved daemon)" || fail
+  if test "$(read_saved daemon)" = not-ready; then
+    # With no live ADB link the off request only changes our boot entry.
+    # It needs no FunctionFS daemon and never rebinds USB.
+    test "$WANT" = 0 && test "$(read_saved before)" = "$(read_saved after)" || fail
+  else test "$(daemon)" = "$(read_saved daemon)" || fail; fi
   actual=$(links) || fail
   test "$actual" = "$(read_saved "$1")" || fail
+  rc_matches "$1" || fail
 }
 restore() {
   # Exactly one best-effort rollback; no retry after an uncertain sysfs write.
@@ -87,6 +149,10 @@ restore() {
   current=$(links) || return 1
   before=$(read_saved before) || return 1
   after=$(read_saved after) || return 1
+  if rc_matches after; then rc_install before after || return 1
+  else rc_matches before || return 1; fi
+  # Persistence-only changes do not interrupt USB or touch its function links.
+  if test "$before" = "$after"; then validate_current before; return; fi
   name=$(read_saved name) || return 1
   # Other function links must remain exact even when our link is missing.
   current_other=$(printf '%s\n' "$current" | sed "/^$name=/d")
@@ -137,9 +203,9 @@ if test "$mode" = prepare; then
   mkdir "$STAGE/prepare-active" || fail
   trap 'rmdir "$STAGE/prepare-active" 2>/dev/null || :' EXIT
   test ! -e "$STAGE/phase" && test ! -L "$STAGE/phase" || fail
-  for tool in sh stat readlink sha256sum cut awk sed sort pidof nohup sleep cat mv rm rmdir mkdir ln id uname; do command -v "$tool" >/dev/null 2>&1 || fail; done
+  for tool in sh stat readlink sha256sum cut awk sed sort pidof nohup sleep cat mv rm rmdir mkdir ln id uname cmp chmod; do command -v "$tool" >/dev/null 2>&1 || fail; done
   test -w "$STAGE" || fail
-  layout; original_links=$(links); original_udc=$(udc); original_daemon=$(daemon)
+  layout; original_links=$(links); original_udc=$(udc)
   name=; target=; found=0
   for link in "$BASE"/configs/c.1/*; do
     test -L "$link" || continue
@@ -148,7 +214,12 @@ if test "$mode" = prepare; then
     fi
   done
   test "$found" -le 1 || fail
-  if test "$found" = "$WANT"; then printf 'ADB_UNCHANGED\n'; exit 0; fi
+  original_daemon=$(daemon 2>/dev/null) || {
+    test "$found" = 0 && test "$WANT" = 0 || fail
+    original_daemon=not-ready
+  }
+  rc_prepare
+  if test "$found" = "$WANT" && cmp -s "$STAGE/rc.before" "$STAGE/rc.after"; then printf 'ADB_UNCHANGED\n'; exit 0; fi
   if test "$found" = 0; then
     i=1
     while test "$i" -le 32; do
@@ -172,6 +243,7 @@ if test "$mode" = prepare; then
     write original absent
     expected=$(printf '%s\n%s=%s\n' "$original_links" "$name" ffs.adb | sed '/^$/d' | sort)
   fi
+  if test "$found" = "$WANT"; then expected=$original_links; fi
   write after "$expected"
   phase prepared
   printf 'ADB_PREPARED\n'
@@ -219,7 +291,10 @@ on_exit() {
 trap on_exit EXIT
 trap 'exit 72' INT TERM
 phase changing
+rc_backup
+rc_install after before
 name=$(read_saved name)
+if test "$(read_saved before)" != "$(read_saved after)"; then
 printf '\n' > "$BASE/UDC"
 if test "$WANT" = 0; then
   test -L "$BASE/configs/c.1/$name" && test "$(readlink -f "$BASE/configs/c.1/$name")" = "$BASE/functions/ffs.adb" || fail
@@ -229,6 +304,7 @@ else
   ln -s "$(read_saved target)" "$BASE/configs/c.1/$name"
 fi
 printf '%s\n' "$(read_saved udc)" > "$BASE/UDC"
+fi
 validate_current after
 phase awaiting-ack
 elapsed=0

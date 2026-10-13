@@ -6,6 +6,7 @@ public sealed partial class MainWindow
 {
     private async Task CollectFirmwareAdaptationAsync()
     {
+        if (!RequireSelectedConnection()) return;
         if (_busy || _terminal?.IsConnected == true || _terminalOpening ||
             _snapshot?.IsConnected != true || _snapshot.ConnectionMode != "SSH") return;
         var selected = new Dictionary<string,string> {
@@ -20,6 +21,7 @@ public sealed partial class MainWindow
             ShowOverwritePrompt = false,
         });
         if (file?.TryGetLocalPath() is not { } path || _busy || _terminal?.IsConnected == true || _terminalOpening) return;
+        if (!RequireSelectedConnection()) return;
         if (selected.Any(item => Get(item.Key) != item.Value) || _service.GetConnectionSettings().Port != selectedPort)
         { SetStatus("Настройки подключения изменились; начните сбор заново.", true); return; }
         selected["destination"] = path;

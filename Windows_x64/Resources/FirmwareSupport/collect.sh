@@ -4,7 +4,9 @@ set -eu
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C
 action=${1:-}
 fail() { printf 'CAPTURE_ERROR %s\n' "$1" >&2; exit 1; }
-for tool in stat sha256sum cat base64 tr awk; do command -v "$tool" >/dev/null 2>&1 || fail REQUIRED_TOOL; done
+if test "$action" != radio; then
+    for tool in stat sha256sum cat base64 tr awk; do command -v "$tool" >/dev/null 2>&1 || fail REQUIRED_TOOL; done
+fi
 
 originals_allowed() {
     base=/data/zte-imei-screen-ru
@@ -84,6 +86,24 @@ path_for() {
       liblua) binary=1; library /usr/lib/liblua.so.5.1 /usr/lib/liblua.so /usr/lib/liblua5.1.so;;
       lua_uci) binary=1; library /usr/lib/lua/uci.so;;
       lua_jsonc) binary=1; library /usr/lib/lua/luci/jsonc.so /usr/lib/lua/jsonc.so;;
+      firmware_mdt) file=/firmware/image/modem.mdt;;
+      firmware_b16) file=/firmware/image/modem.b16;;
+      libqcril_nr) binary=1; library /usr/lib/libqcrilNr.so /lib/libqcrilNr.so;;
+      libqcril_nrril) binary=1; library /usr/lib/libqcrilNrril.so.1 /usr/lib/libqcrilNrril.so /lib/libqcrilNrril.so.1 /lib/libqcrilNrril.so;;
+      libzte_qmi) binary=1; library /usr/lib/libzteqmi.so /lib/libzteqmi.so;;
+      libqmiservices) binary=1; library /usr/lib/libqmiservices.so /lib/libqmiservices.so;;
+      libqmi_cci) binary=1; library /usr/lib/libqmi_cci.so.1 /usr/lib/libqmi_cci.so /lib/libqmi_cci.so.1 /lib/libqmi_cci.so;;
+      libqmi_csi) binary=1; library /usr/lib/libqmi_csi.so.1 /usr/lib/libqmi_csi.so /lib/libqmi_csi.so.1 /lib/libqmi_csi.so;;
+      libqmi_common) binary=1; library /usr/lib/libqmi_common_so.so.1 /usr/lib/libqmi_common_so.so /lib/libqmi_common_so.so.1 /lib/libqmi_common_so.so;;
+      libqmi_encdec) binary=1; library /usr/lib/libqmi_encdec.so.1 /usr/lib/libqmi_encdec.so /lib/libqmi_encdec.so.1 /lib/libqmi_encdec.so;;
+      libqmi_sap) binary=1; library /usr/lib/libqmi_sap.so.1 /usr/lib/libqmi_sap.so /lib/libqmi_sap.so.1 /lib/libqmi_sap.so;;
+      libqrtr) binary=1; library /usr/lib/libqrtr.so.1 /usr/lib/libqrtr.so /lib/libqrtr.so.1 /lib/libqrtr.so;;
+      libqsocket) binary=1; library /usr/lib/libqsocket.so.1 /usr/lib/libqsocket.so /lib/libqsocket.so.1 /lib/libqsocket.so;;
+      libglib) binary=1; library /usr/lib/libglib-2.0.so.0 /usr/lib/libglib-2.0.so /lib/libglib-2.0.so.0 /lib/libglib-2.0.so;;
+      libgthread) binary=1; library /usr/lib/libgthread-2.0.so.0 /usr/lib/libgthread-2.0.so /lib/libgthread-2.0.so.0 /lib/libgthread-2.0.so;;
+      liblog) binary=1; library /usr/lib/liblog.so.0 /usr/lib/liblog.so /lib/liblog.so.0 /lib/liblog.so;;
+      libtime_genoff) binary=1; library /usr/lib/libtime_genoff.so.1 /usr/lib/libtime_genoff.so /lib/libtime_genoff.so.1 /lib/libtime_genoff.so;;
+      libsqlite3) binary=1; library /usr/lib/libsqlite3.so /lib/libsqlite3.so;;
       original_ui) originals_allowed || return 1; file=/data/zte-imei-screen-ru/backup/zte_topsw_devui;;
       original_english) originals_allowed || return 1; file=/data/zte-imei-screen-ru/backup/English.ini;;
       original_chinese) originals_allowed || return 1; file=/data/zte-imei-screen-ru/backup/Chinese.ini;;
@@ -142,7 +162,110 @@ file_row() {
     printf 'FILE\t%s\tpresent\t%s\t%s\t%s\t%s\t%s\n' "$id" "$1" "$hash" "$2" "$3" "$4"
 }
 
+# Radio adaptation records are projected metadata only. No device node is opened,
+# no NV/EF or card identifier is read, and no radio or profile state is changed.
+radio_path() (
+    radio_id=$1; file=$2; source_state=present; binary=0
+    file_state
+    if test "$state" != present; then printf 'PATH %s state=%s\n' "$radio_id" "$state"; return; fi
+    command -v stat >/dev/null 2>&1 || { printf 'PATH %s state=not_assessed\n' "$radio_id"; return; }
+    info=$(stat -c '%u %a %s' "$file" 2>/dev/null) || { printf 'PATH %s state=not_assessed\n' "$radio_id"; return; }
+    set -- $info
+    test "$#" = 3 || { printf 'PATH %s state=not_assessed\n' "$radio_id"; return; }
+    case "$1:$2:$3" in *[!0-9:]*) printf 'PATH %s state=not_assessed\n' "$radio_id"; return;; esac
+    radio_hash=not_assessed
+    if command -v sha256sum >/dev/null 2>&1; then
+        value=$(sha256sum "$file" 2>/dev/null) || value=
+        value=${value%% *}
+        case "$value" in ''|*[!0-9a-f]*) ;; *) test "${#value}" != 64 || radio_hash=$value;; esac
+    fi
+    printf 'PATH %s state=present type=regular uid=%s mode=%s bytes=%s sha256=%s\n' "$radio_id" "$1" "$2" "$3" "$radio_hash"
+)
+radio_node() (
+    node_id=$1; node_path=$2; node_type=missing
+    if test -L "$node_path"; then node_type=symlink
+    elif test -c "$node_path"; then node_type=character
+    elif test -b "$node_path"; then node_type=block
+    elif test -S "$node_path"; then node_type=socket
+    elif test -d "$node_path"; then node_type=directory
+    elif test -e "$node_path"; then node_type=other
+    elif test ! -d "${node_path%/*}" || test ! -x "${node_path%/*}"; then node_type=not_assessed; fi
+    node_uid=not_assessed; node_mode=not_assessed
+    if test "$node_type" != missing && test "$node_type" != not_assessed && command -v stat >/dev/null 2>&1; then
+        value=$(stat -c '%u %a' "$node_path" 2>/dev/null) || value=
+        case "$value" in ''|*[!0-9\ ]*) ;; *) set -- $value; if test "$#" = 2; then node_uid=$1; node_mode=$2; fi;; esac
+    fi
+    printf 'NODE %s type=%s uid=%s mode=%s\n' "$node_id" "$node_type" "$node_uid" "$node_mode"
+)
+radio_slot() (
+    slot_source=$1; shift; value=not_assessed
+    # The getter can return private fields. Only its numeric route enum leaves
+    # this function. Each OEM source is retained separately without interpretation.
+    case "$slot_source" in
+      mdm_get_sim_info|mdm_get_current_slot_info)
+        if command -v ubus >/dev/null 2>&1 && command -v jsonfilter >/dev/null 2>&1; then
+            if reply=$(ubus -t 5 call zwrt_zte_mdm.api "$1" '{}' 2>/dev/null); then
+                value=$(printf '%s' "$reply" | jsonfilter -e '@.current_sim_slot' 2>/dev/null) || value=not_assessed
+            fi
+        fi;;
+      uci_active_card_id|uci_active_slot_temp)
+        if command -v uci >/dev/null 2>&1; then value=$(uci -q get "$1" 2>/dev/null) || value=not_assessed; fi;;
+    esac
+    case "$value" in 0|1|2|3) ;; *) value=not_assessed;; esac
+    printf 'SLOT %s value=%s\n' "$slot_source" "$value"
+)
+radio_report() {
+    printf 'FIRMWARE_RADIO_V1\n'
+    for pair in firmware_mdt:/firmware/image/modem.mdt firmware_b16:/firmware/image/modem.b16 mdm:/usr/bin/zte_topsw_mdm diag_router:/usr/bin/diag-router; do
+        radio_path "${pair%%:*}" "${pair#*:}"
+    done
+    for segment in /firmware/image/modem.b[0-9][0-9]; do
+        test -e "$segment" || test -L "$segment" || continue
+        name=${segment##*/}; test "$name" != modem.b16 || continue
+        radio_path "modem_segment_${name#modem.}" "$segment"
+    done
+    for pair in diag:/dev/diag diag_tty:/dev/diag_tty at_mdm0:/dev/at_mdm0 at_mdm1:/dev/at_mdm1 ffs_diag:/dev/ffs-diag ffs_diag_1:/dev/ffs-diag-1 ffs_diag_2:/dev/ffs-diag-2 diag_socket:/dev/socket/diag; do
+        radio_node "${pair%%:*}" "${pair#*:}"
+    done
+    if command -v awk >/dev/null 2>&1 && test -r /proc/net/unix; then
+        awk 'NR>1 && ($8=="@diag" || $8=="@diag_socket" || $8=="/dev/socket/diag") && $4~/^[0-9A-Fa-f]+$/ && $5~/^[0-9A-Fa-f]+$/ && $6~/^[0-9A-Fa-f]+$/ {name=($8=="@diag"?"abstract_diag":($8=="@diag_socket"?"abstract_diag_socket":"filesystem_diag"));printf "DIAG_SOCKET %s flags=%s type=%s state=%s\n",name,$4,$5,$6;n++} END{printf "DIAG_SOCKETS state=observed count=%d\n",n+0}' /proc/net/unix
+    else printf 'DIAG_SOCKETS state=not_assessed count=0\n'; fi
+    radio_slot mdm_get_sim_info get_sim_info
+    radio_slot mdm_get_current_slot_info zte_get_current_slot_info
+    radio_slot uci_active_card_id zwrt_zte_mdm.sim_info.sim_active_card_id
+    radio_slot uci_active_slot_temp zwrt_zte_mdm.sim_info.simcard_active_slot_temp
+    # qrtr-lookup asks only the name service for endpoint numbers. It does not
+    # connect to UIM/DIAG services or send card/NV messages.
+    if command -v timeout >/dev/null 2>&1 && command -v qrtr-lookup >/dev/null 2>&1 && command -v awk >/dev/null 2>&1 && reply=$(timeout 6 qrtr-lookup 2>/dev/null); then
+        printf '%s\n' "$reply" | awk 'NF>=5 && $1~/^[0-9]+$/ && $2~/^[0-9]+$/ && $3~/^[0-9]+$/ && $4~/^[0-9]+$/ && $5~/^[0-9]+$/ && length($1)<=10 && length($2)<=10 && length($3)<=10 && length($4)<=10 && length($5)<=10 {printf "QRTR service=%s version=%s instance=%s node=%s port=%s\n",$1,$2,$3,$4,$5;n++} END{printf "QRTR_INVENTORY state=observed count=%d\n",n+0}'
+    else printf 'QRTR_INVENTORY state=not_assessed count=0\n'; fi
+    if command -v awk >/dev/null 2>&1; then
+        for block in /sys/class/block/mmcblk[0-9]p[0-9]*; do
+            test -d "$block" && test -r "$block/uevent" || continue
+            name=$(awk -F= '$1=="PARTNAME" && $2~/^(modem|modem_a|modem_b|modemst1|modemst2|fsg|fsc|persist|userdata|rawdump|system|system_b|ztedata|ztedata_b|zterw|zteoverlay)$/ {print $2}' "$block/uevent")
+            case "$name" in ''|*[!a-z0-9_]*) continue;; esac
+            block_name=${block##*/}; block_index=${block_name#mmcblk[0-9]p}; case "$block_index" in ''|*[!0-9]*) continue;; esac
+            sectors=$(cat "$block/size" 2>/dev/null) || sectors=not_assessed
+            start=$(cat "$block/start" 2>/dev/null) || start=not_assessed
+            ro=$(cat "$block/ro" 2>/dev/null) || ro=not_assessed
+            case "$sectors" in ''|*[!0-9]*) sectors=not_assessed;; esac
+            case "$start" in ''|*[!0-9]*) start=not_assessed;; esac
+            case "$ro" in 0|1) ;; *) ro=not_assessed;; esac
+            printf 'PARTITION name=%s block=%s sectors=%s start=%s ro=%s\n' "$name" "$block_name" "$sectors" "$start" "$ro"
+        done
+        if test -r /proc/self/mountinfo; then
+            awk '$5=="/data" || $5=="/firmware" {mount=($5=="/data"?"data":"firmware");mode="unknown";if($6~/(^|,)rw(,|$)/)mode="rw";else if($6~/(^|,)ro(,|$)/)mode="ro";kind="unknown";for(i=7;i<NF;i++)if($i=="-"){if($(i+1)~/^(ext4|squashfs|ubifs|tmpfs|overlay|vfat)$/)kind=$(i+1);break}printf "MOUNT %s mode=%s type=%s\n",mount,mode,kind}' /proc/self/mountinfo
+        fi
+    fi
+    printf 'POLICY nv_read=0 apdu_sent=0 radio_changed=0 profile_changed=0 private_identifiers_exported=0\n'
+    printf 'FIRMWARE_RADIO_END\n'
+}
+
 case "$action" in
+radio)
+    test "$#" = 1 || fail ARGUMENTS
+    radio_report
+    ;;
 inspect)
     test "$#" = 2 || fail ARGUMENTS
     host=$2
@@ -189,7 +312,7 @@ inspect)
     fact http_dashboard_status "$(http_status dashboard)"
     mounts=$(awk '$5=="/usr/ui/language/English.ini" || $5=="/usr/ui/language/Chinese.ini" || $5=="/usr/bin/zte_topsw_devui" {n++} END {print n+0}' /proc/self/mountinfo 2>/dev/null || printf not_assessed)
     fact ui_mounts "$mounts"
-    for id in ui english chinese init original_ui original_english original_chinese original_init font_zhengyuan font_roboto font_oswald ipacm ipa_switch network_init netifd procd ubusd ubus_cli uci_cli lua_cli mdm qcril diag_router libdiag libzte_sdk libzte_gesture libzte_log libfreetype libpng libdrm libgcc libc libuci libubus libubox libblobmsg_json libjson_c liblua lua_uci lua_jsonc; do file_row "$id"; done
+    for id in ui english chinese init original_ui original_english original_chinese original_init font_zhengyuan font_roboto font_oswald ipacm ipa_switch network_init netifd procd ubusd ubus_cli uci_cli lua_cli mdm qcril diag_router libdiag libzte_sdk libzte_gesture libzte_log libfreetype libpng libdrm libgcc libc libuci libubus libubox libblobmsg_json libjson_c liblua lua_uci lua_jsonc firmware_mdt firmware_b16 libqcril_nr libqcril_nrril libzte_qmi libqmiservices libqmi_cci libqmi_csi libqmi_common libqmi_encdec libqmi_sap libqrtr libqsocket libglib libgthread liblog libtime_genoff libsqlite3; do file_row "$id"; done
     printf 'FIRMWARE_SUPPORT_END\n'
     ;;
 file)

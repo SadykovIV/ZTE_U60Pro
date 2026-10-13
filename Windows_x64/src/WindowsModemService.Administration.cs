@@ -41,12 +41,29 @@ public sealed partial class WindowsModemService
         };
         var message = await ConnectAsync(connection,ct);
         if (setup.ComponentsCleaned)
-        {
             await onboarding.AcknowledgeComponentCleanupAsync(setup.CleanupId ?? "", ct);
-            return "Чистая установка завершена. Агент и SSH готовы; резервная копия компонентов сохранена на компьютере. VPN и страницы устанавливаются отдельно. " + message;
-        }
         if (setup.AlreadyConfigured)
             return "Доступ SSH подтверждён; установка не выполнялась. Агент устанавливается отдельно. " + message;
+        // Preparation has committed and SSH has authenticated with the saved
+        // host key. A USB failure must not turn it into another installation.
+        try
+        {
+            Log("info", "SSH проверен. Отключаю ADB и его автозапуск…");
+            await SetAdbEnabledAsync(new Dictionary<string,string> { ["enabled"] = "false" }, ct);
+            message += " ADB отключён, отключение сохранено после перезагрузки.";
+        }
+        catch (Exception error) when (!ct.IsCancellationRequested)
+        {
+            var warning = "SSH готов. Отключение ADB не подтверждено: " + error.Message;
+            Log("warning", warning);
+            message += " " + warning;
+            if (File.Exists(Path.Combine(_storage, AdbToggleTransaction.PendingName)))
+                return message + " Откройте параметры подключения и нажмите «Проверить состояние ADB». Установка веб-панели доступна отдельно в разделе агента.";
+        }
+        if (setup.ComponentsCleaned)
+        {
+            return "Чистая установка завершена. Агент и SSH готовы; резервная копия компонентов сохранена на компьютере. VPN и страницы устанавливаются отдельно. " + message;
+        }
         if (setup.Profile != "linux-arm64-access" && setup.FirmwareHash == DeviceFeatureService.FirmwareHash)
         {
             try
@@ -111,13 +128,13 @@ public sealed partial class WindowsModemService
             {
                 _snapshot = _snapshot with { Agent = null };
                 var status = await _features!.GetAgentStatusAsync(ct);
-                _snapshot = _snapshot with { Agent = DescribeAgent(status) };
+                _snapshot = _snapshot with { Agent = await DescribeAgentWithWebAsync(status, ct) };
                 return _snapshot.Agent!;
             }
             case ModemOperation.InstallAgent:
             {
                 var status = await _features!.InstallAgentAsync(ct);
-                _snapshot = _snapshot with { Agent = DescribeAgent(status) };
+                _snapshot = _snapshot with { Agent = await DescribeAgentWithWebAsync(status, ct) };
                 return "Постоянный агент eSIM и веб-панель установлены. " + _snapshot.Agent!;
             }
             case ModemOperation.InstallCustomAgent:
@@ -132,13 +149,13 @@ public sealed partial class WindowsModemService
                 var candidate = AgentCandidate.FromSelection(Param(p,"agent_path"), bytes, Param(p,"agent_sha256"));
                 _snapshot = _snapshot with { Agent = null, Vpn = null, VpnPage = null };
                 var status = await _features!.InstallCustomAgentAsync(candidate, ct);
-                _snapshot = _snapshot with { Agent = DescribeAgent(status) };
+                _snapshot = _snapshot with { Agent = await DescribeAgentWithWebAsync(status, ct) };
                 return "Выбранный агент установлен и запущен. Веб-панель, VPN и дополнительные страницы не изменялись.";
             }
             case ModemOperation.RestoreAgent:
             {
                 var status = await _features!.RestoreAgentAsync(ct);
-                _snapshot = _snapshot with { Agent = DescribeAgent(status) };
+                _snapshot = _snapshot with { Agent = await DescribeAgentWithWebAsync(status, ct) };
                 return _snapshot.Agent!;
             }
             case ModemOperation.RefreshLocalization:
@@ -153,23 +170,23 @@ public sealed partial class WindowsModemService
                 return _snapshot.ScreenLocalization!;
             case ModemOperation.ApplyImei:
             {
-                var first = Param(p,"imei1"); var second = Param(p,"imei2");
-                if (!ImeiCodec.IsValid(first) || !ImeiCodec.IsValid(second) || first == second)
+                var first = Param(p,"imei1"); var second = p?.GetValueOrDefault("imei2");
+                if (!ImeiCodec.IsValid(first) || (!string.IsNullOrEmpty(second) && (!ImeiCodec.IsValid(second) || first == second)))
                     throw new InvalidDataException("Введите два разных IMEI с верной контрольной цифрой.");
                 var result = await _imei!.ApplyAsync(first,second,ct);
-                _snapshot = _snapshot with { Imei = string.Join(" / ",result.Imeis) };
-                return "Оба IMEI подтверждены после перезагрузки по NV и API.";
+                _snapshot = _snapshot with { Imei = string.Join(" / ",result.Imeis), ImeiRecordCount = result.Imeis.Length };
+                return "Активные IMEI подтверждены после перезагрузки по NV и API.";
             }
             case ModemOperation.RestoreImeiBackup:
             {
                 var result = await _imei!.RestoreAsync(Param(p,"id"),ct);
-                _snapshot = _snapshot with { Imei = string.Join(" / ",result.Imeis) };
+                _snapshot = _snapshot with { Imei = string.Join(" / ",result.Imeis), ImeiRecordCount = result.Imeis.Length };
                 return "IMEI восстановлены из проверенной копии и подтверждены после перезагрузки.";
             }
             case ModemOperation.ResumeImei:
             {
                 var result = await _imei!.ResumeAsync(ct);
-                _snapshot = _snapshot with { Imei = string.Join(" / ",result.Imeis) };
+                _snapshot = _snapshot with { Imei = string.Join(" / ",result.Imeis), ImeiRecordCount = result.Imeis.Length };
                 return "Незавершённая операция IMEI продолжена и проверена.";
             }
             case ModemOperation.RefreshAccess:
@@ -198,7 +215,7 @@ public sealed partial class WindowsModemService
             case ModemOperation.CreateDeviceBackup:
             {
                 var backup = new DeviceBackupManager(_ssh!,_features!,_storage);
-                var path = await backup.CreateAsync(ct);
+                var path = await backup.CreateAsync(ct, Param(p,"backup_kind","all"));
                 return "Бэкап данных модема создан и проверен: " + path;
             }
             case ModemOperation.VerifyDeviceBackup:
@@ -269,13 +286,24 @@ public sealed partial class WindowsModemService
         }
     }
 
+    private async Task<string> DescribeAgentWithWebAsync(AgentInstallationStatus status, CancellationToken ct)
+    {
+        var web = await AgentWebDiagnostics.CollectAsync(_host, async (command, token) => {
+            var result = await (_sshRead ?? _ssh!).RunAsync(command, timeout: TimeSpan.FromSeconds(8), ct: token);
+            if (!result.Success) throw new IOException("Проверка через SSH недоступна");
+            return Encoding.UTF8.GetString(result.Stdout);
+        }, ct: ct);
+        Log(web.Computer.Available ? "info" : "warning", web.Log);
+        return DescribeAgent(status) + "\n" + web.Summary;
+    }
+
     private static string DescribeAgent(AgentInstallationStatus status)
         => (status.Warning == "OWNER" ? "Состояние агента прочитано, но каталог его установщика требует проверки (AGENT_OWNER)." :
             status.RecoveryPending ? "Требуется восстановление агента" :
             status.Hash == "absent" ? "Агент не установлен" :
             status.Version is null ? (status.Running ? "Неизвестная сборка агента · запущен" : "Неизвестная сборка агента · не запущен") :
             status.IsCurrent ? (status.Running ? $"Агент {status.Version} · запущен" : $"Агент {status.Version} · не запущен") :
-            status.Running ? $"Агент {status.Version} · предыдущая сборка · запущен" : $"Агент {status.Version} · предыдущая сборка · не запущен");
+            $"Агент {status.Version} · предыдущая сборка. Нажмите «Установить / обновить», чтобы агент мог управлять новыми компонентами VPN и TTL. Обновление программы на компьютере само по себе не обновляет агент.");
     private static string DescribeLocalization(ScreenLocalizationStatus status)
         => status.State switch {
             "enabled" => "Русификация включена (" + status.Language + ").",

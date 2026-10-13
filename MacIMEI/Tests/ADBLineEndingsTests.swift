@@ -44,7 +44,7 @@ private final class Runner: HostCommandRunner {
                 let runner = Runner(); runner.eol = eol
                 let client = ADBClient(binary: URL(fileURLWithPath: "/fixture/adb"), runner: runner)
                 try check(try client.shell("synthetic-usb", "printf lines") == "first\nsecond", "Line endings leaked to text consumer")
-                runner.output = identity + web
+                runner.output = identity + boot + "\n" + web
                 let expected = try WebIdentity(JSONSerialization.jsonObject(with: Data(web.utf8)) as! [String: Any])
                 try check(try client.identityDetails("synthetic-usb", expected: expected).identity.cid == cid, "Onboarding identity failed")
                 runner.code = 1
@@ -60,7 +60,7 @@ private final class Runner: HostCommandRunner {
             test(name + " firmware facts and binding retain exact values") {
                 let facts = FirmwareResearchCollector.facts(wire("FR_FACT architecture=aarch64\nFR_FACT root=1\n", eol))
                 try check(facts == ["architecture": "aarch64", "root": "1"], "Fact values contain transport CR")
-                try check(FirmwareResearchCollector.facts(wire("FR_FACT root=1\nFR_FACT root=0\n", eol)).isEmpty, "Duplicate fact became trusted")
+                try check(FirmwareResearchCollector.facts(wire("FR_FACT root=1\nFR_FACT root=0\n", eol))["root"] == "conflicting", "Duplicate fact became trusted")
                 let fingerprint = String(repeating: "a", count: 64)
                 let binding = FirmwareResearchCollector.binding(Data(wire("uid=0\narchitecture=aarch64\ncid=" + fingerprint + "\nboot=" + fingerprint + "\n", eol).utf8))
                 try check(binding == ["uid": "0", "architecture": "aarch64", "cid": fingerprint, "boot": fingerprint], "Binding failed")
@@ -90,7 +90,7 @@ private final class Runner: HostCommandRunner {
             try check(CommandText.normalize("a\r\r\r\nb\r") == "a\r\r\r\nb\r", "Unsupported controls hidden")
         }
         test("normalized identity still rejects another modem") {
-            let runner = Runner(); runner.output = identity + web.replacingOccurrences(of: "867123456789017", with: "353490068701230")
+            let runner = Runner(); runner.output = identity + boot + "\n" + web.replacingOccurrences(of: "867123456789017", with: "353490068701230")
             let expected = try WebIdentity(JSONSerialization.jsonObject(with: Data(web.utf8)) as! [String: Any])
             try reject { _ = try ADBClient(binary: URL(fileURLWithPath: "/fixture/adb"), runner: runner).identity("synthetic-usb", expected: expected) }
             try check(runner.calls == 1, "Identity failure replayed")

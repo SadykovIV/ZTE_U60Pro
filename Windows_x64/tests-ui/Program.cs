@@ -9,6 +9,9 @@ using System.Reflection;
 using System.Security.Cryptography;
 using ZteImeiStudio.Windows.Core;
 using ZteImeiStudio.Windows.Research;
+Check(MainWindow.PublicVersion("1.25+commit", new Version(1,25,0,0)) == "1.25", "About uses public minor version without git metadata");
+Check(MainWindow.PublicVersion("1.25.1+commit", new Version(1,25,1,0)) == "1.25.1", "About preserves public patch version");
+Check(MainWindow.PublicVersion(null, new Version(1,24,22,0)) == "1.24.22", "About retains legacy assembly version fallback");
 var windowsRoot=Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,"../../../../"));
 var lockPath=Path.Combine(windowsRoot,"src","packages.lock.json");
 var screenshots=Path.Combine(Path.GetTempPath(),"zte-diagnostic-terminal-ui");Directory.CreateDirectory(screenshots);
@@ -96,6 +99,26 @@ await session.Dispatch(()=> {
   Check(policyModem.Requests.Last().Operation==ModemOperation.PrepareSsh&&policyModem.Requests.Last().Parameters!["skip_firmware_check"]=="true",language+" preparation receives explicit firmware override");
   FindButton(policyWindow,"Подключиться").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();
   Check(policyModem.Requests.Last().Operation==ModemOperation.Connect&&policyModem.Requests.Last().Parameters!["skip_firmware_check"]=="true",language+" SSH connection receives the same firmware policy");
+  var selectionForm=(Dictionary<string,string>)Get(policyWindow,"_form")!;
+  var dispatch=typeof(MainWindow).GetMethod("ExecuteAsync",BindingFlags.NonPublic|BindingFlags.Instance,null,[typeof(ModemOperation),typeof(IReadOnlyDictionary<string,string>)],null)!;
+  foreach(var key in new[]{"host","key_path","known_hosts_path","port","username"})
+  {
+   var original=selectionForm[key];selectionForm[key]=key=="host"?"192.0.2.77":key=="port"?"2223":original+"-different";
+   foreach(var operation in new[]{ModemOperation.RefreshAgent,ModemOperation.InstallAgent,ModemOperation.RefreshLocalization})
+   {
+    var beforeDispatch=policyModem.Requests.Count;
+    var task=(Task)dispatch.Invoke(policyWindow,[operation,null])!;Pump();
+    Check(task.IsCompletedSuccessfully&&policyModem.Requests.Count==beforeDispatch,language+" changed "+key+" cannot dispatch "+operation+" through old SSH");
+   }
+   var beforeEsim=policyModem.EsimCalls;var beforeTerminal=policyModem.TerminalCalls;
+   var esimTask=(Task)typeof(MainWindow).GetMethod("RunEsimUiAsync",BindingFlags.NonPublic|BindingFlags.Instance)!.Invoke(policyWindow,[new ZteImeiStudio.Windows.Esim.EsimRequest { Operation="list" }])!;Pump();
+   var terminalTask=(Task)typeof(MainWindow).GetMethod("OpenTerminalAsync",BindingFlags.NonPublic|BindingFlags.Instance)!.Invoke(policyWindow,[])!;Pump();
+   Check(esimTask.IsCompletedSuccessfully&&terminalTask.IsCompletedSuccessfully&&policyModem.EsimCalls==beforeEsim&&policyModem.TerminalCalls==beforeTerminal,language+" changed "+key+" also blocks eSIM and terminal dispatch through old SSH");
+   var beforeAdaptation=policyModem.Requests.Count;
+   var adaptationTask=(Task)typeof(MainWindow).GetMethod("CollectFirmwareAdaptationAsync",BindingFlags.NonPublic|BindingFlags.Instance)!.Invoke(policyWindow,[])!;Pump();
+   Check(adaptationTask.IsCompletedSuccessfully&&policyModem.Requests.Count==beforeAdaptation,language+" changed "+key+" blocks adaptation before opening its file picker or old SSH");
+   selectionForm[key]=original;
+  }
   var beforeSection=policyModem.Requests.Count;NamedClick(policyWindow,"Section0-2");
   Check(policyModem.Requests.Count==beforeSection,language+" agent section navigation performs no global hydration");
   Check(policyWindow.GetLogicalDescendants().OfType<Button>().Any(b=>b.Name=="ChooseCustomAgent") && policyWindow.GetLogicalDescendants().OfType<Button>().Any(b=>b.Name=="InstallCustomAgent"),language+" local custom agent picker and separate install are visible");
@@ -173,7 +196,7 @@ await session.Dispatch(()=> {
   Check(FindButton(adaptationWindow,"Сохранить логи и журналы").IsEnabled,language+" logs remain exportable without SSH");
   Check(AdaptationButton().Content?.ToString()==(language=="en"?"Collect firmware adaptation data":"Собрать данные для адаптации прошивки"),language+" adaptation button label is localized");
   Check(adaptationWindow.GetLogicalDescendants().OfType<TextBlock>().Any(t=>t.Text==(language=="en"?"Firmware adaptation data":"Данные для адаптации прошивки")),language+" adaptation card title is localized");
-  Check(adaptationWindow.GetLogicalDescendants().OfType<TextBlock>().Any(t=>t.Text==Localization.Translate("Сведения об устройстве, проверки функций программы, структура прошивки и исходные файлы её компонентов — в одном ZIP. Подробные результаты сохраняются в архиве.")),language+" adaptation card description is localized");
+  Check(adaptationWindow.GetLogicalDescendants().OfType<TextBlock>().Any(t=>t.Text==Localization.Translate("Сведения об устройстве, файлы прошивки и результаты чтения DIAG/QMI для исследования IMEI и SIM/eSIM — в одном ZIP. Подробные проверки остаются в архиве.")),language+" adaptation card description is localized");
   Check(adaptationWindow.GetLogicalDescendants().OfType<TextBlock>().Any(t=>t.Text==(language=="en"?"Read-only access over the current SSH connection. The archive is saved to the chosen location; incomplete collection is reported separately.":"Только чтение по текущему SSH. Архив сохраняется в выбранное место; неполный сбор отмечается отдельно.")),language+" adaptation read-only and partial-collection hint is localized");
   Check(!AdaptationButton().IsEnabled,language+" disconnected adaptation capture is disabled");
   foreach(var mode in new[]{"ADB","Web"})
@@ -207,10 +230,9 @@ await session.Dispatch(()=> {
   adaptationHelp.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();var adaptationDialog=adaptationWindow.OwnedWindows.Single();
   Check(adaptationDialog.Title==(language=="en"?"Collecting firmware adaptation data":"Сбор данных для адаптации прошивки"),language+" adaptation help title is localized");
   var adaptationHelpText=string.Join('\n',adaptationDialog.GetLogicalDescendants().OfType<TextBlock>().Select(t=>t.Text));
-  Check(adaptationHelpText.Contains(language=="en"?"screen":"экрана",StringComparison.Ordinal)&&adaptationHelpText.Contains(language=="en"?"If a verified backup from our screen localization is available":"Если доступна проверенная копия нашей русификации",StringComparison.Ordinal),language+" adaptation help distinguishes current files from optional verified localization originals");
-  Check(adaptationHelpText.Contains(language=="en"?"agent startup script":"сценарий запуска агента",StringComparison.Ordinal)&&adaptationHelpText.Contains(language=="en"?"passwords":"пароли",StringComparison.Ordinal)&&adaptationHelpText.Contains(language=="en"?"full flash image":"полный образ флеш-памяти",StringComparison.Ordinal)&&adaptationHelpText.Contains(language=="en"?"are not collected":"не собираются",StringComparison.Ordinal),language+" adaptation help explicitly excludes agent startup, secrets and full flash");
-  Check(adaptationHelpText.Contains("SHA-256",StringComparison.Ordinal)&&adaptationHelpText.Contains(language=="en"?"incomplete collection":"неполный сбор",StringComparison.Ordinal)&&adaptationHelpText.Contains(language=="en"?"does not authorize":"не разрешает",StringComparison.Ordinal),language+" adaptation help states integrity, partial result and installation boundary");
-  Check(adaptationHelpText.Contains(language=="en"?"fresh survey":"новое исследование",StringComparison.Ordinal)&&adaptationHelpText.Contains("TTL")&&adaptationHelpText.Contains("VPN")&&adaptationHelpText.Contains(language=="en"?"optional fonts":"необязательных шрифтов",StringComparison.Ordinal),language+" adaptation help covers fresh whole-program research and optional fonts");
+  Check(adaptationHelpText.Contains("DIAG/QMI") && adaptationHelpText.Contains("NV550") && adaptationHelpText.Contains("EFS") && adaptationHelpText.Contains("eSIM"),language+" adaptation help describes the actual read-only radio research");
+  Check(adaptationHelpText.Contains(language=="en"?"passwords":"Пароли",StringComparison.OrdinalIgnoreCase)&&adaptationHelpText.Contains(language=="en"?"full flash image":"полный образ флеш-памяти",StringComparison.OrdinalIgnoreCase),language+" adaptation help excludes secrets and full flash");
+  Check(adaptationHelpText.Contains(language=="en"?"does not":"не",StringComparison.OrdinalIgnoreCase)&&adaptationHelpText.Contains("APDU",StringComparison.Ordinal),language+" adaptation help explains write/APDU boundary");
   if(language=="en")Check(!adaptationHelpText.Any(c=>c is >= '\u0400' and <= '\u04ff'),"adaptation help is fully translated");
   adaptationDialog.Close();Pump();
   Check(adaptationModem.Operations==0&&adaptationModem.Requests.Count==0&&adaptationModem.Events.Count==0,language+" adaptation navigation, rendering and help never invoke collection or modem operations");
@@ -256,7 +278,7 @@ await session.Dispatch(()=> {
   Check(window.GetLogicalDescendants().OfType<CheckBox>().Single(c=>c.Name=="AdbEnabled").IsEnabled,language+" diagnostic resume remains available through checkbox without live SSH");
   var info=window.GetLogicalDescendants().OfType<Button>().Single(b=>ToolTip.GetTip(b)?.ToString()==Localization.Translate("Подробно о включении диагностического ADB"));
   info.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();var dialog=window.OwnedWindows.Single();
-  Check(dialog.GetLogicalDescendants().OfType<TextBlock>().Any(t=>t.Text==Localization.Translate("3. Продолжение после обрыва")),language+" force ADB info icon shows resume policy");
+  Check(dialog.GetLogicalDescendants().OfType<TextBlock>().Any(t=>t.Text==Localization.Translate("4. Продолжение после обрыва")),language+" force ADB info icon shows resume policy");
   if(language=="en")Check(dialog.GetLogicalDescendants().OfType<TextBlock>().All(t=>!(t.Text??"").Any(c=>c is >= '\u0400' and <= '\u04ff')),"Diagnostic ADB help fully translated");
   dialog.Close();Pump();
   NamedClick(window,"Section0-1");
@@ -516,6 +538,7 @@ await session.Dispatch(()=> {
  Check(pendingBox.IsEnabled&&pendingBox.IsChecked is null,"legacy pending permits explicit resume with no password");
  beforeBootstrap=diagnostics.Requests.Count;Toggle(pendingBox);
  Check(diagnostics.Requests.Count==beforeBootstrap+1&&diagnostics.Requests.Last().Operation==ModemOperation.EnableDiagnosticAdb,"pending checkbox resumes existing diagnostic workflow once");
+ diagnostics.Settings=diagnostics.Settings with {Host=context["host"],KeyPath=context["key_path"],KnownHostsPath=context["known_hosts_path"]};
  Set(panel,"_snapshot",new DeviceSnapshot(true,"Synthetic SSH",ConnectionMode:"SSH",AdbActivationPending:true));Render(panel);
  Check(!panel.GetLogicalDescendants().OfType<CheckBox>().Single(c=>c.Name=="AdbEnabled").IsEnabled,"SSH pending disables mutation and permits only state recovery");
  NamedClick(panel,"RefreshAdbState");Check(diagnostics.Requests.Last().Operation==ModemOperation.RefreshAdbState,"SSH pending recovery uses state read workflow");
@@ -568,7 +591,8 @@ internal sealed class FakeTerminal:ITerminalSession {
  public ValueTask DisposeAsync()=>ValueTask.CompletedTask;
 }
 internal sealed class FakeModem:IModemService {
- public bool AllowFirmwarePolicy;
+ public bool AllowFirmwarePolicy; public int EsimCalls,TerminalCalls;
+ public Task<ZteImeiStudio.Windows.Esim.EsimResult> RunEsimAsync(ZteImeiStudio.Windows.Esim.EsimRequest request,IProgress<string>? progress,CancellationToken ct=default){EsimCalls++;throw new Exception("Unexpected eSIM");}
  public ConnectionSettingsSnapshot? PreparedSettings;public Action? OnPrepare;public ConnectionSettingsSnapshot Settings=new(); public ConnectionSettingsSnapshot GetConnectionSettings()=>Settings;
  public int Operations{get;private set;} public bool AllowPreparation,AllowDiagnostics,AllowBackupCheck,BackupCheckSuccess=true,AllowRefresh,ConnectSuccess,ThrowPrepare,PrepareSuccess;public DeviceSnapshot Snapshot=new(false,"Нет подключения");public List<string> Events=[];public List<OperationRequest> Requests=[];public IReadOnlyDictionary<string,string>? ResearchParameters;
  public Task<DeviceSnapshot> GetDeviceSnapshotAsync(CancellationToken ct=default)=>Task.FromResult(Snapshot);
@@ -578,7 +602,7 @@ internal sealed class FakeModem:IModemService {
  public Task<IReadOnlyList<BackupInfo>> ListBackupsAsync(CancellationToken ct=default)=>Task.FromResult<IReadOnlyList<BackupInfo>>([]);
  public Task<IReadOnlyList<ModemAppInfo>> ListApplicationsAsync(CancellationToken ct=default)=>Task.FromResult<IReadOnlyList<ModemAppInfo>>([]);
  public Task<IReadOnlyList<LogEntry>> GetLogsAsync(CancellationToken ct=default)=>Task.FromResult<IReadOnlyList<LogEntry>>([]);
- public Task<ITerminalSession> OpenTerminalAsync(CancellationToken ct=default)=>throw new Exception("Unexpected terminal");
+ public Task<ITerminalSession> OpenTerminalAsync(CancellationToken ct=default){TerminalCalls++;throw new Exception("Unexpected terminal");}
 }
 
 internal sealed class WaitingStream:MemoryStream

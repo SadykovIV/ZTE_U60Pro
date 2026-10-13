@@ -128,6 +128,7 @@ static void *mainform,*pages[3],*dots[5],*titles[3];
 static void *info_cards[INFO_MAX_SELECTED],*info_titles[INFO_MAX_SELECTED],*info_values[INFO_MAX_SELECTED],*info_status,*info_scroll;
 static struct info_layout rendered_layout;static int has_rendered_layout;
 static void *wifi_card,*wifi_title,*wifi_ssid,*wifi_switch,*profile_heading,*profile_cards[3],*profile_labels[3],*profile_marks[3];
+static void *subscription_button,*subscription_label;
 static void *previous,*next,*previous_label,*next_label,*notice,*confirm,*confirm_title,*confirm_name,*confirm_hint,*confirm_yes,*confirm_no;
 static void *esim_scope,*esim_cards[3],*esim_labels[3],*esim_marks[3],*esim_prev,*esim_next,*esim_prev_label,*esim_next_label,*esim_notice,*esim_refresh_label;
 static void *esim_confirm,*esim_confirm_title,*esim_confirm_name,*esim_confirm_hint,*esim_yes,*esim_no;
@@ -209,6 +210,7 @@ static void clicked(void *event){
  else if(id==21&&offset+3<shown.count)offset+=3;
  else if(id==30&&selected_id[0]){if(backend_action(-1,selected_id))selected_id[0]=0;}
  else if(id==31)selected_id[0]=0;
+ else if(id==32&&backend_update_subscriptions())selected_id[0]=0;
  backend_snapshot(&shown);render();
 }
 static void *button(void *parent,int x,int y,int w,int h,int id,void **caption){
@@ -278,12 +280,23 @@ static void render(void){
  F(0x534c14,void,void*,int)(wifi_switch,shown.busy&&pending_wifi>=0?pending_wifi:shown.enabled);
  flag(wifi_switch,CLICKABLE,shown.valid&&!shown.busy);
  F(shown.busy||!shown.valid?0x42e660:0x42e67c,void,void*,unsigned)(P(wifi_switch,8),128);
+ text(subscription_label,tr("Обновить подписки","Update subscriptions"));
+ int can_update=vpn_can_update_subscriptions(&shown);flag(subscription_button,CLICKABLE,can_update);
+ F(can_update?0x42e67c:0x42e660,void,void*,unsigned)(P(subscription_button,8),128);
  text(profile_heading,tr("Профиль VPN","VPN profile"));
  if(offset>=shown.count)offset=0;
  for(int i=0;i<3;i++){int idx=offset+i;flag(profile_cards[i],HIDDEN,idx>=shown.count);if(idx<shown.count){text(profile_labels[i],shown.profiles[idx].name);flag(profile_marks[i],HIDDEN,!shown.profiles[idx].active);}}
  flag(previous,HIDDEN,shown.count<=3);flag(next,HIDDEN,shown.count<=3);text(previous_label,tr("Назад","Previous"));text(next_label,tr("Далее","Next"));
- text(notice,shown.busy?tr("Применение...","Applying..."):shown.error?vpn_error_text(shown.error_code[0]?shown.error_code:shown.operation_error,tr_ru()):!shown.valid?tr("Получение данных...","Loading..."):!shown.count?tr("Добавьте профиль в агенте","Import a profile in the agent"):shown.enabled?(shown.network_ok&&shown.running?tr("VPN работает","VPN is running"):tr("Проверьте VPN в агенте","Check VPN in the agent")):tr("WiFi с VPN выключен","WiFi with VPN is off"));
- flag(confirm,HIDDEN,!selected_id[0]);text(confirm_title,tr("Подключить профиль?","Connect this profile?"));text(confirm_name,selected_name);text(confirm_hint,tr("VPN переподключится","VPN will reconnect"));text(confirm_yes,tr("Подключить","Connect"));text(confirm_no,tr("Отмена","Cancel"));
+ char status[320];vpn_subscription_text(&shown,tr_ru(),status,sizeof status);
+ const char *normal=shown.busy?tr("Применение...","Applying..."):shown.error?vpn_error_text(shown.error_code[0]?shown.error_code:shown.operation_error,tr_ru()):!shown.valid?tr("Получение данных...","Loading..."):!shown.count?tr("Добавьте профиль в агенте","Import a profile in the agent"):shown.enabled?(shown.network_ok&&shown.running?tr("VPN работает","VPN is running"):tr("Проверьте VPN в агенте","Check VPN in the agent")):tr("WiFi с VPN выключен","WiFi with VPN is off");
+ int selected_insecure=0,active_insecure=0;
+ for(int i=0;i<shown.count;i++){if(!strcmp(shown.profiles[i].id,selected_id))selected_insecure=shown.profiles[i].insecure_tls;if(shown.profiles[i].active)active_insecure=shown.profiles[i].insecure_tls;}
+ if(!shown.subscription_update.running&&!shown.subscription_update.complete){
+  snprintf(status,sizeof status,"%s%s%s",normal,!shown.busy&&!shown.error&&shown.enabled&&active_insecure?"\n":"",!shown.busy&&!shown.error&&shown.enabled&&active_insecure?vpn_warning_text("VPN_INSECURE_TLS",tr_ru()):"");
+ }
+ if(shown.subscription_count>MAX_SUBSCRIPTIONS&&!shown.busy&&!shown.error)snprintf(status,sizeof status,"%s",tr("Слишком много подписок\nОбновите через программу","Too many subscriptions\nUpdate in the desktop app"));
+ text(notice,status);
+ flag(confirm,HIDDEN,!selected_id[0]);text(confirm_title,tr("Подключить профиль?","Connect this profile?"));text(confirm_name,selected_name);text(confirm_hint,selected_insecure?tr("VPN переподключится\nTLS: проверка выключена","VPN will reconnect\nTLS verification is off"):tr("VPN переподключится","VPN will reconnect"));text(confirm_yes,tr("Подключить","Connect"));text(confirm_no,tr("Отмена","Cancel"));
  last_generation=shown.generation;last_language=tr_ru();
 }
 static void tick(void *unused){
@@ -326,7 +339,9 @@ static void create(void *form){
   info_cards[i]=panel(info_scroll,14,0,292,48,1);flag(info_cards[i],CLICKABLE,0);
   info_titles[i]=label(info_cards[i],12,3,268,19,14,"");info_values[i]=label(info_cards[i],12,23,268,24,19,"");
  }
- titles[1]=label(pages[1],16,12,288,34,24,"VPN");wifi_ssid=label(pages[1],16,52,288,26,18,"");
+ titles[1]=label(pages[1],16,12,64,34,24,"VPN");
+ subscription_button=button(pages[1],88,8,218,38,32,&subscription_label);F(0x52fa04,void,void*,int)(subscription_label,16);
+ wifi_ssid=label(pages[1],16,52,288,26,18,"");
  wifi_card=panel(pages[1],14,88,292,62,1);flag(wifi_card,CLICKABLE,0);
  wifi_title=label(wifi_card,12,20,196,30,19,"");
  wifi_switch=objmem(56);F(0x534a94,void,void*,void*)(wifi_switch,wifi_card);
@@ -336,7 +351,7 @@ static void create(void *form){
  for(int i=0;i<3;i++){profile_cards[i]=button(pages[1],14,194+54*i,292,48,10+i,&profile_labels[i]);pos(profile_labels[i],18,7);size(profile_labels[i],262,39);F(0x52fa04,void,void*,int)(profile_labels[i],17);F(0x52f73c,void,void*,int)(profile_labels[i],1);profile_marks[i]=panel(profile_cards[i],0,8,5,32,0);color(profile_marks[i],100,0);}
  previous=button(pages[1],14,355,140,34,20,&previous_label);next=button(pages[1],166,355,140,34,21,&next_label);
  notice=label(pages[1],16,394,288,36,14,"");
- confirm=panel(pages[1],8,156,304,247,0);confirm_title=label(confirm,8,14,288,32,22,"");confirm_name=label(confirm,8,57,288,70,20,"");confirm_hint=label(confirm,8,132,288,28,17,"");
+ confirm=panel(pages[1],8,156,304,247,0);confirm_title=label(confirm,8,14,288,32,22,"");confirm_name=label(confirm,8,57,288,70,20,"");confirm_hint=label(confirm,8,130,288,44,14,"");
  button(confirm,6,186,146,48,30,&confirm_yes);button(confirm,158,186,140,48,31,&confirm_no);
  titles[2]=label(pages[2],16,12,144,34,24,"SIM");button(pages[2],178,8,128,38,82,&esim_refresh_label);esim_scope=label(pages[2],16,52,288,40,16,"");
  for(int i=0;i<3;i++){esim_cards[i]=button(pages[2],14,104+70*i,292,62,60+i,&esim_labels[i]);pos(esim_labels[i],16,5);size(esim_labels[i],264,54);F(0x52fa04,void,void*,int)(esim_labels[i],16);F(0x52f73c,void,void*,int)(esim_labels[i],1);esim_marks[i]=panel(esim_cards[i],0,8,5,46,0);color(esim_marks[i],100,0);}
@@ -358,7 +373,7 @@ static uintptr_t read_pointer(uintptr_t address){return *(uintptr_t*)address;}
 static uint32_t read_word(uintptr_t address){return *(uint32_t*)address;}
 __attribute__((constructor)) static void init(void){
  if(!getenv("ZTE_LAUNCHER"))return;unsetenv("LD_PRELOAD");unsetenv("ZTE_LAUNCHER");
- abi=launcher_abi_select(getauxval(AT_PHDR),getauxval(AT_ENTRY));
+ abi=launcher_abi_select(getauxval(AT_PHDR),getauxval(AT_ENTRY),read_pointer,read_word);
  /* The wrapper checks the full UI hash. Every address below comes from that
   * profile; all five slots and instruction checks must pass before any write. */
  if(!launcher_abi_valid(abi,read_pointer,read_word)){abi=NULL;return;}

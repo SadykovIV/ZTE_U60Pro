@@ -17,7 +17,7 @@ done
 [ "$(id -u)" = 0 ] && [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ] || exit 68
 [ -f /usr/bin/zte_topsw_devui ] && [ ! -L /usr/bin/zte_topsw_devui ] || exit 68
 case "$(sha256sum /usr/bin/zte_topsw_devui | cut -d' ' -f1)" in
- e3914e78a8488cb736770f0ac9fb8ce10e0e5222fa50285f08e9e8be90d7f1e9|16eb92e27f54b5cf5c6b316a6e7a62b782053a2a609d0d4904a7f08a7bc0afa4|8d2ebbde880934f52195ad9595815d728f7aa4671bb0633d5a5149b09467ae90|d6c3cd409705d5aa9c12185c84074513b159088025f005da7dbf01c51e3c3715) ;;
+ e3914e78a8488cb736770f0ac9fb8ce10e0e5222fa50285f08e9e8be90d7f1e9|16eb92e27f54b5cf5c6b316a6e7a62b782053a2a609d0d4904a7f08a7bc0afa4|8d2ebbde880934f52195ad9595815d728f7aa4671bb0633d5a5149b09467ae90|d6c3cd409705d5aa9c12185c84074513b159088025f005da7dbf01c51e3c3715|dbe6eadc92d43a0cd7206264f9d75ab242df90e88c02ee2ba3ac65598b58523e|0db2294b3e428fb53f4b6b725063ad8ffd9c396e5a27c54452f0ea479fa78f3b) ;;
  *) exit 68;;
 esac
 case "$(sha256sum /etc/init.d/zte_topsw_devui | cut -d' ' -f1)" in
@@ -25,12 +25,12 @@ case "$(sha256sum /etc/init.d/zte_topsw_devui | cut -d' ' -f1)" in
  *) exit 69;;
 esac
 # PAYLOAD_PINS_BEGIN
-[ "$(sha256sum "$stage/launcher.so" | cut -d' ' -f1)" = c04c5c1d0cccb0a2964a1500e6fdc3c549c9eac6125fe591b9cdf25d39dff3c2 ] || exit 70
-[ "$(sha256sum "$stage/launcher-run.sh" | cut -d' ' -f1)" = a40658f10fab10cdfa168223af4b00af009ee08bc20adc6b4faebd0289d0b53f ] || exit 70
+[ "$(sha256sum "$stage/launcher.so" | cut -d' ' -f1)" = eb01a6f3c6cb914ded0e2f069f6f5072cd8445245b9b7f0d5f572f6662e9dc70 ] || exit 70
+[ "$(sha256sum "$stage/launcher-run.sh" | cut -d' ' -f1)" = 301e2c6d9c6eda4882b64911b10626605e92660b7d890fdb2a7a42a8a83e0ca1 ] || exit 70
 [ "$(sha256sum "$stage/launcher-watch.sh" | cut -d' ' -f1)" = 13dbaa1520f0a503270109bbd07eea331317396824566d389bba37bdc91a16e2 ] || exit 70
 [ "$(sha256sum "$stage/launcher-service.sh" | cut -d' ' -f1)" = e0d5c80f061af69a8a7329476e33e6b4766a80b37a9a38e3d3217712551b4e90 ] || exit 70
 [ "$(sha256sum "$stage/launcher-start.sh" | cut -d' ' -f1)" = 8aed90c6fe28ad488b78caeadbc61117dfcfda795793894325e39baf0ac03633 ] || exit 70
-[ "$(sha256sum "$stage/launcher.sha256" | cut -d' ' -f1)" = eeae2396f3fe909574146e12eee60ab38298ca039bfe373f16235e8227df8390 ] || exit 70
+[ "$(sha256sum "$stage/launcher.sha256" | cut -d' ' -f1)" = d3847c43c20eb467a4cbfb4397b39adfaf6b41e1346bc467839f566cc07851e5 ] || exit 70
 # PAYLOAD_PINS_END
 for file in launcher.so launcher-run.sh launcher-watch.sh launcher-service.sh launcher-start.sh launcher.sha256; do
  [ -f "$stage/$file" ] && [ ! -L "$stage/$file" ] || exit 70

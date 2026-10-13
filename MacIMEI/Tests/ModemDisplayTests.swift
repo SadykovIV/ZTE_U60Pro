@@ -205,12 +205,12 @@ private final class MockDisplay: RemoteTransport {
                 try check(make(mock).inspect().state == .outdated, "Mixed/old components not reported")
             }
         }
-        test("exact B28 screen profile is independent of modem firmware and router binaries") {
-            for ui in ["8d2ebbde880934f52195ad9595815d728f7aa4671bb0633d5a5149b09467ae90", "d6c3cd409705d5aa9c12185c84074513b159088025f005da7dbf01c51e3c3715"] {
+        test("exact B28 and B04 screen profiles are independent of modem firmware and router binaries") {
+            for ui in ["8d2ebbde880934f52195ad9595815d728f7aa4671bb0633d5a5149b09467ae90", "d6c3cd409705d5aa9c12185c84074513b159088025f005da7dbf01c51e3c3715", "dbe6eadc92d43a0cd7206264f9d75ab242df90e88c02ee2ba3ac65598b58523e", "0db2294b3e428fb53f4b6b725063ad8ffd9c396e5a27c54452f0ea479fa78f3b"] {
                 let mock = MockDisplay(hashes: hashes); mock.ui = ui; mock.firmware = "absent"; mock.router = "absent"
                 let value = try make(mock)
-                try check(value.inspect().canInstall, "Exact B28 screen denied by unrelated binary absence")
-                try check(install(value).state == .ready && mock.installerCalls == 1, "Exact B28 install did not complete")
+                try check(value.inspect().canInstall, "Exact captured screen denied by unrelated binary absence")
+                try check(install(value).state == .ready && mock.installerCalls == 1, "Exact captured install did not complete")
             }
         }
         test("present unreadable identity and router drift reject") {

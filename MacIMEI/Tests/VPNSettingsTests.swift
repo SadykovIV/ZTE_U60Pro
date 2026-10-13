@@ -14,6 +14,7 @@ private func rejects(_ fragment: String = "", _ work: () throws -> Void) throws 
 private final class Remote: RemoteTransport {
     let cid = String(repeating: "a", count: 32), boot = "11111111-2222-3333-4444-555555555555"
     var commands: [String] = [], requests: [[String: Any]] = []
+    var firmware = ModemEngine.firmwareHash
     var locked = false, installed = true, helperReady = true
     var helperLayoutReady = true
     var installedHelperHash: String?
@@ -32,10 +33,10 @@ private final class Remote: RemoteTransport {
     func result(_ text: String = "", status: Int32 = 0) -> CommandResult { CommandResult(status: status, stdout: Data(text.utf8), stderr: Data()) }
     func run(_ command: String, input: Data?, timeout: TimeInterval) throws -> CommandResult {
         commands.append(command)
-        if command.hasPrefix("sha256sum /firmware/image/modem.b16") {
+        if command == AccessIdentity.command {
             identityCalls += 1
             let device = swappedAt > 0 && identityCalls >= swappedAt ? String(repeating: "b", count: 32) : cid
-            return result(ModemEngine.firmwareHash + "  /firmware/image/modem.b16\n" + ModemEngine.routerHash + "  /usr/bin/diag-router\n" + device + "\n" + boot + "\n")
+            return result(firmware + "  /firmware/image/modem.b16\n" + ModemEngine.routerHash + "  /usr/bin/diag-router\n" + device + "\n" + boot + "\n")
         }
         if command.contains("if mkdir /tmp/zte-imei-app.lock") { locked = true; return result() }
         if command.contains("&& rm /tmp/zte-imei-app.lock/owner") { locked = false; return result() }
@@ -48,6 +49,9 @@ private final class Remote: RemoteTransport {
             requests.append(request)
             let action = request["action"] as? String
             if let requestOverride { return requestOverride }
+            if action == "subscription_details" {
+                return result(String(decoding: try JSONSerialization.data(withJSONObject: ["ok": true, "data": ["subscription": ["id": request["id"]!, "name": "Feed", "url": "https://example.test/private-subscription-token"]]]), as: UTF8.self))
+            }
             if let installedHelperHash {
                 // Execute the actual emitted case-pattern locally. The guard
                 // stays before the fake helper response and any fixture write.
@@ -76,7 +80,7 @@ private final class Remote: RemoteTransport {
                     payload["ssid"] = request["ssid"]; payload["ssid_2g"] = bad2GReceipt ? "Old 2G name" : request["ssid"]; payload["ssid_5g"] = request["ssid"]
                 }
                 if enabledReceipt { payload["enabled"] = true }
-            } else if let action, ["import", "activate", "rename", "delete", "set_enabled"].contains(action) {
+            } else if let action, ["import", "import_config", "subscription_import", "subscription_update", "subscription_delete", "activate", "rename", "delete", "set_enabled"].contains(action) {
                 try check(!locked, "Desktop took the lock owned by vpnctl")
                 try check(command.contains(cid) && command.contains(boot), "Profile request omitted target guard")
                 try check(request["lock_token"] == nil, "Unexpected borrowed lock token")
@@ -85,7 +89,18 @@ private final class Remote: RemoteTransport {
                     var profiles = payload["profiles"] as! [[String: Any]]
                     let id = request["id"] as? String ?? ""
                     switch action {
-                    case "import": profiles.append(["id": "11111111-1111-1111-1111-111111111111", "name": request["name"] ?? "Imported", "transport": "tcp", "active": false, "warnings": []])
+                    case "import", "import_config": profiles.append(["id": "11111111-1111-1111-1111-111111111111", "name": request["name"] ?? "Imported", "transport": "tcp", "protocol": action == "import_config" ? "amneziawg" : "vless", "active": false, "warnings": []])
+                    case "subscription_import":
+                        let sid = "33333333-3333-3333-3333-333333333333"
+                        payload["subscriptions"] = [["id": sid, "name": "Feed", "host": "example.test", "updated_at": 123, "profile_count": 1]]
+                        profiles.append(["id": "22222222-2222-2222-2222-222222222222", "name": "Node", "transport": "", "protocol": "hysteria2", "subscription_id": sid, "active": false, "warnings": []])
+                        payload["last_import"] = ["added": 1, "updated": 0, "removed": 0, "duplicates": 2, "retained_active": 0, "skipped": [["index": 3, "code": "VPN_UNSUPPORTED_PROTOCOL"]]]
+                    case "subscription_update":
+                        for i in profiles.indices { profiles[i]["update_available"] = true }
+                        payload["last_import"] = ["added": 0, "updated": 1, "removed": 0, "duplicates": 0, "retained_active": 1, "skipped": []]
+                    case "subscription_delete":
+                        payload["subscriptions"] = []
+                        for i in profiles.indices { profiles[i].removeValue(forKey: "subscription_id") }
                     case "rename": for i in profiles.indices where profiles[i]["id"] as? String == id { profiles[i]["name"] = request["name"] }
                     case "activate":
                         for i in profiles.indices { profiles[i]["active"] = profiles[i]["id"] as? String == id }
@@ -116,6 +131,64 @@ private final class Fixture {
     static func main() throws {
         var count = 0
         func test(_ name: String, _ body: () throws -> Void) throws { try body(); count += 1; print("PASS " + name) }
+        try test("Updated active profiles can be explicitly reactivated") {
+            var profile = VPNProfile(id: "11111111-1111-1111-1111-111111111111", name: "Synthetic", transport: "", warnings: [], active: true)
+            try check(!profile.canActivate, "Unchanged active profile unexpectedly needs activation")
+            profile.updateAvailable = true
+            try check(profile.canActivate, "Updated active profile cannot be activated")
+            profile.active = false; profile.updateAvailable = false
+            try check(profile.canActivate, "Inactive profile cannot be activated")
+        }
+        try test("Reactivation must consume the available profile update") {
+            let id = "11111111-1111-1111-1111-111111111111"
+            var before = VPNStatus(); before.activeProfile = id
+            before.profiles = [.init(id: id, name: "Active", transport: "", warnings: [], active: true, updateAvailable: true)]
+            var after = before
+            try rejects { try VPNOperation.activate(id).verify(before: before, after: after) }
+            after.profiles[0].updateAvailable = false
+            try VPNOperation.activate(id).verify(before: before, after: after)
+            after.profiles[0].updateAvailable = nil
+            try VPNOperation.activate(id).verify(before: before, after: after)
+        }
+        try test("Import summary survives status refresh and new results replace it") {
+            let summary = VPNImportSummary(added: 2, updated: 1, removed: 0, duplicates: 3, retainedActive: 1, skipped: [.init(index: 4, code: "VPN_UNSUPPORTED_PROTOCOL")])
+            var status = VPNStatus(); status.installed = true; status.lastImport = summary
+            let imported = VPNInspection(status: status, missingCapabilities: [], ssclashInstalled: false)
+            status.lastImport = nil; status.enabled = true
+            var refreshed = VPNInspection(status: status, missingCapabilities: [], ssclashInstalled: false)
+            let preserved = refreshed.preservingImportSummary(from: imported)
+            try check(preserved.status.lastImport?.added == 2 && preserved.status.lastImport?.skipped.first?.index == 4 && preserved.status.enabled, "Status refresh lost receipt or current state")
+            refreshed.status.lastImport = .init(added: 9, updated: 0, removed: 0, duplicates: 0, retainedActive: 0, skipped: [])
+            try check(refreshed.preservingImportSummary(from: imported).status.lastImport?.added == 9, "New result was replaced by old receipt")
+            refreshed.status.lastImport = nil
+            try check(refreshed.preservingImportSummary(from: nil).status.lastImport == nil, "Receipt crossed cleared device selection")
+            refreshed.status.installed = false
+            try check(refreshed.preservingImportSummary(from: imported).status.lastImport == nil, "Receipt survived removed components")
+        }
+        try test("Fresh installer failures report exact phases without private output") {
+            func result(_ stderr: String, _ exit: Int32 = 1) -> CommandResult { .init(status: exit, stdout: Data(), stderr: Data(stderr.utf8)) }
+            for code in ["INVALID_STAGE", "PLATFORM", "UNSAFE_STAGE", "ALREADY_PRESENT", "UNSUPPORTED_FIRMWARE", "RUNTIME_TOOLS", "TUN_UNAVAILABLE", "LUA_MODULES", "NO_SPACE", "PAYLOAD", "WRITE", "INTEGRITY", "SERVICE"] {
+                let message = VPNSettingsManager.installFailure(result("private-canary\nVPN_INSTALL_ERROR " + code + "\n"))
+                try check(message?.contains("VPN_INSTALL_" + code) == true && message?.contains("private-canary") == false, "Installer error or privacy lost")
+            }
+            for text in ["VPN_INSTALL_ERROR PRIVATE_CANARY", "prefix VPN_INSTALL_ERROR PAYLOAD", "VPN_INSTALL_ERROR PAYLOAD private-canary", "VPN_INSTALL_ERROR PAYLOAD\nVPN_INSTALL_ERROR SERVICE"] {
+                try check(VPNSettingsManager.installFailure(result(text)) == nil, "Untrusted or contradictory installer error accepted")
+            }
+            for exit: Int32 in [-1, 0, 255] { try check(VPNSettingsManager.installFailure(result("VPN_INSTALL_ERROR PAYLOAD", exit)) == nil, "Lost transport converted to installer error") }
+        }
+        try test("B28 Wi-Fi settings use the component controller without global B31 permission") {
+            let f = try Fixture()
+            f.remote.firmware = "5a4489882538b5ab1d3e0049371f1b620d28d262a429923299b4f2626d40d478"
+            let result = try f.configure(VPNWiFiConfiguration(ssid: "Synthetic", passwordMode: .main))
+            try check(result.status.desiredSsid == "Synthetic" && f.remote.requests.contains { $0["action"] as? String == "configure_wifi" }, "B28 configuration blocked before controller")
+        }
+        try test("B04 without modem.b16 reaches the component controller with measured access identity") {
+            let f = try Fixture()
+            f.remote.firmware = "absent"
+            let result = try f.configure(VPNWiFiConfiguration(ssid: "Synthetic B04", passwordMode: .main))
+            try check(result.status.desiredSsid == "Synthetic B04" && f.remote.requests.contains { $0["action"] as? String == "configure_wifi" }, "B04 configuration blocked before controller")
+            try check(f.remote.identityCalls > 0 && f.remote.commands.contains(AccessIdentity.command), "B04 configuration skipped access identity")
+        }
         try test("Upgrade errors expose only fixed causes and keep uncertain transport distinct") {
             func result(_ stderr: String, _ exit: Int32 = 1) -> CommandResult { .init(status: exit, stdout: Data(), stderr: Data(stderr.utf8)) }
             let codes = ["INVALID_STAGE", "UNSAFE_LAYOUT", "PAYLOAD", "VPN_PENDING", "SCREEN_BUSY", "CONTROLLER_UNKNOWN", "OLD_INTEGRITY", "DEVICE_CHANGED", "NETWORK_CHANGED", "SERVICE_CHANGED", "STARTUP_CHANGED", "STATE_UNSAFE", "SNAPSHOT", "WRITE", "NEW_INTEGRITY", "VERIFY", "RECOVERY_REQUIRED", "ROLLBACK_UNKNOWN"]
@@ -211,6 +284,24 @@ private final class Fixture {
                     try check(f.remote.requests.count == 1, "Failure retried")
                 }
             }
+        }
+        try test("Shipped 1.24.18 controller remains readable before a controlled upgrade") {
+            let f = try Fixture()
+            f.remote.installedHelperHash = "b2c3fcfafeccd50fa3000ad5f8f66f1e42ff157b295cdda11dddd31571612af7"
+            let inspection = try f.manager.inspect()
+            try check(inspection.status.installed && !inspection.helperReady, "Shipped controller status blocked or falsely current")
+            let before = try JSONSerialization.data(withJSONObject: f.remote.payload, options: .sortedKeys)
+            try rejects { _ = try f.manager.request(["action": "configure_wifi", "ssid": "must-not-change"]) }
+            try check(try JSONSerialization.data(withJSONObject: f.remote.payload, options: .sortedKeys) == before, "Legacy controller allowed mutation")
+        }
+        try test("Shipped 1.24.20 controller remains readable before a controlled upgrade") {
+            let f = try Fixture()
+            f.remote.installedHelperHash = "fe1f6d535ccee6ec0f9333c01108b00f35006209850ed641023dbb937dd30b48"
+            let inspection = try f.manager.inspect()
+            try check(inspection.status.installed && !inspection.helperReady, "Shipped controller status blocked or falsely current")
+            let before = try JSONSerialization.data(withJSONObject: f.remote.payload, options: .sortedKeys)
+            try rejects { _ = try f.manager.request(["action": "configure_wifi", "ssid": "must-not-change"]) }
+            try check(try JSONSerialization.data(withJSONObject: f.remote.payload, options: .sortedKeys) == before, "Legacy controller allowed mutation")
         }
         try test("Previous .7 helper is accepted only for status, never mutation") {
             let f = try Fixture()
@@ -416,6 +507,88 @@ private final class Fixture {
                 try rejects(VPNSettingsManager.message(code)) { _ = try f.engine.locked { try f.manager.perform(.delete("11111111-1111-1111-1111-111111111111")) } }
                 try check(f.remote.requests.filter { $0["action"] as? String == "delete" }.count == 1, "Refused delete retried")
             }
+        }
+        try test("Configuration and subscription documents stay on stdin and never activate on import or refresh") {
+            let f = try Fixture()
+            func run(_ op: VPNOperation) throws -> VPNStatus { try f.engine.locked { try f.manager.perform(op).status } }
+            let config = "[Interface]\nPrivateKey=CONFIG_CANARY\n" + String(repeating: "# padding\n", count: 8000)
+            let configured = try run(.importConfiguration(config: config, name: "AWG"))
+            try check(configured.profiles[0].protocolName == "amneziawg" && !configured.enabled, "Config was not imported privately or activated")
+            let imported = try run(.importSubscription(url: "https://example.test/TOKEN_CANARY", name: "Feed", documents: ["DOCUMENT_CANARY"]))
+            let sid = imported.subscriptions![0].id
+            try check(imported.lastImport?.duplicates == 2 && imported.lastImport?.skipped[0].code == "VPN_UNSUPPORTED_PROTOCOL", "Import counts missing")
+            _ = try run(.activate(imported.profiles[1].id))
+            let updated = try run(.updateSubscription(sid, documents: ["UPDATED_CANARY"]))
+            try check(updated.enabled && updated.activeProfile == imported.profiles[1].id && updated.profiles[1].updateAvailable == true, "Refresh changed active connection or lost update badge")
+            let detached = try run(.deleteSubscription(sid))
+            try check(detached.profiles.count == 2 && detached.profiles.allSatisfy { $0.subscriptionId == nil }, "Detach removed profiles")
+            let url = try f.engine.locked { try f.manager.subscriptionURL(sid) }
+            try check(url.hasSuffix("private-subscription-token"), "Private URL response not decoded")
+            for secret in ["CONFIG_CANARY", "TOKEN_CANARY", "DOCUMENT_CANARY", "UPDATED_CANARY", "private-subscription-token"] {
+                try check(!f.remote.commands.joined().contains(secret), "Private import content leaked into command")
+            }
+        }
+        try test("Profile warnings explain preserved settings without reporting operation failure") {
+            let expected = [
+                "VPN_SPX_PRESERVED": "Параметр spx сохранён в исходной ссылке, но не используется этим ядром VPN.",
+                "NAME_TRUNCATED": "Название профиля сокращено до 64 символов.",
+                "VPN_INSECURE_TLS": "В ссылке отключена проверка TLS-сертификата",
+                "VPN_IPV6_GUEST_DISABLED": "Сеть Wi-Fi с VPN использует IPv4. Параметры IPv6 туннеля сохранены."
+            ]
+            for (code, text) in expected {
+                try check(VPNSettingsManager.warning(code) == text, "Profile warning lost its explanation: " + code)
+                try check(!text.contains("VPN_OPERATION_FAILED"), "Information rendered as a failed operation")
+            }
+        }
+        try test("Unknown warning and error codes do not produce a profile warning indicator") {
+            for code in ["VPN_FUTURE_WARNING", "VPN_BUSY", "VPN_OPERATION_FAILED", "", "PRIVATE_CANARY"] {
+                try check(VPNSettingsManager.warning(code) == nil, "Unknown warning or error was displayed as profile failure")
+            }
+            try check(["VPN_FUTURE_WARNING"].compactMap(VPNSettingsManager.warning).isEmpty, "Unknown-only profile should not show a warning triangle")
+            let mixed = ["VPN_FUTURE_WARNING", "VPN_SPX_PRESERVED"].compactMap(VPNSettingsManager.warning)
+            try check(mixed.count == 1 && mixed[0].contains("spx"), "Unknown code hid or replaced a recognized warning")
+            try check(VPNSettingsManager.message("VPN_BUSY").contains("другая операция"), "Actual errors lost their error explanation")
+        }
+        try test("Hysteria2 URI aliases import through the shared profile action") {
+            for prefix in ["hy2://", "hysteria2://"] {
+                let uri = prefix + "PRIVATE_CANARY@example.test:443?sni=example.test#Travel"
+                try check(VPNOperation.isProfileLink("  " + uri + "\n"), "File detection missed Hysteria2 URI")
+                let f = try Fixture()
+                _ = try f.engine.locked { try f.manager.perform(.importProfile(uri: uri, name: "Travel")) }
+                try check(f.remote.requests.contains { $0["action"] as? String == "import" && $0["uri"] as? String == uri }, "Hysteria2 URI did not reach shared importer")
+                try check(!f.remote.commands.joined().contains("PRIVATE_CANARY"), "Hysteria2 authentication reached shell arguments")
+            }
+            for value in ["http://example.test", "hysteria://secret@example.test", "[Interface]", "trojan://secret@example.test"] {
+                try check(!VPNOperation.isProfileLink(value), "Unsupported link misclassified")
+                try rejects { try VPNOperation.importProfile(uri: value, name: "").validate() }
+            }
+        }
+        try test("Subscription receipts cannot hide activation or profile deletion") {
+            var before = VPNStatus(), after = VPNStatus()
+            before.profiles = [VPNProfile(id: "one", name: "One", transport: "", warnings: [], active: true)]
+            before.activeProfile = "one"; before.enabled = true
+            after = before; after.profiles = []
+            try rejects { try VPNOperation.deleteSubscription("feed").verify(before: before, after: after) }
+            after = before; after.enabled = false
+            try rejects { try VPNOperation.updateSubscription("feed").verify(before: before, after: after) }
+        }
+        try test("VPN transport enforces request and response byte limits") {
+            let f = try Fixture()
+            try rejects("32 МиБ") { _ = try f.manager.request(["action": "status", "padding": String(repeating: "x", count: 32 * 1024 * 1024)]) }
+            try check(f.remote.requests.isEmpty, "Oversized request reached the controller")
+            let valid = try JSONSerialization.data(withJSONObject: ["ok": true, "data": f.remote.payload])
+            let padded = valid + Data(repeating: 32, count: 2 * 1024 * 1024 - valid.count)
+            f.remote.requestOverride = .init(status: 0, stdout: padded, stderr: Data())
+            _ = try f.manager.request(["action": "status"])
+            f.remote.requestOverride = .init(status: 0, stdout: padded + Data([32]), stderr: Data())
+            try rejects("2 МиБ") { _ = try f.manager.request(["action": "status"]) }
+        }
+        try test("Expanded status accepts 1024 profiles and rejects overflow") {
+            let f = try Fixture()
+            f.remote.payload["profiles"] = (0..<1024).map { ["id": String($0), "name": "Node", "transport": "", "active": false, "warnings": []] as [String: Any] }
+            try check(try f.manager.inspect().status.profiles.count == 1024, "1024-node status refused")
+            var profiles = f.remote.payload["profiles"] as! [[String: Any]]; profiles.append(profiles[0]); f.remote.payload["profiles"] = profiles
+            try rejects("формат") { _ = try f.manager.inspect() }
         }
         print("\(count) VPN settings tests passed")
     }

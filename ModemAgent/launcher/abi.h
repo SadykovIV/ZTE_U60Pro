@@ -21,12 +21,12 @@ static const struct launcher_abi launcher_abis[] = {
   {{0xe62b98,0x4b6c54}, {0xe6d970,0x4b6d40}, {0xe6b458,0x4b5524}, {0xe62b00,0x4b1350}, {0xe69c50,0x4b1350}},
   {{0x42c4ec,0xa9be7bfd}, {0x42c524,0x33180e81}, {0x42c488,0xa9be7bfd}, {0x42c4c8,0x33000681}, {0x530868,0xa9be7bfd}, {0x53089c,0xf946a210}, {0x42403c,0xb4000120}, {0x424058,0xd3608c00}, {0x424080,0xf9402000}}
  },
+ {"xcbzhk-b04", 0x421dc4, 0x400040, 0x2288088, 0x2287598, 0xe80214,
+  {0x429128, 0x4291a0, 0x42a8c0, 0x42ace8, 0x42ad14, 0x42e3c0, 0x42e4f4, 0x42e660, 0x42e67c, 0x433134, 0x433198, 0x481428, 0x481540, 0x4b8048, 0x4bc218, 0x4bd948, 0x4bda34, 0x52f5c0, 0x52f788, 0x52f888, 0x52f904, 0x52fb48, 0x533c50, 0x534918, 0x534a8c, 0x534a98, 0x5372d4, 0x5376ec, 0x5377c0, 0x537f04, 0x537f40, 0x538138, 0x538324, 0x5384dc},
+  {{0xe72ab0,0x4bd948}, {0xe7d968,0x4bda34}, {0xe7b448,0x4bc218}, {0xe72a18,0x4b8048}, {0xe79c30,0x4b8048}},
+  {{0x433198,0xa9be7bfd}, {0x4331d0,0x33180e81}, {0x433134,0xa9be7bfd}, {0x433174,0x33000681}, {0x537f40,0xa9be7bfd}, {0x537f74,0xf9469e10}, {0x42ace8,0xb4000120}, {0x42ad04,0xd3608c00}, {0x42ad2c,0xf9402000}}
+ },
 };
-static inline const struct launcher_abi *launcher_abi_select(uintptr_t phdr, uintptr_t entry) {
- for (size_t i=0;i<sizeof launcher_abis/sizeof launcher_abis[0];i++)
-  if (launcher_abis[i].phdr==phdr && launcher_abis[i].entry==entry) return &launcher_abis[i];
- return NULL;
-}
 static inline uintptr_t launcher_abi_address(const struct launcher_abi *abi, uintptr_t b31) {
  if (!abi) return 0;
  for (size_t i=0;i<34;i++) if (launcher_abis[0].functions[i]==b31) return abi->functions[i];
@@ -38,5 +38,17 @@ static inline int launcher_abi_valid(const struct launcher_abi *abi,
  for (size_t i=0;i<9;i++) if (read_word(abi->checks[i].address)!=abi->checks[i].word) return 0;
  for (size_t i=0;i<5;i++) if (read_pointer(abi->hooks[i].slot)!=abi->hooks[i].target) return 0;
  return 1;
+}
+static inline const struct launcher_abi *launcher_abi_select(uintptr_t phdr, uintptr_t entry,
+ uintptr_t (*read_pointer)(uintptr_t), uint32_t (*read_word)(uintptr_t)) {
+ const struct launcher_abi *match = NULL;
+ for (size_t i=0;i<sizeof launcher_abis/sizeof launcher_abis[0];i++) {
+  const struct launcher_abi *candidate = &launcher_abis[i];
+  if (candidate->phdr != phdr || candidate->entry != entry ||
+      !launcher_abi_valid(candidate, read_pointer, read_word)) continue;
+  if (match) return NULL;
+  match = candidate;
+ }
+ return match;
 }
 #endif

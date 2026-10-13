@@ -3,7 +3,7 @@
 from pathlib import Path,PurePosixPath
 import argparse,io,re,subprocess,tarfile,zipfile,sys,json,hashlib
 ROOT=Path(__file__).resolve().parents[1]
-p=argparse.ArgumentParser();p.add_argument('--artifacts',action='store_true');p.add_argument('--forbidden-file',type=Path,help='Private JSON array of extra strings; never add it to Git');a=p.parse_args()
+p=argparse.ArgumentParser();p.add_argument('--artifacts',action='store_true');p.add_argument('--artifact-dir',type=Path,default=ROOT/'release',help='Release directory to inspect with --artifacts');p.add_argument('--forbidden-file',type=Path,help='Private JSON array of extra strings; never add it to Git');a=p.parse_args()
 forbidden=[s.encode(encoding) for s in json.loads(a.forbidden_file.read_text()) for encoding in ('utf-8','utf-16le')] if a.forbidden_file else []
 problems=[];count=0;total=0;public_test_fixtures=0
 source_fixtures={(f['archive'],f['member']):f for f in json.loads((ROOT/'tools/public-source-test-fixtures.json').read_text())['fixtures']}
@@ -31,7 +31,7 @@ def inspect(name,data,depth=0):
   else:problems.append((name,'private key'))
  for match in re.finditer(rb'vless://[0-9a-fA-F-]{36}@([^:?/#\s"\\]+)',data):
   host=match[1].decode(errors='ignore')
-  if host not in ('example.com','example.test','vpn.example.com','192.0.2.1','198.51.100.1','203.0.113.1'):
+  if host not in ('example.com','example.org','example.test','vpn.example.com','192.0.2.1','198.51.100.1','203.0.113.1'):
    problems.append((name,'non-example VPN profile'))
  if depth>=5:return
  stream=io.BytesIO(data)
@@ -54,8 +54,9 @@ for name in filter(None,files):
  if path.is_symlink():problems.append((name,'symlink in source'))
  else:inspect(name,path.read_bytes())
 if a.artifacts:
- for path in sorted((ROOT/'release').glob('*')):
-  if path.is_file():inspect('release/'+path.name,path.read_bytes())
+ artifacts=sorted(path for path in a.artifact_dir.glob('*') if path.is_file())
+ if not artifacts:raise RuntimeError('No release files found in '+str(a.artifact_dir))
+ for path in artifacts:inspect('release/'+path.name,path.read_bytes())
 for name,reason in sorted(set(problems)):print('FAIL',name,reason)
 print(f'Audit: {count} files/archive members, {len(set(problems))} findings; {public_test_fixtures} known public upstream test fixture')
 sys.exit(bool(problems))

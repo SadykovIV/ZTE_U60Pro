@@ -21,7 +21,7 @@ internal static class ForcePreparationTests
                 var backup=Path.Combine(folder,"SetupBackups",Guid.NewGuid().ToString());Directory.CreateDirectory(backup);
                 if(saved is not null)await File.WriteAllTextAsync(Path.Combine(folder,"setup-pending.json"),JsonSerializer.Serialize(new OnboardingPending
                 {Id=Guid.NewGuid().ToString(),BackupDirectory=backup,IdentitySource="single-usb",Intent="linux-arm64-access",Cid=Cid,BootId=Boot,FirmwareHash=ImeiEngine.FirmwareHash,RouterHash=ImeiEngine.RouterHash,Profile="linux-arm64-access",ForceReinstall=saved.Value,CleanComponents=mode.SavedClean}));
-                var ssh=new ReadySsh();var preflight=0;var uploads=0;var requested=mode.RequestedForce;var expected=saved??(requested||mode.RequestedClean);var expectedClean=saved is null?mode.RequestedClean:mode.SavedClean;
+                var ssh=new ReadySsh();var preflight=0;var uploads=0;var requested=mode.RequestedForce;var expectedClean=mode.RequestedClean||mode.SavedClean;var expected=saved==true||requested||expectedClean;
                 var adb=new AdbTransport((args,stream,_,_)=>
                 {
                     if(args[0]=="devices")return Task.FromResult(Reply("fixture device usb:1\n"));
@@ -32,7 +32,7 @@ internal static class ForcePreparationTests
                     if(command.Contains("'--preflight'"))
                     {
                         preflight++;
-                        Check(command.Contains(" -- '--reinstall' '--preflight' ")==expected,"actual preflight uses persisted force intent before the original arguments");
+                        Check(command.Contains(" -- '"+(expectedClean?"--clean-reinstall":"--reinstall")+"' '--preflight' ")==expected,"actual preflight uses persisted force intent before the original arguments");
                         return Task.FromResult(Reply(prefix+"\n"+marker+"71\n"));
                     }
                     if(!command.Contains("observed_hash()"))throw new Exception("Unexpected non-read command");
@@ -40,17 +40,11 @@ internal static class ForcePreparationTests
                 },Path.GetFullPath("Windows_x64/Resources/Onboarding/adb-stream.sh"));
                 var engine=new OnboardingEngine("192.0.2.1",folder,Path.GetFullPath("Windows_x64/Resources"),adb){ExistingSshFactory=()=>ssh,WebFactory=()=>new ModemWebClient("192.0.2.1",new NoWeb())};
                 try{await engine.PrepareAsync("","synthetic-new-password","",forceReinstall:requested,cleanComponents:mode.RequestedClean);}catch(Exception error) when(error is IOException or InvalidDataException){}
-                if(saved is not null&&!mode.SavedClean&&mode.RequestedClean)
-                {
-                    var retained=JsonSerializer.Deserialize<OnboardingPending>(File.ReadAllBytes(Path.Combine(folder,"setup-pending.json")))!;
-                    Check(preflight==0&&ssh.Calls==0&&uploads==0&&!retained.CleanComponents&&retained.ForceReinstall==saved.Value,"clean request cannot supersede an unfinished non-ready transaction or silently change its mode");
-                    continue;
-                }
                 Check(preflight==1&&ssh.Calls==0&&uploads==0,"explicit force/new or saved intent reaches measured preflight without SSH reuse, Web or uploads");
                 var pending=JsonSerializer.Deserialize<OnboardingPending>(File.ReadAllBytes(Path.Combine(folder,"setup-pending.json")))!;
                 Check(pending.ForceReinstall==expected&&pending.CleanComponents==expectedClean&&!pending.InstallRequested,"force intent is durable before dispatch and cannot override an existing journal");
-                Check(!OnboardingEngine.InstallerArguments(pending,new[]{"--preflight"}).Any(arg=>arg.Contains("clean",StringComparison.Ordinal)),"clean components never adds an unsupported installer flag");
-                Check(OnboardingEngine.InstallerArguments(pending,new[]{"stage","cid","agent-sha","dropbear-sha","key-sha","profile"}).SequenceEqual((expected?new[]{"--reinstall"}:Array.Empty<string>()).Concat(new[]{"stage","cid","agent-sha","dropbear-sha","key-sha","profile"})),"normal apply keeps its original CLI arguments behind the optional leading flag");
+                Check(OnboardingEngine.InstallerArguments(pending,new[]{"--preflight"}).Contains("--clean-reinstall")==expectedClean,"only explicit clean intent uses the archive-enabled installer flag");
+                Check(OnboardingEngine.InstallerArguments(pending,new[]{"stage","cid","agent-sha","dropbear-sha","key-sha","profile"}).SequenceEqual((expected?new[]{expectedClean?"--clean-reinstall":"--reinstall"}:Array.Empty<string>()).Concat(new[]{"stage","cid","agent-sha","dropbear-sha","key-sha","profile"})),"normal apply keeps its original CLI arguments behind the optional leading flag");
             }
             foreach(var scenario in new[]{"pending","rollback-unknown","rollback-confirmed","ordinary-rollback"})
             {
@@ -69,7 +63,8 @@ internal static class ForcePreparationTests
                     var command=stream?.OriginalCommand??args[^1];var marker=stream?.Result??Regex.Match(command,"__ZTE_RESULT_[A-F0-9]{32}__").Value;
                     var prefix=stream is null?"":"\n"+stream.Ready+"\n\n"+stream.Begin+"\n";string body;var code=0;
                     if(command.Contains(" -- '--preflight' ")||command.Contains(" -- '--reinstall' ")){preflights++;throw new Exception("Replay attempted");}
-                    if(command.Contains(" -- '--verify-rollback' ")){verifications++;Check(!command.Contains(" -- '--reinstall' "),"rollback verification never receives a mutation flag");body="INSTALL_ROLLBACK_VERIFIED "+journal;if(scenario=="rollback-unknown"){body="unverified";code=71;}}
+                    if(command.Contains(" -- '--verify-not-started' ")){body="INSTALL_ERROR NOT_STARTED_JOURNAL";code=1;}
+                    else if(command.Contains(" -- '--verify-rollback' ")){verifications++;Check(!command.Contains(" -- '--reinstall' "),"rollback verification never receives a mutation flag");body="INSTALL_ROLLBACK_VERIFIED "+journal;if(scenario=="rollback-unknown"){body="unverified";code=71;}}
                     else if(command.Contains("cat '"+journal+"/state'"))body=scenario=="pending"?"pending":"rolled-back";
                     else if(command.Contains("observed_hash()"))body=ImeiEngine.FirmwareHash+"  /firmware/image/modem.b16\n"+ImeiEngine.RouterHash+"  /usr/bin/diag-router\n"+Cid+"\n"+Boot;
                     else throw new Exception("Unexpected resume operation");

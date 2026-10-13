@@ -30,7 +30,7 @@ struct ComponentCleanupPlan: Codable {
         try require(schema == 1 && UUID(uuidString: id)?.uuidString.lowercased() == id &&
                     UUID(uuidString: bootID)?.uuidString.lowercased() == bootID &&
                     cid.range(of: #"^[0-9a-f]{32}$"#, options: .regularExpression) != nil &&
-                    DeviceBackups.validHash(firmwareHash) && DeviceBackups.validHash(routerHash),
+                    (firmwareHash == "absent" || DeviceBackups.validHash(firmwareHash)) && (routerHash == "absent" || DeviceBackups.validHash(routerHash)),
                     "Повреждён журнал чистой установки")
         try require(["prepared", "backup-verified", "clean-requested", "complete", "cancelled"].contains(phase), "Повреждён журнал чистой установки")
         try require(URL(fileURLWithPath: backupDirectory).standardizedFileURL.path == root.appendingPathComponent("ComponentBackups/" + id).standardizedFileURL.path,
@@ -52,6 +52,38 @@ final class ComponentCleanup {
     static func pendingURL(_ root: URL) -> URL { root.appendingPathComponent("component-cleanup-pending.json") }
     static func pendingURL(root: URL) -> URL { pendingURL(root) }
     static func hasPending(root: URL) -> Bool { var info = stat(); return lstat(pendingURL(root).path, &info) == 0 }
+    static func undispatchedRecoveryPlan(root: URL) throws -> ComponentCleanupPlan? {
+        guard hasPending(root: root) else { return nil }
+        let plan = try JSONDecoder().decode(ComponentCleanupPlan.self, from: DeviceBackups.smallFile(pendingURL(root), maximum: 65536))
+        try plan.validate(root: root)
+        return ["prepared", "backup-verified"].contains(plan.phase) ? plan : nil
+    }
+
+    /// The caller holds the operation lock and supplies fresh, repeated USB
+    /// identity proof. Retiring an undispatched intent changes host metadata only.
+    static func archiveUndispatchedAfterReboot(root: URL, connection: Connection, proof: DiagnosticDeviceProof) throws -> Bool {
+        guard hasPending(root: root) else { return false }
+        let original = try DeviceBackups.smallFile(pendingURL(root), maximum: 65536)
+        let plan = try JSONDecoder().decode(ComponentCleanupPlan.self, from: original)
+        try plan.validate(root: root)
+        guard ["prepared", "backup-verified"].contains(plan.phase) else { return false }
+        try require(connection.host == plan.connection.host && proof.identity == plan.identity && proof.routerHash == plan.routerHash &&
+                    UUID(uuidString: proof.bootID)?.uuidString.lowercased() == proof.bootID,
+                    "После перезагрузки обнаружено другое устройство или прошивка; журнал очистки сохранён")
+        guard proof.bootID != plan.bootID else { return false }
+        try validateRemainingSetup(plan, root: root)
+        let directory = URL(fileURLWithPath: plan.backupDirectory)
+        if let sha = plan.archiveSha {
+            let archive = try DeviceBackups.hashFile(directory.appendingPathComponent("components.tar"))
+            try require(archive.sha256 == sha && archive.bytes == plan.archiveBytes, "Копия компонентов повреждена; журнал очистки сохранён")
+        }
+        try DeviceBackups.directory(root.appendingPathComponent("ComponentBackups"), create: true)
+        try DeviceBackups.directory(directory, create: true)
+        try require(try DeviceBackups.smallFile(pendingURL(root), maximum: 65536) == original, "Журнал очистки изменился; он сохранён для проверки")
+        try FileManager.default.moveItem(at: pendingURL(root), to: directory.appendingPathComponent("cleanup-before-reset-" + UUID().uuidString.lowercased() + ".json"))
+        return true
+    }
+
     static func acknowledge(root: URL, setupID: String) throws {
         let plan = try JSONDecoder().decode(ComponentCleanupPlan.self, from: DeviceBackups.smallFile(pendingURL(root), maximum: 65536))
         try plan.validate(root: root)
@@ -128,7 +160,7 @@ final class ComponentCleanup {
         default: return "Не удалось безопасно очистить компоненты. Резервная копия и журнал сохранены; чужие файлы не удаляются."
         }
     }
-    private func validateRemainingSetup(_ plan: ComponentCleanupPlan) throws {
+    private static func validateRemainingSetup(_ plan: ComponentCleanupPlan, root: URL) throws {
         let oldPending = root.appendingPathComponent("setup-pending.json")
         var info = stat()
         if lstat(oldPending.path, &info) == 0 {
@@ -148,7 +180,7 @@ final class ComponentCleanup {
         let original = try DeviceBackups.smallFile(Self.pendingURL(root), maximum: 65536)
         var plan = try JSONDecoder().decode(ComponentCleanupPlan.self, from: original)
         try plan.validate(root: root)
-        try validateRemainingSetup(plan)
+        try Self.validateRemainingSetup(plan, root: root)
         try require(connection.host == plan.connection.host, "Незавершённая чистая установка относится к другому адресу модема")
         if plan.phase == "cancelled" {
             try Self.verifyCancellation(plan)
@@ -199,7 +231,7 @@ final class ComponentCleanup {
         try DeviceBackups.directory(root)
         var plan = try JSONDecoder().decode(ComponentCleanupPlan.self, from: DeviceBackups.smallFile(Self.pendingURL(root), maximum: 65536))
         try plan.validate(root: root)
-        try validateRemainingSetup(plan)
+        try Self.validateRemainingSetup(plan, root: root)
         try require(connection.host == plan.connection.host, "Незавершённая чистая установка относится к другому адресу модема")
         if plan.phase == "cancelled" {
             try Self.verifyCancellation(plan)

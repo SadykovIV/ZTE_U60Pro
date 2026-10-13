@@ -11,6 +11,7 @@ static class ScreenLocalizationTests
 {
     static int checks;
     static readonly byte[] B31 = Encoding.ASCII.GetBytes("SYNTHETIC-UI-B31-ORIGINAL");
+    static readonly byte[] B04 = Encoding.ASCII.GetBytes("SYNTHETIC-UI-B04-ORIGINAL");
     static readonly byte[] B28 = Encoding.ASCII.GetBytes("SYNTHETIC-UI-B28-ORIGINAL");
     static string Hash(byte[] bytes) => Convert.ToHexStringLower(SHA256.HashData(bytes));
     static void Check(bool value,string name) { if(!value)throw new Exception("FAIL "+name);Console.WriteLine("PASS "+name);checks++; }
@@ -24,7 +25,7 @@ static class ScreenLocalizationTests
     static string Resources(string root,string fault="")
     {
         var directory=Path.Combine(root,"Resources","ScreenLocalization");Directory.CreateDirectory(directory);
-        var files=new Dictionary<string,byte[]> { ["install.sh"]=Encoding.UTF8.GetBytes("#!/bin/sh\n# synthetic installer"),["service.sh"]=Encoding.UTF8.GetBytes("# synthetic service"),["English.ini"]=Encoding.UTF8.GetBytes("synthetic English"),["Chinese.ini"]=Encoding.UTF8.GetBytes("synthetic Russian"),["font.patch.json"]=Patch(B31),["font.patch.b28.json"]=Patch(fault=="ambiguous"?B31:B28) };
+        var files=new Dictionary<string,byte[]> { ["install.sh"]=Encoding.UTF8.GetBytes("#!/bin/sh\n# synthetic installer"),["service.sh"]=Encoding.UTF8.GetBytes("# synthetic service"),["English.ini"]=Encoding.UTF8.GetBytes("synthetic English"),["Chinese.ini"]=Encoding.UTF8.GetBytes("synthetic Russian"),["font.patch.b04.json"]=Patch(B04),["font.patch.json"]=Patch(B31),["font.patch.b28.json"]=Patch(fault=="ambiguous"?B31:B28) };
         if(fault=="output") { using var doc=JsonDocument.Parse(files["font.patch.b28.json"]);files["font.patch.b28.json"]=Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(files["font.patch.b28.json"]).Replace(Hash(Patched(B28)),new string('d',64),StringComparison.Ordinal)); }
         if(fault=="size")files["font.patch.b28.json"]=JsonSerializer.SerializeToUtf8Bytes(new{version=1,inputSHA256=Hash(B28),outputSHA256=Hash(Patched(B28)),inputSize=B28.Length+1,outputSize=B28.Length+1,patches=new[]{new{offset=0,originalHex="53",replacementHex="52"}}});
         if(fault=="patch-original")files["font.patch.b28.json"]=Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(Patch(B28)).Replace("\"originalHex\":\"53\"","\"originalHex\":\"54\"",StringComparison.Ordinal));
@@ -38,7 +39,8 @@ static class ScreenLocalizationTests
     static async Task Run(string[] args)
     {
         var root=args[0];Directory.CreateDirectory(root);
-        async Task<(Fake,ScreenLocalizationStatus)> Install(string name,byte[] original,string firmware="b28",string state="absent",string revision="20261006",string fault="")
+        if(args.Length>3)CheckActualB04(args[3]);
+        async Task<(Fake,ScreenLocalizationStatus)> Install(string name,byte[] original,string firmware="b28",string state="absent",string revision="20261013",string fault="")
         {
             var path=Path.Combine(root,name);var resources=Resources(path,fault);var fake=new Fake(original){Firmware=firmware,State=state,Revision=revision};
             var status=await new DeviceFeatureService(fake,resources,Path.Combine(path,"state")).InstallLocalizationAsync();return(fake,status);
@@ -48,23 +50,25 @@ static class ScreenLocalizationTests
         Check(first.Item1.StrictReads==0&&first.Item1.MeasuredReads>=3,"screen operation keeps fresh measured root/platform/device proof");
         Check(first.Item1.Uploads["zte_topsw_devui"].SequenceEqual(Patched(B28))&&first.Item1.Uploads["font.patch.json"].SequenceEqual(Patch(B28)),"B28 exact manifest is selected and staged under the existing canonical name");
         Check(first.Item1.Uploads.Keys.ToHashSet().SetEquals(["install.sh","service.sh","English.ini","Chinese.ini","font.patch.json","zte_topsw_devui"]),"only the six existing installer payload files are staged");
+        var b04=await Install("b04-fresh",B04,"b04");
+        Check(b04.Item1.Uploads["font.patch.json"].SequenceEqual(Patch(B04))&&b04.Item1.Installs==1,"B04 selects its independent manifest through the actual installation path");
         var b31=await Install("b31-fresh",B31,"b31");
         Check(b31.Item1.Uploads["font.patch.json"].SequenceEqual(Patch(B31))&&b31.Item1.Installs==1,"B31 fresh installation still selects its unchanged font map");
         var absent=await Install("files-absent",B28,"absent");
         Check(absent.Item2.State=="enabled","unrelated firmware/router files may be proven absent for the exact screen profile");
-        foreach(var firmware in new[]{"b31","b28"})
+        foreach(var firmware in new[]{"b31","b28","b04"})
         {
-            var enabled=await Install(firmware+"-repeat",firmware=="b31"?B31:B28,firmware,"enabled");
+            var enabled=await Install(firmware+"-repeat",firmware=="b31"?B31:firmware=="b04"?B04:B28,firmware,"enabled");
             Check(enabled.Item1.Installs==0&&enabled.Item1.Uploads.Count==0,"current "+firmware+" enabled repeat does not stage or reinstall");
-            var disabled=await Install(firmware+"-reenable",firmware=="b31"?B31:B28,firmware,"disabled");
+            var disabled=await Install(firmware+"-reenable",firmware=="b31"?B31:firmware=="b04"?B04:B28,firmware,"disabled");
             Check(disabled.Item1.Enables==1&&disabled.Item1.Uploads.Count==0,"current "+firmware+" re-enable uses the owned manager");
         }
-        foreach(var revision in new[]{"20260922","20260923","20260924"})
+        foreach(var revision in new[]{"20260922","20260923","20260924","20261006"})
         {
             var legacy=await Install("upgrade-"+revision,B31,"b31","disabled",revision);
             Check(legacy.Item1.BackupReads==1&&legacy.Item1.Installs==1,"B31 "+revision+" upgrade patches the owned original backup");
         }
-        foreach(var revision in new[]{"20260922","20260923","20260924","20261006"})
+        foreach(var revision in new[]{"20260922","20260923","20260924","20261006","20261013"})
         {
             var path=Path.Combine(root,"restore-"+revision);var fake=new Fake(B31){Firmware=revision=="20261006"?"b28":"b31",State="enabled",Revision=revision};
             var result=await new DeviceFeatureService(fake,Resources(path),Path.Combine(path,"state")).RestoreLocalizationAsync();
@@ -106,16 +110,23 @@ static class ScreenLocalizationTests
             Check(original.Length==patched.Length&&original.Length==10946355,"actual B31 patch preserves the full file size");
         }
     }
+    static void CheckActualB04(string path)
+    {
+        var original=File.ReadAllBytes(path);var manifest=File.ReadAllBytes(Path.GetFullPath("Windows_x64/Resources/ScreenLocalization/font.patch.b04.json"));
+        var method=typeof(DeviceFeatureService).GetMethod("ApplyScreenFontPatch",BindingFlags.NonPublic|BindingFlags.Static)!;var patched=(byte[])method.Invoke(null,[original,manifest])!;
+        Check(Hash(original)=="dbe6eadc92d43a0cd7206264f9d75ab242df90e88c02ee2ba3ac65598b58523e"&&Hash(patched)=="0db2294b3e428fb53f4b6b725063ad8ffd9c396e5a27c54452f0ea479fa78f3b","actual captured B04 font patch matches the reviewed output without execution");
+        Check(original.Length==patched.Length&&original.Length==10946355,"B04 patch preserves file size");
+    }
     sealed class Fake(byte[] original):IRemoteShell
     {
-        public string Firmware="b28",State="absent",Revision="20261006";
+        public string Firmware="b28",State="absent",Revision="20261013";
         public bool PlatformFailure,Drift,ReadFailure;
         public string? HelperError;
         public int StrictReads,MeasuredReads,Installs,Enables,Disables,BackupReads;
         public readonly List<string> Commands=[];
         public readonly Dictionary<string,byte[]> Uploads=new(StringComparer.Ordinal);
         const string Cid="11111111111111111111111111111111",Boot="11111111-1111-1111-1111-111111111111";
-        string InstalledHash=>Revision switch {"20260922"=>"6aed6654afb7a4fde7792a5f6034aa41e15b0fd77d794ed04d3a12c111c95fd2","20260923"=>"586a7727fb24a5701990c7cd82889887220c1c5566261c53ca21f3bb12549bfa","20260924"=>"810aae3c07c8019f2d0657f2bad6f1ee38f1dea5f1081210ab144478dd87c7b8",_ => (string)typeof(DeviceFeatureService).GetField("ScreenManagerHash",BindingFlags.NonPublic|BindingFlags.Static)!.GetRawConstantValue()!};
+        string InstalledHash=>Revision switch {"20261006"=>"0ce40f0d3e4375165f5e4424db023b786f70f9cacf88bfe07c1c893cff12db7d","20260922"=>"6aed6654afb7a4fde7792a5f6034aa41e15b0fd77d794ed04d3a12c111c95fd2","20260923"=>"586a7727fb24a5701990c7cd82889887220c1c5566261c53ca21f3bb12549bfa","20260924"=>"810aae3c07c8019f2d0657f2bad6f1ee38f1dea5f1081210ab144478dd87c7b8",_ => (string)typeof(DeviceFeatureService).GetField("ScreenManagerHash",BindingFlags.NonPublic|BindingFlags.Static)!.GetRawConstantValue()!};
         string Identity()=> (Firmware=="b31"?DeviceFeatureService.FirmwareHash:Firmware=="absent"?"absent":new string('a',64))+"  /firmware/image/modem.b16\n"+(Firmware=="b31"?DeviceFeatureService.RouterHash:Firmware=="absent"?"absent":new string('b',64))+"  /usr/bin/diag-router\n"+Cid+"\n"+(Drift&&MeasuredReads>1?"22222222-2222-2222-2222-222222222222":Boot)+"\n";
         static RemoteResult Reply(string s,int exit=0)=>new(exit,Encoding.UTF8.GetBytes(s),[]);
         string Status()=>"SCREEN_RU_STATUS state="+State+" language="+(State=="enabled"?"cn":"en")+" mounted="+(State=="enabled"?"3":"0")+" boot="+(State=="enabled"?"1":"0")+" pid=3 revision="+Revision+"\n";
@@ -139,7 +150,7 @@ static class ScreenLocalizationTests
             {
                 var match=Regex.Match(command,@"cat > '([^']+)'");if(!match.Success)throw new Exception("unexpected input");var name=Path.GetFileName(match.Groups[1].Value);Uploads.Add(name,input);return Task.FromResult(Reply(Hash(input)+"  "+match.Groups[1].Value));
             }
-            if(command.Contains("/install.sh'")&&command.Contains(" install ")){Installs++;if(HelperError is not null)return Task.FromResult(new RemoteResult(1,[],Encoding.UTF8.GetBytes("SCREEN_RU_ERROR "+HelperError+"\n")));State="enabled";Revision="20261006";return Task.FromResult(Reply(Status()));}
+            if(command.Contains("/install.sh'")&&command.Contains(" install ")){Installs++;if(HelperError is not null)return Task.FromResult(new RemoteResult(1,[],Encoding.UTF8.GetBytes("SCREEN_RU_ERROR "+HelperError+"\n")));State="enabled";Revision="20261013";return Task.FromResult(Reply(Status()));}
             if(command.Contains("/tmp/zte-imei-app.lock")||command.Contains("mkdir -m 700 '/tmp/zte-screen-ru-install-")||command.Contains("rmdir '/tmp/zte-screen-ru-install-"))return Task.FromResult(Reply(""));
             throw new Exception("Unexpected synthetic shell command");
         }

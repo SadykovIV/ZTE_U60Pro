@@ -1,3 +1,11 @@
 {
-  "collect.sh": "8270fd3811ec49eb4f52321662ed78618f55572ac0ee7b3803c68dc3baf8423c"
+  "NOTICE-QMI.txt": "0a4fbc7c40b920492af75db765de3334d90648f9737046430b289951129b5fe5",
+  "README.txt": "cc8d7512dad53be4de604eb4922c8eeae7a40b8e9ecf0363b0f08b2cddc5d843",
+  "collect.sh": "9c6c2ad48216b7be268fdb777a541e8fac0c3ed83e02c483247163f64e3f13ce",
+  "radio-inspect-build.json": "5fe97cfc41b3eb1dc382c4d5908980cd88315730127be6d7f0bda5d325eb1d1e",
+  "support-helpers.json": "8d162914450c42b5d5e6c315578cbbdf036ad1d00083a935ad12eecf0821801f",
+  "support-sources.tar.gz": "13d45901087d30ef04b680d8ad1ccc4ce701d534fd3627db56fac63e0d543929",
+  "zte-support-config": "61cfce1263c9c882eccf2303b93f83fa3f0e96919ed7da60e690df5a148fa262",
+  "zte-support-nv": "d41b1d537a0f690cc8dc954bd63bb2f41179e862a76818c650ee0b66346d3c76",
+  "zte-support-qmi": "8ae8a370596c1369b6c03c9fe5c048dccd83e8dda6b0947b4204b407934d2d0d"
 }

@@ -72,10 +72,6 @@ def header():
                   '  {' + ', '.join('{' + h['slot'] + ',' + h['target'] + '}' for h in p['hooks']) + '},',
                   '  {' + ', '.join('{' + c['address'] + ',' + c['word'] + '}' for c in p['checks']) + '}', ' },']
     lines += ['};',
-              'static inline const struct launcher_abi *launcher_abi_select(uintptr_t phdr, uintptr_t entry) {',
-              ' for (size_t i=0;i<sizeof launcher_abis/sizeof launcher_abis[0];i++)',
-              '  if (launcher_abis[i].phdr==phdr && launcher_abis[i].entry==entry) return &launcher_abis[i];',
-              ' return NULL;', '}',
               'static inline uintptr_t launcher_abi_address(const struct launcher_abi *abi, uintptr_t b31) {',
               ' if (!abi) return 0;', f' for (size_t i=0;i<{count};i++) if (launcher_abis[0].functions[i]==b31) return abi->functions[i];',
               ' return 0;', '}',
@@ -84,7 +80,18 @@ def header():
               ' if (!abi) return 0;',
               ' for (size_t i=0;i<9;i++) if (read_word(abi->checks[i].address)!=abi->checks[i].word) return 0;',
               ' for (size_t i=0;i<5;i++) if (read_pointer(abi->hooks[i].slot)!=abi->hooks[i].target) return 0;',
-              ' return 1;', '}', '#endif', '']
+              ' return 1;', '}',
+              'static inline const struct launcher_abi *launcher_abi_select(uintptr_t phdr, uintptr_t entry,',
+              ' uintptr_t (*read_pointer)(uintptr_t), uint32_t (*read_word)(uintptr_t)) {',
+              ' const struct launcher_abi *match = NULL;',
+              ' for (size_t i=0;i<sizeof launcher_abis/sizeof launcher_abis[0];i++) {',
+              '  const struct launcher_abi *candidate = &launcher_abis[i];',
+              '  if (candidate->phdr != phdr || candidate->entry != entry ||',
+              '      !launcher_abi_valid(candidate, read_pointer, read_word)) continue;',
+              '  if (match) return NULL;',
+              '  match = candidate;',
+              ' }',
+              ' return match;', '}', '#endif', '']
     return '\n'.join(lines)
 
 

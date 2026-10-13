@@ -12,6 +12,34 @@ end
 local function fail(code)
     io.stderr:write(code .. '\n'); os.exit(1)
 end
+-- IPA policy uses its own savedir: never commit the stock UI's pending router
+-- edits. The complete original file is retained by manager.sh, but restoration
+-- changes only our one persistent option in the current router configuration.
+if arg[1] == 'ipa-prepare' or arg[1] == 'ipa-restore' then
+    local p = uci.cursor('/etc/config', root .. '/ipa-uci')
+    local function flag(cursor)
+        local value = cursor:get('zwrt_router','other','ipa_disable')
+        if value ~= nil and value ~= '0' and value ~= '1' then fail('VPN_IPA_STATE_INVALID') end
+        return value
+    end
+    if not p:get('zwrt_router','other') then fail('VPN_IPA_STATE_INVALID') end
+    local current = flag(p)
+    if arg[1] == 'ipa-prepare' then
+        if current ~= '1' then
+            assert(p:set('zwrt_router','other','ipa_disable','1'))
+            assert(p:save('zwrt_router')); assert(p:commit('zwrt_router'))
+        end
+    elseif current == '1' then
+        local b = uci.cursor(root .. '/ipa-backup', root .. '/ipa-backup/deltas')
+        local original = flag(b)
+        if original ~= current then
+            if original == nil then assert(p:delete('zwrt_router','other','ipa_disable'))
+            else assert(p:set('zwrt_router','other','ipa_disable',original)) end
+            assert(p:save('zwrt_router')); assert(p:commit('zwrt_router'))
+        end
+    end
+    print('UCI_' .. arg[1] .. '=OK'); return
+end
 local function guest_sections(owned)
     -- Validate both sections before changing either one.
     for _,name in ipairs({'guest_2g','guest_5g'}) do

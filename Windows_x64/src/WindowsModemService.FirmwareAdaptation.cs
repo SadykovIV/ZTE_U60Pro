@@ -9,6 +9,7 @@ namespace ZteImeiStudio.Windows;
 public sealed partial class WindowsModemService
 {
     internal FirmwareSupportCollector.StreamFile? FirmwareSupportStream { get; init; }
+    internal Func<bool,CancellationToken,Task<Dictionary<string,byte[]>>>? FirmwareSupportRadioProbe { get; init; }
 
     private async Task<FirmwareSupportResult> CollectFirmwareAdaptationAsync(IReadOnlyDictionary<string,string>? parameters,CancellationToken ct)
     {
@@ -64,7 +65,7 @@ public sealed partial class WindowsModemService
                 return report;
             }
             VerifySelection();
-            return await FirmwareSupportCollector.CollectAsync(shell,selected,stream,helper,host,destination,work,activity,version,ct,VerifySelection,CollectResearch,_diagnosticPrivacy);
+            return await FirmwareSupportCollector.CollectAsync(shell,selected,stream,helper,host,destination,work,activity,version,ct,VerifySelection,CollectResearch,_diagnosticPrivacy,_resources,FirmwareSupportRadioProbe);
         }
         finally { if(File.Exists(activityZip))File.Delete(activityZip); }
     }

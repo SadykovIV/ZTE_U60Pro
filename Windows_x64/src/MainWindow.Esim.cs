@@ -105,7 +105,7 @@ public sealed partial class MainWindow
     private void UpdateEsimAvailability()
     {
         if (_page != 8) return;
-        bool connected = _snapshot?.IsConnected == true && _snapshot.ConnectionMode == "SSH";
+        bool connected = _snapshot?.IsConnected == true && _snapshot.ConnectionMode == "SSH" && SelectedConnectionMatches();
         bool available = !_busy && connected && _terminal?.IsConnected != true && !_terminalOpening;
         bool writes = available && _esimAuthorized && _esimSnapshot is not null;
         if (_esimCardStatus is not null) _esimCardStatus.Text = Localization.Translate(EsimCardLabel());
@@ -170,7 +170,7 @@ public sealed partial class MainWindow
     }
     private async Task RunEsimUiAsync(EsimRequest request)
     {
-        if (_busy) return;
+        if (_busy || !RequireSelectedConnection()) return;
         _esimAuthorized = false; _esimCard = null; _esimCardChecked = true; _esimChecking = true;
         ClearEsimSecrets(); SetBusy(true);
         _esimStatus = "Проверка карты…";

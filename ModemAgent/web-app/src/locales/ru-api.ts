@@ -2,7 +2,7 @@ export const ruApi: Record<string, string> = {
   'The TTL interface has changed. Reload this page to continue.': 'Управление TTL обновлено. Перезагрузите страницу, чтобы продолжить.',
   'TTL values must be whole numbers from 1 to 255, or disabled.': 'Укажите целое значение TTL от 1 до 255 или выключите направление.',
   'The shared TTL manager is not installed on this modem.': 'На модеме не установлен общий менеджер TTL.',
-  'The TTL manager version could not be verified. Reinstall it from the Mac app.': 'Не удалось подтвердить версию менеджера TTL. Переустановите его через приложение Mac.',
+  'The agent could not verify the TTL component. Check and update both the agent and TTL component in ZTE U60Pro Manager for macOS or Windows.': 'Агент не смог проверить компонент TTL. Проверьте и обновите агент и компонент TTL в ZTE U60Pro Manager для macOS или Windows.',
   'Another modem operation is in progress. Try again when it finishes.': 'На модеме выполняется другая операция. Дождитесь её завершения.',
   'Finish the pending modem operation before changing TTL.': 'Завершите отложенную операцию на модеме перед изменением TTL.',
   'The TTL operation timed out. Refresh its status before retrying.': 'Модем не успел завершить операцию с TTL. Обновите статус перед повторной попыткой.',

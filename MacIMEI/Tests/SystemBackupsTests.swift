@@ -127,6 +127,14 @@ private final class Fixture {
             let missing = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
             try check(try SystemBackups.list(root: missing).isEmpty, "Expected empty list")
         }
+        test("copy-only full capture preserves unrelated IMEI and setup journals") {
+            let f = try Fixture()
+            for name in ["pending.json", "setup-pending.json"] { try savePrivate(Data("preserve journal".utf8), f.root.appendingPathComponent(name)) }
+            let item = try f.create()
+            try check(f.remote.writes == 0, "Read-only capture wrote a partition")
+            for name in ["pending.json", "setup-pending.json"] { try check(try Data(contentsOf: f.root.appendingPathComponent(name)) == Data("preserve journal".utf8), "Journal modified by capture") }
+            try rejects("незавершённую") { _ = try f.prepare(item) }
+        }
         test("full snapshot includes three verified private images and chunk hashes") {
             let f = try Fixture(), item = try f.create()
             try check(item.bytes == 2048 && !item.isLiveCapture && f.remote.writes == 0, "Wrong snapshot")
@@ -211,6 +219,19 @@ private final class Fixture {
             f.remote.cid = item.inventory.cid; f.remote.layout = String(repeating: "b", count: 64)
             try rejects("разметка") { _ = try f.prepare(item) }
             try check(f.remote.writes == 0, "Mismatched device written")
+        }
+        test("live inventory accepts measured B31 B28 B04 while unknown firmware remains refused") {
+            let f = try Fixture()
+            var inventory = f.remote.inventory; inventory.offline = false
+            for hash in DeviceBackups.supportedModemFirmwareHashes {
+                inventory.firmwareHash = hash; try SystemBackups.validate(inventory)
+            }
+            for hash in [String(repeating: "a", count: 64), "absent", ""] {
+                inventory.firmwareHash = hash
+                try rejects { try SystemBackups.validate(inventory) }
+            }
+            inventory.offline = true; inventory.firmwareHash = ""
+            try SystemBackups.validate(inventory)
         }
         test("live plan remains reviewable but restore refuses offline gate") {
             let f = try Fixture(); f.remote.offline = false

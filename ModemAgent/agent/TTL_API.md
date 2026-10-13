@@ -56,8 +56,11 @@ The client request deadline must exceed 90 seconds for these endpoints. Failed
 mutations must be followed by an explicit status refresh; they must not be
 presented as a successful rollback or successful apply.
 
-The pinned manager SHA256 is
-`b6588072c82ddd7678093a29b983ec4417c6807562819e3bda69cd6534637b7c`.
+The B31/B28 manager SHA256 is
+`79d5a2e696613f966fe2dff3fe59a0366455fe16681284c65d8ddb36c5e35b5a`.
+The previous B31 manager
+`b6588072c82ddd7678093a29b983ec4417c6807562819e3bda69cd6534637b7c`
+also remains accepted, so an agent update does not require reinstalling TTL.
 It validates its firmware/profile, CID, owned files, rules and hooks. The adapter
 checks root-owned, non-writable, non-symlink paths and the manager hash before
 invocation. It uses fixed `/bin/sh` argv (no `-c` or string interpolation), a clean

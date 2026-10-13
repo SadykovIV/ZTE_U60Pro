@@ -5,7 +5,7 @@ import Foundation
         [host, port, keyPath, knownHostsPath, channelSession?.summary.bootID ?? "", activeChannel?.rawValue ?? ""].joined(separator: "\n")
     }
     var canReadEsim: Bool { canReadModem && !esimPreview }
-    var canWriteEsim: Bool { canReadEsim && esimAuthorization == esimTargetKey && esimSnapshot?.writeReady == true }
+    var canWriteEsim: Bool { canManage && canReadEsim && esimAuthorization == esimTargetKey && esimSnapshot?.writeReady == true }
     var hasOrdinarySIM: Bool { esimCard?.kind == "ordinary_sim" && esimAuthorization == esimTargetKey }
     var esimCardStatus: String {
         if esimOperationActive { return "Тип SIM-карты: проверка…" }

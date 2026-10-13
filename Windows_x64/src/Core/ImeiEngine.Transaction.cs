@@ -10,15 +10,16 @@ public sealed partial class ImeiEngine
     // deadline before it can issue another raw mutation.
     private static readonly TimeSpan MutationSettleTime = TimeSpan.FromSeconds(270);
 
-    /// <summary>Start a new, journalled two-slot write. A fresh verified backup is mandatory.</summary>
-    public Task<ImeiState> ApplyAsync(string imei1, string imei2, CancellationToken ct = default)
+    /// <summary>Start a new, journalled write of one or two active records. A fresh verified backup is mandatory.</summary>
+    public Task<ImeiState> ApplyAsync(string imei1, string? imei2, CancellationToken ct = default)
     {
-        if (!ImeiCodec.IsValid(imei1) || !ImeiCodec.IsValid(imei2) || imei1 == imei2)
-            throw new ArgumentException("Введите два разных IMEI с верными контрольными цифрами.");
-        return BeginAsync([imei1, imei2], null, ct);
+        var targets = string.IsNullOrEmpty(imei2) ? new[] { imei1 } : new[] { imei1, imei2 };
+        if (targets.Any(x => !ImeiCodec.IsValid(x)) || targets.Distinct().Count() != targets.Length)
+            throw new ArgumentException("Введите IMEI для каждой активной записи NV550.");
+        return BeginAsync(targets, null, ct);
     }
 
-    /// <summary>Restore the two NV550 records from a verified local backup.</summary>
+    /// <summary>Restore the active NV550 records from a verified local backup.</summary>
     public Task<ImeiState> RestoreAsync(string backupId, CancellationToken ct = default)
     {
         if (!Guid.TryParse(backupId, out _)) throw new ArgumentException("Неверный ID бэкапа.", nameof(backupId));
@@ -60,24 +61,24 @@ public sealed partial class ImeiEngine
                 var (source, records, _) = await LoadBackup(Path.Combine(Backups, restoreId), token);
                 if (!SameDevice(source.Identity, state.Identity))
                     throw new InvalidDataException("Бэкап относится к другому модему или прошивке.");
-                for (var i = 0; i < 2; i++)
+                if (records.Length != state.Nv.Length) throw new InvalidDataException("Число активных NV550 не совпадает с бэкапом.");
+                for (var i = 0; i < records.Length; i++)
                     if (!records[i].AsSpan(9).SequenceEqual(state.Nv[i].AsSpan(9)))
                         throw new InvalidDataException("Остальные байты NV отличаются от бэкапа; восстановление остановлено.");
                 desired = records;
             }
             else
             {
-                if (targets is not { Length: 2 }) throw new ArgumentException("Нужны два IMEI.");
-                desired = [ImeiCodec.EncodeNv550(targets[0], state.Nv[0]),
-                    ImeiCodec.EncodeNv550(targets[1], state.Nv[1])];
+                if (targets is null || targets.Length != state.Nv.Length) throw new ArgumentException("Число IMEI не совпадает с активными NV550.");
+                desired = targets.Select((value,index) => ImeiCodec.EncodeNv550(value, state.Nv[index])).ToArray();
             }
-            if (ImeiCodec.DecodeNv550(desired[0]) == ImeiCodec.DecodeNv550(desired[1]))
+            if (desired.Select(item => ImeiCodec.DecodeNv550(item)).Distinct().Count() != desired.Length)
                 throw new InvalidDataException("Для двух слотов нужны разные IMEI.");
             if (PairEqual(desired, state.Nv))
-                throw new InvalidOperationException("Эта пара IMEI уже записана.");
+                throw new InvalidOperationException("Эти IMEI уже записаны.");
 
             var backupPath = await CreateBackupCoreAsync(state, token);
-            var pending = new ImeiPending(1, Guid.NewGuid().ToString(), Path.GetFileName(backupPath),
+            var pending = new ImeiPending(desired.Length == 1 ? 2 : 1, Guid.NewGuid().ToString(), Path.GetFileName(backupPath),
                 identity, desired.Select(Convert.ToHexString).ToArray(), "prepared");
             await SaveJson(Pending, pending, token);
             return await ResumeCoreAsync(identity, token);
@@ -88,8 +89,8 @@ public sealed partial class ImeiEngine
     {
         var pending = JsonSerializer.Deserialize<ImeiPending>(await File.ReadAllTextAsync(Pending, ct))
             ?? throw new InvalidDataException("Повреждён журнал IMEI.");
-        if (pending.Schema != 1 || !Guid.TryParse(pending.Id, out _) ||
-            !Guid.TryParse(pending.BackupId, out _) || pending.TargetHex is not { Length: 2 } ||
+        if (!((pending.Schema == 1 && pending.TargetHex is { Length: 2 }) || (pending.Schema == 2 && pending.TargetHex is { Length: 1 })) || !Guid.TryParse(pending.Id, out _) ||
+            !Guid.TryParse(pending.BackupId, out _) ||
             pending.TargetHex.Any(value => value.Length != 256) ||
             pending.Phase is not ("prepared" or "enabling" or "rebooting-to-enable" or "writing" or
                 "written" or "restoring-config" or "final-reboot"))
@@ -112,13 +113,14 @@ public sealed partial class ImeiEngine
         if (!SameDevice(backup.Identity, pending.Identity))
             throw new InvalidDataException("Бэкап и журнал относятся к разным устройствам.");
         var desired = pending.TargetHex.Select(Convert.FromHexString).ToArray();
-        for (var i = 0; i < 2; i++)
+        if (desired.Length != original.Length) throw new InvalidDataException("Число активных NV550 не совпадает с бэкапом.");
+        for (var i = 0; i < desired.Length; i++)
         {
             _ = ImeiCodec.DecodeNv550(desired[i]);
             if (!desired[i].AsSpan(9).SequenceEqual(original[i].AsSpan(9)))
                 throw new InvalidDataException("Журнал изменяет посторонние байты NV.");
         }
-        if (ImeiCodec.DecodeNv550(desired[0]) == ImeiCodec.DecodeNv550(desired[1]))
+        if (desired.Select(item => ImeiCodec.DecodeNv550(item)).Distinct().Count() != desired.Length)
             throw new InvalidDataException("В журнале одинаковые IMEI.");
         var candidateConfig = ConfigCodec.Candidate(originalConfig);
         var configPlan = originalConfig.Concat(candidateConfig).ToArray();
@@ -166,18 +168,18 @@ public sealed partial class ImeiEngine
             CheckKnownPair(current, original, desired);
             if (!PairEqual(current, desired))
             {
-                var plan = current[0].Concat(current[1]).Concat(desired[0]).Concat(desired[1]).ToArray();
+                var plan = current.Concat(desired).SelectMany(record => record).ToArray();
                 pending = pending with { Phase = "writing", WriteStartedAt = DateTimeOffset.UtcNow };
                 await SaveJson(Pending, pending, ct);
                 await Helper("zte_nv", "--apply-plan", plan, ct);
                 current = await Snapshot(ct);
-                if (!PairEqual(current, desired) || !(await ApiPair(ct)).SequenceEqual(desired.Select(item => ImeiCodec.DecodeNv550(item))))
-                    throw new InvalidDataException("Проверка обоих IMEI после записи не прошла.");
+                if (!PairEqual(current, desired) || !(await ApiPair(desired.Length, ct)).SequenceEqual(desired.Select(item => ImeiCodec.DecodeNv550(item))))
+                    throw new InvalidDataException("Проверка активных IMEI после записи не прошла.");
             }
             pending = pending with { Phase = "written" };
             await SaveJson(Pending, pending, ct);
         }
-        else if (!(await ApiPair(ct)).SequenceEqual(desired.Select(item => ImeiCodec.DecodeNv550(item))))
+        else if (!(await ApiPair(desired.Length, ct)).SequenceEqual(desired.Select(item => ImeiCodec.DecodeNv550(item))))
             throw new InvalidDataException("Текущие IMEI в API не совпадают с журналом.");
 
         if (!diskConfig.AsSpan().SequenceEqual(originalConfig))
@@ -218,7 +220,7 @@ public sealed partial class ImeiEngine
         await SaveJson(resultPath, new
         {
             complete.Id, complete.BackupId, complete.Phase, complete.Identity,
-            Imei1 = final.Imeis[0], Imei2 = final.Imeis[1], BootId = final.Identity.BootId,
+            Imei1 = final.Imeis[0], Imei2 = final.Imeis.ElementAtOrDefault(1), BootId = final.Identity.BootId,
             Verified = "NV + API + original config after reboot",
         }, ct);
         File.Delete(Pending);
@@ -227,7 +229,8 @@ public sealed partial class ImeiEngine
 
     private static void CheckKnownPair(byte[][] current, byte[][] original, byte[][] desired)
     {
-        for (var i = 0; i < 2; i++)
+        if (current.Length != original.Length || desired.Length != original.Length) throw new InvalidDataException("Число активных NV550 изменилось.");
+        for (var i = 0; i < current.Length; i++)
             if (!current[i].AsSpan().SequenceEqual(original[i]) && !current[i].AsSpan().SequenceEqual(desired[i]))
                 throw new InvalidDataException("Текущий NV не совпал ни с исходным, ни с целевым. Операция остановлена.");
     }
@@ -267,11 +270,13 @@ public sealed partial class ImeiEngine
 
     private async Task<DeviceIdentity> IdentityForWriteAsync(CancellationToken ct)
     {
-        // An explicit version override does not waive the NV helper's pinned
-        // diag-router ABI. Recheck it before every write and resume step.
-        var identity = await IdentityAsync(ct);
-        if (!skipFirmwareCheck && identity.FirmwareHash != FirmwareHash)
-            throw new InvalidDataException("Запись IMEI разрешена только на проверенной прошивке MU5250 B31.");
+        var identity = await MeasuredIdentityAsync(ct);
+        if (identity.FirmwareHash == "absent")
+            throw new InvalidDataException("Для записи IMEI нужен измеренный хэш прошивки для привязки бэкапа и журнала.");
+        if (identity.RouterHash != RouterHash)
+            throw new InvalidDataException("Чтение NV требует совместимый diag-router. Соберите данные для адаптации прошивки.");
+        // NV topology/encoding, EFS schema/CRC and native file modes are
+        // checked on the actual device before mutation, independently of name.
         var routerLine = await Text("sha256sum /usr/bin/diag-router", ct);
         var fields = routerLine.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         if (fields.Length != 2 || fields[1] != "/usr/bin/diag-router" || fields[0] != RouterHash)

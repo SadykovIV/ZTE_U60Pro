@@ -140,11 +140,11 @@ esac
         p.write_text(text)
         p.chmod(0o700)
 
-    def run_setup(self, cid=CID, agent_hash=None, profile=None, firmware=None, router=ROUTER, boot=None, force=False):
+    def run_setup(self, cid=CID, agent_hash=None, profile=None, firmware=None, router=ROUTER, boot=None, force=False, clean=False):
         args = [str(self.stage), cid, agent_hash or digest(self.stage/'zte-agent'), digest(self.stage/'dropbear'), digest(self.stage/'id_ed25519.pub')]
         if profile is not None: args.extend([profile, firmware or FIRMWARE, router])
         if boot is not None: args.append(boot)
-        if force: args.insert(0,'--reinstall')
+        if clean or force: args.insert(0,'--clean-reinstall' if clean else '--reinstall')
         return subprocess.run(['/bin/sh', str(self.stage/'setup-agent.sh'), *args], env=self.env, capture_output=True, text=True)
 
     def commit(self, profile=None, firmware=None, router=ROUTER, boot=None):
@@ -153,10 +153,10 @@ esac
         if boot is not None: args.append(boot)
         return subprocess.run(['/bin/sh', str(self.stage/'setup-agent.sh'), *args], env=self.env, capture_output=True, text=True)
 
-    def preflight(self, cid=CID, profile='b31', firmware=FIRMWARE, router=ROUTER, boot=None, force=False):
+    def preflight(self, cid=CID, profile='b31', firmware=FIRMWARE, router=ROUTER, boot=None, force=False, clean=False):
         args=['/bin/sh','-c',self.script_text,'--','--preflight',cid,profile,firmware,router]
         if boot is not None: args.append(boot)
-        if force:args.insert(4,'--reinstall')
+        if clean or force:args.insert(4,'--clean-reinstall' if clean else '--reinstall')
         return subprocess.run(args,env=self.env,capture_output=True,text=True)
 
     def forced_existing(self, running=True):
@@ -179,6 +179,37 @@ esac
 
     def verify_rollback(self):
         return subprocess.run(['/bin/sh','-c',self.script_text,'--','--verify-rollback',str(self.journal),CID,'b31',FIRMWARE,ROUTER],env=self.env,capture_output=True,text=True)
+
+    def verify_not_started(self):
+        return subprocess.run(['/bin/sh','-c',self.script_text,'--','--verify-not-started',str(self.stage),CID,'b31',FIRMWARE,ROUTER],env=self.env,capture_output=True,text=True)
+
+    def test_failed_before_journal_is_proven_unstarted(self):
+        self.owner()
+        # Device /data is the outermost parent inspected by production code.
+        # Host-only ancestors are outside the simulated filesystem.
+        self.script_text=self.script_text.replace('parent=$stage\n', 'parent=$stage\n').replace('parent=${parent%/*}; done', 'test "$parent" != "'+str(self.root)+'/data" || break; parent=${parent%/*}; done')
+        result=self.verify_not_started();self.assert_success(result)
+        self.assertEqual(result.stdout, 'INSTALL_NOT_STARTED '+str(self.stage)+'\n')
+        self.assertFalse(self.journal.exists())
+
+    def test_unstarted_proof_rejects_existing_journal_lock_and_process(self):
+        self.owner()
+        self.script_text=self.script_text.replace('parent=${parent%/*}; done', 'test "$parent" != "'+str(self.root)+'/data" || break; parent=${parent%/*}; done')
+        for name in [TOKEN,'active','lock']:
+            entry=self.root/'data/zte-imei-studio/installations'/name
+            entry.parent.mkdir(exist_ok=True);entry.touch()
+            result=self.verify_not_started();self.assertNotEqual(result.returncode,0);self.assertIn('INSTALLATION_STARTED',result.stderr)
+            entry.unlink()
+        self.write('/proc/9876/cmdline','sh\0'+str(self.stage)+'/setup-agent.sh\0'+str(self.stage)+'\0')
+        result=self.verify_not_started();self.assertNotEqual(result.returncode,0);self.assertIn('INSTALLER_RUNNING',result.stderr)
+
+    def test_force_replaces_writable_previous_agent_with_backup(self):
+        oldhash,newhash=self.forced_existing()
+        (self.root/'data/zte-agent').chmod(0o777)
+        result=self.run_setup(profile='b31',force=True);self.assert_success(result)
+        self.assertEqual(digest(self.root/'data/zte-agent'),newhash)
+        self.assertEqual(digest(self.journal/'before/data_zte-agent'),oldhash)
+        self.assertEqual((self.journal/'before/data_zte-agent').stat().st_mode & 0o777,0o777)
 
     def test_force_replaces_agent_password_but_reuses_ssh_inode_and_keys(self):
         oldhash,newhash=self.forced_existing()
@@ -318,6 +349,86 @@ esac
         router='absent' if absent else 'b'*64
         self.owner('linux-arm64-access','a'*64,router,BOOT)
         return dict(profile='linux-arm64-access',firmware='a'*64,router=router,boot=BOOT)
+
+    def reset_transaction(self):
+        args=self.generic()
+        # B04 lacks modem.b16; keep its literal observed identity across reboot.
+        (self.root/'firmware/image/modem.b16').unlink(); args['firmware']='absent'
+        self.owner(args['profile'],args['firmware'],args['router'],args['boot'])
+        self.assert_success(self.run_setup(**args))
+        self.write('/proc/sys/kernel/random/boot_id','bbbbbbbb-cccc-dddd-eeee-ffffffffffff\n')
+        self.write('/proc/sys/kernel/random/uuid','cccccccc-dddd-eeee-ffff-111111111111\n')
+        args['boot']='bbbbbbbb-cccc-dddd-eeee-ffffffffffff'
+        self.write('/etc/rc.local','#!/bin/sh\n# factory defaults\nexit 0\n',0o775)
+        (self.root/'running').unlink(missing_ok=True)
+        return args
+
+    def test_clean_previous_boot_archives_owned_transaction_and_preserves_current_targets(self):
+        args=self.reset_transaction()
+        previous={str(p.relative_to(self.journal)):p.read_bytes() for p in self.journal.rglob('*') if p.is_file()}
+        current=(self.root/'etc/rc.local').read_bytes()
+        result=self.preflight(**args,clean=True);self.assert_success(result)
+        self.assertEqual(result.stdout.strip(),'INSTALL_PREFLIGHT linux-arm64-access imei_config=unknown')
+        self.assertIn('INSTALL_RESET_ARCHIVED',result.stderr)
+        archives=list(self.stage.parent.glob('reset-recovery-*'));self.assertEqual(len(archives),1)
+        archive=archives[0]
+        for name,value in previous.items():
+            self.assertEqual((self.journal/name).read_bytes(),value)
+            self.assertEqual((archive/'journal'/name).read_bytes(),value)
+        self.assertEqual((archive/'current/etc_rc.local').read_bytes(),current)
+        self.assertEqual((self.root/'etc/rc.local').read_bytes(),current)
+        self.assertFalse((self.journal.parent/'active').exists());self.assertFalse((self.journal.parent/'lock').exists())
+        self.assertFalse((self.root/'running').exists(),'Archived recovery must not restart old credentials')
+        # A fresh installer using a new stage completes after reset recovery.
+        new_token='dddddddd-eeee-ffff-1111-222222222222'
+        new_stage=self.stage.parent/('stage-'+new_token);shutil.copytree(self.stage,new_stage)
+        self.stage=new_stage;self.journal=self.journal.parent/new_token
+        (self.stage/'.owner').write_text(f"{new_token} {CID} {args['profile']} {args['firmware']} {args['router']} {args['boot']}\n")
+        self.write('/proc/1234/stat','1234 (zte-agent) '+' '.join(['S']+['0']*18+['777'])+'\n')
+        self.assert_success(self.run_setup(**args,clean=True));self.assertEqual((self.journal/'state').read_text(),'ready\n')
+        self.assert_success(self.commit(**args));self.assertEqual((self.journal/'state').read_text(),'complete\n')
+        self.assertTrue((archive/'active').is_file());self.assertTrue((archive/'lock/owner').is_file())
+
+    def test_clean_previous_boot_accepts_interrupted_completed_lock_release(self):
+        args=self.reset_transaction()
+        (self.journal/'state').write_text('complete\n')
+        (self.journal.parent/'lock').rename(self.journal/'completed-lock')
+        result=self.preflight(**args,clean=True);self.assert_success(result)
+        archive=list(self.stage.parent.glob('reset-recovery-*'))[0]
+        self.assertEqual((archive/'journal/completed-lock/owner').read_text(),TOKEN+'\n')
+        self.assertIn('/journal/completed-lock/owner',(archive/'snapshot.sha256').read_text())
+        self.assertEqual((self.journal/'completed-lock/owner').read_text(),TOKEN+'\n')
+        self.assertTrue((archive/'active').is_file());self.assertFalse((self.journal.parent/'active').exists())
+
+    def test_clean_previous_boot_keeps_foreign_completed_lock_owner_or_contents(self):
+        for scenario in ['foreign-owner','extra-file']:
+            with self.subTest(scenario=scenario):
+                if scenario!='foreign-owner':self.tearDown();self.setUp()
+                args=self.reset_transaction();(self.journal/'state').write_text('complete\n')
+                (self.journal.parent/'lock').rename(self.journal/'completed-lock')
+                if scenario=='foreign-owner':(self.journal/'completed-lock/owner').write_text('foreign\n')
+                else:self.write(str(self.journal.relative_to(self.root))+'/completed-lock/extra','foreign')
+                result=self.preflight(**args,clean=True);self.assertNotEqual(result.returncode,0)
+                self.assertTrue((self.journal.parent/'active').exists());self.assertTrue((self.journal/'completed-lock/owner').exists())
+                self.assertFalse(list(self.stage.parent.glob('reset-recovery-*')))
+
+    def test_clean_reset_recovery_refuses_current_boot_busy_foreign_and_changed_identity(self):
+        for scenario in ['current-boot','busy','foreign','cid','firmware','force-only','corrupt-copy']:
+            with self.subTest(scenario=scenario):
+                if scenario!='current-boot':self.tearDown();self.setUp()
+                args=self.reset_transaction()
+                if scenario=='current-boot':
+                    args['boot']=BOOT;self.write('/proc/sys/kernel/random/boot_id',BOOT+'\n')
+                elif scenario=='busy':self.write('/proc/9999/cmdline',f'sh\0{self.stage}/setup-agent.sh\0')
+                elif scenario=='foreign':self.write(str(self.journal.relative_to(self.root))+'/unexpected','foreign')
+                elif scenario=='cid':(self.journal/'cid').write_text('b'*32+'\n')
+                elif scenario=='firmware':(self.journal/'profile.identity').write_text(f"linux-arm64-access {'a'*64} {args['router']} {BOOT}\n")
+                elif scenario=='corrupt-copy':self.command('cp','#!/bin/sh\n/bin/cp "$@" || exit 1\ncase "$1" in -Rp) for last do :; done; printf corrupt >> "$last/cid";; esac\n')
+                result=self.preflight(**args,force=True,clean=scenario!='force-only')
+                self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
+                self.assertTrue((self.journal.parent/'active').exists());self.assertTrue((self.journal.parent/'lock/owner').exists())
+                if scenario!='corrupt-copy':self.assertFalse(list(self.stage.parent.glob('reset-recovery-*')))
+                else:self.assertIn('CLEAN_RECOVERY_CHANGED',result.stderr)
 
     def test_generated_and_legacy_startup_grammars_are_accepted_without_execution(self):
         source=(RES/'setup-agent.sh').read_text()

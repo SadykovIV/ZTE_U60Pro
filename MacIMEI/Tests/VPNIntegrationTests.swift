@@ -1,9 +1,13 @@
 import Foundation
 private func check(_ condition: @autoclosure () throws -> Bool, _ text: String) throws { if try !condition() { throw IMEIError.message("TEST: " + text) } }
 private final class IntegrationRemote: RemoteTransport {
+    var firmware = ModemEngine.firmwareHash
     var commands = [String](), uploaded = [String: Data]()
     var present = false, ready = false, fail = false, lost = false, invalidReceipt = false, ignoreInstall = false
     var missing = "", switched = false, switchBeforeWrite = false, performed = false
+    var helperHash = VPNSettingsManager.helperHash
+    var statusRequests = 0, statusBeforeInstall = 0
+    var rejectOldStatus = false, upgradeRefusal = ""
     var integrityChecks = 0
     var integrityReply: CommandResult?
     var identityCalls = 0
@@ -12,13 +16,13 @@ private final class IntegrationRemote: RemoteTransport {
     func run(_ command: String, input: Data?, timeout: TimeInterval) throws -> CommandResult {
         commands.append(command)
         if command.contains("mkdir /tmp/zte-imei-app.lock") || command.contains("&& rm /tmp/zte-imei-app.lock/owner") { return output() }
-        if command.hasPrefix("sha256sum /firmware/image/modem.b16") {
+        if command == AccessIdentity.command {
             identityCalls += 1
             let different = switched && (performed || (switchBeforeWrite && !uploaded.isEmpty))
-            return output(ModemEngine.firmwareHash + " /firmware/image/modem.b16\n" + ModemEngine.routerHash + " /usr/bin/diag-router\n" + (different ? String(repeating:"b", count:32) : cid) + "\n" + boot)
+            return output(firmware + "  /firmware/image/modem.b16\n" + ModemEngine.routerHash + "  /usr/bin/diag-router\n" + (different ? String(repeating:"b", count:32) : cid) + "\n" + boot)
         }
         if command.hasPrefix("for c in lua nft") {
-            return output((present ? "VPN\nHELPER:" + VPNSettingsManager.helperHash + "\n" : "") + (ready ? "HELPER_LAYOUT_READY\n" : "") + missing)
+            return output((present ? "VPN\nHELPER:" + helperHash + "\n" : "") + (ready ? "HELPER_LAYOUT_READY\n" : "") + missing)
         }
         if command.hasPrefix("umask 077; mkdir ") || command.hasPrefix("rm -f ") { return output() }
         if command.hasPrefix("umask 077; cat > "), let bytes = input {
@@ -31,6 +35,22 @@ private final class IntegrationRemote: RemoteTransport {
             return integrityReply ?? output("{\"ok\":true,\"data\":{\"verified\":true}}")
         }
         if command.contains("exec /data/zte-vpn/vpnctl request") {
+            if !performed {
+                statusBeforeInstall += 1
+                if rejectOldStatus { return output("", 71) }
+            }
+            let marker = "| cut -d ' ' -f1)\" in "
+            guard let start = command.range(of: marker),
+                  let end = command.range(of: "; exec /data/zte-vpn/vpnctl request", range: start.upperBound..<command.endIndex) else {
+                throw IMEIError.message("TEST: Missing helper hash guard")
+            }
+            let process = Process(); process.executableURL = URL(fileURLWithPath: "/bin/sh")
+            process.arguments = ["-c", "case \"$1\" in " + String(command[start.upperBound..<end.lowerBound]), "--", helperHash]
+            let errors = Pipe(); process.standardError = errors
+            try process.run(); try? errors.fileHandleForWriting.close(); process.waitUntilExit()
+            let stderr = errors.fileHandleForReading.readDataToEndOfFile()
+            if process.terminationStatus != 0 { return .init(status: process.terminationStatus, stdout: Data(), stderr: stderr) }
+            statusRequests += 1
             let request = try JSONSerialization.jsonObject(with: input!) as! [String:Any]
             try check(request["action"] as? String == "status", "Installer changed a profile or enabled VPN")
             let data: [String:Any] = ["schema_version":1,"installed":true,"version":"fixture","core_version":"fixture","core_available":true,"configured":false,"enabled":false,"core_running":false,"network_ok":false,"mesh_conflict":false,"ssid":"","profiles":[],"active_profile":"","recovery_pending":false]
@@ -43,7 +63,8 @@ private final class IntegrationRemote: RemoteTransport {
             performed = true
             if lost { return output("",255) }
             if fail { return output("",1) }
-            if !ignoreInstall { present = true; ready = true }
+            if !upgradeRefusal.isEmpty { return .init(status: 1, stdout: Data(), stderr: Data(("VPN_UPGRADE_ERROR " + upgradeRefusal + "\nPRIVATE_CANARY\n").utf8)) }
+            if !ignoreInstall { present = true; ready = true; helperHash = VPNSettingsManager.helperHash }
             return output(invalidReceipt ? "INVALID" : fresh ? "VPN_COMPONENTS_INSTALLED\n" : "VPN_CONTROLLER_UPDATED\n")
         }
         throw IMEIError.message("TEST: Unexpected SSH command: " + command)
@@ -66,10 +87,53 @@ private final class IntegrationRemote: RemoteTransport {
             try check(!remote.commands.contains { $0.contains("/data/zte-agent") || $0.contains("/data/zte-launcher") || $0.contains("/data/zte-dashboard") }, "VPN installation accessed an optional component")
             try check(remote.uploaded.keys.allSatisfy { !["zte-agent","launcher.so","dashboard.tar.gz","update-agent.sh","install-launcher.sh"].contains(URL(fileURLWithPath:$0).lastPathComponent) }, "VPN uploaded optional components")
         }
-        let fresh=IntegrationRemote();try run(fresh);try isolated(fresh)
-        try check(fresh.present && fresh.ready && fresh.uploaded.count==9,"Fresh standalone VPN installation failed")
-        let upgrade=IntegrationRemote();upgrade.present=true;try run(upgrade);try isolated(upgrade)
-        try check(upgrade.ready && upgrade.uploaded.count==4,"Controller-only repair failed")
+        func completeUpgrade(_ remote: IntegrationRemote) throws {
+            let names = Set(remote.uploaded.keys.map { URL(fileURLWithPath: $0).lastPathComponent })
+            let runtime = Set(["upgrade-controller.sh", "vpnctl", "manager.sh", "firewall.sh", "configure.lua", "nft-guard.nft", "dnsmasq.conf", "service.sh"])
+            try check(names == runtime, "Upgrade omitted a required runtime component")
+            for path in remote.uploaded.keys {
+                let original = try Data(contentsOf: resources.appendingPathComponent("VPN/" + URL(fileURLWithPath: path).lastPathComponent))
+                try check(remote.uploaded[path] == original, "Upgrade staged altered runtime bytes")
+            }
+        }
+        for firmware in [ModemEngine.firmwareHash, "5a4489882538b5ab1d3e0049371f1b620d28d262a429923299b4f2626d40d478", "absent", "c57e063d390983229dfc53aa87380b3d4655ee8daa1c748e1a032ac90cd0df81"] {
+            let fresh=IntegrationRemote();fresh.firmware=firmware;try run(fresh);try isolated(fresh)
+            try check(fresh.present && fresh.ready && fresh.uploaded.count==9,"Fresh standalone VPN installation failed")
+            let upgrade=IntegrationRemote();upgrade.firmware=firmware;upgrade.present=true
+            upgrade.helperHash="b2c3fcfafeccd50fa3000ad5f8f66f1e42ff157b295cdda11dddd31571612af7"
+            try run(upgrade);try isolated(upgrade)
+            try check(upgrade.ready && upgrade.helperHash == VPNSettingsManager.helperHash,"Shipped 1.24.18 controller repair failed")
+            try completeUpgrade(upgrade)
+            try check(fresh.commands.contains(AccessIdentity.command) && upgrade.commands.contains(AccessIdentity.command), "VPN install skipped measured identity")
+        }
+        let released=IntegrationRemote();released.present=true
+        released.helperHash="fe1f6d535ccee6ec0f9333c01108b00f35006209850ed641023dbb937dd30b48"
+        try run(released);try isolated(released)
+        try check(released.ready && released.helperHash == VPNSettingsManager.helperHash && released.statusRequests == 1 && released.statusBeforeInstall == 0, "1.24.20 status blocked its explicit upgrade")
+        try completeUpgrade(released)
+        for oldHash in ["1c0e3e6d308a6c4b161faf896a00437b8e011fe5b7eff7969b9870c85d8d0c5c", "fe1f6d535ccee6ec0f9333c01108b00f35006209850ed641023dbb937dd30b48"] {
+            let old=IntegrationRemote();old.present=true;old.helperHash=oldHash;old.rejectOldStatus=true
+            try run(old);try isolated(old)
+            try check(old.performed && old.ready && old.statusRequests == 1 && old.statusBeforeInstall == 0,
+                      "Old or faulty status executed before the trusted controller upgrade")
+        }
+        for code in ["CONTROLLER_UNKNOWN", "UNSAFE_LAYOUT"] {
+            let unsafe=IntegrationRemote();unsafe.present=true;unsafe.helperHash=String(repeating:"f",count:64);unsafe.upgradeRefusal=code
+            do { try run(unsafe); throw IMEIError.message("TEST: Unsafe controller upgrade accepted") }
+            catch { try check(!error.localizedDescription.hasPrefix("TEST:") && error.localizedDescription.contains("VPN_UPGRADE_" + code) && !error.localizedDescription.contains("PRIVATE_CANARY"), "Upgrade refusal lost or private output leaked") }
+            try check(unsafe.statusBeforeInstall == 0 && unsafe.statusRequests == 0 && !unsafe.ready && unsafe.helperHash == String(repeating:"f",count:64), "Refused upgrade executed unknown controller or changed the installed state")
+        }
+        let release12422 = "b5f581427afd423be3931473db2ce4b496a387b685ab3c48adf26cc597000f9a"
+        try check(release12422 != VPNSettingsManager.helperHash, "Previous and current fixture hashes must differ")
+        for firmware in [ModemEngine.firmwareHash, "5a4489882538b5ab1d3e0049371f1b620d28d262a429923299b4f2626d40d478", "c57e063d390983229dfc53aa87380b3d4655ee8daa1c748e1a032ac90cd0df81"] {
+            let old = IntegrationRemote(); old.present = true; old.ready = true; old.firmware = firmware; old.helperHash = release12422
+            let engine = try ModemEngine(root:base.appendingPathComponent(UUID().uuidString),resources:resources,connection:Connection(host:"192.0.2.1",port:"2222",keyPath:"/fixture/key",knownHostsPath:"/fixture/hosts"),transport:old)
+            let inspected = try engine.locked { try VPNSettingsManager(engine:engine).inspect() }
+            try check(inspected.status.installed && old.statusRequests == 1 && old.uploaded.isEmpty && !old.performed, "1.24.22 read-only status blocked or upgraded silently")
+            try run(old); try isolated(old)
+            try check(old.helperHash == VPNSettingsManager.helperHash && old.statusRequests == 2 && old.statusBeforeInstall == 1, "1.24.22 did not upgrade after successful status")
+            try completeUpgrade(old)
+        }
         let ready=IntegrationRemote();ready.present=true;ready.ready=true;try run(ready);try isolated(ready)
         try check(ready.uploaded.isEmpty && !ready.performed && ready.integrityChecks == 1,"Current installation was reinstalled or its core integrity was not verified")
         let damaged=IntegrationRemote();damaged.present=true;damaged.ready=true
@@ -103,6 +167,6 @@ private final class IntegrationRemote: RemoteTransport {
         try check(!changed.performed,"Device changed before installation but writes continued")
         let changedAfter=IntegrationRemote();changedAfter.switched=true;try reject(changedAfter)
         try check(changedAfter.performed,"Final identity fixture did not exercise post-install check")
-        print("PASS 19 independent VPN install scenarios: absent optional components, fresh install, repair, repeat with core integrity, damaged core, malformed integrity, status-only reads, failures, transport loss and identity changes; fake SSH only")
+        print("PASS 33 independent VPN install scenarios including B31, B28, B04 absent/image and 1.24.20/1.24.22 upgrade: absent optional components, fresh install, repair, repeat with core integrity, damaged core, malformed integrity, status-only reads, failures, transport loss and identity changes; fake SSH only")
     }
 }

@@ -65,6 +65,8 @@ extension ContentView {
                     .buttonStyle(StudioButtonStyle()).disabled(!model.canReadModem)
                 OperationInfoButton(topic: .diagnosticADB)
             }
+            Button(L10n.text("Выключить ADB и автозапуск", "Disable ADB and autostart")) { model.setADBEnabled(false) }
+                .buttonStyle(StudioButtonStyle()).disabled(!model.canDisableADB)
             Text(L10n.text(model.diagnosticADBMessage.isEmpty ? model.adbControlStatus?.detail ?? "Для чтения состояния ADB подключитесь по SSH." : model.diagnosticADBMessage))
                 .font(.system(size: 11)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
             if !model.connected {

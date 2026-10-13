@@ -10,6 +10,11 @@ extension ContentView {
     @ObservedObject var model: AppModel
     @StudioState private var uri = ""
     @StudioState private var importName = ""
+    @StudioState private var importKind = "uri"
+    @StudioState private var configuration = ""
+    @StudioState private var subscriptionURL = ""
+    @StudioState private var subscriptionName = ""
+    @StudioState private var profileSearch = ""
     @StudioState private var selectedID = ""
     @StudioState private var renameName = ""
     @StudioState private var inputError = ""
@@ -27,6 +32,7 @@ extension ContentView {
             components
             profiles
             importer
+            subscriptions
             wifiSettings
             if !model.vpnError.isEmpty { StudioNote(symbol: "exclamationmark.triangle", text: model.vpnError) }
             if !inputError.isEmpty { StudioNote(symbol: "exclamationmark.triangle", text: inputError) }
@@ -40,7 +46,7 @@ extension ContentView {
             if !busy { wifi.refresh(status); if selected == nil { selectedID = "" }; renameName = selected?.name ?? "" }
         }
         .onAppear { wifi.refresh(status) }
-        .onDisappear { uri = ""; wifi.password = ""; wifi.confirmation = ""; pending = nil }
+        .onDisappear { uri = ""; configuration = ""; subscriptionURL = ""; wifi.password = ""; wifi.confirmation = ""; pending = nil }
     }
 
     private var components: some View {
@@ -70,13 +76,23 @@ extension ContentView {
                 Text(L10n.text(status.enabled ? "Wi-Fi с VPN включён" : "Wi-Fi с VPN выключен"))
                     .foregroundStyle(status.enabled ? StudioStyle.accent : StudioStyle.secondary)
                 if status.profiles.isEmpty { Text(L10n.text("Профили не добавлены")).foregroundStyle(StudioStyle.secondary) }
-                ForEach(status.profiles) { profile in
+                TextField(L10n.text("Поиск профилей"), text: $profileSearch).textFieldStyle(.roundedBorder)
+                ForEach(status.profiles.filter { profileSearch.isEmpty || $0.name.localizedCaseInsensitiveContains(profileSearch) || ($0.protocolName ?? "vless").localizedCaseInsensitiveContains(profileSearch) }) { profile in
+                    let warnings = profile.warnings.compactMap(VPNSettingsManager.warning)
                     Button { selectedID = profile.id } label: {
                         HStack {
                             Image(systemName: selectedID == profile.id ? "largecircle.fill.circle" : "circle")
                             Text(profile.name).fontWeight(.semibold)
-                            Text(profile.transport).foregroundStyle(StudioStyle.secondary)
+                            Text((profile.protocolName ?? "vless").uppercased()).font(.caption).foregroundStyle(StudioStyle.secondary)
+                            if !profile.transport.isEmpty { Text(profile.transport).font(.caption).foregroundStyle(StudioStyle.secondary) }
+                            if !warnings.isEmpty {
+                                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(StudioStyle.warning)
+                                    .help(warnings.map { L10n.text($0) }.joined(separator: "\n"))
+                            }
                             Spacer()
+                            if profile.subscriptionId != nil { Text(L10n.text("Подписка")).font(.caption) }
+                            if profile.updateAvailable == true { Text(L10n.text("Есть обновление")).font(.caption).foregroundStyle(StudioStyle.warning) }
+                            if profile.removedFromSubscription == true { Text(L10n.text("Сохранён из прежней подписки")).font(.caption).foregroundStyle(StudioStyle.secondary) }
                             if profile.active { Text(L10n.text("Активен")).foregroundStyle(StudioStyle.accent) }
                         }.padding(12).background(StudioStyle.canvas.opacity(0.65), in: RoundedRectangle(cornerRadius: 9))
                     }.buttonStyle(.plain).disabled(model.busy)
@@ -85,7 +101,7 @@ extension ContentView {
                     Button(L10n.text("Сделать активным")) {
                         guard let profile = selected else { return }
                         confirm(.activate(profile.id), "Выбрать профиль VPN? При первой активации будет настроена и включена сеть Wi-Fi с VPN. При смене работающего профиля VPN переподключится.")
-                    }.buttonStyle(StudioButtonStyle()).disabled(!ready || selected == nil || selected?.active == true)
+                    }.buttonStyle(StudioButtonStyle()).disabled(!ready || selected?.canActivate != true)
                     Button(L10n.text(status.enabled ? "Выключить Wi-Fi с VPN" : "Включить Wi-Fi с VPN")) {
                         confirm(.setEnabled(!status.enabled), status.enabled ? "Выключить Wi-Fi с VPN? Устройства этой сети потеряют подключение." : "Включить Wi-Fi с VPN с выбранным профилем?")
                     }.buttonStyle(StudioButtonStyle()).disabled(!ready || (!status.enabled && status.activeProfile.isEmpty))
@@ -111,22 +127,72 @@ extension ContentView {
     private var importer: some View {
         StudioCard {
             Text(L10n.text("Добавить профиль VPN")).font(.system(size: 18, weight: .semibold))
-            Text(L10n.text("Поддерживается одна ссылка VLESS: TCP, WebSocket, gRPC или XHTTP. Можно вставить ссылку или открыть текстовый файл с ней."))
+            Picker(L10n.text("Формат профиля"), selection: $importKind) {
+                Text(L10n.text("Ссылка VLESS / Hysteria2")).tag("uri")
+                Text(L10n.text("Конфигурация WireGuard / AmneziaWG")).tag("config")
+            }.pickerStyle(.segmented).disabled(model.busy)
+            Text(L10n.text("Можно вставить ссылку VLESS / Hysteria2 или конфигурацию WireGuard / AmneziaWG .conf. Другие протоколы доступны через подписку."))
                 .font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
-            SecureField("vless://…", text: $uri).textFieldStyle(.roundedBorder).disabled(model.busy)
+            if importKind == "uri" { SecureField("vless://… / hy2://…", text: $uri).textFieldStyle(.roundedBorder).disabled(model.busy) }
+            else { TextEditor(text: $configuration).font(.system(.caption, design: .monospaced)).frame(height: 120).disabled(model.busy) }
             TextField(L10n.text("Название профиля (необязательно)"), text: $importName).textFieldStyle(.roundedBorder).disabled(model.busy)
             HStack {
-                Button(L10n.text("Вставить ссылку")) { uri = NSPasteboard.general.string(forType: .string) ?? "" }.buttonStyle(StudioButtonStyle()).disabled(model.busy)
-                Button(L10n.text("Открыть файл со ссылкой"), action: chooseProfile).buttonStyle(StudioButtonStyle()).disabled(model.busy)
+                Button(L10n.text("Вставить из буфера")) {
+                    let text = NSPasteboard.general.string(forType: .string) ?? ""
+                    if importKind == "uri" { uri = text } else { configuration = text }
+                }.buttonStyle(StudioButtonStyle()).disabled(model.busy)
+                Button(L10n.text("Открыть файл профиля"), action: chooseProfile).buttonStyle(StudioButtonStyle()).disabled(model.busy)
                 Spacer()
                 Button(L10n.text("Импортировать профиль")) {
-                    let operation = VPNOperation.importProfile(uri: uri, name: importName)
-                    do { try operation.validate(); uri = ""; inputError = ""; model.performVPNProfile(operation) }
+                    let operation: VPNOperation = importKind == "uri" ? .importProfile(uri: uri, name: importName) : .importConfiguration(config: configuration, name: importName)
+                    do { try operation.validate(); uri = ""; configuration = ""; inputError = ""; model.performVPNProfile(operation) }
                     catch { inputError = error.localizedDescription }
-                }.buttonStyle(StudioButtonStyle(prominent: true)).disabled(!ready || uri.isEmpty)
+                }.buttonStyle(StudioButtonStyle(prominent: true)).disabled(!ready || (importKind == "uri" ? uri.isEmpty : configuration.isEmpty))
             }
             Text(L10n.text("Импорт сохраняет профиль без активации. Ссылка не записывается в журнал программы."))
                 .font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
+        }
+    }
+
+    private var subscriptions: some View {
+        StudioCard {
+            Text(L10n.text("Подписки VPN")).font(.system(size: 18, weight: .semibold))
+            Text(L10n.text("Подписка загружается через интернет компьютера. Импорт и обновление сохраняют профили без переключения текущего подключения."))
+                .font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
+            ForEach(status?.subscriptions ?? []) { subscription in
+                HStack {
+                    VStack(alignment: .leading) {
+                        Text(subscription.name).fontWeight(.semibold)
+                        Text(subscription.host + " · " + String(subscription.profileCount)).font(.caption).foregroundStyle(StudioStyle.secondary)
+                    }
+                    Spacer()
+                    Button(L10n.text("Обновить подписку")) { model.performVPNProfile(.updateSubscription(subscription.id)) }
+                        .buttonStyle(StudioButtonStyle()).disabled(!ready)
+                    Button(L10n.text("Удалить подписку"), role: .destructive) {
+                        confirm(.deleteSubscription(subscription.id), "Удалить подписку? Уже импортированные профили останутся на модеме.")
+                    }.buttonStyle(StudioButtonStyle()).disabled(!ready)
+                }
+            }
+            SecureField(L10n.text("Ссылка подписки HTTPS"), text: $subscriptionURL).textFieldStyle(.roundedBorder).disabled(model.busy)
+            TextField(L10n.text("Название подписки (необязательно)"), text: $subscriptionName).textFieldStyle(.roundedBorder).disabled(model.busy)
+            Button(L10n.text("Добавить подписку")) {
+                let operation = VPNOperation.importSubscription(url: subscriptionURL, name: subscriptionName)
+                do { try operation.validate(); inputError = ""; subscriptionURL = ""; model.performVPNProfile(operation) }
+                catch { inputError = error.localizedDescription }
+            }.buttonStyle(StudioButtonStyle(prominent: true)).disabled(!ready || subscriptionURL.isEmpty)
+            if let summary = status?.lastImport {
+                Text(L10n.text("Последний импорт / обновление подписки")).font(.caption).fontWeight(.semibold)
+                Text(L10n.text("Добавлено:") + " \(summary.added) · " + L10n.text("Обновлено:") + " \(summary.updated) · " + L10n.text("Удалено:") + " \(summary.removed) · " + L10n.text("Дубликатов:") + " \(summary.duplicates)")
+                    .font(.caption)
+                if summary.retainedActive > 0 { Text(L10n.text("Активный профиль сохранён. Чтобы применить новые настройки, выберите его и нажмите «Сделать активным».")) .font(.caption).foregroundStyle(StudioStyle.warning) }
+                if !summary.skipped.isEmpty {
+                    DisclosureGroup(L10n.text("Пропущенные записи") + " (\(summary.skipped.count))") {
+                        ForEach(Array(summary.skipped.enumerated()), id: \.offset) { _, skipped in
+                            Text("#\(skipped.index): " + L10n.text(VPNSettingsManager.message(skipped.code))).font(.caption)
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -158,15 +224,21 @@ extension ContentView {
         catch { inputError = error.localizedDescription }
     }
     private func chooseProfile() {
-        let panel = NSOpenPanel(); panel.allowedContentTypes = [.plainText]; panel.allowsMultipleSelection = false
+        let panel = NSOpenPanel(); panel.allowedContentTypes = [.plainText, UTType(filenameExtension: "conf") ?? .data]; panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             let file = try FileHandle(forReadingFrom: url); defer { try? file.close() }
-            let data = try file.read(upToCount: 32769) ?? Data()
-            guard let value = String(data: data, encoding: .utf8), data.count <= 32768 else { throw IMEIError.message("Нужен текстовый файл UTF-8 с одной ссылкой VLESS, не больше 32 КиБ.") }
+            let data = try file.read(upToCount: 8 * 1024 * 1024 + 1) ?? Data()
+            guard let value = String(data: data, encoding: .utf8), data.count <= 8 * 1024 * 1024 else { throw IMEIError.message("Нужен текстовый файл профиля UTF-8, не больше 8 МиБ.") }
             let link = value.hasPrefix("\u{FEFF}") ? String(value.dropFirst()) : value
-            try VPNOperation.importProfile(uri: link, name: importName).validate()
-            uri = link.trimmingCharacters(in: .whitespacesAndNewlines); inputError = ""
-        } catch { inputError = "Нужен текстовый файл UTF-8 с одной ссылкой VLESS, не больше 32 КиБ." }
+            if VPNOperation.isProfileLink(link) {
+                try VPNOperation.importProfile(uri: link, name: importName).validate()
+                importKind = "uri"; uri = link.trimmingCharacters(in: .whitespacesAndNewlines)
+            } else {
+                try VPNOperation.importConfiguration(config: link, name: importName).validate()
+                importKind = "config"; configuration = link
+            }
+            inputError = ""
+        } catch { inputError = "Не удалось открыть профиль UTF-8. Допустимы ссылка VLESS / Hysteria2 или файл .conf до 8 МиБ." }
     }
 }

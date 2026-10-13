@@ -10,15 +10,15 @@ using ZteImeiStudio.Transport;
 namespace ZteImeiStudio.Windows.Research;
 
 public sealed record ResearchText(string Ru,string En) { public string Text(bool english)=>english?En:Ru; }
-public sealed record ResearchProfile(string Id,string FirmwareSHA256,string RouterSHA256,string Architecture);
+public sealed record ResearchProfile(string Id,string? FirmwareSHA256,string RouterSHA256,string Architecture,ResearchRequirement[]? IdentityRequirements=null);
 public sealed record ResearchProbe(string Id,ResearchText Title,string Category,string Command,int TimeoutSeconds,int MaxBytes);
-public sealed record ResearchRequirement(string Probe,string Fact,[property:System.Text.Json.Serialization.JsonPropertyName("equals")] string Expected,ResearchText Label,string[]? Platforms=null);
+public sealed record ResearchRequirement(string Probe,string Fact,[property:System.Text.Json.Serialization.JsonPropertyName("equals")] string Expected,ResearchText Label,string[]? Platforms=null,string[]? Profiles=null);
 public sealed record ResearchFeature(string Id,ResearchText Title,string[] Profiles,ResearchRequirement[] Requirements,ResearchText Limitations,string[]? Platforms=null);
 public sealed record ResearchObservation(string Id,ResearchText Title,string Probe,string Fact);
 public sealed record ResearchObservationResult(string Id,ResearchText Title,string Probe,string Fact,string Status,string? Value,string SourceStatus,int? ExitCode);
 public sealed record ResearchSpec(int SchemaVersion,int Revision,ResearchProfile[] Profiles,ResearchProbe[] Probes,ResearchFeature[] Features,ResearchObservation[]? Observations=null)
 {
-    public const string ExpectedSpecificationSha256="88a58d72e3dda052d6468ac933099a2cf2c6d48f7a872727f73155bb9d7c9845";
+    public const string ExpectedSpecificationSha256="95250f95a4c03ec98c41ab9fd7933f2c339869b76fab198d6ade46cccb117efd";
     public string? Sha256 { get; private set; }
     public static readonly JsonSerializerOptions Json=new() { PropertyNameCaseInsensitive=true,PropertyNamingPolicy=JsonNamingPolicy.CamelCase,WriteIndented=true };
     public static ResearchSpec Load(string path)
@@ -36,8 +36,13 @@ public sealed record ResearchSpec(int SchemaVersion,int Revision,ResearchProfile
             if(!Regex.IsMatch(probe.Id,@"^[a-z][a-z0-9-]{0,63}$") || probe.MaxBytes is <1024 or >262144 || probe.TimeoutSeconds is <1 or >60 || probe.Command.Length is <1 or >65536 || probe.Command.Contains('\0'))
                 throw new InvalidDataException("Invalid probe or capture limits.");
         if(Observations is { } observations && (observations.Length>512 || observations.Select(x=>x.Id).Distinct().Count()!=observations.Length || observations.Any(x=>!Probes.Any(p=>p.Id==x.Probe) || !Regex.IsMatch(x.Fact,@"^[a-z0-9_]{1,64}$")))) throw new InvalidDataException("Invalid observation specification.");
+        if(Profiles.Select(p=>p.Id).Distinct().Count()!=Profiles.Length)throw new InvalidDataException("Duplicate research profile.");
+        foreach(var profile in Profiles)
+            if(profile.FirmwareSHA256 is null && profile.IdentityRequirements is not {Length:>0} ||
+                (profile.IdentityRequirements??[]).Any(r=>!Probes.Any(p=>p.Id==r.Probe) || !Regex.IsMatch(r.Fact,@"^[a-z0-9_]{1,80}$") || string.IsNullOrEmpty(r.Expected) || r.Platforms is not null || r.Profiles is not null))
+                throw new InvalidDataException("Invalid profile identity prerequisites.");
         foreach(var feature in Features)
-            if(feature.Requirements.Any(r=>!Probes.Any(p=>p.Id==r.Probe)) || feature.Profiles.Any(p=>!Profiles.Any(x=>x.Id==p)))
+            if(feature.Requirements.Any(r=>!Probes.Any(p=>p.Id==r.Probe) || (r.Profiles??[]).Any(id=>!Profiles.Any(p=>p.Id==id))) || feature.Profiles.Any(p=>!Profiles.Any(x=>x.Id==p)))
                 throw new InvalidDataException("Invalid feature requirements.");
     }
 }
@@ -251,7 +256,10 @@ public sealed class FirmwareResearchEngine(ResearchSpec spec,IResearchTransportF
     public static string? MatchProfile(ResearchSpec spec,IReadOnlyList<ResearchProbeResult> results)
     {
         string? Fact(string probe,string fact)=>results.SingleOrDefault(p=>p.Id==probe && p.Status=="success")?.Facts.GetValueOrDefault(fact);
-        return spec.Profiles.SingleOrDefault(p=>p.Architecture==Fact("identity","architecture") && p.FirmwareSHA256==Fact("firmware-hashes","firmware_sha256") && p.RouterSHA256==Fact("firmware-hashes","router_sha256"))?.Id;
+        var matches=spec.Profiles.Where(p=>p.Architecture==Fact("identity","architecture") && p.RouterSHA256==Fact("firmware-hashes","router_sha256") &&
+            (p.FirmwareSHA256 is {} firmware ? firmware==Fact("firmware-hashes","firmware_sha256") : p.IdentityRequirements is {Length:>0}) &&
+            (p.IdentityRequirements??[]).All(r=>Fact(r.Probe,r.Fact)==r.Expected)).ToArray();
+        return matches.Length==1?matches[0].Id:null;
     }
     public static ResearchFeatureResult[] Evaluate(ResearchSpec spec,IReadOnlyList<ResearchProbeResult> results,string? profile,string outcome)
     {
@@ -261,7 +269,7 @@ public sealed class FirmwareResearchEngine(ResearchSpec spec,IResearchTransportF
             if(feature.Platforms is {Length:>0} && !feature.Platforms.Contains("windows")) { blocked=true;reasons.Add(new("Функция не реализована в Windows.","This operation is not implemented on Windows.")); }
             if(feature.Profiles.Length>0 && profile is null) { unknown=true;reasons.Add(new("Профиль прошивки не подтверждён для этой операции.","Firmware profile is not confirmed for this operation.")); }
             else if(feature.Profiles.Length>0 && !feature.Profiles.Contains(profile!)) { blocked=true;reasons.Add(new("Известная прошивка не поддерживается установщиком этой операции.","This known firmware is not supported by the operation installer.")); }
-            foreach(var requirement in feature.Requirements.Where(r=>r.Platforms is not {Length:>0} || r.Platforms.Contains("windows")))
+            foreach(var requirement in feature.Requirements.Where(r=>(r.Platforms is not {Length:>0} || r.Platforms.Contains("windows")) && (r.Profiles is null || r.Profiles.Contains(profile??""))))
             {
                 var probe=results.SingleOrDefault(x=>x.Id==requirement.Probe);
                 if(probe?.Status!="success" || !probe.Facts.TryGetValue(requirement.Fact,out var actual)) { unknown=true;reasons.Add(requirement.Label); }

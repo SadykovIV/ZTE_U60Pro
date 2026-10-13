@@ -55,6 +55,7 @@ private final class MockWeb: WebTransport {
     var requests = [Request](), methods = [String](), loginArguments = [String:Any]()
     var accepted = true, cookieHeader = "webtoken=\"test-cookie\"; Path=/", session = sessionID
     var info = deviceObject(), identityChangeAfter: Int?, identityCalls = 0
+    var identityFailure: Error?
     var backupData: Data
     var uploadedData: Data?, badUploadHash = false
     var restoreCount = 0, backupCount = 0, rebootCount = 0, outerError: Int?, challenge = "salt-0123"
@@ -62,7 +63,7 @@ private final class MockWeb: WebTransport {
     var directAdvertised = false, directCount = 0, directCode = 0
     var listUnavailable = false
     var directFailure: Error?, onDirect: (() -> Void)?
-    var rebootFailure: Error?, onReboot: (() -> Void)?
+    var rebootFailure: Error?, onReboot: (() -> Void)?, onRestore: (() -> Void)?
     init(_ data: Data) { backupData = data }
     func request(path: String, data: Data?, contentType: String?, cookie: String?) throws -> WebReply {
         requests.append(Request(path:path,data:data,cookie:cookie))
@@ -100,11 +101,12 @@ private final class MockWeb: WebTransport {
             result = ["result":loginResult ?? (accepted ? 0 : 1),"ubus_rpc_session":session]
             headers["set-cookie"] = cookieHeader
         case "device_info":
+            if let identityFailure { throw identityFailure }
             try check(params[0] as? String == sessionID && cookie == "test-cookie", "Authenticated identity")
             identityCalls += 1; result = info
             if let n = identityChangeAfter, identityCalls >= n { result["imei"] = "353490068701230" }
         case "device_backup_proc": backupCount += 1
-        case "device_restore_proc": restoreCount += 1
+        case "device_restore_proc": restoreCount += 1; onRestore?()
         case "device_reboot":
             try check(params[1] as? String == "zwrt_mc.device.manager" && params[3] as? [String: String] == ["moduleName": "web"], "Only stock Web reboot is allowed")
             rebootCount += 1; onReboot?()
@@ -161,6 +163,7 @@ private final class MockHost: HostCommandRunner {
     var installerCalls = 0, stage = "", remoteJournal = "", uploads = [String:Data]()
     var onInstall: (() -> Void)?
     var rollbackVerified = false, rollbackReply: String?, remoteState: String?
+    var unstartedVerified = false, unstartedReply: String?, onUnstartedProof: (() throws -> Void)?
     var lastDeviceList = "", usbSerialOverride: String?
     private func quoted(_ text: String) throws -> [String] {
         let text = text.components(separatedBy: "); zte_code=").first ?? text
@@ -202,6 +205,12 @@ private final class MockHost: HostCommandRunner {
                 let info = String(data:try JSONSerialization.data(withJSONObject:object,options:.sortedKeys),encoding:.utf8)!
                 let cid = identityCIDSequence.isEmpty ? identityCID : identityCIDSequence.removeFirst()
                 value = (identityHashesValid ? identityFirmware : String(repeating:"0",count:64)) + "  /firmware/image/modem.b16\n" + identityRouter + "  /usr/bin/diag-router\n" + cid + "\n" + (command.contains(AccessIdentity.command) ? "01234567-89ab-4cde-8f01-23456789abcd\n" : "") + (command.contains("ubus call") ? info : "")
+            } else if command.hasPrefix("(sh -c ") && command.contains("'--verify-not-started'") {
+                let arguments = Array(try quoted(command).drop(while: { $0 != "--verify-not-started" }))
+                try check(arguments.count == (arguments.contains("linux-arm64-access") ? 7 : 6), "Recovery helper received wrong profile arity")
+                try onUnstartedProof?()
+                let answer = unstartedReply ?? (unstartedVerified ? "INSTALL_NOT_STARTED " + arguments[1] : "INSTALL_ERROR INSTALLATION_STARTED")
+                return CommandResult(status: 0, stdout: Data((answer + "\n" + command[range] + (unstartedVerified ? "0" : "1") + "\n").utf8), stderr: Data())
             } else if command.hasPrefix("(sh -c ") && command.contains("'--verify-rollback'") {
                 value = rollbackReply ?? (rollbackVerified ? "INSTALL_ROLLBACK_VERIFIED " + remoteJournal : "INSTALL_ERROR ROLLBACK_UNVERIFIED")
                 shellCode = rollbackVerified ? "0" : "1"
@@ -222,7 +231,7 @@ private final class MockHost: HostCommandRunner {
                     value=digest(data)+"  "+path
                 } else if command.hasPrefix("(sh '") && command.contains("/setup-agent.sh'") {
                     var args=try quoted(command)
-                    if args.count > 1 && args[1] == "--reinstall" { args.remove(at: 1) }
+                    if args.count > 1 && ["--reinstall", "--clean-reinstall"].contains(args[1]) { args.remove(at: 1) }
                     try check(args.count >= 6 && args[0] == stage+"/setup-agent.sh" && args[1] == stage && args[2] == testCID,"Exact installer invocation and CID")
                     for name in ["zte-agent","dropbear","setup-agent.sh","start_zte_imei_studio.sh","id_ed25519.pub","start-agent.sh"] {try check(uploads[stage+"/"+name] != nil,"Missing staged asset")}
                     try check(args[3] == digest(uploads[stage+"/zte-agent"]!) && args[4] == digest(uploads[stage+"/dropbear"]!) && args[5] == digest(uploads[stage+"/id_ed25519.pub"]!),"Installer hashes")
@@ -358,6 +367,72 @@ private struct Fixture {
         func run(_ name: String, _ body: () throws -> Void) {
             do { try body(); passed += 1; print("PASS \(name)");results.append(["name":name,"result":"PASS"]) }
             catch { failed += 1; print("FAIL \(name): \(error)");results.append(["name":name,"result":"FAIL","error":String(describing:error)]) }
+        }
+        for code: URLError.Code in [.cannotConnectToHost, .cannotFindHost, .networkConnectionLost, .notConnectedToInternet, .timedOut, .dataNotAllowed] {
+            run("Unavailable Web permits independent measured USB before preflight: \(code.rawValue)") {
+                let f = try Fixture(); defer { f.remove() }
+                f.web.transportFailure = URLError(code)
+                f.host.identityMode = true; f.host.deviceList = "List of devices attached\nABC device usb:1\n"
+                f.host.preflightError = true
+                try rejects("PREFLIGHT_TOOL") { _ = try f.engine.run(webPassword: testPassword, agentPassword: testPassword, forceReinstall: true) }
+                try check(f.web.requests.count == 1 && f.web.restoreCount == 0 && f.web.backupCount == 0 && f.host.installerCalls == 0 && f.host.pushCount == 0, "Unavailable Web caused restore, retry or premature installer")
+                try check(f.host.calls.contains { $0.joined(separator: " ").contains("'--preflight'") }, "Independent root USB did not reach measured preflight")
+            }
+        }
+        run("B04 missing HTTP device_info after login uses measured USB without modem.b16") {
+            let f = try Fixture(); defer { f.remove() }
+            f.web.identityFailure = ModemWebError.malformedResponse("не получен результат device_info")
+            f.host.identityMode = true; f.host.identityFirmware = "absent"
+            f.host.deviceList = "List of devices attached\nABC device usb:1\n"; f.host.preflightError = true
+            try rejects("PREFLIGHT_TOOL") { _ = try f.engine.run(webPassword: testPassword, agentPassword: testPassword, forceReinstall: true) }
+            try check(f.web.identityCalls == 0 && f.web.backupCount == 0 && f.web.restoreCount == 0 && f.host.installerCalls == 0, "Unusable Web triggered restore or write")
+            try check(f.host.calls.contains { $0.joined(separator: " ").contains("'linux-arm64-access' 'absent'") }, "B04 did not retain absence and generic measured access")
+        }
+        run("ADB identity reads absent B31 modem image without certifying firmware writes") {
+            let f = try Fixture(); defer { f.remove() }
+            f.host.identityMode = true; f.host.identityFirmware = "absent"
+            let identity = try ADBClient(binary: f.resources.appendingPathComponent("Onboarding/adb"), runner: f.host).identityDetails("ABC", expected: WebIdentity(deviceObject(), skipFirmwareCheck: true), skipFirmwareCheck: true)
+            try check(identity.identity.firmwareHash == "absent" && identity.identity.cid == testCID, "Absent image blocked access identity")
+        }
+        for failure: Error in [URLError(.userAuthenticationRequired), URLError(.cancelled), ModemWebError.invalidPassword, ModemWebError.malformedResponse("fixture")] {
+            run("Authentication, cancellation and malformed Web stay terminal: \(failure)") {
+                let f = try Fixture(); defer { f.remove() }
+                f.web.transportFailure = failure; f.host.identityMode = true
+                f.host.deviceList = "List of devices attached\nABC device usb:1\n"
+                try rejects { _ = try f.engine.run(webPassword: testPassword, agentPassword: testPassword, forceReinstall: true) }
+                try check(!f.host.calls.contains { $0.contains("shell") || $0.contains("push") } && f.host.installerCalls == 0 && f.web.restoreCount == 0, "Invalid Web authentication bypassed to USB mutation")
+            }
+        }
+        for profile in ["b31", "linux-arm64-access"] {
+            for scenario in ["verified", "uncertain", "malformed-proof", "changed-pending"] {
+                run("Unstarted intent recovery \(profile): \(scenario)") {
+                    let f = try Fixture(); defer { f.remove() }
+                    let id = UUID().uuidString
+                    let directory = f.root.appendingPathComponent("SetupBackups/" + id); try secureDirectory(directory)
+                    let stage = "/data/zte-imei-studio/stage-" + id
+                    let saved = AccessSetupJournal(id: id, cid: testCID, bootID: "01234567-89ab-4cde-8f01-23456789abcd", firmwareHash: ModemEngine.firmwareHash,
+                        routerHash: ModemEngine.routerHash, installerProfile: profile, directory: directory.path, adbSerial: "ABC", phase: "install-requested", installRequested: true,
+                        remoteJournal: "/data/zte-imei-studio/installations/" + id, remoteStage: stage)
+                    try saveJSON(saved, f.engine.pending); let original = try Data(contentsOf: f.engine.pending)
+                    try savePrivate(Data("preserved".utf8), directory.appendingPathComponent("original.fixture"))
+                    f.host.deviceList = "List of devices attached\nABC device usb:1\n"
+                    f.host.unstartedVerified = scenario != "uncertain"
+                    if scenario == "malformed-proof" { f.host.unstartedReply = "unverified" }
+                    if scenario == "changed-pending" {
+                        f.host.onUnstartedProof = { try savePrivate(Data("changed".utf8), f.engine.pending) }
+                        try rejects { try f.engine.reconcileUnstartedPreparation() }
+                        try check(try Data(contentsOf: f.engine.pending) == Data("changed".utf8), "Recovery removed changed pending intent")
+                    } else {
+                        try f.engine.reconcileUnstartedPreparation()
+                        if scenario == "verified" {
+                            try check(!FileManager.default.fileExists(atPath: f.engine.pending.path), "Verified unstarted intent remained blocking")
+                            try check(try Data(contentsOf: directory.appendingPathComponent("setup-not-started.json")) == original, "Original intent was not preserved")
+                        } else { try check(try Data(contentsOf: f.engine.pending) == original, "Uncertain intent was replaced") }
+                    }
+                    try check(f.host.installerCalls == 0 && f.host.pushCount == 0 && f.web.requests.isEmpty && f.ssh.calls.isEmpty, "Read-only recovery performed unrelated operation")
+                    try check(try Data(contentsOf: directory.appendingPathComponent("original.fixture")) == Data("preserved".utf8), "Recovery changed original backups")
+                }
+            }
         }
         run("Diagnostic ADB activates despite existing SSH and never installs components") {
             let f = try Fixture(); defer { f.remove() }
@@ -993,7 +1068,7 @@ private struct Fixture {
             try check(startup.contains(newPassword) && !commands.contains{$0.contains(newPassword)},"Forced password missing from private startup or exposed in argv")
             try check(!f.ssh.calls.contains{$0.contains("--reinstall")} && f.web.requests.isEmpty && f.web.restoreCount==0,"Force widened commit or called Web on ready USB")
         }
-        run("Saved preparation mode wins over a changed checkbox before dispatch") {
+        run("Predispatch retry can request reinstall and never downgrades saved mode") {
             for initial in [false,true] {
                 let f=try Fixture();defer {f.remove()}
                 f.host.identityMode=true;f.host.fullInstaller=true;f.host.deviceList="List of devices attached\nABC device usb:1\n";f.host.failPushAt=2
@@ -1004,10 +1079,10 @@ private struct Fixture {
                 f.host.failPushAt=nil;f.host.calls=[]
                 _ = try f.engine.run(webPassword:"",agentPassword:testPassword,forceReinstall:!initial)
                 let apply=f.host.calls.map{$0.joined(separator:" ")}.first{$0.contains("(sh '") && $0.contains("/setup-agent.sh'")} ?? ""
-                try check(apply.contains("'--reinstall'")==initial && f.host.installerCalls==1,"Changed checkbox changed pending mode")
+                try check(apply.contains("'--reinstall'") && f.host.installerCalls==1,"Changed checkbox changed pending mode")
             }
         }
-        run("Clean intent implies force and a changed retry cannot silently replace an unready intent") {
+        run("Predispatch retry can request clean setup and never downgrades saved clean mode") {
             for initial in [false,true] {
                 let f=try Fixture();defer { f.remove() }
                 f.host.identityMode=true;f.host.fullInstaller=true;f.host.deviceList="List of devices attached\nABC device usb:1\n";f.host.failPushAt=2
@@ -1016,10 +1091,84 @@ private struct Fixture {
                 try check(saved.cleanComponents==initial && saved.forceReinstall==initial && !saved.installRequested,
                           "Cleanup mode was not persisted before staging or failed to imply force")
                 f.host.pushCount=0;f.host.calls=[]
-                try rejects(initial ? "interrupted upload" : "не подтвердила готовность") { _ = try f.engine.run(webPassword:"",agentPassword:testPassword,forceReinstall:!initial,cleanComponents:!initial) }
+                try rejects("interrupted upload") { _ = try f.engine.run(webPassword:"",agentPassword:testPassword,forceReinstall:!initial,cleanComponents:!initial) }
                 let retained=try readJSON(AccessSetupJournal.self,f.engine.pending)
-                try check(retained.cleanComponents==initial && retained.forceReinstall==initial && f.host.installerCalls==0,
+                try check(retained.cleanComponents==true && retained.forceReinstall==true && f.host.installerCalls==0,
                           "Retry changed saved cleanup mode or dispatched installation")
+            }
+        }
+        run("Factory reboot before installer dispatch preserves history and starts a fresh clean stage") {
+            let f=try Fixture();defer {f.remove()}
+            f.host.identityMode=true;f.host.fullInstaller=true;f.host.deviceList="List of devices attached\nABC device usb:1\n";f.host.failPushAt=2
+            f.host.identityFirmware="absent"
+            let id=UUID().uuidString, directory=f.root.appendingPathComponent("SetupBackups/"+id)
+            try secureDirectory(directory)
+            var saved=AccessSetupJournal(id:id,cid:testCID,bootID:"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",firmwareHash:"absent",routerHash:ModemEngine.routerHash,installerProfile:"linux-arm64-access",directory:directory.path,adbSerial:"ABC")
+            saved.remoteStage="/data/zte-imei-studio/stage-"+id
+            try saveJSON(saved,f.engine.pending)
+            let original=try Data(contentsOf:f.engine.pending)
+            try rejects("interrupted upload") {_ = try f.engine.run(webPassword:"",agentPassword:testPassword,cleanComponents:true)}
+            let next=try readJSON(AccessSetupJournal.self,f.engine.pending)
+            try check(next.id != id && next.bootID=="01234567-89ab-4cde-8f01-23456789abcd" && next.cleanComponents==true && next.forceReinstall==true && !next.installRequested,"Fresh boot/clean intent was not bound")
+            let history=try FileManager.default.contentsOfDirectory(at:directory,includingPropertiesForKeys:nil).filter{$0.lastPathComponent.hasPrefix("setup-before-resume-")}
+            try check(history.count==1 && (try Data(contentsOf:history[0]))==original,"Old preparation history changed")
+            try check(f.host.stage.hasSuffix(next.id) && f.host.installerCalls==0 && f.web.restoreCount==0,"Reboot replayed Web or old stage")
+        }
+        run("Explicit clean archives only verified previous-boot dispatched preparation") {
+            for scenario in ["reset", "same-boot", "foreign-cid", "archive-refused"] {
+                let f=try Fixture();defer {f.remove()}
+                f.host.identityMode=true;f.host.fullInstaller=true;f.host.deviceList="List of devices attached\nABC device usb:1\n";f.host.failPushAt=2
+                f.host.identityFirmware="absent"
+                if scenario=="foreign-cid" {f.host.identityCID=String(repeating:"b",count:32)}
+                f.host.preflightError=scenario=="archive-refused"
+                let id=UUID().uuidString,directory=f.root.appendingPathComponent("SetupBackups/"+id);try secureDirectory(directory)
+                var saved=AccessSetupJournal(id:id,cid:testCID,bootID:scenario=="same-boot" ? "01234567-89ab-4cde-8f01-23456789abcd":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",firmwareHash:"absent",routerHash:ModemEngine.routerHash,installerProfile:"linux-arm64-access",directory:directory.path,adbSerial:"ABC")
+                saved.installRequested=true;saved.phase="install-requested";saved.remoteStage="/data/zte-imei-studio/stage-"+id;saved.remoteJournal="/data/zte-imei-studio/installations/"+id
+                try saveJSON(saved,f.engine.pending);let original=try Data(contentsOf:f.engine.pending)
+                try rejects {_ = try f.engine.run(webPassword:"",agentPassword:testPassword,cleanComponents:true)}
+                if scenario=="reset" {
+                    let next=try readJSON(AccessSetupJournal.self,f.engine.pending)
+                    try check(next.id != id && !next.installRequested && next.cleanComponents==true,"Reset failed to start a fresh attempt")
+                    let history=try FileManager.default.contentsOfDirectory(at:directory,includingPropertiesForKeys:nil).filter{$0.lastPathComponent.hasPrefix("setup-before-reset-")}
+                    try check(history.count==1 && (try Data(contentsOf:history[0]))==original,"Dispatched reset journal not archived exactly")
+                } else {try check(try Data(contentsOf:f.engine.pending)==original,"Unverified reset changed original journal")}
+                try check(f.host.installerCalls==0 && f.web.restoreCount==0,"Recovery replayed installation or Web restore")
+            }
+        }
+        run("Explicit clean restores disabled ADB before reconciling the old dispatched journal") {
+            for scenario in ["direct", "backup", "lost-restore", "wrong-cid"] {
+                let f=try Fixture();defer {f.remove()}
+                f.host.identityMode=true;f.host.fullInstaller=true;f.host.deviceList="List of devices attached\n";f.host.failPushAt=2;f.host.identityFirmware="absent"
+                let id=UUID().uuidString,directory=f.root.appendingPathComponent("SetupBackups/"+id);try secureDirectory(directory)
+                var saved=AccessSetupJournal(id:id,cid:testCID,bootID:"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",firmwareHash:"absent",routerHash:ModemEngine.routerHash,installerProfile:"linux-arm64-access",directory:directory.path,adbSerial:"ABC")
+                saved.installRequested=true;saved.phase="install-requested";saved.remoteStage="/data/zte-imei-studio/stage-"+id;saved.remoteJournal="/data/zte-imei-studio/installations/"+id
+                try saveJSON(saved,f.engine.pending);let original=try Data(contentsOf:f.engine.pending)
+                var intactAtActivation=false
+                let activate = {
+                    intactAtActivation=(try? Data(contentsOf:f.engine.pending))==original
+                    if scenario != "lost-restore" {f.host.deviceList="List of devices attached\nABC device usb:1\n"}
+                    if scenario=="wrong-cid" {f.host.identityCID=String(repeating:"b",count:32)}
+                }
+                f.web.directAdvertised=scenario=="direct" || scenario=="wrong-cid"
+                f.web.onDirect=activate;f.web.onRestore=activate
+                var recoveryError = ""
+                do { _ = try f.engine.run(webPassword:testPassword,agentPassword:testPassword,cleanComponents:true); throw TestFailure.check("Expected staging boundary") }
+                catch let failure as TestFailure { throw failure }
+                catch { recoveryError = String(describing:error) }
+                if scenario=="lost-restore" {
+                    try check(try Data(contentsOf:f.engine.pending)==original,"Missing ADB retired original intent")
+                    try check(f.web.restoreCount==1 && FileManager.default.fileExists(atPath:f.engine.diagnosticPending.path),"Lost restoration was not durable")
+                    f.host.deviceList="List of devices attached\nABC device usb:1\n";f.web.transportFailure=URLError(.cannotConnectToHost)
+                    try rejects("interrupted upload") {_ = try f.engine.run(webPassword:testPassword,agentPassword:testPassword,cleanComponents:true)}
+                }
+                try check(intactAtActivation && f.host.installerCalls==0 && f.ssh.calls.isEmpty,"Activation changed old intent or used old SSH: "+scenario+" intact="+String(intactAtActivation)+" installer="+String(f.host.installerCalls)+" ssh="+String(f.ssh.calls.count)+" error="+recoveryError)
+                if scenario=="wrong-cid" {try check(try Data(contentsOf:f.engine.pending)==original,"Wrong device retired original intent")}
+                else {
+                    let next=try readJSON(AccessSetupJournal.self,f.engine.pending)
+                    try check(next.id != id && next.cleanComponents==true && !next.installRequested,"ADB recovery did not reach fresh clean staging")
+                    try check(!FileManager.default.fileExists(atPath:f.engine.diagnosticPending.path),"Confirmed ADB retained activation blocker")
+                }
+                try check(f.web.directCount==(f.web.directAdvertised ? 1:0) && f.web.restoreCount==(f.web.directAdvertised ? 0:1),"ADB recovery replayed activation")
             }
         }
         run("Malformed cleanup journal blocks bootstrap before any Web or ADB request") {
@@ -1050,7 +1199,7 @@ private struct Fixture {
             let saved=try JSONDecoder().decode(AccessSetupJournal.self,from:completeSetup)
             try check(saved.phase=="complete" && saved.cleanComponents==true && saved.forceReinstall==true, "Missing completed setup receipt")
             let webCount=f.web.requests.count, adbCount=f.host.calls.count, authCount=f.ssh.authenticationCalls
-            try rejects("операция модема") { _ = try f.engine.run(webPassword:"",agentPassword:"",forceReinstall:false,cleanComponents:false) }
+            try rejects("операция модема") { _ = try f.engine.run(webPassword:"",agentPassword:"",forceReinstall:false,cleanComponents:true) }
             try check(f.web.requests.count==webCount && f.host.calls.count==adbCount && f.ssh.authenticationCalls==authCount && f.host.installerCalls==1,
                       "Cleanup retry requested credentials or replayed bootstrap/install")
             let archive=Data("synthetic owned component backup".utf8)
@@ -1369,12 +1518,12 @@ private struct Fixture {
             try rejects("Повреждён") {_ = try f.engine.run(password:testPassword)}
             try check(f.web.requests.isEmpty && f.host.calls.allSatisfy { $0 == ["devices", "-l"] || $0 == ["-d", "get-serialno"] }, "No actions with corrupt resources")
         }
-        run("Existing IMEI transaction and operation lock block onboarding") {
+        run("Saved IMEI journal permits SSH recovery but actual operation lock excludes concurrent onboarding") {
             let f=try Fixture(); defer {f.remove()}
             try savePrivate(Data("pending".utf8),f.root.appendingPathComponent("pending.json"))
-            try rejects("незавершённую смену") {_ = try f.engine.run(password:testPassword)}
-            try check(f.web.requests.isEmpty, "Pending IMEI guard")
-            try FileManager.default.removeItem(at:f.root.appendingPathComponent("pending.json"))
+            var reached = false
+            try f.engine.locked { reached = true }
+            try check(reached && (try Data(contentsOf: f.root.appendingPathComponent("pending.json"))) == Data("pending".utf8), "SSH recovery blocked or IMEI journal changed")
             let fd=open(f.root.appendingPathComponent("operation.lock").path,O_RDWR|O_CREAT,0o600); defer {flock(fd,LOCK_UN);close(fd)}
             try check(fd >= 0 && flock(fd,LOCK_EX|LOCK_NB)==0,"Test lock held")
             try rejects("Другая операция") {_ = try f.engine.run(password:testPassword)}

@@ -12,10 +12,27 @@ namespace ZteImeiStudio.Windows.Features;
 internal sealed class AdbToggleTransaction(IRemoteShell shell, string resources, string storage,
     TimeSpan? waitBudget = null, TimeSpan? pollInterval = null)
 {
-    internal const string ScriptSha256 = "4e24dd2e15fa567c8a22efaafdc0f01345fb226c2b1fef7f921ec77d67ebe2f7";
+    internal const string ScriptSha256 = "0ca5d10426c8398bab5e35af525782c490dce30f841a073e2cc64e3dc49c27dd";
+    internal const string B04FirmwareHash = "c57e063d390983229dfc53aa87380b3d4655ee8daa1c748e1a032ac90cd0df81";
+    internal const string B28FirmwareHash = "5a4489882538b5ab1d3e0049371f1b620d28d262a429923299b4f2626d40d478";
     internal const string PendingName = "adb-toggle-pending.json";
     internal const string Unknown = "Результат переключения ADB не подтверждён. Подключитесь по SSH и обновите состояние ADB. Повторное переключение заблокировано.";
-    internal const string CapabilityCommand = "set -eu; test \"$(id -u)\" = 0; for tool in sh stat readlink sha256sum cut awk sed sort pidof nohup sleep cat mv rm rmdir mkdir ln id uname; do command -v \"$tool\" >/dev/null || exit 71; done; test ! -L /sbin/adbd; test \"$(sha256sum /sbin/adbd | cut -d ' ' -f 1)\" = 6d42bf97ae1f761ba3c5a0ee48deb84db0b19e4766b6b538b71741743d5b3f90; printf 'ADB_CONTROL_CAPABLE\\n'";
+    internal const string CapabilityCommand = "set -eu; test \"$(id -u)\" = 0; for tool in sh stat readlink sha256sum cut awk sed sort pidof nohup sleep cat mv rm rmdir mkdir ln id uname cmp chmod; do command -v \"$tool\" >/dev/null || exit 71; done; test ! -L /sbin/adbd; test -f /sbin/adbd && test -x /sbin/adbd && test \"$(stat -c %u /sbin/adbd)\" = 0; printf 'ADB_CONTROL_CAPABLE\\n'";
+    // The captured B04 image or its absence requires the measured native build; it
+    // is never an ADB write grant.
+    internal const string B04CapabilityCommand = """
+        if test -e /firmware/image/modem.b16 || test -L /firmware/image/modem.b16; then
+          test -f /firmware/image/modem.b16 && test ! -L /firmware/image/modem.b16 && test "$(stat -c %u /firmware/image/modem.b16)" = 0 || exit 71
+          test "$(sha256sum /firmware/image/modem.b16 | cut -d ' ' -f 1)" = c57e063d390983229dfc53aa87380b3d4655ee8daa1c748e1a032ac90cd0df81 || exit 71
+        fi
+          test -f /usr/bin/zte_topsw_mdm && test ! -L /usr/bin/zte_topsw_mdm && test "$(stat -c %u /usr/bin/zte_topsw_mdm)" = 0 || exit 71
+          test "$(sha256sum /usr/bin/zte_topsw_mdm | cut -d ' ' -f 1)" = 93a346e7d69024503caf9ad42f14c97e1514dd7d04c7b5ebef4e30473b5d5c64 || exit 71
+          info=$(ubus -t 5 call zwrt_web device_info '{}') || exit 71
+          test "$(printf '%s' "$info" | jsonfilter -e '@.integrate_version')" = XCBZ_HK_MU5250V1.0.0B04 || exit 71
+          test "$(printf '%s' "$info" | jsonfilter -e '@.wa_inner_version')" = BD_XCBZHKMU5250V1.0.0B04 || exit 71
+        """;
+    private static string Capability(AccessDeviceIdentity identity) => (identity.FirmwareHash == "absent" || identity.FirmwareHash == B04FirmwareHash)
+        ? "set -eu; " + B04CapabilityCommand + "; " + CapabilityCommand : CapabilityCommand;
     private string PendingPath => Path.Combine(storage, PendingName);
     private sealed record Pending(int Schema, string Token, string Cid, string Boot, string Firmware, string Router, bool Desired, bool Original, string Phase)
     {
@@ -25,7 +42,7 @@ internal sealed class AdbToggleTransaction(IRemoteShell shell, string resources,
     private static DeviceFeatureException Failure(string message = Unknown) => new(message);
     private static string Q(string value) => DeviceFeatureService.Quote(value);
     private static bool Exact(RemoteResult result, string line) => result.Success && result.Stdout.AsSpan().SequenceEqual(Encoding.ASCII.GetBytes(line + "\n"));
-    private static bool Known(AccessDeviceIdentity identity) => identity.FirmwareHash == DeviceFeatureService.FirmwareHash && identity.RouterHash == DeviceFeatureService.RouterHash;
+    private static bool Known(AccessDeviceIdentity identity) => (identity.FirmwareHash == DeviceFeatureService.FirmwareHash || identity.FirmwareHash == B28FirmwareHash || identity.FirmwareHash == B04FirmwareHash || identity.FirmwareHash == "absent") && identity.RouterHash == DeviceFeatureService.RouterHash;
 
     private async Task<byte[]> Script(CancellationToken ct)
     {
@@ -46,7 +63,7 @@ internal sealed class AdbToggleTransaction(IRemoteShell shell, string resources,
         if (!Known(before) || !state.ReadyForChange) return state;
         try { _ = await Script(ct); }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException or DeviceFeatureException) { return state; }
-        var capability = await shell.RunAsync(CapabilityCommand, timeout: TimeSpan.FromSeconds(10), ct: ct);
+        var capability = await shell.RunAsync(Capability(before), timeout: TimeSpan.FromSeconds(10), ct: ct);
         if (await AccessIdentity.ReadAsync(shell, ct) != before) throw Failure();
         return state with { SupportsChange = Exact(capability, "ADB_CONTROL_CAPABLE") };
     }
@@ -87,9 +104,10 @@ internal sealed class AdbToggleTransaction(IRemoteShell shell, string resources,
         { throw Failure("Компонент переключения ADB не подтверждён. Настройки модема не изменены."); }
         // Pin failure precedes any remote staging.
         var identity = await AccessIdentity.ReadAsync(shell, ct);
-        if (!Known(identity)) throw Failure("Переключение ADB поддерживается только на проверенной прошивке B31.");
+        if (!Known(identity)) throw Failure("Для этой прошивки переключение ADB ещё не подтверждено; поддерживаются измеренные B04, B28 и B31.");
         var state = await Observe(ct, identity);
-        if (!state.SupportsChange || state.Enabled is null) throw Failure("Безопасное переключение ADB для этой конфигурации не подтверждено.");
+        var persistenceOnly = !desired && state.Enabled == false && Exact(await shell.RunAsync(Capability(identity), timeout: TimeSpan.FromSeconds(10), ct: ct), "ADB_CONTROL_CAPABLE");
+        if ((!state.SupportsChange && !persistenceOnly) || state.Enabled is null) throw Failure("Безопасное переключение ADB для этой конфигурации не подтверждено. Для включения нужны готовые USB-дескрипторы ADB; выключение уже отсутствующего ADB доступно через SSH.");
         var pending = new Pending(1, Guid.NewGuid().ToString("D"), identity.Cid, identity.BootId, identity.FirmwareHash, identity.RouterHash, desired, state.Enabled.Value, "preparing");
         Directory.CreateDirectory(storage);
         Save(pending, create: true);
@@ -205,10 +223,10 @@ internal sealed class AdbToggleTransaction(IRemoteShell shell, string resources,
     {
         await Bound(pending, ct);
         var stage = Q(pending.Stage);
-        var names = new[] { "adb-toggle.sh", "before", "after", "udc", "daemon", "name", "target", "desired", "original", "phase", "ack", "worker.log" };
+        var names = new[] { "adb-toggle.sh", "before", "after", "udc", "daemon", "name", "target", "desired", "original", "phase", "ack", "worker.log", "rc.before", "rc.after", "rc.mode" };
         var files = string.Join(' ', names.Select(n => Q(pending.Stage + "/" + n)));
         var command = "set -eu; test -d " + stage + " && test ! -L " + stage + " && test \"$(stat -c '%u:%a' " + stage + ")\" = 0:700 || exit 71; " +
-            "for entry in " + stage + "/* " + stage + "/.[!.]* " + stage + "/..?*; do test ! -e \"$entry\" && test ! -L \"$entry\" && continue; case \"${entry##*/}\" in adb-toggle.sh|before|after|udc|daemon|name|target|desired|original|phase|ack|worker.log|apply-once|decision) :;; *) exit 71;; esac; done; " +
+            "for entry in " + stage + "/* " + stage + "/.[!.]* " + stage + "/..?*; do test ! -e \"$entry\" && test ! -L \"$entry\" && continue; case \"${entry##*/}\" in adb-toggle.sh|before|after|udc|daemon|name|target|desired|original|phase|ack|worker.log|rc.before|rc.after|rc.mode|apply-once|decision) :;; *) exit 71;; esac; done; " +
             "for dir in " + Q(pending.Stage + "/apply-once") + " " + Q(pending.Stage + "/decision") + "; do if test -e \"$dir\" || test -L \"$dir\"; then test -d \"$dir\" && test ! -L \"$dir\" && test \"$(stat -c '%u:%a' \"$dir\")\" = 0:700 || exit 71; for f in \"$dir\"/* \"$dir\"/.[!.]* \"$dir\"/..?*; do test ! -e \"$f\" && test ! -L \"$f\" || exit 71; done; fi; done; " +
             "for f in " + files + "; do if test -e \"$f\" || test -L \"$f\"; then test -f \"$f\" && test ! -L \"$f\" && test \"$(stat -c '%u:%a:%h' \"$f\")\" = 0:600:1 || exit 71; fi; done; " +
             "for dir in " + Q(pending.Stage + "/apply-once") + " " + Q(pending.Stage + "/decision") + "; do if test -d \"$dir\"; then rmdir \"$dir\"; fi; done; " +

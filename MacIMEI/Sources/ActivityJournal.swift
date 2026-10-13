@@ -21,7 +21,7 @@ final class ActivityJournal: @unchecked Sendable {
     static func redact(_ text: String) -> String {
         String(sanitize(text).prefix(4096))
     }
-    private static let credentialName = #"(?i)(password|passwd|token|authorization|cookie|secret|private[_ -]?key|api[_ -]?key|access[_ -]?key|key_2g|key_5g|psk|pin|puk|пароль)"#
+    private static let credentialName = #"(?i)(password|passwd|token|authorization|cookie|secret|private[_ -]?key|preshared[_ -]?key|header[_ -]?protection[_ -]?key|source[_ -]?config|subscription[_ -]?url|api[_ -]?key|access[_ -]?key|key_2g|key_5g|psk|pin|puk|пароль)"#
     static func sanitize(_ text: String) -> String {
         var value = text
         // Remove complete or truncated PEM blocks before processing individual
@@ -30,7 +30,7 @@ final class ActivityJournal: @unchecked Sendable {
         if let pem = try? NSRegularExpression(pattern: #"-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?(?:-----END [^-]*PRIVATE KEY-----|\z)"#) {
             value = pem.stringByReplacingMatches(in: value, range: NSRange(value.startIndex..., in: value), withTemplate: "[скрыто]")
         }
-        for pattern in [#"(?i)\b(?:vless|vmess|trojan|ss|ssr|hysteria2?|tuic)://[^\s\"<>]+"#,
+        for pattern in [#"(?i)\b(?:vless|vmess|trojan|ss|ssr|hy2|hysteria2?|tuic)://[^\s\"<>]+"#,
                         #"(?i)(?:APP_(?:NV|EFS|CONFIG)|EFS_CHUNK)[^\n]*(?:data|hex)=[^\n]*"#,
                         #"\b[0-9]{15,22}\b"#,
                         #"[A-Za-z0-9_+/=-]{100,}"#] {

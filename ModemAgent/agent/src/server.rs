@@ -269,8 +269,9 @@ fn handle_request(mut request: Request, state: &AppState) {
     }
 
     let mut body = Vec::new();
+    let body_limit = if path == "/api/vpn/request" { crate::vpn::REQUEST_LIMIT } else { 1024 * 1024 };
     let mut reader = request.as_reader();
-    let mut limited = std::io::Read::take(&mut reader, 1024 * 1024 + 1);
+    let mut limited = std::io::Read::take(&mut reader, body_limit as u64 + 1);
     if let Err(e) = std::io::Read::read_to_end(&mut limited, &mut body) {
         respond(
             request,
@@ -281,11 +282,11 @@ fn handle_request(mut request: Request, state: &AppState) {
         return;
     }
 
-    if body.len() > 1024 * 1024 {
+    if body.len() > body_limit {
         respond(
             request,
             413,
-            json!({"ok": false, "error": "request body exceeds 1 MiB"}),
+            json!({"ok": false, "error": "request body exceeds the route limit"}),
             origin_ref,
         );
         return;

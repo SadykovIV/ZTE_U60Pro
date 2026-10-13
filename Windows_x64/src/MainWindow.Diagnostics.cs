@@ -9,6 +9,7 @@ public sealed partial class MainWindow
     private Button? _firmwareAdaptationButton;
     private Button? _diagnosticAccessButton;
     private Button? _refreshAdbButton;
+    private Button? _disableAdbButton;
     private Button? _verifyBackupKeyButton;
     private TextBlock? _backupKeyCheckStatus;
     private string _backupKeyCheckResult = "";
@@ -47,6 +48,9 @@ public sealed partial class MainWindow
         _refreshAdbButton = ActionButton(Localization.IsEnglish ? "Check ADB state" : "Проверить состояние ADB",
             () => ExecuteAsync(ModemOperation.RefreshAdbState, (string[]?)null), false);
         _refreshAdbButton.Name = "RefreshAdbState"; methods.Children.Add(_refreshAdbButton);
+        _disableAdbButton = ActionButton(Localization.IsEnglish ? "Disable ADB and autostart" : "Выключить ADB и автозапуск",
+            () => ExecuteAsync(ModemOperation.SetAdbEnabled, new Dictionary<string,string> { ["enabled"] = "false" }), false);
+        _disableAdbButton.Name = "DisableAdb"; methods.Children.Add(_disableAdbButton);
         _adbEnabledCheckbox = new AdbIntentCheckBox { Name = "AdbEnabled", IsThreeState = true,
             Content = Localization.IsEnglish ? "Enable ADB" : "Включить ADB", IsChecked = _snapshot?.AdbEnabled };
         _adbEnabledCheckbox.IsCheckedChanged += async (_, _) =>
@@ -114,7 +118,7 @@ public sealed partial class MainWindow
             panel.Children.Add(Actions(("Сохранить логи и журналы", ModemOperation.ExportDiagnostics, null)));
             panel.Children.Add(Muted("Если модем недоступен, ZIP сохранит локальные журналы и причину пропуска. Просмотр журнала действий остаётся в «Администрирование». Пароли, ключи и профили не включаются."));
         });
-        AddCard("Данные для адаптации прошивки", "Сведения об устройстве, проверки функций программы, структура прошивки и исходные файлы её компонентов — в одном ZIP. Подробные результаты сохраняются в архиве.", panel =>
+        AddCard("Данные для адаптации прошивки", "Сведения об устройстве, файлы прошивки и результаты чтения DIAG/QMI для исследования IMEI и SIM/eSIM — в одном ZIP. Подробные проверки остаются в архиве.", panel =>
         {
             var row = new WrapPanel();
             _firmwareAdaptationButton = ActionButton("Собрать данные для адаптации прошивки", CollectFirmwareAdaptationAsync, false);
@@ -138,6 +142,7 @@ public sealed partial class MainWindow
         if (_firmwareAdaptationButton is not null) _firmwareAdaptationButton.IsEnabled = idle && ssh;
         if (_diagnosticAccessButton is not null) _diagnosticAccessButton.IsEnabled = idle && ssh;
         if (_refreshAdbButton is not null) _refreshAdbButton.IsEnabled = idle && ssh;
+        if (_disableAdbButton is not null) _disableAdbButton.IsEnabled = idle && ssh && noPending;
         if (_adbEnabledCheckbox is not null)
         {
             _updatingAdbCheckbox = true;

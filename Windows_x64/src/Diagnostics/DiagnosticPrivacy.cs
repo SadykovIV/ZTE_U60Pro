@@ -12,7 +12,7 @@ public sealed class DiagnosticPrivacy
     private int secretCharacters;
     private bool suppressDetails;
     private static readonly Regex SensitiveName = new(
-        "password|passwd|passphrase|secret|token|authorization|cookie|private.?key|api.?key|psk|pin|puk|backup.?key.?suffix|activation.?code|confirmation.?code|matching.?id|key_2g|key_5g|пароль",
+        "password|passwd|passphrase|secret|token|authorization|cookie|private.?key|header.?protection.?key|pre.?shared.?key|source.?config|api.?key|psk|pin|puk|backup.?key.?suffix|activation.?code|confirmation.?code|matching.?id|key_2g|key_5g|пароль",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
 
     public void Remember(IEnumerable<string?> values)
@@ -34,7 +34,7 @@ public sealed class DiagnosticPrivacy
         if (values is null) return;
         try
         {
-            Remember(values.Where(x => SensitiveName.IsMatch(x.Key) || x.Key is "imei1" or "imei2" or "iccid" or "eid" or "ssid")
+            Remember(values.Where(x => SensitiveName.IsMatch(x.Key) || x.Key is "vpn_subscription_url" or "imei1" or "imei2" or "iccid" or "eid" or "ssid")
                 .Select(x => x.Value));
         }
         catch (Exception error) when (error is RegexMatchTimeoutException or ArgumentException or InvalidOperationException)
@@ -68,9 +68,9 @@ public sealed class DiagnosticPrivacy
                 // Discard a whole credential-bearing line: quoted JSON/shell escapes and
                 // Cookie lists must not leak a suffix. No raw transport output is collected.
                 value = string.Join('\n', value.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n').Select(line =>
-                    Regex.IsMatch(line, @"(?i)\bLPA:|\bBearer\s|(?:password|passwd|passphrase|secret|token|authorization|cookie|private.?key|api.?key|psk|pin|puk|backup.?key.?suffix|activation.?code|confirmation.?code|matching.?id|key_2g|key_5g|пароль)[""']?\s*(?:[:=]|\s+\S)", RegexOptions.None, TimeSpan.FromSeconds(1))
+                    Regex.IsMatch(line, @"(?i)\bLPA:|\bBearer\s|(?:password|passwd|passphrase|secret|token|authorization|cookie|private.?key|header.?protection.?key|pre.?shared.?key|source.?config|api.?key|psk|pin|puk|backup.?key.?suffix|activation.?code|confirmation.?code|matching.?id|key_2g|key_5g|пароль)[""']?\s*(?:[:=]|\s+\S)", RegexOptions.None, TimeSpan.FromSeconds(1))
                         ? "[Confidential line omitted]" : line));
-                value = Regex.Replace(value, @"(?i)\b(?:https?|ftp|ssh|socks[45]?|vless|vmess|trojan|ss|ssr|hysteria2?|tuic)://[^\s""<>]+|\b(?:APP_(?:NV|EFS|CONFIG)|EFS_CHUNK)[^\n]*|[A-Za-z0-9_+/=-]{100,}", "[PRIVATE DATA REDACTED]", RegexOptions.None, TimeSpan.FromSeconds(1));
+                value = Regex.Replace(value, @"(?i)\b(?:https?|ftp|ssh|socks[45]?|vless|vmess|trojan|ss|ssr|hysteria2?|hy2|tuic)://[^\s""<>]+|\b(?:APP_(?:NV|EFS|CONFIG)|EFS_CHUNK)[^\n]*|[A-Za-z0-9_+/=-]{100,}", "[PRIVATE DATA REDACTED]", RegexOptions.None, TimeSpan.FromSeconds(1));
                 value = new ResearchRedactor().Clean(value);
                 // Preserve diagnostic text, not terminal control sequences.
                 value = new string(value.Where(c => !char.IsControl(c) || c is '\n' or '\t').ToArray());

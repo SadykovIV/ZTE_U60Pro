@@ -2,7 +2,7 @@ import { translate as t } from '../../i18n'
 import { Button } from '../../ui/controls'
 
 export type ProfileDetails = { schema_version: number; active: boolean; profile: {
-  id: string; name: string; proxy: Record<string, unknown>; source_uri: string; warnings: string[]
+  id: string; name: string; proxy: Record<string, unknown>; source_uri?: string; source_config?: string; warnings: string[]
 } }
 
 export function VpnProfileDetails({ value, onClose }: { value: ProfileDetails; onClose: () => void }) {
@@ -27,11 +27,11 @@ export function VpnProfileDetails({ value, onClose }: { value: ProfileDetails; o
         <dd className="min-w-0 whitespace-pre-wrap break-all font-mono text-ink">{typeof item === 'boolean' ? (item ? t('Yes') : t('No')) : typeof item === 'object' ? JSON.stringify(item, null, 2) : String(item)}</dd>
       </div>)}
     </dl>
-    <label className="block text-xs font-semibold text-ink2">
-      {t('Original profile link')}
-      <textarea className="mt-2 block h-28 w-full resize-y rounded-lg border border-line/15 bg-surface p-3 font-mono text-xs font-normal text-ink" readOnly value={profile.source_uri} spellCheck={false} onFocus={e => e.currentTarget.select()} />
-    </label>
-    <p className="text-xs text-ink2">{t('Renaming changes the name in your list. The original link and connection settings stay unchanged.')}</p>
+    {(profile.source_config || profile.source_uri) && <label className="block text-xs font-semibold text-ink2">
+      {t('Original profile data')}
+      <textarea className="mt-2 block h-28 w-full resize-y rounded-lg border border-line/15 bg-surface p-3 font-mono text-xs font-normal text-ink" readOnly value={profile.source_config ?? profile.source_uri ?? ''} spellCheck={false} onFocus={e => e.currentTarget.select()} />
+    </label>}
+    <p className="text-xs text-ink2">{t('Renaming changes the name in your list. The original profile data and connection settings stay unchanged.')}</p>
     <details className="text-xs text-ink2">
       <summary className="cursor-pointer">{t('VPN core configuration')}</summary>
       <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-surface p-3 text-ink">{JSON.stringify(proxy, null, 2)}</pre>

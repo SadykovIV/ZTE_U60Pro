@@ -12,6 +12,18 @@ const LPAC: &[u8] = include_bytes!("../../resources/esim/lpac");
 const GSMA_ROOT: &[u8] = include_bytes!("../../resources/esim/gsma-rsp-roots.pem");
 const GSMA_HASH: &str = "7364a2ac4d2b5f77c1b83ee7e1c535e8fc806c67ee42e73ad97c35464d203477";
 const B31: &str = "604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263";
+const B28_IMAGE: &str = "5a4489882538b5ab1d3e0049371f1b620d28d262a429923299b4f2626d40d478";
+const B28_MDM: &str = "5d140d3b31078607ecfc3333188289f12a9cdf285390448c5ae748bdf53f2995";
+const B04_IMAGE: &str = "c57e063d390983229dfc53aa87380b3d4655ee8daa1c748e1a032ac90cd0df81";
+const B04_MDM: &str = "93a346e7d69024503caf9ad42f14c97e1514dd7d04c7b5ebef4e30473b5d5c64";
+const B04_ROUTER: &str = "55c54f74aaa427940254a2f16c36771e675a80a002363e4f10b0dfcb604d9c6f";
+
+fn radio_profile_matches(image: &str, mdm: Option<&str>, router: Option<&str>) -> bool {
+    image == B31 || (router == Some(B04_ROUTER)
+        && ((image == B04_IMAGE && mdm == Some(B04_MDM))
+            || (image == B28_IMAGE && mdm == Some(B28_MDM))))
+}
+
 
 fn hash(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
@@ -28,8 +40,11 @@ pub fn check_device() -> Result<()> {
     }
     Ok(())
 }
-/// The tested power/radio reset remains firmware-specific. APDU inventory and
-/// card operations use real QMI route/capability checks instead of this hash.
+/// Radio reset uses measured B31/B28/B04 component profiles. Each operation
+/// requires a fresh operating-mode and physical-slot read before changing the
+/// profile, then setter acknowledgements and readbacks. B28's live QMI route
+/// remains an owner-validation item. This does not enable a built-in-card route.
+/// APDU inventory and card operations use actual card/route checks.
 pub fn check_radio_device() -> Result<()> {
     check_device()?;
     let mut f = fs::File::open("/firmware/image/modem.b16")
@@ -45,10 +60,37 @@ pub fn check_radio_device() -> Result<()> {
         }
         digest.update(&buffer[..n]);
     }
-    if format!("{:x}", digest.finalize()) != B31 {
+    let image = format!("{:x}", digest.finalize());
+    if image == B31 { return Ok(()); }
+    if image != B04_IMAGE && image != B28_IMAGE { return Err(Error::new("unsupported_firmware")); }
+    let mdm = fs::read("/usr/bin/zte_topsw_mdm").map_err(|_| Error::new("firmware_check_failed"))?;
+    let router = fs::read("/usr/bin/diag-router").map_err(|_| Error::new("firmware_check_failed"))?;
+    if !radio_profile_matches(&image, Some(&hash(&mdm)), Some(&hash(&router))) {
         return Err(Error::new("unsupported_firmware"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod radio_profile_tests {
+    use super::*;
+    #[test]
+    fn b31_is_unchanged_and_b28_b04_require_their_captured_components() {
+        assert!(radio_profile_matches(B31, None, None));
+        assert!(radio_profile_matches(B04_IMAGE, Some(B04_MDM), Some(B04_ROUTER)));
+        assert!(radio_profile_matches(B28_IMAGE, Some(B28_MDM), Some(B04_ROUTER)));
+        assert!(!radio_profile_matches(B28_IMAGE, Some(B04_MDM), Some(B04_ROUTER)));
+        assert!(!radio_profile_matches(B04_IMAGE, Some(B28_MDM), Some(B04_ROUTER)));
+        assert!(!radio_profile_matches(B28_IMAGE, None, Some(B04_ROUTER)));
+        assert!(!radio_profile_matches(B28_IMAGE, Some(B28_MDM), None));
+        for image in ["absent", "BD_XCBZHKMU5250V1.0.0B04", "", "unknown"] {
+            assert!(!radio_profile_matches(image, Some(B04_MDM), Some(B04_ROUTER)));
+        }
+        assert!(!radio_profile_matches(B04_IMAGE, None, Some(B04_ROUTER)));
+        assert!(!radio_profile_matches(B04_IMAGE, Some("unknown"), Some(B04_ROUTER)));
+        assert!(!radio_profile_matches(B04_IMAGE, Some(B04_MDM), None));
+        assert!(!radio_profile_matches(B04_IMAGE, Some(B04_MDM), Some("unknown")));
+    }
 }
 
 pub struct Resources {

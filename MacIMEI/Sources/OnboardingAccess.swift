@@ -34,6 +34,102 @@ struct AccessSetupJournal: Codable {
 }
 
 extension OnboardingEngine {
+    func cleanRecoveryUSBProof(webPassword: String, expectedIdentity: Identity, expectedRouter: String,
+                               expectedIMEI: String? = nil) throws -> (String, DiagnosticDeviceProof) {
+        let adb = ADBClient(binary: assets.appendingPathComponent("adb"), runner: runner)
+        var serials = try adb.discovery().readyUSBSerials
+        if serials.isEmpty || fm.fileExists(atPath: diagnosticPending.path) {
+            _ = try enableDiagnosticADBLocked(webPassword: webPassword, expectedIdentity: expectedIdentity,
+                expectedIMEI: expectedIMEI, preparationRecovery: true)
+            serials = try adb.discovery().readyUSBSerials
+        }
+        try require(serials.count == 1, "Для восстановления чистой установки подключите один USB-модем")
+        let serial = serials[0]
+        let physical = try adb.command(["-d", "get-serialno"], timeout: 5)
+        try require(CommandText.decode(physical).trimmingCharacters(in: .whitespacesAndNewlines) == serial, "Не подтверждён единственный физический USB-модем")
+        var first: DiagnosticDeviceProof?
+        for _ in 0..<2 {
+            let response = try adb.shellResult(serial, AccessIdentity.command, timeout: 20)
+            try require(response.status == 0, "Не подтверждён модем после перезагрузки")
+            let proof = try AccessIdentity.parse(response.stdout)
+            try require(proof.identity == expectedIdentity && proof.routerHash == expectedRouter && (first == nil || first == proof),
+                        "После перезагрузки обнаружено другое устройство или прошивка; прежняя установка сохранена")
+            first = proof
+        }
+        return (serial, first!)
+    }
+
+    /// Explicit clean setup may retire a transaction from a previous boot only
+    /// after the device helper preserves its owned journal and current targets.
+    func archivePreviousBootForClean(webPassword: String) throws {
+        guard fm.fileExists(atPath: pending.path) else { return }
+        let raw = try DeviceBackups.smallFile(pending, maximum: 65536)
+        guard let object = try JSONSerialization.jsonObject(with: raw) as? [String: Any],
+              object["intent"] as? String == "linux-arm64-access", object["installRequested"] as? Bool == true else { return }
+        let saved = try JSONDecoder().decode(AccessSetupJournal.self, from: raw)
+        try saved.validate(root: root)
+        guard saved.installerProfile == "linux-arm64-access" else { return }
+        let (serial, proof) = try cleanRecoveryUSBProof(webPassword: webPassword,
+            expectedIdentity: Identity(cid: saved.cid, firmwareHash: saved.firmwareHash), expectedRouter: saved.routerHash)
+        guard proof.bootID != saved.bootID else { return }
+        let adb = ADBClient(binary: assets.appendingPathComponent("adb"), runner: runner)
+        let hashes = try verifyAssets()
+        let bytes = try Data(contentsOf: assets.appendingPathComponent("setup-agent.sh"))
+        try require(hashes["setup-agent.sh"] == digest(bytes), "Повреждён установщик подготовки")
+        let args = ["--clean-reinstall", "--preflight", saved.cid, saved.installerProfile, saved.firmwareHash, saved.routerHash, proof.bootID]
+        let answer = try adb.shell(serial, "sh -c " + shellQuote(String(decoding: bytes, as: UTF8.self)) + " -- " + args.map(shellQuote).joined(separator: " "), timeout: 60)
+        let freshResponse = try adb.shellResult(serial, AccessIdentity.command, timeout: 20)
+        try require(freshResponse.status == 0, "Повторная идентификация USB недоступна")
+        let fresh = try AccessIdentity.parse(freshResponse.stdout)
+        try require(answer == "INSTALL_PREFLIGHT linux-arm64-access imei_config=unknown" && fresh.identity == proof.identity && fresh.routerHash == proof.routerHash && fresh.bootID == proof.bootID &&
+                    (try DeviceBackups.smallFile(pending, maximum: 65536)) == raw, "Не подтверждён архив предыдущей установки; журнал сохранён")
+        try savePrivate(raw, URL(fileURLWithPath: saved.directory).appendingPathComponent("setup-before-reset-" + UUID().uuidString + ".json"))
+        try fm.removeItem(at: pending)
+        update("Состояние предыдущей загрузки сохранено. Начинается новая чистая установка с заданным паролем.", 0.05)
+    }
+
+    /// An early preflight failure has no remote transaction to resume. Preserve
+    /// its local history, but release the intent only with fresh device proof.
+    func reconcileUnstartedPreparation() throws {
+        guard fm.fileExists(atPath: pending.path) else { return }
+        let raw = try DeviceBackups.smallFile(pending, maximum: 65536)
+        guard let object = try JSONSerialization.jsonObject(with: raw) as? [String: Any],
+              object["installRequested"] as? Bool == true,
+              object["phase"] as? String == "install-requested" else { return }
+        let id: String, directory: URL, serial: String, policy: [String], stage: String?, journalPath: String?
+        if object["intent"] as? String == "linux-arm64-access" {
+            let saved = try JSONDecoder().decode(AccessSetupJournal.self, from: raw)
+            try saved.validate(root: root)
+            id = saved.id; directory = URL(fileURLWithPath: saved.directory); serial = saved.adbSerial
+            policy = [saved.cid, saved.installerProfile, saved.firmwareHash, saved.routerHash] +
+                (saved.installerProfile == "linux-arm64-access" ? [saved.bootID] : [])
+            stage = saved.remoteStage; journalPath = saved.remoteJournal
+        } else {
+            let saved = try JSONDecoder().decode(SetupJournal.self, from: raw)
+            guard let cid = saved.cid, let fw = saved.firmwareHash, let router = saved.routerHash,
+                  let profile = saved.installerProfile, let usb = saved.adbSerial else { return }
+            id = saved.id; directory = URL(fileURLWithPath: saved.directory).standardizedFileURL; serial = usb
+            try require(saved.intent == nil && UUID(uuidString: id) != nil &&
+                directory.deletingLastPathComponent() == root.appendingPathComponent("SetupBackups").standardizedFileURL &&
+                UUID(uuidString: directory.lastPathComponent) != nil, "Некорректный журнал подготовки")
+            policy = [cid, profile, fw, router]; stage = saved.remoteStage; journalPath = saved.remoteJournal
+        }
+        let paths = try SetupRemotePaths(id: id, installRequested: true, stage: stage, journal: journalPath)
+        let installerBytes = try Data(contentsOf: assets.appendingPathComponent("setup-agent.sh"))
+        let manifest = try JSONDecoder().decode([String: String].self, from: Data(contentsOf: assets.appendingPathComponent("SHA256.json")))
+        try require(manifest["setup-agent.sh"] == digest(installerBytes), "Повреждён установщик подготовки")
+        let adb = ADBClient(binary: assets.appendingPathComponent("adb"), runner: runner)
+        guard (try? adb.discovery().readyUSBSerials.contains(serial)) == true else { return }
+        let script = String(decoding: installerBytes, as: UTF8.self)
+        let command = "sh -c " + shellQuote(script) + " -- " + (["--verify-not-started", paths.stage] + policy).map(shellQuote).joined(separator: " ")
+        guard let answer = try? adb.shellResult(serial, command, timeout: 25), answer.status == 0,
+              CommandText.decode(answer.stdout).trimmingCharacters(in: .whitespacesAndNewlines) == "INSTALL_NOT_STARTED " + paths.stage else { return }
+        try require(try DeviceBackups.smallFile(pending, maximum: 65536) == raw, "Журнал подготовки изменился во время проверки; его данные сохранены")
+        try savePrivate(raw, directory.appendingPathComponent("setup-not-started.json"))
+        try savePrivate(answer.stdout, directory.appendingPathComponent("not-started-verification.txt"))
+        try fm.removeItem(at: pending)
+        update("Предыдущая попытка остановилась до установки. Её журнал сохранён; подготовку можно повторить.", 0.05)
+    }
     /// A new clean install must not silently resume an earlier non-clean intent.
     /// Close only an already-applied, unchanged installation with its own saved
     /// installer, and preserve its journal before creating the new transaction.
@@ -44,6 +140,9 @@ extension OnboardingEngine {
             throw IMEIError.message("Не удалось прочитать прежний журнал подготовки. Чистая установка не начиналась.")
         }
         if object["cleanComponents"] as? Bool == true { return }
+        // Before installer dispatch the requested cleanup mode can still change.
+        // The normal USB path validates the saved device before persisting it.
+        if object["installRequested"] as? Bool == false { return }
         try require(object["installRequested"] as? Bool == true && ["ready", "complete"].contains(object["phase"] as? String ?? ""),
                     "Предыдущая установка ещё не подтвердила готовность. Чистая переустановка не начиналась; её точная стадия и журнал сохранены.")
         let id: String, cid: String, firmware: String, router: String, profile: String, directory: URL
@@ -166,7 +265,7 @@ extension OnboardingEngine {
         func resume<J: Encodable>(_ journal: J, id: String, directory: URL, cid: String,
                                   firmware: String, router: String, boot: String?) throws -> SetupResult {
             try require(cid.range(of: #"^[0-9a-f]{32}$"#, options: .regularExpression) != nil &&
-                        DeviceBackups.validHash(firmware) && DeviceBackups.validHash(router), "Некорректный журнал завершённой подготовки")
+                        (firmware == "absent" || DeviceBackups.validHash(firmware)) && (router == "absent" || DeviceBackups.validHash(router)), "Некорректный журнал завершённой подготовки")
             let connection = Connection(host: host, port: "2222", keyPath: root.appendingPathComponent("SSH/id_ed25519").path,
                 knownHostsPath: root.appendingPathComponent("SSH/known_hosts").path, skipFirmwareCheck: currentConnection.skipFirmwareCheck)
             try connection.validate()
@@ -236,7 +335,7 @@ extension OnboardingEngine {
         try ComponentCleanup.acknowledge(root: root, setupID: result.setupID)
         update(result.cancelled ? "Очистка отменена до удаления компонентов. Агент и SSH сохранены." : "Подготовка и очистка компонентов завершены. Агент и SSH сохранены.", 1)
         return SetupResult(connection: result.connection, state: nil, identity: result.identity,
-                           firmware: "unknown", suffix: "", componentsCleaned: !result.cancelled)
+                           firmware: "unknown", suffix: "", componentsCleaned: !result.cancelled, cleanupCancelled: result.cancelled)
     }
     /// Caller holds the host operation lock. A responding root USB device is
     /// evaluated before any web login, backup activation or installer mutation.
@@ -270,11 +369,12 @@ extension OnboardingEngine {
             }
         }
         try require(completedBootstrapID == nil || bootstrap != nil, "Журнал подтверждённого ADB отсутствует; установка не запускалась")
-        // A checkbox never changes the mode of a saved operation.
-        let reinstall = saved != nil ? saved!.forceReinstall == true : bootstrap != nil ? bootstrap!.forceReinstall == true : forceReinstall
-        let cleanup = saved != nil ? saved!.cleanComponents == true : bootstrap != nil ? bootstrap!.cleanComponents == true : cleanComponents
+        // Keep a dispatched installation immutable. A pre-install attempt may
+        // adopt an explicitly requested reinstall/cleanup after USB validation.
+        let cleanup = saved?.installRequested == true ? saved!.cleanComponents == true : cleanComponents || saved?.cleanComponents == true || bootstrap?.cleanComponents == true
+        let reinstall = saved?.installRequested == true ? saved!.forceReinstall == true : forceReinstall || cleanup || saved?.forceReinstall == true || bootstrap?.forceReinstall == true
         try require(!cleanup || reinstall, "Некорректный режим незавершённой подготовки")
-        let installFlags = reinstall ? ["--reinstall"] : []
+        let installFlags = cleanup ? ["--clean-reinstall"] : reinstall ? ["--reinstall"] : []
         let adb = ADBClient(binary: assets.appendingPathComponent("adb"), runner: runner)
         let serials: [String]
         do { serials = try adb.discovery().readyUSBSerials }
@@ -287,10 +387,20 @@ extension OnboardingEngine {
         var binding = expected
         var webProof: WebIdentity?
         if !webPassword.isEmpty {
-            try web.login(password: webPassword)
-            webProof = try web.identity(skipFirmwareCheck: true)
-            binding.imeis.insert(webProof!.imei)
-            try require(binding.imeis.count == 1, "Web не совпадает с ожидаемым модемом")
+            var authenticated = false
+            do {
+                try web.login(password: webPassword)
+                authenticated = true
+                webProof = try web.identity(skipFirmwareCheck: true)
+                binding.imeis.insert(webProof!.imei)
+                try require(binding.imeis.count == 1, "Web не совпадает с ожидаемым модемом")
+            } catch let error as URLError where [.cannotConnectToHost, .cannotFindHost, .networkConnectionLost, .notConnectedToInternet, .timedOut, .dataNotAllowed].contains(error.code) {
+                update("Штатный Web недоступен. Проверяю устройство через уже работающий root USB ADB.", 0.1)
+            } catch ModemWebError.malformedResponse where authenticated {
+                // B04 can authenticate Web yet omit device_info. An independent
+                // USB identity may establish access; it cannot authorize a Web restore.
+                update("Web не вернул сведения об устройстве. Проверяю уже работающий root USB ADB.", 0.1)
+            }
         }
         var matches: [(String, DiagnosticDeviceProof)] = []
         for serial in serials {
@@ -322,7 +432,7 @@ extension OnboardingEngine {
             try require(fresh.identity == proof.identity && fresh.routerHash == proof.routerHash && fresh.bootID == proof.bootID, "Устройство, загрузка или компоненты изменились; подготовка остановлена")
         }
         if let saved {
-            try require(saved.cid == proof.identity.cid && saved.bootID == proof.bootID && saved.firmwareHash == proof.identity.firmwareHash && saved.routerHash == proof.routerHash && saved.installerProfile == profile, "Незавершённая подготовка относится к другому устройству, загрузке или компонентам")
+            try require(saved.cid == proof.identity.cid && (!saved.installRequested || saved.bootID == proof.bootID) && saved.firmwareHash == proof.identity.firmwareHash && saved.routerHash == proof.routerHash && saved.installerProfile == profile, "Незавершённая подготовка относится к другому устройству, загрузке или компонентам")
         }
         if saved == nil && !reinstall {
             let own = Connection(host: host, port: "2222", keyPath: root.appendingPathComponent("SSH/id_ed25519").path,
@@ -364,16 +474,17 @@ extension OnboardingEngine {
             try require(report.transport == "adb" && report.bindingStrength == "full" && report.outcome != "cancelled", "Исследование не подтвердило привязку устройства; установка не запускалась")
             try verify()
         }
-        let id = saved?.id ?? UUID().uuidString.lowercased()
+        let rebindBoot = saved != nil && saved!.installRequested == false && saved!.bootID != proof.bootID
+        let id = rebindBoot ? UUID().uuidString.lowercased() : saved?.id ?? UUID().uuidString.lowercased()
         let directory = root.appendingPathComponent("SetupBackups/" + id)
-        let paths = try SetupRemotePaths(id: id, installRequested: saved?.installRequested ?? false, stage: saved?.remoteStage, journal: saved?.remoteJournal)
+        let paths = try SetupRemotePaths(id: id, installRequested: saved?.installRequested ?? false, stage: rebindBoot ? nil : saved?.remoteStage, journal: rebindBoot ? nil : saved?.remoteJournal)
         let stage = paths.stage
         let remoteJournal = paths.journal
         let policy = AccessIdentity.policyArguments(proof, profile: profile)
         let owner = ([id] + policy).joined(separator: " ")
-        var journal = saved ?? AccessSetupJournal(id: id, cid: proof.identity.cid, bootID: proof.bootID, firmwareHash: proof.identity.firmwareHash,
+        var journal = (rebindBoot ? nil : saved) ?? AccessSetupJournal(id: id, cid: proof.identity.cid, bootID: proof.bootID, firmwareHash: proof.identity.firmwareHash,
             routerHash: proof.routerHash, installerProfile: profile, directory: directory.path, adbSerial: serial)
-        if saved == nil { journal.forceReinstall = reinstall; journal.cleanComponents = cleanup }
+        if !journal.installRequested { journal.forceReinstall = reinstall; journal.cleanComponents = cleanup }
         let key: URL
         if journal.installRequested {
             let phase = try adb.shell(serial, "cat " + shellQuote(remoteJournal + "/state"))
@@ -400,6 +511,15 @@ extension OnboardingEngine {
             try verify()
             try secureDirectory(directory)
             if let bootstrap { try saveJSON(bootstrap, URL(fileURLWithPath: bootstrap.directory).appendingPathComponent("bootstrap-result.json")) }
+            if let saved, !saved.installRequested,
+               rebindBoot || saved.forceReinstall != journal.forceReinstall || saved.cleanComponents != journal.cleanComponents {
+                let raw = try DeviceBackups.smallFile(pending, maximum: 65536)
+                let previous = try JSONDecoder().decode(AccessSetupJournal.self, from: raw)
+                try require(previous.id == saved.id && previous.bootID == saved.bootID && !previous.installRequested,
+                            "Журнал изменился перед продолжением подготовки")
+                try savePrivate(raw, URL(fileURLWithPath: saved.directory).appendingPathComponent("setup-before-resume-" + UUID().uuidString.lowercased() + ".json"))
+                update("Предыдущая попытка остановилась до установки. Её журнал сохранён; продолжаю подготовку проверенного устройства.", 0.55)
+            }
             // Replace the old activation journal only after preflight succeeds.
             // Until this atomic save, restore/direct intents still prevent replay.
             try saveJSON(journal, pending)

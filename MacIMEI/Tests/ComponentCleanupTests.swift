@@ -8,12 +8,13 @@ private let testBoot = "12345678-1234-1234-1234-123456789abc"
 private let archive = Data("ARCHIVE_PRIVATE_PROFILE_CANARY".utf8)
 private final class Remote: RemoteTransport {
     var calls = [String](), ready = false, complete = false, cleanCalls = 0, prepareCalls = 0, pendingStatus = false, changeBoot = false, failClean = false
+    var firmwareHash = ModemEngine.firmwareHash
     var onClean: (() throws -> Void)?
     func run(_ command: String, input: Data?, timeout: TimeInterval) throws -> CommandResult {
         calls.append(command)
         let text: String
         if command == AccessIdentity.command {
-            text = "\(ModemEngine.firmwareHash)  /firmware/image/modem.b16\n\(ModemEngine.routerHash)  /usr/bin/diag-router\n\(testCID)\n\(changeBoot ? "23456789-2345-2345-2345-23456789abcd" : testBoot)\n"
+            text = "\(firmwareHash)  /firmware/image/modem.b16\n\(ModemEngine.routerHash)  /usr/bin/diag-router\n\(testCID)\n\(changeBoot ? "23456789-2345-2345-2345-23456789abcd" : testBoot)\n"
         } else {
             try check(command.hasPrefix("sh -s -- ") && command.utf8.count < 1024 && input?.starts(with: Data("#!/bin/sh".utf8)) == true, "Helper must use short SSH argv and stdin source")
             let arguments = command.components(separatedBy: " -- ").last ?? ""
@@ -45,7 +46,8 @@ private final class Stream: BackupStreamTransport {
 private final class Fixture {
     let root: URL, resources: URL, connection: Connection, id = UUID().uuidString.lowercased()
     let remote = Remote(), stream = Stream()
-    init() throws {
+    init(firmwareHash: String = ModemEngine.firmwareHash) throws {
+        remote.firmwareHash = firmwareHash
         root = URL(fileURLWithPath: "/private/tmp").appendingPathComponent("clean-host-" + UUID().uuidString.lowercased()); try secureDirectory(root)
         resources = root.appendingPathComponent("Resources"); try secureDirectory(resources); try secureDirectory(resources.appendingPathComponent("Onboarding"))
         let source = try Data(contentsOf: URL(fileURLWithPath: "Resources/Onboarding/clean-components.sh"))
@@ -53,7 +55,7 @@ private final class Fixture {
         for name in ["key", "hosts"] { try savePrivate(Data("fixture".utf8), root.appendingPathComponent(name)) }
         connection = .init(host: "192.0.2.1", port: "2222", keyPath: root.appendingPathComponent("key").path, knownHostsPath: root.appendingPathComponent("hosts").path)
         try secureDirectory(root.appendingPathComponent("SetupBackups")); try secureDirectory(root.appendingPathComponent("SetupBackups/" + id))
-        try ComponentCleanup.schedule(root: root, connection: connection, setupID: id, setupDirectory: root.appendingPathComponent("SetupBackups/" + id), expectedIdentity: .init(cid: testCID, firmwareHash: ModemEngine.firmwareHash), transport: remote)
+        try ComponentCleanup.schedule(root: root, connection: connection, setupID: id, setupDirectory: root.appendingPathComponent("SetupBackups/" + id), expectedIdentity: .init(cid: testCID, firmwareHash: firmwareHash), transport: remote)
         remote.calls.removeAll()
     }
     var cleanup: ComponentCleanup { .init(root: root, resources: resources, connection: connection, sshFactory: { _ in self.remote }, streamer: stream) }
@@ -69,6 +71,45 @@ private final class Fixture {
    try check(ComponentCleanup.hasPending(root:f.root),"Caller ack required")
    _ = try f.cleanup.run();try check(f.stream.calls==1 && f.remote.cleanCalls==1,"Completed retry replays mutation")
    try ComponentCleanup.acknowledge(root:f.root,setupID:f.id);try check(!ComponentCleanup.hasPending(root:f.root),"Ack")
+  }
+  test("observed missing firmware permits backed-up cleanup without fabricating a hash") {
+   let f=try Fixture(firmwareHash:"absent")
+   let result=try f.cleanup.run()
+   try check(result.identity.firmwareHash=="absent" && f.remote.cleanCalls==1 && f.stream.calls==1,"B04 cleanup rejected observed absence")
+   try ComponentCleanup.acknowledge(root:f.root,setupID:f.id)
+  }
+  test("new boot archives only undispatched cleanup while preserving its exact journal and backup") {
+   for scenario in ["prepared", "verified", "same-boot", "wrong-cid", "wrong-firmware", "wrong-router", "wrong-host", "corrupt-backup", "dispatched", "complete", "foreign-setup"] {
+    let f=try Fixture(firmwareHash:"absent")
+    var plan=try readJSON(ComponentCleanupPlan.self,ComponentCleanup.pendingURL(f.root))
+    let directory=URL(fileURLWithPath:plan.backupDirectory)
+    try DeviceBackups.directory(f.root.appendingPathComponent("ComponentBackups"),create:true)
+    try DeviceBackups.directory(directory,create:true)
+    if ["verified","corrupt-backup","dispatched","complete"].contains(scenario) {
+     plan.phase=scenario=="dispatched" ? "clean-requested" : scenario=="complete" ? "complete" : "backup-verified"
+     plan.archiveSha=digest(archive);plan.archiveBytes=Int64(archive.count)
+     try savePrivate(scenario=="corrupt-backup" ? Data("corrupt".utf8) : archive,directory.appendingPathComponent("components.tar"))
+     try saveJSON(plan,ComponentCleanup.pendingURL(f.root))
+    }
+    if scenario=="foreign-setup" {try savePrivate(try JSONSerialization.data(withJSONObject:["id":"foreign","phase":"complete","cleanComponents":true,"forceReinstall":true]),f.root.appendingPathComponent("setup-pending.json"))}
+    let original=try Data(contentsOf:ComponentCleanup.pendingURL(f.root))
+    var proof=DiagnosticDeviceProof(identity:plan.identity,routerHash:plan.routerHash,bootID:scenario=="same-boot" ? testBoot : "23456789-2345-2345-2345-23456789abcd")
+    if scenario=="wrong-cid" {proof.identity.cid=String(repeating:"b",count:32)}
+    if scenario=="wrong-firmware" {proof.identity.firmwareHash=String(repeating:"c",count:64)}
+    if scenario=="wrong-router" {proof.routerHash=String(repeating:"d",count:64)}
+    var connection=f.connection;if scenario=="wrong-host" {connection.host="192.0.2.2"}
+    let eligible=try ComponentCleanup.undispatchedRecoveryPlan(root:f.root)
+    try check((eligible != nil) == !["dispatched","complete"].contains(scenario),"Only predispatch metadata is eligible: \(scenario)")
+    var retired=false
+    do {retired=try ComponentCleanup.archiveUndispatchedAfterReboot(root:f.root,connection:connection,proof:proof)} catch {}
+    let allowed=["prepared","verified"].contains(scenario)
+    try check(retired==allowed && ComponentCleanup.hasPending(root:f.root) == !allowed,"Retirement eligibility: \(scenario)")
+    let history=try FileManager.default.contentsOfDirectory(at:directory,includingPropertiesForKeys:nil).filter{$0.lastPathComponent.hasPrefix("cleanup-before-reset-")}
+    try check(history.count == (allowed ? 1 : 0),"Unexpected retirement history: \(scenario)")
+    try check(try Data(contentsOf:allowed ? history[0] : ComponentCleanup.pendingURL(f.root)) == original,"Original journal bytes lost: \(scenario)")
+    if plan.archiveSha != nil {try check(try Data(contentsOf:directory.appendingPathComponent("components.tar")) == (scenario=="corrupt-backup" ? Data("corrupt".utf8) : archive),"Backup changed: \(scenario)")}
+    try check(f.remote.calls.isEmpty && f.stream.calls==0,"Metadata retirement touched the modem: \(scenario)")
+   }
   }
   test("incorrect stream receipt prevents deletion") { let f=try Fixture();f.stream.corruptReceipt=true;try rejects{_ = try f.cleanup.run()};try check(f.remote.cleanCalls==0,"Clean dispatched") }
   test("actual file hash independently verified") { let f=try Fixture();f.stream.corruptData=true;try rejects{_ = try f.cleanup.run()};try check(f.remote.cleanCalls==0,"Clean dispatched") }

@@ -14,6 +14,8 @@ private func reject(_ block: () throws -> Void) throws { do { try block() } catc
         try check(BundledAgent.description(for: String(repeating: "0", count: 64)) == "Другая сборка / свой агент", "Unknown agent must remain unknown")
         try check(BundledAgent.supportedUpgradeHashes.contains("c50ba6b7ac6f77c581c2b657ba769f976d8d20aca0c6b7d08c9254ef2de9d346"), "Previous public agent upgrade lost")
         try check(BundledAgent.description(for: "c50ba6b7ac6f77c581c2b657ba769f976d8d20aca0c6b7d08c9254ef2de9d346").hasPrefix("2.8.0"), "Previous public agent unknown")
+        let priorAgent = "0ab7839ccd1b5930d8dcc74665f1ccfc30d0ad74746f73130760da66343c6659"
+        try check(BundledAgent.description(for: priorAgent).hasPrefix("2.9.0-esim.9") && BundledAgent.supportedUpgradeHashes.contains(priorAgent), "Previous .9 agent must remain recognized and upgradeable")
         let original = try Data(contentsOf: bundled)
         let temp = fm.temporaryDirectory.appendingPathComponent("zte-agent-candidate-" + UUID().uuidString)
         try secureDirectory(temp); defer { try? fm.removeItem(at: temp) }

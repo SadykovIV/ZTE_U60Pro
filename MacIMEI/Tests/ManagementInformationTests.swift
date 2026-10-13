@@ -54,7 +54,7 @@ private final class Stub: RemoteTransport {
             identities += 1
             return CommandResult(status:0,stdout:Data(("ZTE_SSH_READ_V1\n0\nLinux\naarch64\n" + identity.cid + "\n" + (reboot && identities > 1 ? "3a2fb1c5-1bbf-4d3b-92a8-3daaf5510601" : boot) + "\n" + ModemEngine.firmwareHash + "\n" + ModemEngine.routerHash + "\n").utf8),stderr:Data())
         }
-        if command.hasPrefix("sha256sum /firmware") || command == DiagnosticTransportSelector.identityCommand {
+        if command == AccessIdentity.command || command.hasPrefix("sha256sum /firmware") || command == DiagnosticTransportSelector.identityCommand {
             identities += 1
             return CommandResult(status:0,stdout:Data((ModemEngine.firmwareHash+" /firmware/image/modem.b16\n"+ModemEngine.routerHash+" /usr/bin/diag-router\n"+identity.cid+"\n"+(reboot && identities>1 ? "3a2fb1c5-1bbf-4d3b-92a8-3daaf5510601" : boot)+"\n").utf8),stderr:Data())
         }

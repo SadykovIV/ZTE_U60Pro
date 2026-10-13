@@ -39,9 +39,10 @@ release_atomic_lock() {
 # ATOMIC_LOCK_END
 generation() { printf '%s\n' "$1" | grep -Eq '^g-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; }
 identity() {
- [ "$(id -u)" = 0 ] && [ "$(uname -m)" = aarch64 ] || fail ROOT_ARCH
+ [ "$(id -u)" = 0 ] && [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ] || fail ROOT_ARCH
  [ "$(cat /sys/block/mmcblk0/device/cid)" = "$CID" ] && [ "$(cat /proc/sys/kernel/random/boot_id)" = "$BOOT" ] || fail DEVICE_CHANGED
- [ "$(sha /firmware/image/modem.b16)" = 604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263 ] || fail FIRMWARE
+ # The pinned runtime carries its own musl and libraries. It needs this package
+ # ABI and real chroot/filesystem capabilities, not a modem-firmware hash.
  grep -qx "DISTRIB_RELEASE='23.05.4'" /etc/openwrt_release && grep -qx "DISTRIB_ARCH='aarch64_cortex-a53'" /etc/openwrt_release || fail PLATFORM
  [ ! -e /tmp/fota_install_processing ] || fail FIRMWARE_UPDATE
 }
@@ -336,6 +337,9 @@ case "$ACTION" in inspect|read-feeds)
  read_identity;owned_layout;state
  if [ "$ACTION" = read-feeds ];then print_feeds;fi
  report;read_identity;exit 0;;
+preflight)
+ [ "$#" = 0 ] || fail ARGUMENTS
+ platform;state;read_identity;printf 'OPKG_PREFLIGHT_OK\n';exit 0;;
 esac
 platform;state
 check_supervisor

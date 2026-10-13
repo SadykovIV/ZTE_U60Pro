@@ -23,7 +23,9 @@ private final class SSH: RemoteTransport {
         if thrown { throw IMEIError.message("Файл SSH не найден") }
         if status != 0 { return CommandResult(status: status, stdout: Data(), stderr: Data(message.utf8)) }
         let out: String
-        if command.contains(DiagnosticTransportSelector.identityCommand) {
+        if command == SSHReadProof.command {
+            out = "ZTE_SSH_READ_V1\n0\nLinux\naarch64\n\(observedCID)\n\(changeAfterQuery && queryCount > 0 ? "ffffffff-ffff-ffff-ffff-ffffffffffff" : boot)\n\(b02)\n\(ModemEngine.routerHash)\n"
+        } else if command.contains(DiagnosticTransportSelector.identityCommand) {
             out = proof(observedCID, web: command.contains("device_info"), changedBoot: changeAfterQuery && queryCount > 0)
         } else {
             queryCount += 1

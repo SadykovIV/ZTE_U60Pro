@@ -24,12 +24,12 @@ struct FirmwareSupportResult: Sendable {
     let sha256: String
 }
 
-/// Explicit, read-only export. It never loads an NV helper, agent credentials,
-/// firmware allowlist, remote lock, or a fallback transport.
+/// Explicit research export over the selected SSH session. Temporary DIAG/QMI
+/// helpers read protocol metadata without exporting values or changing radio/NV state.
 final class FirmwareSupportCollector {
-    static let helperSHA256 = "8270fd3811ec49eb4f52321662ed78618f55572ac0ee7b3803c68dc3baf8423c"
+    static let helperSHA256 = "9c6c2ad48216b7be268fdb777a541e8fac0c3ed83e02c483247163f64e3f13ce"
     static let requiredIDs = ["ui", "english", "chinese", "init"]
-    static let componentIDs = ["ipacm", "ipa_switch", "network_init", "netifd", "procd", "ubusd", "ubus_cli", "uci_cli", "lua_cli", "mdm", "qcril", "diag_router", "libdiag", "libzte_sdk", "libzte_gesture", "libzte_log", "libfreetype", "libpng", "libdrm", "libgcc", "libc", "libuci", "libubus", "libubox", "libblobmsg_json", "libjson_c", "liblua", "lua_uci", "lua_jsonc"]
+    static let componentIDs = ["ipacm", "ipa_switch", "network_init", "netifd", "procd", "ubusd", "ubus_cli", "uci_cli", "lua_cli", "mdm", "qcril", "diag_router", "libdiag", "libzte_sdk", "libzte_gesture", "libzte_log", "libfreetype", "libpng", "libdrm", "libgcc", "libc", "libuci", "libubus", "libubox", "libblobmsg_json", "libjson_c", "liblua", "lua_uci", "lua_jsonc", "firmware_mdt", "firmware_b16", "libqcril_nr", "libqcril_nrril", "libzte_qmi", "libqmiservices", "libqmi_cci", "libqmi_csi", "libqmi_common", "libqmi_encdec", "libqmi_sap", "libqrtr", "libqsocket", "libglib", "libgthread", "liblog", "libtime_genoff", "libsqlite3"]
     static let allIDs = requiredIDs + ["original_ui", "original_english", "original_chinese", "original_init", "font_zhengyuan", "font_roboto", "font_oswald"] + componentIDs
     static let sources = ["ui": "/usr/bin/zte_topsw_devui", "english": "/usr/ui/language/English.ini", "chinese": "/usr/ui/language/Chinese.ini", "init": "/etc/init.d/zte_topsw_devui",
         "original_ui": "/data/zte-imei-screen-ru/backup/zte_topsw_devui", "original_english": "/data/zte-imei-screen-ru/backup/English.ini", "original_chinese": "/data/zte-imei-screen-ru/backup/Chinese.ini", "original_init": "/data/zte-imei-screen-ru/backup/zte_topsw_devui.init",
@@ -62,7 +62,25 @@ final class FirmwareSupportCollector {
         "libjson_c": "/usr/lib/libjson-c.so.5 | /usr/lib/libjson-c.so | /lib/libjson-c.so.5",
         "liblua": "/usr/lib/liblua.so.5.1 | /usr/lib/liblua.so | /usr/lib/liblua5.1.so",
         "lua_uci": "/usr/lib/lua/uci.so",
-        "lua_jsonc": "/usr/lib/lua/luci/jsonc.so | /usr/lib/lua/jsonc.so"]
+        "lua_jsonc": "/usr/lib/lua/luci/jsonc.so | /usr/lib/lua/jsonc.so",
+        "firmware_mdt": "/firmware/image/modem.mdt",
+        "firmware_b16": "/firmware/image/modem.b16",
+        "libqcril_nr": "/usr/lib/libqcrilNr.so | /lib/libqcrilNr.so",
+        "libqcril_nrril": "/usr/lib/libqcrilNrril.so.1 | /usr/lib/libqcrilNrril.so | /lib/libqcrilNrril.so.1 | /lib/libqcrilNrril.so",
+        "libzte_qmi": "/usr/lib/libzteqmi.so | /lib/libzteqmi.so",
+        "libqmiservices": "/usr/lib/libqmiservices.so | /lib/libqmiservices.so",
+        "libqmi_cci": "/usr/lib/libqmi_cci.so.1 | /usr/lib/libqmi_cci.so | /lib/libqmi_cci.so.1 | /lib/libqmi_cci.so",
+        "libqmi_csi": "/usr/lib/libqmi_csi.so.1 | /usr/lib/libqmi_csi.so | /lib/libqmi_csi.so.1 | /lib/libqmi_csi.so",
+        "libqmi_common": "/usr/lib/libqmi_common_so.so.1 | /usr/lib/libqmi_common_so.so | /lib/libqmi_common_so.so.1 | /lib/libqmi_common_so.so",
+        "libqmi_encdec": "/usr/lib/libqmi_encdec.so.1 | /usr/lib/libqmi_encdec.so | /lib/libqmi_encdec.so.1 | /lib/libqmi_encdec.so",
+        "libqmi_sap": "/usr/lib/libqmi_sap.so.1 | /usr/lib/libqmi_sap.so | /lib/libqmi_sap.so.1 | /lib/libqmi_sap.so",
+        "libqrtr": "/usr/lib/libqrtr.so.1 | /usr/lib/libqrtr.so | /lib/libqrtr.so.1 | /lib/libqrtr.so",
+        "libqsocket": "/usr/lib/libqsocket.so.1 | /usr/lib/libqsocket.so | /lib/libqsocket.so.1 | /lib/libqsocket.so",
+        "libglib": "/usr/lib/libglib-2.0.so.0 | /usr/lib/libglib-2.0.so | /lib/libglib-2.0.so.0 | /lib/libglib-2.0.so",
+        "libgthread": "/usr/lib/libgthread-2.0.so.0 | /usr/lib/libgthread-2.0.so | /lib/libgthread-2.0.so.0 | /lib/libgthread-2.0.so",
+        "liblog": "/usr/lib/liblog.so.0 | /usr/lib/liblog.so | /lib/liblog.so.0 | /lib/liblog.so",
+        "libtime_genoff": "/usr/lib/libtime_genoff.so.1 | /usr/lib/libtime_genoff.so | /lib/libtime_genoff.so.1 | /lib/libtime_genoff.so",
+        "libsqlite3": "/usr/lib/libsqlite3.so | /lib/libsqlite3.so"]
     static let factKeys: Set<String> = ["uid", "os", "architecture", "firmware", "inner", "openwrt_version", "target", "agent_present", "agent_sha256", "agent_running_count", "agent_mode", "agent_mapped_matches_disk", "http_health_status", "http_capabilities_status", "http_dashboard_status", "ui_mounts"]
     static let metadataLimit = 65_536
     static let totalLimit: Int64 = 600 * 1024 * 1024
@@ -83,11 +101,13 @@ final class FirmwareSupportCollector {
     let selectionIsCurrent: @Sendable () -> Bool
     let update: @Sendable (String, Double) -> Void
     let researchSurvey: ((ResearchCancellation) throws -> FirmwareResearchReport)?
+    let radioSurvey: ((Bool, @escaping @Sendable () -> Bool) throws -> [String: Data])?
 
     init(root: URL, resources: URL, connection: Connection, session: ReadOnlyChannelSession,
          remote: RemoteTransport? = nil, streamer: BackupStreamTransport? = nil, secrets: [String] = [],
          selectionIsCurrent: @escaping @Sendable () -> Bool = { true },
          researchSurvey: ((ResearchCancellation) throws -> FirmwareResearchReport)? = nil,
+         radioSurvey: ((Bool, @escaping @Sendable () -> Bool) throws -> [String: Data])? = nil,
          update: @escaping @Sendable (String, Double) -> Void = { _, _ in }) throws {
         try require(session.mode == .ssh && session.diagnosticSession?.transport == "ssh" &&
                     session.sshEndpoint == ConnectionRouter.sshEndpoint(connection), "Для сбора данных требуется выбранное SSH-подключение")
@@ -95,7 +115,7 @@ final class FirmwareSupportCollector {
         self.root = root; self.resources = resources; self.connection = connection; self.selectedProof = proof
         self.remote = remote ?? SSHTransport(connection); self.streamer = streamer ?? SSHBackupStreamTransport(connection)
         self.secrets = secrets; self.selectionIsCurrent = selectionIsCurrent; self.update = update
-        self.researchSurvey = researchSurvey
+        self.researchSurvey = researchSurvey; self.radioSurvey = radioSurvey
     }
 
     static func parseSnapshot(_ data: Data) throws -> FirmwareSupportSnapshot {
@@ -150,6 +170,39 @@ final class FirmwareSupportCollector {
         }
     }
 
+    static let radioLinePatterns = [
+        #"^PATH (firmware_mdt|firmware_b16|mdm|diag_router|modem_segment_b[0-9]{2}) state=(missing|not_assessed|symlink|not_regular|unreadable)$"#,
+        #"^PATH (firmware_mdt|firmware_b16|mdm|diag_router|modem_segment_b[0-9]{2}) state=present type=regular uid=[0-9]+ mode=[0-7]{3,4} bytes=[0-9]+ sha256=([0-9a-f]{64}|not_assessed)$"#,
+        #"^NODE (diag|diag_tty|at_mdm0|at_mdm1|ffs_diag|ffs_diag_1|ffs_diag_2|diag_socket) type=(missing|not_assessed|symlink|character|block|socket|directory|other) uid=([0-9]+|not_assessed) mode=([0-7]{3,4}|not_assessed)$"#,
+        #"^DIAG_SOCKET (abstract_diag|abstract_diag_socket|filesystem_diag) flags=[0-9A-Fa-f]+ type=[0-9A-Fa-f]+ state=[0-9A-Fa-f]+$"#,
+        #"^DIAG_SOCKETS state=(observed|not_assessed) count=[0-9]+$"#,
+        #"^SLOT (mdm_get_sim_info|mdm_get_current_slot_info|uci_active_card_id|uci_active_slot_temp) value=([0-3]|not_assessed)$"#,
+        #"^QRTR service=[0-9]{1,10} version=[0-9]{1,10} instance=[0-9]{1,10} node=[0-9]{1,10} port=[0-9]{1,10}$"#,
+        #"^QRTR_INVENTORY state=(observed|not_assessed) count=[0-9]+$"#,
+        #"^PARTITION name=(modem|modem_a|modem_b|modemst1|modemst2|fsg|fsc|persist|userdata|rawdump|system|system_b|ztedata|ztedata_b|zterw|zteoverlay) block=mmcblk[0-9]p[0-9]+ sectors=([0-9]+|not_assessed) start=([0-9]+|not_assessed) ro=([01]|not_assessed)$"#,
+        #"^MOUNT (data|firmware) mode=(ro|rw|unknown) type=(ext4|squashfs|ubifs|tmpfs|overlay|vfat|unknown)$"#,
+        #"^POLICY nv_read=0 apdu_sent=0 radio_changed=0 profile_changed=0 private_identifiers_exported=0$"#
+    ]
+    static func passiveRadioOutput(_ reply: CommandResult) -> Data {
+        let invalid = Data("status=not_assessed reason=invalid_passive_output\n".utf8)
+        guard reply.status == 0, reply.stdout.count <= 131072, reply.stderr.isEmpty,
+              let text = String(data: reply.stdout, encoding: .utf8),
+              text.utf8.allSatisfy({ $0 == 10 || ($0 >= 32 && $0 <= 126) }), text.hasSuffix("\n") else { return invalid }
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false).dropLast().map(String.init)
+        guard lines.first == "FIRMWARE_RADIO_V1", lines.last == "FIRMWARE_RADIO_END" else { return invalid }
+        let body = Array(lines.dropFirst().dropLast())
+        guard body.allSatisfy({ line in radioLinePatterns.contains { line.range(of: $0, options: .regularExpression) != nil } }),
+              body.filter({ $0.hasPrefix("POLICY ") }).count == 1 else { return invalid }
+        return reply.stdout
+    }
+    private func passiveRadio(_ helper: Data, cancelled: @Sendable () -> Bool) throws -> Data {
+        do { return Self.passiveRadioOutput(try remote.run("sh -s -- radio", input: helper, timeout: 90)) }
+        catch {
+            try require(!cancelled(), "Сбор данных для адаптации отменён")
+            return Data("status=not_assessed reason=passive_transport_failure\n".utf8)
+        }
+    }
+
     private func quickProof() throws -> SSHReadProof {
         do {
             let reply = try remote.run(SSHReadProof.quickCommand, input: nil, timeout: 30)
@@ -168,7 +221,10 @@ final class FirmwareSupportCollector {
         let directory = resources.appendingPathComponent("FirmwareSupport")
         let data = try DeviceBackups.smallFile(directory.appendingPathComponent("collect.sh"), maximum: 128 * 1024, publicResource: true)
         let manifest = try readJSON([String: String].self, directory.appendingPathComponent("SHA256.json"))
-        try require(digest(data) == Self.helperSHA256 && manifest["collect.sh"] == Self.helperSHA256,
+        let entries: Set<String> = ["collect.sh", "zte-support-nv", "zte-support-config", "zte-support-qmi",
+                                    "support-helpers.json", "radio-inspect-build.json", "support-sources.tar.gz", "NOTICE-QMI.txt", "README.txt"]
+        try require(Set(manifest.keys) == entries && manifest.values.allSatisfy(DeviceBackups.validHash) &&
+                    digest(data) == Self.helperSHA256 && manifest["collect.sh"] == Self.helperSHA256,
                     "Повреждён встроенный сборщик данных для адаптации")
         return data
     }
@@ -191,6 +247,7 @@ final class FirmwareSupportCollector {
         let selectedQuick = SSHReadProof(uid: selectedProof.uid, system: selectedProof.system, architecture: selectedProof.architecture, cid: selectedProof.cid, bootID: selectedProof.bootID)
         try selectedQuick.verify(beforeProof)
         let before = try inspect(script)
+        var radioPayloads = ["passive-before.txt": try passiveRadio(script, cancelled: cancelled)]
         var entries = [[String: String]](), total: Int64 = 0
         let present = before.files.filter { $0.status == "present" && ($0.bytes ?? Int64.max) <= Self.limit($0.id) }
         for (index, item) in present.enumerated() {
@@ -226,6 +283,19 @@ final class FirmwareSupportCollector {
         }
         try checkCancelled()
         try Self.verifyResearch(research, proof: beforeProof)
+        try require(selectionIsCurrent(), "Настройки подключения изменились. Подключитесь к выбранному модему заново.")
+        update("Читаю ответы DIAG и QMI для адаптации…", 0.90)
+        let nativeRadio: [String: Data]
+        if beforeProof.architecture != "aarch64" {
+            nativeRadio = ["native-status.txt": Data("status=not_assessed reason=architecture_unsupported\n".utf8)]
+        } else if let radioSurvey { nativeRadio = try radioSurvey(beforeProof.uid == "0", cancelled) }
+        else { nativeRadio = try FirmwareRadioSupport.collect(resources: resources, remote: remote, root: beforeProof.uid == "0", cancelled: cancelled) }
+        for (name, data) in nativeRadio {
+            try require((["native-status.txt"] + FirmwareRadioSupport.probes.map { $0.name + ".txt" }).contains(name) && data.count <= 131072, "Некорректный ответ сбора данных для адаптации")
+            radioPayloads[name] = data
+        }
+        try checkCancelled()
+        radioPayloads["passive-after.txt"] = try passiveRadio(script, cancelled: cancelled)
         let researchPayloads = try FirmwareResearchArchive.textPayloads(research, secrets: secrets)
         update("Проверяю неизменность файлов и SSH-сеанса…", 0.92)
         let after = try inspect(script), afterProof = try quickProof()
@@ -249,14 +319,17 @@ final class FirmwareSupportCollector {
             try secureDirectory(folder.appendingPathComponent("research/" + payload.path).deletingLastPathComponent())
             try add(payload.data, "research/" + payload.path)
         }
+        try secureDirectory(folder.appendingPathComponent("radio"))
+        for (name, data) in radioPayloads { try add(data, "radio/" + name) }
         var elf = [String: [String: String]]()
         for id in ["ui", "original_ui"] + Self.componentIDs where present.contains(where: { $0.id == id }) {
             let file = try DeviceBackups.openFile(filesRoot.appendingPathComponent(id)); defer { try? file.close() }
             elf[id] = Self.elfMetadata(try file.read(upToCount: 64) ?? Data())
         }
         let binding = beforeProof.cid != nil && beforeProof.bootID != nil ? "full" : (beforeProof.cid != nil || beforeProof.bootID != nil ? "partial" : "transport-only")
-        let metadata: [String: Any] = ["schema": 1, "applicationVersion": DiagnosticsContext.version, "applicationBuild": DiagnosticsContext.build,
+        let metadata: [String: Any] = ["schema": 2, "applicationVersion": DiagnosticsContext.version, "applicationBuild": DiagnosticsContext.build,
             "startedAt": started, "finishedAt": ISO8601DateFormatter().string(from: Date()), "complete": complete, "writeAuthorization": "none", "elf": elf,
+            "radio": ["passiveBefore": "radio/passive-before.txt", "passiveAfter": "radio/passive-after.txt", "nativeReports": nativeRadio.keys.sorted(), "temporaryReadHelpers": true, "deviceWrites": false],
             "transport": "ssh", "helperSHA256": Self.helperSHA256, "sources": Self.sources, "bindingStrength": binding,
             "research": ["outcome": research.outcome, "specificationRevision": research.specificationRevision,
                          "specificationSHA256": research.application["probeSpecificationSHA256"] ?? "not-assessed",
@@ -290,8 +363,16 @@ final class FirmwareSupportCollector {
         Missing dependencies remain explicit; complete collection is not proof
         that every component has been adapted or that a function works.
         Fixed firmware files, projected metadata and sanitized activity
-        events are included. No agent startup/password, user configuration, NV, SIM
-        profiles or complete firmware image is collected. No device changes.
+        events are included. Available static modem.mdt/modem.b16 code and the
+        QMI/RIL/DIAG library dependencies are included for offline ABI analysis.
+        radio/ contains passive snapshots before and after temporary native DIAG
+        and QMI reads. The helpers inspect NV550/EFS response status and structure
+        and the current card route; they export no IMEI, ICCID, EID, keys or raw
+        NV/EFS bytes. They do not write NV, send APDUs, switch slots, reset radio,
+        change profiles or install an agent. Temporary SSH helper files are removed.
+        Unsupported modules and incomplete replies remain explicit report states.
+        Agent startup/password, user configuration, SIM profiles and complete
+        storage images are excluded. No persistent device settings are changed.
         SSH continuity compares available observations; unavailable CID or boot
         stays unavailable, and no device identifier is included in this metadata.
         Agent/HTTP states are observations, not a firmware compatibility claim.

@@ -30,6 +30,10 @@ public enum ModemOperation
     ApplyTtl,
     RefreshVpn,
     ImportVpnProfile,
+    ImportVpnConfig,
+    ImportVpnSubscription,
+    UpdateVpnSubscription,
+    DeleteVpnSubscription,
     ActivateVpnProfile,
     RenameVpnProfile,
     DeleteVpnProfile,
@@ -82,6 +86,7 @@ public sealed record DeviceSnapshot(
     string? Firmware = null,
     string? Serial = null,
     string? Imei = null,
+    int? ImeiRecordCount = null,
     string? IpAddress = null,
     string? ConnectionMode = null,
     string? Battery = null,
@@ -116,9 +121,12 @@ public sealed record VpnPageSnapshot(
     IReadOnlyList<string> Profiles,
     string? ActiveProfile,
     IReadOnlyList<VpnProfileSnapshot>? ProfileDetails = null,
-    bool SettingsSupported = false);
+    bool SettingsSupported = false,
+    IReadOnlyList<Features.VpnSubscription>? Subscriptions = null,
+    Features.VpnImportSummary? LastImport = null);
 
-public sealed record VpnProfileSnapshot(string Id, string Name, string Transport, bool Active);
+public sealed record VpnProfileSnapshot(string Id, string Name, string Transport, bool Active, string Protocol = "vless",
+    string? SubscriptionId = null, bool UpdateAvailable = false, bool RemovedFromSubscription = false, IReadOnlyList<string>? Warnings = null);
 
 public sealed record BackupInfo(
     string Id,

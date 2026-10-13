@@ -190,16 +190,50 @@ public sealed partial class OnboardingEngine
         Directory.CreateDirectory(_storage);
         using var localLock = new FileStream(Path.Combine(_storage, "operation.lock"),
             FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
-        if (File.Exists(Path.Combine(_storage, "imei-pending.json")) ||
-            File.Exists(Path.Combine(_storage, "pending.json")) ||
-            File.Exists(Path.Combine(_storage, "system-restore-pending.json")) ||
-            File.Exists(Path.Combine(_storage, "adb-access-pending.json")))
+        // A saved IMEI recovery journal may need SSH access restored. Only an
+        // actively running IMEI operation owns this lock; its journal is preserved.
+        using var imeiLock = new FileStream(Path.Combine(_storage, "imei-operation.lock"),
+            FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+        if (File.Exists(Path.Combine(_storage, "system-restore-pending.json")))
             throw new InvalidOperationException("Сначала завершите незавершённую операцию с модемом.");
 
         RejectReparsePoint(CleanupPendingPath);
-        if (File.Exists(CleanupPendingPath) || Directory.Exists(CleanupPendingPath))
-            return await ResumeComponentCleanupAsync(ct).ConfigureAwait(false);
         var savedPending = await LoadPendingAsync(ct).ConfigureAwait(false);
+        if (File.Exists(CleanupPendingPath) || Directory.Exists(CleanupPendingPath))
+        {
+            if (cleanComponents && await LoadUndispatchedCleanupRecoveryAsync(ct).ConfigureAwait(false) is { } cleanupPlan)
+            {
+                var original = await File.ReadAllBytesAsync(CleanupPendingPath, ct).ConfigureAwait(false);
+                try { return await ResumeComponentCleanupAsync(ct).ConfigureAwait(false); }
+                catch (Exception sshError) when (!ct.IsCancellationRequested && sshError is IOException or InvalidDataException or InvalidOperationException or TimeoutException or SocketException or Renci.SshNet.Common.SshException)
+                {
+                    if (!File.Exists(CleanupPendingPath) || !(await File.ReadAllBytesAsync(CleanupPendingPath, ct).ConfigureAwait(false)).AsSpan().SequenceEqual(original)) throw;
+                    // A component error on a still-proven original boot is not a reset.
+                    DeviceIdentity? currentSsh = null;
+                    try { currentSsh = await AccessIdentity.ReadAsync(CleanupSshFactory?.Invoke() ?? new SshTransport(cleanupPlan.Host, cleanupPlan.Port, cleanupPlan.KeyPath, cleanupPlan.KnownHostsPath), ct).ConfigureAwait(false); }
+                    catch (Exception) when (!ct.IsCancellationRequested) { }
+                    if (currentSsh == new DeviceIdentity(cleanupPlan.Cid, cleanupPlan.FirmwareHash, cleanupPlan.BootId, cleanupPlan.RouterHash)) throw;
+                    try
+                    {
+                        var (_, proof) = await ReadCleanRecoveryUsbAsync(new DeviceIdentity(cleanupPlan.Cid, cleanupPlan.FirmwareHash, cleanupPlan.BootId, cleanupPlan.RouterHash),
+                            savedPending?.WebIdentity, webPassword, backupKeySuffix, ct).ConfigureAwait(false);
+                        if (!await ArchiveUndispatchedCleanupAfterRebootAsync(proof, ct).ConfigureAwait(false)) throw new InvalidDataException("Текущая загрузка совпадает с журналом очистки.");
+                    }
+                    catch (Exception recoveryError) when (!ct.IsCancellationRequested)
+                    { throw new IOException("Продолжение очистки по SSH: " + sshError.Message + ". Восстановление доступа: " + recoveryError.Message, recoveryError); }
+                }
+            }
+            else return await ResumeComponentCleanupAsync(ct).ConfigureAwait(false);
+        }
+        if (File.Exists(Path.Combine(_storage, "adb-access-pending.json")) &&
+            !(cleanComponents && savedPending is { InstallRequested: true, Profile: "linux-arm64-access" }))
+            throw new InvalidOperationException("Сначала завершите включение ADB для диагностики.");
+        if (savedPending is { InstallRequested: true, Phase: "install-requested" } &&
+            await ArchiveVerifiedNotStartedAsync(savedPending, ct).ConfigureAwait(false))
+            savedPending = null;
+        if (cleanComponents && savedPending is { InstallRequested: true, Profile: "linux-arm64-access" } &&
+            await ArchivePreviousBootForCleanAsync(savedPending, webPassword, backupKeySuffix, ct).ConfigureAwait(false))
+            savedPending = null;
         if (cleanComponents && savedPending is { InstallRequested: true, CleanComponents: false, Phase: "ready" or "complete" })
         {
             if (string.IsNullOrEmpty(agentPassword) || agentPassword.Contains('\0'))
@@ -207,10 +241,10 @@ public sealed partial class OnboardingEngine
             await FinishPriorReadyForReinstallAsync(savedPending, ct).ConfigureAwait(false);
             savedPending = null;
         }
-        if (cleanComponents && savedPending is { CleanComponents: false })
+        if (cleanComponents && savedPending is { CleanComponents: false, InstallRequested: true })
             throw new InvalidDataException("Незавершённая подготовка ещё не готова к чистой переустановке.");
-        cleanComponents = savedPending?.CleanComponents ?? cleanComponents;
-        forceReinstall = savedPending?.ForceReinstall ?? (forceReinstall || cleanComponents);
+        cleanComponents = savedPending is { InstallRequested: true } ? savedPending.CleanComponents : cleanComponents || savedPending?.CleanComponents == true;
+        forceReinstall = savedPending is { InstallRequested: true } ? savedPending.ForceReinstall : forceReinstall || cleanComponents || savedPending?.ForceReinstall == true;
         if (cleanComponents) _ = await ReadCleanupHelperAsync(ct).ConfigureAwait(false);
         if (savedPending is { Phase: "complete", InstallRequested: true, ForceReinstall: true, CleanComponents: true })
             return await ResumeCommittedCleanupAsync(savedPending, ct).ConfigureAwait(false);
@@ -223,6 +257,7 @@ public sealed partial class OnboardingEngine
         DeviceIdentity? existing = null;
         (string Serial, DeviceIdentity Identity)? match = null;
         var restoredUsbResume = false;
+        var webUnavailable = false;
         if (savedPending is { RestoreRequested: true, InstallRequested: false, IdentitySource: "web-matched", WebIdentity: not null })
         {
             // A saved restoration can hand off through freshly matched USB without Web credentials.
@@ -244,14 +279,36 @@ public sealed partial class OnboardingEngine
         }
         else
         {
-            await web.LoginAsync(webPassword, ct).ConfigureAwait(false);
-            webIdentity = await web.GetIdentityAsync(skipFirmwareCheck: true, ct: ct).ConfigureAwait(false);
-            if (savedPending is null && !forceReinstall) existing = await ProbeExistingSshAsync(webIdentity, null, agentPassword, ct).ConfigureAwait(false);
-            match = existing is null ? await FindMatchingAdbAsync(webIdentity, ct).ConfigureAwait(false) : null;
+            var authenticated = false;
+            try
+            {
+                await web.LoginAsync(webPassword, ct).ConfigureAwait(false);
+                authenticated = true;
+                webIdentity = await web.GetIdentityAsync(skipFirmwareCheck: true, ct: ct).ConfigureAwait(false);
+            }
+            catch (Exception error) when (!ct.IsCancellationRequested &&
+                (IsWebUnavailable(error) || authenticated && error is ModemWebException { Kind: WebFailureKind.MalformedResponse }))
+            {
+                // Unavailable transport or missing post-login device_info can use
+                // independently measured root USB. Authentication errors still stop here.
+                webUnavailable = true;
+                _progress?.Invoke(WebUnavailableMessage(error) + " Проверяется root USB ADB.");
+                webIdentity = savedPending?.WebIdentity;
+                try { match = await FindMatchingAdbAsync(webIdentity, ct).ConfigureAwait(false); }
+                catch (Exception adbError) when (adbError is IOException or InvalidDataException or InvalidOperationException or TimeoutException)
+                {
+                    throw new IOException(WebUnavailableMessage(error) + " USB ADB: " + adbError.Message, error);
+                }
+                if (match is null)
+                    throw new IOException(WebUnavailableMessage(error) + " " + _lastAdbDiagnostic, error);
+                _progress?.Invoke("Подготовка продолжается через подтверждённый root USB ADB; Web недоступен.");
+            }
+            if (savedPending is null && !forceReinstall) existing = await ProbeExistingSshAsync(webIdentity, webUnavailable ? match?.Identity : null, agentPassword, ct).ConfigureAwait(false);
+            if (!webUnavailable) match = existing is null ? await FindMatchingAdbAsync(webIdentity, ct).ConfigureAwait(false) : null;
         }
         if (existing is not null && savedPending is null)
         {
-            if (webIdentity is not null && await web.GetIdentityAsync(skipFirmwareCheck: true, ct: ct).ConfigureAwait(false) != webIdentity)
+            if (!webUnavailable && webIdentity is not null && await web.GetIdentityAsync(skipFirmwareCheck: true, ct: ct).ConfigureAwait(false) != webIdentity)
                 throw new InvalidDataException("Устройство изменилось во время подтверждения доступа.");
             if (webIdentity is null && await ReadAdbIdentityAsync(match!.Value.Serial, null, ct).ConfigureAwait(false) != existing)
                 throw new InvalidDataException("USB и SSH больше не подтверждают одно устройство.");
@@ -265,7 +322,7 @@ public sealed partial class OnboardingEngine
         var rootAlreadyAvailable = existing is not null || match is not null;
         var genericAccess = rootAlreadyAvailable && InstallerProfile(webIdentity, existing ?? match!.Value.Identity) == "linux-arm64-access";
         var encrypted = Array.Empty<byte>();
-        if (!restoredUsbResume && webIdentity is not null && await web.GetIdentityAsync(skipFirmwareCheck: true, ct: ct).ConfigureAwait(false) != webIdentity)
+        if (!restoredUsbResume && !webUnavailable && webIdentity is not null && await web.GetIdentityAsync(skipFirmwareCheck: true, ct: ct).ConfigureAwait(false) != webIdentity)
             throw new InvalidDataException("Устройство изменилось во время предварительной проверки.");
         var backupDirectory = Path.Combine(_storage, "SetupBackups", Guid.NewGuid().ToString("D"));
         Directory.CreateDirectory(backupDirectory);
@@ -294,11 +351,6 @@ public sealed partial class OnboardingEngine
         {
             if (pending.WebIdentity != webIdentity || pending.IdentitySource != (webIdentity is null ? "single-usb" : "web-matched") || !Guid.TryParse(pending.Id, out _))
                 throw new InvalidDataException("Незавершённая настройка относится к другому устройству.");
-            if (!pending.RestoreRequested && !pending.InstallRequested && !pending.DiagnosticRebootRequested)
-            {
-                pending.BackupDirectory = backupDirectory;
-                await SavePendingAsync(pending, ct).ConfigureAwait(false);
-            }
         }
 
         _progress?.Invoke("Проверка уже работающего USB ADB: транспорт, root и идентичность модема.");
@@ -313,8 +365,29 @@ public sealed partial class OnboardingEngine
             pending.FirmwareHash is not null && pending.FirmwareHash != identity.FirmwareHash ||
             pending.Profile is not null && pending.Profile != profile ||
             pending.RouterHash is not null && pending.RouterHash != identity.RouterHash ||
-            profile == "linux-arm64-access" && pending.BootId is not null && pending.BootId != identity.BootId)
+            pending.InstallRequested && profile == "linux-arm64-access" && pending.BootId is not null && pending.BootId != identity.BootId)
             throw new InvalidDataException("Устройство или профиль незавершённой установки изменился.");
+        var newBootBeforeInstall = !pending.InstallRequested && pending.BootId is not null && pending.BootId != identity.BootId;
+        if (!pending.InstallRequested && (newBootBeforeInstall || pending.ForceReinstall != forceReinstall || pending.CleanComponents != cleanComponents))
+        {
+            // The installer intent is persisted before dispatch. Before that boundary,
+            // a reboot only invalidates the old staging owner, not the modem identity.
+            var original = await File.ReadAllBytesAsync(PendingPath, ct).ConfigureAwait(false);
+            if (_genericAccess) await VerifySingleUsbAsync(serial, ct).ConfigureAwait(false);
+            if (await ReadAdbIdentityAsync(serial, webIdentity, ct).ConfigureAwait(false) != identity ||
+                !(await File.ReadAllBytesAsync(PendingPath, ct).ConfigureAwait(false)).AsSpan().SequenceEqual(original))
+                throw new InvalidDataException("Устройство или журнал изменились перед продолжением подготовки.");
+            await WritePrivateAsync(Path.Combine(pending.BackupDirectory, "setup-before-resume-" + Guid.NewGuid().ToString("N") + ".json"), original, ct).ConfigureAwait(false);
+            if (newBootBeforeInstall)
+            {
+                // Never reuse files staged for the previous boot. Keep that private
+                // directory intact; the new preflight still checks remote recovery.
+                pending.Id = Guid.NewGuid().ToString("D");
+                pending.RemoteStage = null; pending.RemoteJournal = null;
+            }
+            pending.ForceReinstall = forceReinstall; pending.CleanComponents = cleanComponents;
+            _progress?.Invoke("Предыдущая попытка остановилась до установки. Её журнал сохранён; параметры подготовки применены к проверенному устройству.");
+        }
         pending.Cid = identity.Cid;
         pending.AdbSerial = serial;
         pending.Intent = _genericAccess ? "linux-arm64-access" : "preparation";
@@ -409,6 +482,23 @@ public sealed partial class OnboardingEngine
             KeyPath, KnownHostsPath, false, InstallerProfile(webIdentity, identity));
     }
 
+    internal static bool IsWebUnavailable(Exception error) => error switch
+    {
+        ModemWebException { Kind: WebFailureKind.Transport, Code: not (401 or 403) } => true,
+        HttpRequestException { StatusCode: not (System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden) } or SocketException or TimeoutException => true,
+        _ => false,
+    };
+
+    internal static string WebUnavailableMessage(Exception error)
+    {
+        for (Exception? current = error; current is not null; current = current.InnerException)
+            if (current is SocketException { SocketErrorCode: SocketError.AccessDenied })
+                return "Windows запретила сетевой доступ к Web модема (порт 80). Проверьте разрешения приложения в брандмауэре и антивирусе.";
+        if (error is ModemWebException { Kind: WebFailureKind.MalformedResponse })
+            return "Web не вернул сведения об устройстве после входа.";
+        return error is TimeoutException ? "Web модема не ответил вовремя." : "Не удалось подключиться к Web модема (порт 80).";
+    }
+
     public Task<AdbAccessResult> EnableDiagnosticAdbAsync(string webPassword, string backupKeySuffix = "",
         DeviceIdentity? expectedIdentity = null, string? expectedImei = null, CancellationToken ct = default)
     {
@@ -418,17 +508,17 @@ public sealed partial class OnboardingEngine
     }
 
     private async Task<AdbAccessResult> EnableDiagnosticAdbCoreAsync(string webPassword, string backupKeySuffix,
-        DeviceIdentity? expectedIdentity, string? expectedImei, CancellationToken ct)
+        DeviceIdentity? expectedIdentity, string? expectedImei, CancellationToken ct, bool preparationRecovery = false)
     {
         if ((string.IsNullOrEmpty(webPassword) && !File.Exists(PendingPath)) || webPassword.Contains('\0'))
             throw new ArgumentException("Введите пароль штатного веб-интерфейса.", nameof(webPassword));
         Directory.CreateDirectory(_storage);
-        using var localLock = new FileStream(Path.Combine(_storage, "operation.lock"),
+        using var localLock = preparationRecovery ? null : new FileStream(Path.Combine(_storage, "operation.lock"),
             FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
-        using var imeiLock = new FileStream(Path.Combine(_storage,"imei-operation.lock"),
+        using var imeiLock = preparationRecovery ? null : new FileStream(Path.Combine(_storage,"imei-operation.lock"),
             FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None);
-        foreach (var competing in new[] { "setup-pending.json", "imei-pending.json", "pending.json", "system-restore-pending.json" })
-            if (File.Exists(Path.Combine(_storage, competing)))
+        foreach (var competing in new[] { "setup-pending.json", "system-restore-pending.json" })
+            if (!(preparationRecovery && competing == "setup-pending.json") && File.Exists(Path.Combine(_storage, competing)))
                 throw new InvalidOperationException("Сначала завершите незавершённую подготовку или восстановление модема.");
         await VerifyToolHashAsync(Path.Combine(_resources, "Tools", "adb.exe"),
             "b4a6b455702684652cccf7b46258b29e653538904359a58fd4931cf3ef286b3f", ct).ConfigureAwait(false);
@@ -500,7 +590,7 @@ public sealed partial class OnboardingEngine
             if (await web.GetIdentityAsync(true, ct).ConfigureAwait(false) != webIdentity)
                 throw new InvalidDataException("Устройство изменилось после переключения USB.");
         }
-        if (expectedIdentity is not null && expectedImei is null)
+        if (expectedIdentity is not null && expectedImei is null && !preparationRecovery)
             throw new InvalidDataException("Для включения ADB сначала подтвердите связь ожидаемого CID и IMEI через SSH.");
         if (pending is null)
         {
@@ -983,9 +1073,93 @@ public sealed partial class OnboardingEngine
     }
 
     internal static IEnumerable<string> InstallerArguments(OnboardingPending pending, IEnumerable<string> arguments) =>
-        (pending.ForceReinstall ? new[] { "--reinstall" } : Array.Empty<string>()).Concat(arguments);
+        (pending.CleanComponents ? new[] { "--clean-reinstall" } : pending.ForceReinstall ? new[] { "--reinstall" } : Array.Empty<string>()).Concat(arguments);
 
     private const string RollbackVerifiedMessage = "Предыдущая принудительная подготовка отменена; исходное состояние подтверждено. Повторите подготовку, чтобы начать новую попытку.";
+
+    private async Task<(string Serial, DeviceIdentity Identity)> ReadCleanRecoveryUsbAsync(DeviceIdentity expected, WebIdentity? web,
+        string webPassword, string backupKeySuffix, CancellationToken ct)
+    {
+        var inventory = await _adb.InspectUsbAsync(ct).ConfigureAwait(false);
+        if (inventory.ReadyDevices.Count > 1) throw new InvalidDataException("Для восстановления чистой установки подключите один USB-модем.");
+        var match = inventory.ReadyDevices.Count == 0 ? null : await FindMatchingAdbAsync(web, ct).ConfigureAwait(false);
+        if (match is null || File.Exists(Path.Combine(_storage, "adb-access-pending.json")))
+        {
+            var diagnostic = new OnboardingEngine(_host, _storage, _resources, _adb, _skipFirmwareCheck, _progress)
+                { _diagnosticAccess = true, WebFactory = WebFactory };
+            await diagnostic.EnableDiagnosticAdbCoreAsync(webPassword, backupKeySuffix, expected,
+                web?.Imei, ct, preparationRecovery: true).ConfigureAwait(false);
+            match = await FindMatchingAdbAsync(web, ct).ConfigureAwait(false);
+            if (match is null) throw new InvalidDataException("USB ADB не подтверждён после включения; прежний журнал сохранён.");
+        }
+        var (serial, identity) = match.Value;
+        if (identity.Cid != expected.Cid || identity.FirmwareHash != expected.FirmwareHash || identity.RouterHash != expected.RouterHash)
+            throw new InvalidDataException("После перезагрузки обнаружено другое устройство или прошивка; прежняя установка сохранена.");
+        await VerifySingleUsbAsync(serial, ct).ConfigureAwait(false);
+        if (await ReadAdbIdentityAsync(serial, web, ct).ConfigureAwait(false) != identity)
+            throw new InvalidDataException("Устройство изменилось при восстановлении USB ADB; прежний журнал сохранён.");
+        return match.Value;
+    }
+
+    private async Task<bool> ArchivePreviousBootForCleanAsync(OnboardingPending pending, string webPassword, string backupKeySuffix, CancellationToken ct)
+    {
+        var original = await File.ReadAllBytesAsync(PendingPath, ct).ConfigureAwait(false);
+        var (serial, identity) = await ReadCleanRecoveryUsbAsync(
+            new DeviceIdentity(pending.Cid ?? "", pending.FirmwareHash ?? "", pending.BootId ?? "", pending.RouterHash ?? ""),
+            pending.WebIdentity, webPassword, backupKeySuffix, ct).ConfigureAwait(false);
+        if (identity.BootId == pending.BootId) return false;
+        if (pending.Cid != identity.Cid || pending.FirmwareHash != identity.FirmwareHash || pending.RouterHash != identity.RouterHash ||
+            InstallerProfile(pending.WebIdentity, identity) != "linux-arm64-access")
+            throw new InvalidDataException("После перезагрузки обнаружено другое устройство или прошивка; прежняя установка сохранена.");
+        await VerifySingleUsbAsync(serial, ct).ConfigureAwait(false);
+        var hashes = await VerifyAssetsAsync(ct).ConfigureAwait(false);
+        var bytes = await File.ReadAllBytesAsync(Path.Combine(_resources, "Onboarding", "setup-agent.sh"), ct).ConfigureAwait(false);
+        if (Sha(bytes) != hashes["setup-agent.sh"]) throw new InvalidDataException("Повреждён установщик подготовки.");
+        var arguments = new[] { "--clean-reinstall", "--preflight" }.Concat(InstallerPolicy(identity, "linux-arm64-access"));
+        var proof = await AdbTextAsync(serial, "sh -c " + Quote(StrictUtf8.GetString(bytes)) + " -- " +
+            string.Join(' ', arguments.Select(Quote)), TimeSpan.FromSeconds(60), ct).ConfigureAwait(false);
+        if (proof != "INSTALL_PREFLIGHT linux-arm64-access imei_config=unknown" ||
+            await ReadAdbIdentityAsync(serial, pending.WebIdentity, ct).ConfigureAwait(false) != identity ||
+            !(await File.ReadAllBytesAsync(PendingPath, ct).ConfigureAwait(false)).AsSpan().SequenceEqual(original))
+            throw new InvalidDataException("Не подтверждён архив предыдущей установки; журнал сохранён.");
+        File.Move(PendingPath, Path.Combine(pending.BackupDirectory, "setup-before-reset-" + Guid.NewGuid().ToString("N") + ".json"));
+        _progress?.Invoke("Состояние предыдущей загрузки сохранено. Начинается новая чистая установка с заданным паролем.");
+        return true;
+    }
+
+    private async Task<bool> ArchiveVerifiedNotStartedAsync(OnboardingPending pending, CancellationToken ct)
+    {
+        // A local dispatch intent can precede a device-side preflight rejection.
+        // Only the current helper's read-only proof may retire that intent.
+        var paths = InstallationPaths(pending);
+        if (!paths.Stage.StartsWith("/data/zte-imei-studio/stage-", StringComparison.Ordinal)) return false;
+        try
+        {
+            var original = await File.ReadAllBytesAsync(PendingPath, ct).ConfigureAwait(false);
+            var match = await FindMatchingAdbAsync(pending.WebIdentity, ct).ConfigureAwait(false);
+            if (match is null) return false;
+            var (serial, identity) = match.Value;
+            if (pending.Cid != identity.Cid || pending.FirmwareHash != identity.FirmwareHash || pending.RouterHash != identity.RouterHash ||
+                pending.Profile != InstallerProfile(pending.WebIdentity, identity) ||
+                pending.Profile == "linux-arm64-access" && pending.BootId != identity.BootId) return false;
+            var hashes = await VerifyAssetsAsync(ct).ConfigureAwait(false);
+            var bytes = await File.ReadAllBytesAsync(Path.Combine(_resources, "Onboarding", "setup-agent.sh"), ct).ConfigureAwait(false);
+            if (Sha(bytes) != hashes["setup-agent.sh"]) return false;
+            var arguments = new[] { "--verify-not-started", paths.Stage }.Concat(InstallerPolicy(identity, pending.Profile));
+            var proof = await AdbTextAsync(serial, "sh -c " + Quote(StrictUtf8.GetString(bytes)) + " -- " +
+                string.Join(' ', arguments.Select(Quote)), TimeSpan.FromSeconds(40), ct).ConfigureAwait(false);
+            if (proof != "INSTALL_NOT_STARTED " + paths.Stage ||
+                await ReadAdbIdentityAsync(serial, pending.WebIdentity, ct).ConfigureAwait(false) != identity) return false;
+            var current = await File.ReadAllBytesAsync(PendingPath, ct).ConfigureAwait(false);
+            if (!original.AsSpan().SequenceEqual(current)) return false;
+            await WritePrivateAsync(Path.Combine(pending.BackupDirectory, "not-started-verification.txt"), Encoding.UTF8.GetBytes(proof + "\n"), ct).ConfigureAwait(false);
+            File.Move(PendingPath, Path.Combine(pending.BackupDirectory, "setup-not-started-" + pending.Id + ".json"));
+            _progress?.Invoke("Предыдущий установщик не начал изменение компонентов. Журнал сохранён; начинается новая подготовка.");
+            return true;
+        }
+        catch (Exception error) when (!ct.IsCancellationRequested && error is IOException or InvalidDataException or InvalidOperationException or TimeoutException)
+        { return false; }
+    }
 
     private async Task<bool> ArchiveVerifiedRollbackAsync(OnboardingPending pending, string serial,
         DeviceIdentity identity, WebIdentity? web, CancellationToken ct)
@@ -1020,8 +1194,17 @@ public sealed partial class OnboardingEngine
         string serial, DeviceIdentity identity, WebIdentity? web, string agentPassword, CancellationToken ct)
     {
         var journal = InstallationPaths(pending).Journal;
-        var state = await AdbTextAsync(serial, "cat " + Quote(journal + "/state"),
-            TimeSpan.FromSeconds(20), ct).ConfigureAwait(false);
+        string state;
+        try
+        {
+            state = await AdbTextAsync(serial, "cat " + Quote(journal + "/state"),
+                TimeSpan.FromSeconds(20), ct).ConfigureAwait(false);
+        }
+        catch (IOException error)
+        {
+            throw new IOException("Не удалось прочитать состояние предыдущей установки: " + journal +
+                "/state. Новая установка не начата; журнал сохранён. " + error.Message, error);
+        }
         if (state == "rolled-back" && await ArchiveVerifiedRollbackAsync(pending, serial, identity, web, ct).ConfigureAwait(false))
             throw new InvalidOperationException(RollbackVerifiedMessage);
         if (state is not ("ready" or "complete"))

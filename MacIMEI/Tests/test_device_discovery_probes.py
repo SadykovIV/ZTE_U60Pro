@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline fixtures for exact spec8 shell commands; no device or network."""
+"""Offline fixtures for current research shell commands; no device or network."""
 import hashlib
 import json
 import os
@@ -14,6 +14,26 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = ROOT / 'MacIMEI/Resources/FirmwareResearch/probes.json'
 CANARY = 'PRIVATE_PASSWORD_IMEI_TOKEN_MUST_NOT_APPEAR'
+
+# Only literal calls to documented read methods are allowed; service list has
+# an exact public selector. Inventory/schema listing without "call" is separate.
+READ_CALLS={
+    ('zwrt_web','device_info'):{},
+    ('service','list'):{'name':'zte_topsw_devui'},
+    ('zwrt_apn_object','get_apn_mode'):{},
+    ('zte_nwinfo_api','nwinfo_get_netinfo'):{},
+    ('zwrt_router.api','router_get_dns_para'):{},
+    ('zwrt_bsp.battery','list'):{},
+    ('zwrt_bsp.charger','list'):{},
+    ('zwrt_wlan','report'):{},
+}
+def assert_readonly_ubus(case,command,context):
+    prefix=r"ubus\s+(?:-t\s+\d+\s+)?call\s+"
+    calls=list(re.finditer(prefix+r"(\S+)\s+(\S+)\s+'([^']*)'",command))
+    case.assertEqual(len(calls),len(re.findall(prefix,command)),context)
+    for call in calls:
+        key=(call[1],call[2]);case.assertIn(key,READ_CALLS,context)
+        case.assertEqual(json.loads(call[3]),READ_CALLS[key],context)
 
 class Fixture:
     def __init__(self):
@@ -47,7 +67,7 @@ class Fixture:
     def run(self,name):
         spec=json.loads(SPEC.read_text());probe=next(x for x in spec['probes'] if x['id']==name)
         command=probe['command']
-        command=re.sub(r'(?<![A-Za-z0-9_.-])/(proc|sys|dev|lib64|lib|usr|bin|sbin|data|etc|overlay|tmp|var)(?=[/\s\"\'\);:]|$)',
+        command=re.sub(r'(?<![A-Za-z0-9_.-])/(proc|sys|dev|lib64|lib|usr|bin|sbin|data|etc|overlay|tmp|var|firmware)(?=[/\s\"\'\);:]|$)',
             lambda m: m.group(0) if m.group(1)=='dev' and command[m.end():].startswith('/null') else str(self.fs)+'/'+m.group(1),command)
         command=re.sub(r'(?m)^export PATH=.*? LC_ALL=C$', 'export PATH='+str(self.tools)+' LC_ALL=C', command)
         if name=='mounts':
@@ -71,16 +91,53 @@ class DiscoveryTests(unittest.TestCase):
     def run_probe(self,name):
         result,text,facts=self.f.run(name);self.assertEqual(result.returncode,0,result.stderr.decode());return text,facts
     def test_mirror_shape_and_shell_syntax(self):
-        s=json.loads(SPEC.read_text());self.assertEqual(s['revision'],8);self.assertEqual(len(s['probes']),46)
+        s=json.loads(SPEC.read_text());self.assertEqual(s['revision'],13);self.assertEqual(len(s['probes']),57)
         self.assertEqual(SPEC.read_bytes(),(ROOT/'Windows_x64/Resources/FirmwareResearch/probes.json').read_bytes())
-        self.assertEqual(len({p['id'] for p in s['probes']}),46)
+        self.assertEqual(len({p['id'] for p in s['probes']}),57)
         self.assertEqual(len({o['id'] for o in s['observations']}),len(s['observations']))
         for o in s['observations']: self.assertIn(o['probe'],[p['id'] for p in s['probes']])
         for p in s['probes']:
             r=subprocess.run(['/bin/sh','-n'],input=p['command'],text=True,capture_output=True);self.assertEqual(r.returncode,0,(p['id'],r.stderr))
         for feature in s['features']:
-            if feature['id'] in ('preparation','ssh','generic-access'):self.assertEqual(feature['profiles'],[])
+            if feature['id'] in ('preparation','ssh','generic-access','agent','launcher','screen-localization','diagnostic-apps','opkg','ssh-accounts','imei','config-backup','user-data-backup'):self.assertEqual(feature['profiles'],[])
             elif feature['id']!='native-esim':self.assertTrue(feature['profiles'])
+    def test_firmware_identity_validity_does_not_grant_unknown_b04_image(self):
+        self.f.sha()
+        self.f.file('/firmware/image/modem.b16',b'foreign synthetic image')
+        self.f.file('/usr/bin/diag-router',b'synthetic router')
+        _,facts=self.run_probe('firmware-hashes')
+        self.assertEqual(facts['firmware_identity_valid'],'1')
+        self.assertEqual(facts['router_identity_valid'],'1')
+        self.assertEqual(facts['firmware_image_present'],'1')
+        self.assertEqual(facts['b04_image_compatible'],'0')
+        (self.f.fs/'firmware/image/modem.b16').unlink()
+        _,facts=self.run_probe('firmware-hashes')
+        self.assertEqual(facts['firmware_identity_valid'],'1')
+        self.assertEqual(facts['firmware_image_present'],'0')
+        self.assertEqual(facts['b04_image_compatible'],'1')
+        target=self.f.file('/private-image',b'synthetic')
+        (self.f.fs/'firmware/image/modem.b16').symlink_to(target)
+        _,facts=self.run_probe('firmware-hashes')
+        self.assertEqual(facts['firmware_identity_valid'],'not-assessed')
+        self.assertEqual(facts['b04_image_compatible'],'not-assessed')
+
+    def test_firmware_hash_failure_or_malformed_value_is_unassessed(self):
+        self.f.file('/firmware/image/modem.b16',b'synthetic')
+        for body in ["print('a'*64);raise SystemExit(1)","print('a'*63)","print('invalid')"]:
+            self.f.tool('sha256sum',body)
+            _,facts=self.run_probe('firmware-hashes')
+            self.assertEqual(facts['firmware_identity_valid'],'not-assessed')
+            self.assertEqual(facts['firmware_image_present'],'not-assessed')
+
+    def test_metadata_prerequisites_do_not_treat_saved_journals_as_live_locks(self):
+        s=json.loads(SPEC.read_text())
+        for feature in s['features']:
+            self.assertNotIn('no_pending_operations',{r['fact'] for r in feature['requirements']})
+        self.assertIn('pending-operations',{p['id'] for p in s['probes']})
+        for name in ['physical-euicc','native-esim']:
+            feature=next(f for f in s['features'] if f['id']==name)
+            self.assertTrue(any(r['equals']=='verified' for r in feature['requirements']))
+
     def test_fingerprint_no_tools_preserves_survey(self):
         self.f.file('/sys/block/mmcblk0/device/cid','fixture-cid\n');self.f.file('/proc/sys/kernel/random/boot_id','fixture-boot\n')
         _,facts=self.run_probe('fingerprint');self.assertEqual(facts['hasher'],'not-assessed')
@@ -166,7 +223,19 @@ class DiscoveryTests(unittest.TestCase):
         for p in s['probes']:
             command=p['command'];self.assertNotRegex(command,r'(?m)^\s*(?:rm|mv|cp|mkdir|chmod|chown|mount|reboot|insmod|modprobe|dd|tee)\s',p['id'])
             self.assertNotRegex(command,r'(?m)^\s*ldd\s');self.assertNotIn('/proc/self/environ',command)
-            if 'ubus' in command:self.assertNotRegex(command,r'ubus\s+(?:-t\s+\d+\s+)?call\s+(?!zwrt_web device_info)',p['id'])
+            assert_readonly_ubus(self,command,p['id'])
+
+    def test_readonly_rpc_allowlist_rejects_mutation_and_dynamic_arguments(self):
+        for command in [
+            "ubus call service start '{}'",
+            "ubus call zwrt_apn_object set_apn_mode '{}'",
+            "ubus call zwrt_wlan set_wifi '{}'",
+            "ubus call service list '{\"name\":\"other\"}'",
+            "ubus call zwrt_web device_info \"$arguments\"",
+            "ubus call $object $method '{}'",
+        ]:
+            with self.subTest(command=command),self.assertRaises(AssertionError):
+                assert_readonly_ubus(self,command,'mutation fixture')
 
     def test_old_hash_probes_do_not_follow_links_or_report_read_failure_absent(self):
         self.f.tool('stat','print("0")'); self.f.sha()
@@ -187,7 +256,7 @@ class DiscoveryTests(unittest.TestCase):
             # run() snapshots fixture files, so run the permission-sensitive
             # production hash function separately without opening the secret.
             command=next(p['command'] for p in json.loads(SPEC.read_text())['probes'] if p['id']=='agent-layout')
-            command=command[:command.index('for path in /data/zte-agent')]+ '\nhash_fact agent_sha256 '+str(target)+'\n'
+            command=command[:command.index('\nfor path in ')]+ '\nhash_fact agent_sha256 '+str(target)+'\n'
             command=re.sub(r'(?m)^export PATH=.*? LC_ALL=C$', 'export PATH='+str(self.f.tools)+' LC_ALL=C', command)
             result=subprocess.run(['/bin/sh','-c',command],capture_output=True,timeout=5)
             self.assertEqual(result.returncode,0);self.assertIn(b'agent_sha256=not-assessed',result.stdout)
@@ -240,7 +309,7 @@ class DiscoveryTests(unittest.TestCase):
         self.f.directory('/data');self.f.directory('/etc');self.f.directory('/tmp').chmod(0o1777)
         self.f.directory('/var/run')
         _,facts=self.run_probe('permissions')
-        self.assertEqual(facts['setup_parents_safe'],'1')
+        self.assertEqual(facts['setup_anchor_safe'],'1')
         self.assertEqual(facts['local_tmp_exists'],'0')
         self.assertEqual(facts['dashboard_runtime_safe'],'1')
         self.assertEqual(facts['tmp_safe'],'0')
@@ -253,8 +322,8 @@ class DiscoveryTests(unittest.TestCase):
         self.f.tool('stat','print("0")')
         self.f.directory('/data');self.f.directory('/etc');self.f.directory('/tmp')
         target=self.f.directory('/foreign')
-        (self.f.fs/'data/local').symlink_to(target)
-        _,facts=self.run_probe('permissions');self.assertNotEqual(facts['setup_parents_safe'],'1')
+        (self.f.fs/'data/zte-imei-studio').symlink_to(target)
+        _,facts=self.run_probe('permissions');self.assertNotEqual(facts['setup_anchor_safe'],'1')
         _,facts=self.run_probe('pending-operations');self.assertEqual(facts['no_pending_operations'],'not-assessed')
 
     def test_unreadable_ancestor_remains_unknown_and_storage_not_guessed(self):
@@ -267,15 +336,18 @@ class DiscoveryTests(unittest.TestCase):
         _,facts=self.run_probe('storage')
         self.assertEqual(facts['data_free_kib'],'not-assessed');self.assertEqual(facts['data_free_16384'],'not-assessed')
 
-    def test_generic_access_cards_do_not_grant_the_old_agent_updater(self):
+    def test_generic_access_and_agent_have_independent_capability_requirements(self):
         s=json.loads(SPEC.read_text());features={f['id']:f for f in s['features']}
-        self.assertTrue(features['agent']['profiles'])
+        self.assertEqual(features['agent']['profiles'],[])
+        agent_facts={x['fact'] for x in features['agent']['requirements']}
+        self.assertTrue({'agent_update_layout','dashboard_runtime_safe','dashboard_runtime_install_mount','tool_ubus','object_zwrt_web'}<=agent_facts)
+        self.assertFalse({'firmware_sha256','router_sha256','no_pending_operations'}&agent_facts)
         for name in ('generic-access','preparation','ssh'):
             f=features[name];self.assertEqual(f['profiles'],[])
             facts={x['fact'] for x in f['requirements']}
             self.assertFalse({'tool_ubus','object_zwrt_web','firmware_sha256','router_sha256'}&facts)
             self.assertTrue({'root','architecture','operating_system','init_comm','startup_procd_rc_local'}<=facts)
-        self.assertEqual(len(s['observations']),45)
+        self.assertEqual(len(s['observations']),76)
 
     def test_procd_startup_is_observed_without_running_its_body(self):
         self.f.cap_tools();self.f.standard('sh')
