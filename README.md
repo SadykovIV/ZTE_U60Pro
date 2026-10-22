@@ -6,36 +6,33 @@ Manage the **ZTE U60 Pro / MU5250**: access preparation, backups, IMEI, TTL,
 Russian screen localization, VPN over a separate Wi-Fi network, removable
 physical eUICC cards, and diagnostics.
 
-Version **1.25** (macOS build **64**, Windows FileVersion **1.25.0.0**),
-agent **2.9.0-esim.12**, VPN controller **1.4.1**.
-[Download macOS ARM64](https://github.com/SadykovIV/ZTE_U60Pro/releases/download/v1.25/ZTE-U60Pro-Manager-1.25-macOS-arm64.zip) ·
-[Download Windows x64](https://github.com/SadykovIV/ZTE_U60Pro/releases/download/v1.25/ZTE-U60Pro-Manager-1.25-Windows-x64-portable.zip) ·
-[Release and checksums](https://github.com/SadykovIV/ZTE_U60Pro/releases/tag/v1.25).
+Version **1.26** (macOS build **65**, Windows FileVersion **1.26.0.0**),
+agent **2.9.0-esim.13**, VPN controller **1.5.0**.
+[Download macOS ARM64](https://github.com/SadykovIV/ZTE_U60Pro/releases/download/v1.26/ZTE-U60Pro-Manager-1.26-macOS-arm64.zip) ·
+[Download Windows x64](https://github.com/SadykovIV/ZTE_U60Pro/releases/download/v1.26/ZTE-U60Pro-Manager-1.26-Windows-x64-portable.zip) ·
+[Release and checksums](https://github.com/SadykovIV/ZTE_U60Pro/releases/tag/v1.26).
 
-## Changes since the previous GitHub release, 1.24.14
+## Changes since the previous GitHub release, 1.25
 
-- Added WireGuard, AmneziaWG 2/3.1, Hysteria2 and HTTPS subscriptions alongside
-  VLESS. Profiles remain shared by desktop, agent and Launcher; the agent and
-  modem screen can refresh subscriptions without changing the running connection.
-- Extended B28/B04 component profiles and fixed preparation after a factory reset,
-  SSH access and agent Web checks. ADB can be disabled after SSH is verified,
-  including its autostart entry.
-- IMEI backup, change and restore use the actual one or two active records;
-  a read error is not treated as an absent second IMEI.
-- Fixed updates of TTL/VPN components and agent compatibility. VPN updates replace
-  the complete runtime with rollback; IPA preparation is automatic, and VPN Wi-Fi
-  keeps its selected state after reboot.
-- Expanded firmware adaptation capture, improved log export and removed more
-  unrelated preparation/IMEI blockers from independent SSH operations. Added
-  measured B28/B04 profiles for backups and physical-eUICC radio refresh.
+- IKEv2 with the modem's native strongSwan, EAP-MSCHAPv2 and server CA verification.
+  Private IPv4 networks and profile DNS use VPN; public IPv4 uses LTE.
+  Credentials are entered in the agent or desktop app, with manual phone push confirmation.
+- VPN Wi-Fi now controls the selected connection. Repeated enable preserves the
+  running connection; guest AP recovery restores an enabled interface after readiness checks.
+- The modem screen has one compact status/switch row and a vertically scrolling
+  profile list. Unsupported emoji use readable text. Subscription refresh stays
+  in the agent and desktop clients.
+- Preparation accepts validated known startup scripts with ordinary protected
+  file permissions, and distinguishes recovery blockers and missing installer state.
+  Unknown startup formats and unverified interrupted operations remain blocked.
+- The web dashboard shows the reported ZTE firmware separately from the Linux kernel.
 
-[Full changes and verification limits](docs/RELEASE-1.25.md).
+[Full changes and verification limits](docs/RELEASE-1.26.md) · [IKEv2 setup](docs/IKEV2.md).
 
-Live verification uses **CN_ZTE_MU5250V1.0.0B31 /
-BD_CNMU5250V1.0.0B31**. B28/B04 coverage comes from captured files and local
-regression tests; native Windows still needs verification. The owner confirmed
-Wi-Fi VPN internet access on B31 from a phone with mobile data disabled.
-[Detailed limits](docs/RELEASE-1.25.md#what-was-checked) ·
+Live VPN checks used **CN_ZTE_MU5250V1.0.0B31 / BD_CNMU5250V1.0.0B31**.
+B28/B04 hardware, native Windows execution and fresh preparation on the reported
+friend devices remain unverified. The supplied logs establish preparation failures,
+not general firmware incompatibility.
 [Operation requirements](docs/OPERATION-DEPENDENCIES.md) ·
 [Collect firmware adaptation data](docs/FIRMWARE-ADAPTATION-DATA.md).
 

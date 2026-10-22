@@ -34,6 +34,68 @@ struct AccessSetupJournal: Codable {
 }
 
 extension OnboardingEngine {
+    /// The remote probe returns only a fixed code or a recognized state, never file contents.
+    static func installationStateCommand(_ path: String) -> String {
+        "state_path=" + shellQuote(path) + "\n" + #"""
+        # ZTE_INSTALL_STATE_PROBE
+        state_result() { printf 'INSTALL_STATE %s\n' "$1"; exit 0; }
+        case "$state_path" in /*) ;; *) state_result UNEXPECTED_TYPE;; esac
+        checked=/; rest=${state_path#/}
+        test -d / && test -r / && test -x / || state_result UNREADABLE
+        while test -n "$rest"; do
+            part=${rest%%/*}; case "$rest" in */*) rest=${rest#*/};; *) rest=;; esac
+            case "$part" in ''|.|..) state_result UNEXPECTED_TYPE;; esac
+            checked=${checked%/}/$part
+            test ! -L "$checked" || state_result UNEXPECTED_TYPE
+            if test ! -e "$checked"; then state_result MISSING; fi
+            if test -n "$rest"; then
+                test -d "$checked" || state_result UNEXPECTED_TYPE
+                test -r "$checked" && test -x "$checked" || state_result UNREADABLE
+            fi
+        done
+        test -f "$state_path" || state_result UNEXPECTED_TYPE
+        test -r "$state_path" || state_result UNREADABLE
+        command -v od >/dev/null 2>&1 && command -v tr >/dev/null 2>&1 || state_result PROBE_FAILED
+        state_hex=$(od -An -v -tx1 -N65 "$state_path" 2>/dev/null) || state_result UNREADABLE
+        state_hex=$(printf '%s' "$state_hex" | tr -d ' \n') || state_result PROBE_FAILED
+        test "${#state_hex}" -le 128 || state_result INVALID_CONTENT
+        case "$state_hex" in
+            7265616479|72656164790a|72656164790d0a) state_result ready;;
+            636f6d706c657465|636f6d706c6574650a|636f6d706c6574650d0a) state_result complete;;
+            707265706172696e67|707265706172696e670a|707265706172696e670d0a) state_result preparing;;
+            70656e64696e67|70656e64696e670a|70656e64696e670d0a) state_result pending;;
+            726f6c6c65642d6261636b|726f6c6c65642d6261636b0a|726f6c6c65642d6261636b0d0a) state_result rolled-back;;
+            '') state_result EMPTY;;
+            *) state_result INVALID_CONTENT;;
+        esac
+        """#
+    }
+    static func installerFailureCode(_ answer: CommandResult) -> String? {
+        let text = CommandText.decode(Data(answer.stderr.prefix(16 * 1024)) + Data("\n".utf8) + Data(answer.stdout.prefix(16 * 1024)))
+        guard let regex = try? NSRegularExpression(pattern: "(?:^|\\n)INSTALL_ERROR ([A-Z][A-Z0-9_]{0,79})(?:\\r?\\n|$)"),
+              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let range = Range(match.range(at: 1), in: text) else { return nil }
+        return String(text[range])
+    }
+    func installationStateFailure(_ reason: String) -> IMEIError {
+        let prior = unstartedDiagnostic.map { "Проверка отсутствия начатой установки: " + $0 + ". " } ?? ""
+        return .message("Не удалось подтвердить состояние предыдущей установки: STATE_" + reason + ". " + prior +
+            "Новая установка не начата; журнал и резервные копии сохранены.")
+    }
+    func readInstallationState(_ adb: ADBClient, serial: String, journal: String) throws -> String {
+        let answer: CommandResult
+        do { answer = try adb.shellResult(serial, Self.installationStateCommand(journal + "/state"), timeout: 20) }
+        catch { if Task.isCancelled { throw error }; throw installationStateFailure("PROBE_FAILED") }
+        guard answer.status == 0 else { throw installationStateFailure("PROBE_FAILED") }
+        let text = CommandText.decode(answer.stdout).trimmingCharacters(in: .whitespacesAndNewlines)
+        for state in ["ready", "complete", "preparing", "pending", "rolled-back"] {
+            if text == "INSTALL_STATE " + state { return state }
+        }
+        for code in ["MISSING", "UNREADABLE", "UNEXPECTED_TYPE", "EMPTY", "INVALID_CONTENT", "PROBE_FAILED"] {
+            if text == "INSTALL_STATE " + code { throw installationStateFailure(code) }
+        }
+        throw installationStateFailure("PROBE_INVALID")
+    }
     func cleanRecoveryUSBProof(webPassword: String, expectedIdentity: Identity, expectedRouter: String,
                                expectedIMEI: String? = nil) throws -> (String, DiagnosticDeviceProof) {
         let adb = ADBClient(binary: assets.appendingPathComponent("adb"), runner: runner)
@@ -91,11 +153,13 @@ extension OnboardingEngine {
     /// An early preflight failure has no remote transaction to resume. Preserve
     /// its local history, but release the intent only with fresh device proof.
     func reconcileUnstartedPreparation() throws {
+        unstartedDiagnostic = nil
         guard fm.fileExists(atPath: pending.path) else { return }
         let raw = try DeviceBackups.smallFile(pending, maximum: 65536)
         guard let object = try JSONSerialization.jsonObject(with: raw) as? [String: Any],
               object["installRequested"] as? Bool == true,
               object["phase"] as? String == "install-requested" else { return }
+        unstartedDiagnostic = "UNSTARTED_PROOF_UNAVAILABLE"
         let id: String, directory: URL, serial: String, policy: [String], stage: String?, journalPath: String?
         if object["intent"] as? String == "linux-arm64-access" {
             let saved = try JSONDecoder().decode(AccessSetupJournal.self, from: raw)
@@ -122,12 +186,18 @@ extension OnboardingEngine {
         guard (try? adb.discovery().readyUSBSerials.contains(serial)) == true else { return }
         let script = String(decoding: installerBytes, as: UTF8.self)
         let command = "sh -c " + shellQuote(script) + " -- " + (["--verify-not-started", paths.stage] + policy).map(shellQuote).joined(separator: " ")
-        guard let answer = try? adb.shellResult(serial, command, timeout: 25), answer.status == 0,
-              CommandText.decode(answer.stdout).trimmingCharacters(in: .whitespacesAndNewlines) == "INSTALL_NOT_STARTED " + paths.stage else { return }
+        guard let answer = try? adb.shellResult(serial, command, timeout: 25) else { return }
+        guard answer.status == 0 else {
+            unstartedDiagnostic = Self.installerFailureCode(answer) ?? "UNSTARTED_PROOF_FAILED"
+            return
+        }
+        unstartedDiagnostic = "UNSTARTED_PROOF_INVALID"
+        guard CommandText.decode(answer.stdout).trimmingCharacters(in: .whitespacesAndNewlines) == "INSTALL_NOT_STARTED " + paths.stage else { return }
         try require(try DeviceBackups.smallFile(pending, maximum: 65536) == raw, "Журнал подготовки изменился во время проверки; его данные сохранены")
         try savePrivate(raw, directory.appendingPathComponent("setup-not-started.json"))
         try savePrivate(answer.stdout, directory.appendingPathComponent("not-started-verification.txt"))
         try fm.removeItem(at: pending)
+        unstartedDiagnostic = nil
         update("Предыдущая попытка остановилась до установки. Её журнал сохранён; подготовку можно повторить.", 0.05)
     }
     /// A new clean install must not silently resume an earlier non-clean intent.
@@ -487,12 +557,12 @@ extension OnboardingEngine {
         if !journal.installRequested { journal.forceReinstall = reinstall; journal.cleanComponents = cleanup }
         let key: URL
         if journal.installRequested {
-            let phase = try adb.shell(serial, "cat " + shellQuote(remoteJournal + "/state"))
+            let phase = try readInstallationState(adb, serial: serial, journal: remoteJournal)
             if phase == "rolled-back" && reinstall {
                 try reconcileForcedRollback(adb, serial: serial, paths: paths, id: id, policy: policy, directory: directory)
                 throw IMEIError.message(Self.rollbackRestoredMessage)
             }
-            try require(phase == "ready" || phase == "complete", "Результат прежней установки не подтверждён. Журнал сохранён; установка автоматически не повторяется.")
+            if phase != "ready" && phase != "complete" { throw installationStateFailure(phase.uppercased().replacingOccurrences(of: "-", with: "_")) }
             key = root.appendingPathComponent("SSH/id_ed25519")
             try require(fm.fileExists(atPath: key.path), "Ключ незавершённой установки недоступен")
         } else {

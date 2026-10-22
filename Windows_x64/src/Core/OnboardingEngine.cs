@@ -114,6 +114,7 @@ public sealed partial class OnboardingEngine
     private readonly bool _skipFirmwareCheck;
     private readonly Action<string>? _progress;
     private string _lastAdbDiagnostic = "USB ADB не обнаружен.";
+    private string? _unstartedDiagnostic;
     private bool _diagnosticAccess;
     private bool _genericAccess;
     internal Func<ModemWebClient>? WebFactory { get; init; }
@@ -185,6 +186,7 @@ public sealed partial class OnboardingEngine
     public async Task<OnboardingResult> PrepareAsync(string webPassword,
         string agentPassword, string backupKeySuffix, CancellationToken ct = default, bool forceReinstall = false, bool cleanComponents = false)
     {
+        _unstartedDiagnostic = null;
         if (webPassword.Contains('\0'))
             throw new ArgumentException("Недопустимый пароль Web.", nameof(webPassword));
         Directory.CreateDirectory(_storage);
@@ -395,8 +397,11 @@ public sealed partial class OnboardingEngine
         pending.FirmwareHash = identity.FirmwareHash;
         pending.RouterHash = identity.RouterHash;
         pending.BootId = identity.BootId;
-        if (!pending.InstallRequested) pending.Phase = "adb-ready";
-        await SavePendingAsync(pending, ct).ConfigureAwait(false);
+        if (!pending.InstallRequested)
+        {
+            pending.Phase = "adb-ready";
+            await SavePendingAsync(pending, ct).ConfigureAwait(false);
+        }
 
         if (!pending.CanStartInstallation)
             return await ResumeInstallationAsync(pending, serial, identity, webIdentity, agentPassword, ct)
@@ -938,6 +943,68 @@ public sealed partial class OnboardingEngine
         return AdbShellOutput.NormalizeText(StrictUtf8.GetString(reply.Stdout)).Trim();
     }
 
+    private static string? InstallerFailureCode(RemoteResult reply)
+    {
+        var diagnostic = Encoding.UTF8.GetString(reply.Stderr.AsSpan(0, Math.Min(reply.Stderr.Length, 16 * 1024))) +
+            "\n" + Encoding.UTF8.GetString(reply.Stdout.AsSpan(0, Math.Min(reply.Stdout.Length, 16 * 1024)));
+        var match = InstallErrorPattern.Match(AdbShellOutput.NormalizeText(diagnostic));
+        return match.Success ? match.Groups[1].Value : null;
+    }
+
+    // Read-only and bounded. Never return arbitrary state-file content, follow
+    // symlinks, or mistake an inaccessible parent for an absent transaction.
+    internal static string InstallationStateCommand(string path) => "state_path=" + Quote(path) + "\n" + """
+        # ZTE_INSTALL_STATE_PROBE
+        state_result() { printf 'INSTALL_STATE %s\n' "$1"; exit 0; }
+        case "$state_path" in /*) ;; *) state_result UNEXPECTED_TYPE;; esac
+        checked=/; rest=${state_path#/}
+        test -d / && test -r / && test -x / || state_result UNREADABLE
+        while test -n "$rest"; do
+            part=${rest%%/*}; case "$rest" in */*) rest=${rest#*/};; *) rest=;; esac
+            case "$part" in ''|.|..) state_result UNEXPECTED_TYPE;; esac
+            checked=${checked%/}/$part
+            test ! -L "$checked" || state_result UNEXPECTED_TYPE
+            if test ! -e "$checked"; then state_result MISSING; fi
+            if test -n "$rest"; then
+                test -d "$checked" || state_result UNEXPECTED_TYPE
+                test -r "$checked" && test -x "$checked" || state_result UNREADABLE
+            fi
+        done
+        test -f "$state_path" || state_result UNEXPECTED_TYPE
+        test -r "$state_path" || state_result UNREADABLE
+        command -v od >/dev/null 2>&1 && command -v tr >/dev/null 2>&1 || state_result PROBE_FAILED
+        state_hex=$(od -An -v -tx1 -N65 "$state_path" 2>/dev/null) || state_result UNREADABLE
+        state_hex=$(printf '%s' "$state_hex" | tr -d ' \n') || state_result PROBE_FAILED
+        test "${#state_hex}" -le 128 || state_result INVALID_CONTENT
+        case "$state_hex" in
+            7265616479|72656164790a|72656164790d0a) state_result ready;;
+            636f6d706c657465|636f6d706c6574650a|636f6d706c6574650d0a) state_result complete;;
+            707265706172696e67|707265706172696e670a|707265706172696e670d0a) state_result preparing;;
+            70656e64696e67|70656e64696e670a|70656e64696e670d0a) state_result pending;;
+            726f6c6c65642d6261636b|726f6c6c65642d6261636b0a|726f6c6c65642d6261636b0d0a) state_result rolled-back;;
+            '') state_result EMPTY;;
+            *) state_result INVALID_CONTENT;;
+        esac
+        """;
+
+    private IOException InstallationStateFailure(string reason) => new(
+        "Не удалось подтвердить состояние предыдущей установки: STATE_" + reason + ". " +
+        (_unstartedDiagnostic is null ? "" : "Проверка отсутствия начатой установки: " + _unstartedDiagnostic + ". ") +
+        "Новая установка не начата; журнал и резервные копии сохранены.");
+
+    private async Task<string> ReadInstallationStateAsync(string serial, string journal, CancellationToken ct)
+    {
+        string answer;
+        try { answer = await AdbTextAsync(serial, InstallationStateCommand(journal + "/state"), TimeSpan.FromSeconds(20), ct).ConfigureAwait(false); }
+        catch (Exception error) when (!ct.IsCancellationRequested && error is IOException or InvalidDataException or InvalidOperationException or TimeoutException)
+        { throw InstallationStateFailure("PROBE_FAILED"); }
+        if (answer is "INSTALL_STATE ready" or "INSTALL_STATE complete" or "INSTALL_STATE preparing" or "INSTALL_STATE pending" or "INSTALL_STATE rolled-back")
+            return answer[14..];
+        var reason = answer is "INSTALL_STATE MISSING" or "INSTALL_STATE UNREADABLE" or "INSTALL_STATE UNEXPECTED_TYPE" or
+            "INSTALL_STATE EMPTY" or "INSTALL_STATE INVALID_CONTENT" or "INSTALL_STATE PROBE_FAILED" ? answer[14..] : "PROBE_INVALID";
+        throw InstallationStateFailure(reason);
+    }
+
     private static string Quote(string text) => "'" + text.Replace("'", "'\\''", StringComparison.Ordinal) + "'";
     private static string Sha(byte[] data) => Convert.ToHexString(SHA256.HashData(data)).ToLowerInvariant();
 
@@ -1133,6 +1200,7 @@ public sealed partial class OnboardingEngine
         // Only the current helper's read-only proof may retire that intent.
         var paths = InstallationPaths(pending);
         if (!paths.Stage.StartsWith("/data/zte-imei-studio/stage-", StringComparison.Ordinal)) return false;
+        _unstartedDiagnostic = "UNSTARTED_PROOF_UNAVAILABLE";
         try
         {
             var original = await File.ReadAllBytesAsync(PendingPath, ct).ConfigureAwait(false);
@@ -1146,14 +1214,22 @@ public sealed partial class OnboardingEngine
             var bytes = await File.ReadAllBytesAsync(Path.Combine(_resources, "Onboarding", "setup-agent.sh"), ct).ConfigureAwait(false);
             if (Sha(bytes) != hashes["setup-agent.sh"]) return false;
             var arguments = new[] { "--verify-not-started", paths.Stage }.Concat(InstallerPolicy(identity, pending.Profile));
-            var proof = await AdbTextAsync(serial, "sh -c " + Quote(StrictUtf8.GetString(bytes)) + " -- " +
+            var verification = await _adb.ShellAsync(serial, "sh -c " + Quote(StrictUtf8.GetString(bytes)) + " -- " +
                 string.Join(' ', arguments.Select(Quote)), TimeSpan.FromSeconds(40), ct).ConfigureAwait(false);
+            if (!verification.Success)
+            {
+                _unstartedDiagnostic = InstallerFailureCode(verification) ?? "UNSTARTED_PROOF_FAILED";
+                return false;
+            }
+            var proof = AdbShellOutput.NormalizeText(StrictUtf8.GetString(verification.Stdout)).Trim();
+            _unstartedDiagnostic = "UNSTARTED_PROOF_INVALID";
             if (proof != "INSTALL_NOT_STARTED " + paths.Stage ||
                 await ReadAdbIdentityAsync(serial, pending.WebIdentity, ct).ConfigureAwait(false) != identity) return false;
             var current = await File.ReadAllBytesAsync(PendingPath, ct).ConfigureAwait(false);
             if (!original.AsSpan().SequenceEqual(current)) return false;
             await WritePrivateAsync(Path.Combine(pending.BackupDirectory, "not-started-verification.txt"), Encoding.UTF8.GetBytes(proof + "\n"), ct).ConfigureAwait(false);
             File.Move(PendingPath, Path.Combine(pending.BackupDirectory, "setup-not-started-" + pending.Id + ".json"));
+            _unstartedDiagnostic = null;
             _progress?.Invoke("Предыдущий установщик не начал изменение компонентов. Журнал сохранён; начинается новая подготовка.");
             return true;
         }
@@ -1194,21 +1270,11 @@ public sealed partial class OnboardingEngine
         string serial, DeviceIdentity identity, WebIdentity? web, string agentPassword, CancellationToken ct)
     {
         var journal = InstallationPaths(pending).Journal;
-        string state;
-        try
-        {
-            state = await AdbTextAsync(serial, "cat " + Quote(journal + "/state"),
-                TimeSpan.FromSeconds(20), ct).ConfigureAwait(false);
-        }
-        catch (IOException error)
-        {
-            throw new IOException("Не удалось прочитать состояние предыдущей установки: " + journal +
-                "/state. Новая установка не начата; журнал сохранён. " + error.Message, error);
-        }
+        var state = await ReadInstallationStateAsync(serial, journal, ct).ConfigureAwait(false);
         if (state == "rolled-back" && await ArchiveVerifiedRollbackAsync(pending, serial, identity, web, ct).ConfigureAwait(false))
             throw new InvalidOperationException(RollbackVerifiedMessage);
         if (state is not ("ready" or "complete"))
-            throw new InvalidOperationException("Предыдущая установка прервалась до готовности; сохранён удалённый журнал " + journal);
+            throw new InvalidOperationException(InstallationStateFailure(state.ToUpperInvariant().Replace('-', '_')).Message);
         if (!File.Exists(KeyPath)) throw new InvalidDataException("Отсутствует ключ незавершённой установки.");
         var verified = await PinAndVerifySshAsync(pending, serial, identity, web, agentPassword, ct).ConfigureAwait(false);
         pending.RemoteJournal = journal;

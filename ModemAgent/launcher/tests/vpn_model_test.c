@@ -7,6 +7,28 @@
 
 static unsigned checks;
 #define CHECK(x) do { checks++; assert(x); } while (0)
+static void compact_status_tests(void){
+    struct snapshot s={0};
+    for(int ru=0;ru<2;ru++){
+        CHECK(vpn_display_status(NULL,ru)&&!vpn_display_hint(NULL,ru));
+        CHECK(!strchr(vpn_display_status(&s,ru),'\n')&&!vpn_display_hint(&s,ru));
+        s.valid=1;s.enabled=0;s.count=1;s.profiles[0].active=s.profiles[0].ikev2=1;s.ikev2_state=IKEV2_WAITING;
+        CHECK(!strcmp(vpn_display_status(&s,ru),ru?"VPN выключен":"VPN is off")&&!vpn_display_hint(&s,ru));
+        s.enabled=1;CHECK(!strcmp(vpn_display_status(&s,ru),ru?"Подтвердите push":"Approve push")&&!vpn_display_hint(&s,ru));
+        s.ikev2_state=IKEV2_CONNECTED;CHECK(!strcmp(vpn_display_status(&s,ru),ru?"IKEv2 подключён":"IKEv2 connected"));
+        s.ikev2_state=IKEV2_DISCONNECTED;CHECK(!strcmp(vpn_display_status(&s,ru),ru?"IKEv2 отключён":"IKEv2 disconnected"));
+        s.error=1;strcpy(s.error_code,"VPN_SUBSCRIPTION_FILE_REFERENCE");
+        CHECK(!strcmp(vpn_display_status(&s,ru),ru?"Ошибка VPN":"VPN error"));
+        CHECK(!strcmp(vpn_display_hint(&s,ru),ru?"Подробнее в агенте":"More details in the agent"));
+        s.busy=1;CHECK(!strcmp(vpn_display_status(&s,ru),ru?"Применение...":"Applying...")&&!vpn_display_hint(&s,ru));
+        s.busy=s.error=0;s.profiles[0].insecure_tls=1;CHECK(!strcmp(vpn_display_hint(&s,ru),ru?"Проверка TLS выключена":"TLS verification is off"));
+        s.enabled=0;CHECK(!vpn_display_hint(&s,ru));s.enabled=1;s.profiles[0].insecure_tls=s.profiles[0].ikev2=0;s.running=s.network_ok=1;
+        CHECK(!strcmp(vpn_display_status(&s,ru),ru?"VPN работает":"VPN is running")&&!vpn_display_hint(&s,ru));
+        s.running=0;CHECK(!strcmp(vpn_display_status(&s,ru),ru?"VPN не подключён":"VPN disconnected"));
+        s.count=0;CHECK(!strcmp(vpn_display_status(&s,ru),ru?"Нет профилей":"No profiles")&&vpn_display_hint(&s,ru));
+        memset(&s,0,sizeof s);
+    }
+}
 static const char *id = "01234567-89ab-cdef-0123-456789abcdef";
 static char *reply(const char *schema, const char *enabled, const char *running,
                    const char *network, const char *profiles, const char *extras) {
@@ -72,12 +94,13 @@ static void batch_tests(void){
 }
 
 int main(void) {
+    compact_status_tests();
     struct snapshot out, expected;
     memset(&out, 0x5a, sizeof out); expected = out;
     const char *json = reply("1", "true", "false", "true", profile(id, "Тест", "true"),
                              ",\"ssid\":\"Test WiFi\",\"ssid_2g\":\"2G\",\"ssid_5g\":\"5G\"");
     CHECK(vpn_parse_status(&out, json));
-    expected.valid = 1; expected.enabled = 1; expected.running = 0; expected.network_ok = 1; expected.count = 1; expected.subscription_count = 0; memset(expected.subscriptions,0,sizeof expected.subscriptions);
+    expected.valid = 1; expected.enabled = 1; expected.running = 0; expected.network_ok = 1; expected.count = 1; expected.ikev2_state = IKEV2_DISCONNECTED; expected.subscription_count = 0; memset(expected.subscriptions,0,sizeof expected.subscriptions);
     memset(expected.profiles, 0, sizeof expected.profiles);
     strcpy(expected.profiles[0].id, id); strcpy(expected.profiles[0].name, "Тест"); expected.profiles[0].active = 1;
     memset(expected.ssid, 0, sizeof expected.ssid); strcpy(expected.ssid, "Test WiFi");
@@ -86,6 +109,31 @@ int main(void) {
     CHECK(!memcmp(&out, &expected, sizeof out)); /* Including errors, telemetry, generation and layout. */
     CHECK(vpn_parse_status(&out, reply("1.0", "false", "false", "false", "[]", "")));
     CHECK(out.count == 0 && !out.enabled && !out.running && !out.network_ok && !out.ssid[0]);
+
+    const char *ike_profile="[{\"id\":\"01234567-89ab-cdef-0123-456789abcdef\",\"name\":\"Work\",\"active\":true,\"protocol\":\"ikev2\",\"update_available\":false}]";
+    CHECK(vpn_parse_status(&out,reply("1","true","true","true",ike_profile,",\"ikev2_state\":\"disconnected\",\"ikev2_connected\":false")));
+    out.busy=0;CHECK(out.profiles[0].ikev2&&vpn_can_activate(&out,0));
+    CHECK(strstr(vpn_connection_text(&out,0),"disconnected")&&strstr(vpn_connection_text(&out,1),"не подключён"));
+    CHECK(!vpn_can_activate(&out,-1)&&!vpn_can_activate(&out,1)&&!vpn_can_activate(NULL,0));
+    out.busy=1;CHECK(!vpn_can_activate(&out,0));out.busy=0;
+    CHECK(vpn_parse_status(&out,reply("1","true","true","true",ike_profile,",\"ikev2_state\":\"waiting\"")));
+    CHECK(out.ikev2_state==IKEV2_WAITING&&!vpn_can_activate(&out,0));
+    CHECK(strstr(vpn_connection_text(&out,0),"push")&&strstr(vpn_connection_text(&out,1),"телефоне"));
+    out.enabled=0;CHECK(vpn_can_activate(&out,0)&&vpn_connection_text(&out,0)==NULL);out.enabled=1;
+    CHECK(vpn_parse_status(&out,reply("1","true","true","true",ike_profile,",\"ikev2_state\":\"connected\",\"ikev2_connected\":true")));
+    CHECK(out.ikev2_state==IKEV2_CONNECTED&&!vpn_can_activate(&out,0));
+    out.enabled=0;CHECK(vpn_can_activate(&out,0)&&vpn_connection_text(&out,0)==NULL);out.enabled=1;
+    CHECK(strstr(vpn_connection_text(&out,0),"connected")&&strstr(vpn_connection_text(&out,1),"LTE"));
+    out.profiles[0].update_available=1;CHECK(vpn_can_activate(&out,0));
+    out.profiles[0].update_available=0;out.profiles[0].active=0;CHECK(vpn_can_activate(&out,0));CHECK(!vpn_connection_text(&out,0));
+    CHECK(vpn_parse_status(&out,reply("1","true","true","true",ike_profile,",\"ikev2_connected\":true")));
+    CHECK(out.ikev2_state==IKEV2_CONNECTED);
+    const char *bad_ike[]={",\"ikev2_state\":\"unknown\"",",\"ikev2_state\":1",",\"ikev2_state\":null",",\"ikev2_connected\":\"true\""};
+    for(unsigned i=0;i<sizeof bad_ike/sizeof bad_ike[0];i++)reject(reply("1","true","true","true",ike_profile,bad_ike[i]));
+    CHECK(vpn_parse_status(&out,reply("1","true","true","true",profile(id,"Other","true"),"")));
+    CHECK(!out.profiles[0].ikev2&&!vpn_can_activate(&out,0)&&!vpn_connection_text(&out,0));
+    out.enabled=0;CHECK(vpn_can_activate(&out,0));out.enabled=1;
+    out.valid=0;CHECK(!vpn_can_activate(&out,0));out.valid=1;
 
     CHECK(!vpn_can_update_subscriptions(&out));
     CHECK(vpn_parse_status(&out,reply("1","true","false","true","[]",",\"subscriptions\":[{\"id\":\"01234567-89ab-cdef-0123-456789abcdef\",\"url\":\"PRIVATE_CANARY\"}]")));
@@ -157,6 +205,7 @@ int main(void) {
 
     CHECK(!strcmp(vpn_error_code("{\"ok\":false,\"code\":\"VPN_BUSY\"}"), "VPN_BUSY"));
     CHECK(!strcmp(vpn_error_code("{\"ok\":false,\"code\":\"VPN_WIFI_SETTINGS_PENDING\"}"), "VPN_WIFI_SETTINGS_PENDING"));
+    CHECK(!strcmp(vpn_error_code("{\"ok\":false,\"code\":\"VPN_IKEV2_UNAVAILABLE\"}"),"VPN_IKEV2_UNAVAILABLE"));
     const char *ipa_errors[] = {"VPN_IPA_ENABLED", "VPN_IPA_UNSUPPORTED", "VPN_IPA_NOT_RUNNING", "VPN_IPA_PREPARE_FAILED", "VPN_IPA_RESTORE_FAILED", "VPN_IPA_STATE_INVALID"};
     for (unsigned i = 0; i < sizeof ipa_errors / sizeof ipa_errors[0]; i++) {
         snprintf(many, sizeof many, "{\"ok\":false,\"code\":\"%s\"}", ipa_errors[i]);

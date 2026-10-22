@@ -53,7 +53,7 @@ class FirmwareTests(unittest.TestCase):
         self.command('sync', ':')
         for tool in ['lua', 'nft', 'iptables', 'ip6tables', 'ebtables', 'dnsmasq', 'ip', 'ubus', 'flock']:
             self.command(tool, ':')
-        for name in ['vpnctl', 'mihomo', 'manager.sh', 'firewall.sh', 'configure.lua', 'nft-guard.nft', 'dnsmasq.conf', 'service.sh']:
+        for name in ['vpnctl', 'mihomo', 'manager.sh', 'firewall.sh', 'configure.lua', 'nft-guard.nft', 'dnsmasq.conf', 'service.sh', 'ikev2.sh', 'ikev2-updown.sh', 'nft-ikev2-guard.nft']:
             (self.stage / name).write_text('#!/bin/sh\nexit 0\n')
         self.script = self.base / 'install.sh'
         self.script.write_text(self.remap((VPN / 'install.sh').read_text()).replace('/dev/net/tun', '/dev/null'))
@@ -85,6 +85,8 @@ class FirmwareTests(unittest.TestCase):
                 self.assertEqual((self.root / 'cid').read_bytes(), self.cid.read_bytes())
                 self.assertEqual(self.init.read_bytes(), (self.stage / 'service.sh').read_bytes())
                 self.assertEqual((self.root / 'manager.sh').read_bytes(), (self.stage / 'manager.sh').read_bytes())
+                for name in ['ikev2.sh', 'ikev2-updown.sh', 'nft-ikev2-guard.nft']:
+                    self.assertEqual((self.root / name).read_bytes(), (self.stage / name).read_bytes())
                 shutil.rmtree(self.root)
                 self.init.unlink()
 
@@ -146,6 +148,9 @@ class FirmwareTests(unittest.TestCase):
         (self.root / 'configured').touch()
         (self.root / 'firewall.sh').write_text('#!/bin/sh\nexit 0\n')
         (self.root / 'firewall.sh').chmod(0o700)
+        # The measured firmware/IPA test uses the existing Mihomo backend.
+        (self.root / 'vpnctl').write_text('#!/bin/sh\n[ "$1" = backend ] || exit 90\necho mihomo\n')
+        (self.root / 'vpnctl').chmod(0o700)
         self.command('uci', '''case "$*" in *mesh_onoff) echo 0;; *close_ipa_acce) echo 1;; *) exit 90;; esac''')
         self.command('ip', 'echo "inet 192.168.50.1/24"')
         script = self.base / 'manager.sh'

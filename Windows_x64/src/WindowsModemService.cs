@@ -252,6 +252,7 @@ public sealed partial class WindowsModemService : IModemService
                         VpnSsid = vpn.Ssid, VpnPasswordMode = vpn.PasswordMode?.ToString().ToLowerInvariant() };
                     result = _snapshot.Vpn!; break;
                 case ModemOperation.ImportVpnProfile:
+                case ModemOperation.SaveVpnIkev2:
                 case ModemOperation.ImportVpnConfig:
                 case ModemOperation.ImportVpnSubscription:
                 case ModemOperation.UpdateVpnSubscription:
@@ -264,6 +265,7 @@ public sealed partial class WindowsModemService : IModemService
                     vpn = request.Operation switch
                     {
                         ModemOperation.ImportVpnProfile => await _features!.ImportVpnProfileAsync(Param(p,"vpn_secret_uri"), p?.GetValueOrDefault("vpn_profile_name"), cancellationToken),
+                        ModemOperation.SaveVpnIkev2 => await _features!.SaveVpnIkev2Async(string.IsNullOrEmpty(Param(p,"vpn_ikev2_id")) ? null : Param(p,"vpn_ikev2_id"), Param(p,"vpn_ikev2_name"), new(Param(p,"vpn_ikev2_server"), Param(p,"vpn_ikev2_server_id"), Param(p,"vpn_ikev2_username"), Param(p,"vpn_ikev2_password"), Param(p,"vpn_ikev2_ca"), Param(p,"vpn_ikev2_dns")), cancellationToken),
                         ModemOperation.ImportVpnConfig => await _features!.ImportVpnConfigAsync(Param(p,"vpn_secret_uri"), p?.GetValueOrDefault("vpn_profile_name"), cancellationToken),
                         ModemOperation.ImportVpnSubscription => await _features!.ImportVpnSubscriptionAsync(Param(p,"vpn_subscription_url"), p?.GetValueOrDefault("vpn_subscription_name"), cancellationToken),
                         ModemOperation.UpdateVpnSubscription => await _features!.UpdateVpnSubscriptionAsync(Param(p,"vpn_subscription_id"), cancellationToken),
@@ -278,6 +280,7 @@ public sealed partial class WindowsModemService : IModemService
                     result = request.Operation switch
                     {
                         ModemOperation.ImportVpnProfile or ModemOperation.ImportVpnConfig => "Профиль VPN импортирован",
+                        ModemOperation.SaveVpnIkev2 => "Профиль IKEv2 сохранён. Выберите «Сделать активным», чтобы применить настройки.",
                         ModemOperation.ImportVpnSubscription or ModemOperation.UpdateVpnSubscription => "Подписка VPN обновлена",
                         ModemOperation.DeleteVpnSubscription => "Подписка VPN удалена; профили сохранены",
                         ModemOperation.ActivateVpnProfile => "Активный профиль VPN изменён",
@@ -285,6 +288,12 @@ public sealed partial class WindowsModemService : IModemService
                         ModemOperation.DeleteVpnProfile => "Профиль VPN удалён",
                         _ => vpn.Enabled ? "Wi-Fi с VPN включён" : "Wi-Fi с VPN выключен",
                     };
+                    break;
+                case ModemOperation.LoadVpnIkev2:
+                    RequireSsh();
+                    var ikev2 = await _features!.GetVpnIkev2Async(Param(p,"vpn_profile_id"), cancellationToken);
+                    _operationValues = new Dictionary<string,string> { ["vpn_ikev2_id"] = ikev2.Id, ["vpn_ikev2_name"] = ikev2.Name, ["vpn_ikev2_server"] = ikev2.Configuration.Server, ["vpn_ikev2_server_id"] = ikev2.Configuration.ServerId, ["vpn_ikev2_username"] = ikev2.Configuration.Username, ["vpn_ikev2_ca"] = ikev2.Configuration.CaCertificate, ["vpn_ikev2_dns"] = ikev2.Configuration.Dns };
+                    result = "Настройки IKEv2 прочитаны. Пароль сохранён на модеме.";
                     break;
                 case ModemOperation.InstallVpn:
                     RequireSsh(); vpn = await _features!.InstallVpnAsync(cancellationToken);
@@ -452,7 +461,7 @@ public sealed partial class WindowsModemService : IModemService
             status.HelperReady,
             status.Configured, status.Enabled,
             status.CoreRunning, status.Ssid, status.Profiles.Select(profile => profile.Name).ToArray(), active,
-            status.Profiles.Select(p => new VpnProfileSnapshot(p.Id, p.Name, p.Transport, p.Active, p.Protocol, p.SubscriptionId, p.UpdateAvailable, p.RemovedFromSubscription, p.Warnings)).ToArray(), status.SettingsSupported, status.Subscriptions, status.LastImport);
+            status.Profiles.Select(p => new VpnProfileSnapshot(p.Id, p.Name, p.Transport, p.Active, p.Protocol, p.SubscriptionId, p.UpdateAvailable, p.RemovedFromSubscription, p.Warnings)).ToArray(), status.SettingsSupported, status.Subscriptions, status.LastImport, status.Ikev2Connected, status.Ikev2State);
     }
     private async Task<IReadOnlyList<ModemAppInfo>> ListApplicationsCoreAsync(CancellationToken ct)
     {

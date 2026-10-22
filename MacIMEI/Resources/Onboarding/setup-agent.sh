@@ -97,6 +97,50 @@ private_file() {
     plain_file "$1" && test "$(stat -c %u:%h "$1")" = 0:1 || return 1
     case "$(stat -c %a "$1")" in 600|700) ;; *) return 1;; esac
 }
+# A known older launcher may be readable by other users, but must never be
+# writable by them. Only this startup migration accepts these extra modes;
+# journal, key and payload validation continues to require private_file.
+startup_file_check() {
+    test ! -L "$1" || fail EXISTING_AGENT_STARTUP_LINK
+    test -f "$1" || fail EXISTING_AGENT_STARTUP_TYPE
+    test "$(stat -c %u "$1")" = 0 || fail EXISTING_AGENT_STARTUP_OWNER
+    test "$(stat -c %h "$1")" = 1 || fail EXISTING_AGENT_STARTUP_HARDLINK
+    startup_mode=$(stat -c %a "$1")
+    startup_normalize=0
+    case "$startup_mode" in
+      600|700) ;;
+      640|644|750|755) startup_normalize=1;;
+      ''|*[!0-7]*) fail EXISTING_AGENT_STARTUP_MODE;;
+      *) test "$((0$startup_mode & 022))" = 0 || fail EXISTING_AGENT_STARTUP_WRITABLE
+         fail EXISTING_AGENT_STARTUP_MODE;;
+    esac
+}
+# Copy through an opened descriptor and compare both metadata and bytes before
+# using the private snapshot. Never chmod or execute a shared source in place.
+copy_agent_startup() {
+    startup_origin=$1
+    startup_file_check "$startup_origin"
+    exec 9< "$startup_origin" || fail LEGACY_STARTUP_READ
+    startup_metadata=$(stat -c %d:%i:%u:%a:%h "$startup_origin")
+    test "$(stat -L -c %d:%i:%u:%a:%h /proc/self/fd/9)" = "$startup_metadata" || fail LEGACY_STARTUP_CHANGED
+    startup_digest=$(hash /proc/self/fd/9) || fail LEGACY_STARTUP_READ
+    hex "$startup_digest" && test "${#startup_digest}" = 64 || fail LEGACY_STARTUP_READ
+    startup_source=$stage/legacy-agent.private.sh
+    (set -C; : > "$startup_source") || fail LEGACY_STARTUP_COLLISION
+    cat <&9 > "$startup_source" || fail LEGACY_STARTUP_READ
+    test "$(stat -L -c %d:%i:%u:%a:%h /proc/self/fd/9)" = "$startup_metadata" &&
+    test "$(hash /proc/self/fd/9)" = "$startup_digest" &&
+    test "$(hash "$startup_source")" = "$startup_digest" || fail LEGACY_STARTUP_CHANGED
+    exec 9<&-
+    startup_source_unchanged
+    agent_launcher_valid "$startup_source" || fail LEGACY_STARTUP_GRAMMAR
+}
+startup_source_unchanged() {
+    test -n "$startup_origin" || return 0
+    startup_file_check "$startup_origin"
+    test "$(stat -c %d:%i:%u:%a:%h "$startup_origin")" = "$startup_metadata" &&
+    test "$(hash "$startup_origin")" = "$startup_digest" || fail LEGACY_STARTUP_CHANGED
+}
 # Only our generated launcher grammar may migrate from a shared legacy path.
 # This validator never evaluates or prints the shell-quoted secret.
 agent_launcher_valid() {
@@ -151,6 +195,23 @@ mount_access() {
       }
       END {exit !(count==1 && opts ~ /(^|,)rw(,|$)/ && (!need_exec || opts !~ /(^|,)noexec(,|$)/) && (type=="ext4" || type=="overlay"))}' /proc/self/mountinfo || fail MOUNT_LAYOUT
 }
+check_recovery_markers() {
+    for pending in "$base/active" "$base/lock" /data/local/tmp/zte-imei-installations/active /data/local/tmp/zte-imei-installations/lock /data/local/tmp/open-u60-transactions/active /tmp/fota_install_processing /tmp/zte-imei-app.lock; do
+        if test -e "$pending" || test -L "$pending"; then
+            # Fixed categories only: no owner tokens, paths or journal contents
+            # are exposed, and no marker is removed by this diagnostic check.
+            case "$pending" in
+              "$base/active") fail RECOVERY_PENDING_OWN_ACTIVE;;
+              "$base/lock") fail RECOVERY_PENDING_OWN_LOCK;;
+              /data/local/tmp/zte-imei-installations/active) fail RECOVERY_PENDING_LEGACY_ACTIVE;;
+              /data/local/tmp/zte-imei-installations/lock) fail RECOVERY_PENDING_LEGACY_LOCK;;
+              /data/local/tmp/open-u60-transactions/active) fail RECOVERY_PENDING_NV;;
+              /tmp/fota_install_processing) fail RECOVERY_PENDING_FOTA;;
+              /tmp/zte-imei-app.lock) fail RECOVERY_PENDING_APP_LOCK;;
+            esac
+        fi
+    done
+}
 structural_preflight() {
     for command in sh sha256sum awk grep tr sed cut stat df chmod mkdir cp mv rm rmdir cat sync pidof readlink nohup logger wc sleep id uname; do
         command -v "$command" >/dev/null 2>&1 || fail MISSING_TOOL
@@ -172,9 +233,7 @@ structural_preflight() {
     mount_access "$anchor" 1; mount_access /etc/dropbear 0
     plain_file /etc/rc.local && test -w /etc/rc.local || fail RC_LOCAL_TYPE
     sh -n /etc/rc.local || fail RC_LOCAL_SYNTAX
-    for pending in "$base/active" "$base/lock" /data/local/tmp/zte-imei-installations/active /data/local/tmp/zte-imei-installations/lock /data/local/tmp/open-u60-transactions/active /tmp/fota_install_processing /tmp/zte-imei-app.lock; do
-        test ! -e "$pending" && test ! -L "$pending" || fail RECOVERY_PENDING
-    done
+    check_recovery_markers
     data_free=$(df -Pk /data | awk 'END {print $4}')
     etc_free=$(df -Pk /etc | awk 'END {print $4}')
     case "$data_free:$etc_free" in *[!0-9:]*) fail SPACE_UNKNOWN;; esac
@@ -554,7 +613,7 @@ if test "${1:-}" = --preflight; then
     if test "$reinstall" = 1; then
         cid=$2
         if ! reconcile_completed_owner; then
-            archive_previous_boot_owner || fail RECOVERY_PENDING
+            archive_previous_boot_owner || { check_recovery_markers; fail RECOVERY_PENDING; }
         fi
     fi
     structural_preflight
@@ -658,9 +717,8 @@ if test "$profile" = linux-arm64-access; then
 fi
 plain_file /etc/rc.local || fail RC_LOCAL_TYPE
 sh -n /etc/rc.local || fail RC_LOCAL_SYNTAX
-test ! -e "$base/active" && test ! -e "$base/lock" || fail RECOVERY_PENDING
+check_recovery_markers
 test ! -e "$base/$token" || fail JOURNAL_ALREADY_EXISTS
-test ! -e /data/local/tmp/open-u60-transactions/active || fail OTHER_RECOVERY_PENDING
 
 targets=$expected_targets
 for target in $targets; do
@@ -684,6 +742,7 @@ fi
 # pinned descriptor, validated as data, and copied to the protected stage before
 # execution. Shared legacy directories are never chmodded or used for writes.
 startup_source=
+startup_origin=
 replace_orphan_agent=0
 replace_existing_agent=0
 agent_was_running=no
@@ -704,25 +763,19 @@ if test -e /data/zte-agent || test -L /data/zte-agent; then
         fi
     fi
     if test -e "$anchor/start_zte_agent.sh" || test -L "$anchor/start_zte_agent.sh"; then
-        private_file "$anchor/start_zte_agent.sh" || fail EXISTING_AGENT_STARTUP_TYPE
-        startup_source=$anchor/start_zte_agent.sh
-        sh -n "$startup_source" || fail EXISTING_AGENT_STARTUP_SYNTAX
+        startup_file_check "$anchor/start_zte_agent.sh"
+        if test "$startup_normalize" = 1; then
+            copy_agent_startup "$anchor/start_zte_agent.sh"
+        else
+            startup_source=$anchor/start_zte_agent.sh
+            sh -n "$startup_source" || fail EXISTING_AGENT_STARTUP_SYNTAX
+        fi
     elif test -e /data/local/tmp/start_zte_agent.sh || test -L /data/local/tmp/start_zte_agent.sh; then
         legacy=/data/local/tmp/start_zte_agent.sh
         for directory in /data/local /data/local/tmp; do
             test -d "$directory" && test ! -L "$directory" && test "$(stat -c %u "$directory")" = 0 || fail LEGACY_STARTUP_PARENT
         done
-        private_file "$legacy" || fail EXISTING_AGENT_STARTUP_TYPE
-        exec 9< "$legacy" || fail LEGACY_STARTUP_READ
-        metadata=$(stat -c %d:%i:%u:%a:%h "$legacy")
-        test "$(stat -L -c %d:%i:%u:%a:%h /proc/self/fd/9)" = "$metadata" || fail LEGACY_STARTUP_CHANGED
-        startup_source=$stage/legacy-agent.private.sh
-        (set -C; : > "$startup_source") || fail LEGACY_STARTUP_COLLISION
-        cat <&9 > "$startup_source" || fail LEGACY_STARTUP_READ
-        test "$(stat -L -c %d:%i:%u:%a:%h /proc/self/fd/9)" = "$metadata" &&
-        private_file "$legacy" && test "$(stat -c %d:%i:%u:%a:%h "$legacy")" = "$metadata" || fail LEGACY_STARTUP_CHANGED
-        exec 9<&-
-        agent_launcher_valid "$startup_source" || fail LEGACY_STARTUP_GRAMMAR
+        copy_agent_startup "$legacy"
     else
         # A reset may leave only an inactive binary. Snapshot it before replacing
         # it with the verified payload and a newly supplied launcher. Never run
@@ -757,6 +810,7 @@ test "$data_free" -ge 16384 && test "$etc_free" -ge 2048 || fail INSUFFICIENT_SP
 # Recheck measured identity immediately before the first persistent mutation.
 identity "$cid"
 structural_preflight
+startup_source_unchanged
 if test ! -d "$base"; then mkdir -m 700 "$base"; fi
 private_directory "$base"
 mkdir "$base/lock" || fail RECOVERY_LOCK

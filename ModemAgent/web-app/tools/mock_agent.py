@@ -75,6 +75,8 @@ def dashboard_batch():
             "hostname": "U60-Pro",
             "uptime_secs": uptime(),
             "load_avg": [0.42, 0.35, 0.31],
+            "integrate_version": "CN_ZTE_MU5250V1.0.0B31",
+            "wa_inner_version": "BD_CNMU5250V1.0.0B31",
             "kernel": "Linux version 5.15.170-perf (builder@zte) "
                       "(aarch64-openwrt-linux-musl-gcc 12.3.0) #1 SMP PREEMPT",
         },

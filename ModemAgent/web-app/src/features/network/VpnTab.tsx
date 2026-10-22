@@ -5,12 +5,13 @@ import { Button, Field, Input } from '../../ui/controls'
 import { Card } from '../../ui/primitives'
 import { toast } from '../../ui/feedback'
 import { VpnProfileDetails, type ProfileDetails } from './VpnProfileDetails'
+import { Ikev2ProfileForm } from './Ikev2ProfileForm'
 import { vpnErrors } from '../../locales/ru-vpn'
-import { activationConfirmed, profileImport, protocolLabel, updateSubscriptionsSequentially, warningText, type ImportSummary, type SubscriptionUpdate } from './vpnModel'
+import { IKEV2_DNS_HINT, IKEV2_ROUTING, activationConfirmed, profileImport, protocolLabel, updateSubscriptionsSequentially, warningText, type ImportSummary, type SubscriptionUpdate } from './vpnModel'
 
 type Profile = { id: string; name: string; transport: string; warnings: string[]; active: boolean; protocol?: string; subscription_id?: string; update_available?: boolean; removed_from_subscription?: boolean }
 type Subscription = { id: string; name: string; host: string; updated_at: string | number; profile_count: number }
-type Status = { schema_version: number; installed: boolean; enabled?: boolean; core_running?: boolean;
+type Status = { schema_version: number; installed: boolean; enabled?: boolean; core_running?: boolean; ikev2_connected?: boolean; ikev2_state?: 'waiting' | 'connected' | 'disconnected';
   configured?: boolean; network_ok?: boolean; ssid?: string; active_profile?: string; recovery_pending?: boolean; screen?: { installed?: boolean; integrated?: boolean; active: boolean; ready: boolean; last_error?: string }; profiles: Profile[]; subscriptions?: Subscription[]; last_import?: ImportSummary }
 
 export default function VpnTab() {
@@ -28,8 +29,11 @@ export default function VpnTab() {
   const [error, setError] = useState('')
   const [subscriptionUpdates, setSubscriptionUpdates] = useState<SubscriptionUpdate[]>([])
   const [updatingSubscriptions, setUpdatingSubscriptions] = useState(0)
+  const [importKind, setImportKind] = useState<'standard' | 'ikev2'>('standard')
+  const [ikev2Editing, setIkev2Editing] = useState<ProfileDetails['profile'] | undefined>(undefined)
   const generation = useRef(0)
   const changing = useRef(false)
+  const ikev2State = status?.ikev2_state ?? (status?.ikev2_connected ? 'connected' : 'disconnected')
   function showError(e: unknown) {
     const message = e instanceof ApiError && e.code ? vpnErrors[e.code] : undefined
     setError(message ?? 'VPN settings could not be updated. Refresh the status before retrying.')
@@ -52,14 +56,19 @@ export default function VpnTab() {
     // The request and translation helpers do not depend on the selected language.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [busy])
-  async function change(body: Record<string, unknown>) {
-    if (changing.current) return
+  async function change(body: Record<string, unknown>): Promise<boolean> {
+    if (changing.current) return false
     changing.current = true; generation.current++
     setBusy(true); setError('')
     try {
       const value = await req('POST', '/api/vpn/request', body, undefined, 240_000) as unknown as Status
       if (body.action === 'activate' && !activationConfirmed(value, body.id)) {
-        setStatus(value); setError('The modem did not confirm profile activation. Refresh status before retrying.'); return
+        setStatus(value); setError('The modem did not confirm profile activation. Refresh status before retrying.'); return false
+      }
+      if (body.action === 'save_ikev2') {
+        const saved = value.schema_version === 1 && Array.isArray(value.profiles) && value.profiles.some(profile => profile.protocol === 'ikev2' && profile.name === body.name && (body.id ? profile.id === body.id : !status?.profiles.some(previous => previous.id === profile.id)))
+        if (!saved) { setError('The modem did not confirm the IKEv2 profile. Refresh status before retrying.'); return false }
+        setDetails(null)
       }
       if (body.action === 'screen_open' || body.action === 'screen_close') {
         setStatus(current => current ? { ...current, screen: value.screen } : current)
@@ -75,7 +84,8 @@ export default function VpnTab() {
       if (body.action === 'import' || body.action === 'import_config') { setUri(''); setName(''); toast(t('VPN profile checked and saved')) }
       else if (body.action === 'screen_open' || body.action === 'screen_close') toast(t('Page selected. Wake and unlock the modem display.'))
       else toast(t('VPN settings saved'))
-    } catch (e) { showError(e) }
+      return true
+    } catch (e) { showError(e); return false }
     finally { changing.current = false; setBusy(false) }
   }
   async function updateAllSubscriptions() {
@@ -98,14 +108,17 @@ export default function VpnTab() {
       } catch { setError('Could not refresh the final VPN status. Individual subscription results are shown below.') }
     } finally { changing.current = false; setBusy(false); setUpdatingSubscriptions(0) }
   }
-  async function showDetails(id: string) {
+  async function showDetails(id: string, editIkev2 = false) {
     if (changing.current) return
     changing.current = true; generation.current++
     setBusy(true); setError(''); setDetails(null)
     try {
       const value = await req('POST', '/api/vpn/request', { action: 'details', id }) as unknown as ProfileDetails
       if (value.schema_version !== 1 || value.profile?.id !== id || !value.profile.proxy) throw new Error('Invalid profile')
-      setDetails(value)
+      if (editIkev2) {
+        if (value.profile.proxy.type !== 'ikev2') throw new Error('Invalid profile')
+        setIkev2Editing(value.profile); setImportKind('ikev2')
+      } else setDetails(value)
     } catch (e) { showError(e) }
     finally { changing.current = false; setBusy(false) }
   }
@@ -123,7 +136,13 @@ export default function VpnTab() {
         <div className="space-y-2 text-[13px]">
           <p className="font-semibold text-ink">{status.ssid}</p>
           <p className="text-ink2">{t('Network')}: {status.enabled ? t('Enabled') : t('Disabled')} · {t('VPN core')}: {status.core_running ? t('VPN core running') : t('VPN core stopped')}</p>
-          <p className="text-ink2">{t('Copies your main Wi-Fi password during setup. Direct internet access is blocked when the VPN is unavailable. The modem screen can also switch this network on and off.')}</p>
+          <p className="text-ink2">{t('Turning off VPN Wi-Fi also disconnects VPN. Turning it on connects the selected profile.')}</p>
+          {status.profiles.some(profile => profile.active && profile.protocol === 'ikev2') ? <>
+            <p className="text-ink2">{t('IKEv2 tunnel')}: {t(ikev2State === 'connected' ? 'Connected' : ikev2State === 'waiting' ? 'Waiting for connection or push approval' : 'Disconnected')}</p>
+            <p className="text-ink2">{t(IKEV2_ROUTING)}</p>
+            <p className="text-ink2">{t(IKEV2_DNS_HINT)}</p>
+            <p className="text-ink2">{t('After starting the connection, approve the push in your authentication app. If the request expires, reconnect.')}</p>
+          </> : <p className="text-ink2">{t('Copies your main Wi-Fi password during setup. Direct internet access is blocked when the VPN is unavailable. The modem screen can also switch this network on and off.')}</p>}
           {status.configured && !status.network_ok && <p className="text-danger">{t('The VPN network configuration needs checking. Keep this network off until it is repaired.')}</p>}
           <div className="flex flex-wrap gap-2 pt-2">
             <Button loading={busy} disabled={!status.active_profile} onClick={() => void change({ action: 'set_enabled', enabled: !status.enabled })}>{status.enabled ? t('Turn off VPN Wi-Fi') : t('Turn on VPN Wi-Fi')}</Button>
@@ -144,8 +163,9 @@ export default function VpnTab() {
             </div>
             <div className="flex flex-wrap gap-2">
               <Button disabled={busy} onClick={() => void showDetails(profile.id)}>{t('Profile details')}</Button>
+              {profile.protocol === 'ikev2' && <Button disabled={busy} onClick={() => void showDetails(profile.id, true)}>{t('Edit IKEv2 profile')}</Button>}
               <Button disabled={busy} onClick={() => { setEditing(profile.id); setEditedName(profile.name) }}>{t('Rename')}</Button>
-              <Button disabled={busy || (profile.active && !profile.update_available)} onClick={() => void change({ action: 'activate', id: profile.id })}>{t(profile.update_available ? 'Apply update' : 'Activate')}</Button>
+              <Button disabled={busy || (status.enabled && profile.active && !profile.update_available && (profile.protocol !== 'ikev2' || ikev2State !== 'disconnected'))} onClick={() => void change({ action: 'activate', id: profile.id })}>{t(profile.update_available ? 'Apply update' : profile.protocol === 'ikev2' ? 'Connect' : 'Activate')}</Button>
               <Button disabled={busy || profile.active} onClick={() => void change({ action: 'delete', id: profile.id })}>{t('Delete')}</Button>
             </div>
             {editing === profile.id && <form className="flex w-full flex-wrap items-end gap-2" onSubmit={e => { e.preventDefault(); void change({ action: 'rename', id: profile.id, name: editedName }) }}>
@@ -158,7 +178,11 @@ export default function VpnTab() {
         </div>
       </Card>
       <Card title={t('Import VPN profile')}>
-        <form className="space-y-3" onSubmit={e => { e.preventDefault(); void change(profileImport(uri, name)) }}>
+        <div className="mb-4 flex flex-wrap gap-2" role="group" aria-label={t('Profile format')}>
+          <Button disabled={busy} aria-pressed={importKind === 'standard'} onClick={() => { setImportKind('standard'); setIkev2Editing(undefined) }}>{t('Link or configuration')}</Button>
+          <Button disabled={busy} aria-pressed={importKind === 'ikev2'} onClick={() => { setImportKind('ikev2'); setIkev2Editing(undefined) }}>{t('IKEv2 / IPsec')}</Button>
+        </div>
+        {importKind === 'ikev2' ? <Ikev2ProfileForm key={ikev2Editing?.id ?? 'new'} profile={ikev2Editing} busy={busy} onSave={change} onCancel={() => { setIkev2Editing(undefined); setImportKind('standard') }} /> : <form className="space-y-3" onSubmit={e => { e.preventDefault(); void change(profileImport(uri, name)) }}>
           <Field label={t('Profile name (optional)')}><Input value={name} onChange={e => setName(e.target.value)} maxLength={64} disabled={busy} autoComplete="off" /></Field>
           <Field label={t('VPN link or configuration')}><textarea className="min-h-28 w-full rounded-lg border border-line/15 bg-surface p-3 font-mono text-xs text-ink" value={uri} onChange={e => setUri(e.target.value)} placeholder={t('VPN link or configuration')} maxLength={32768} disabled={busy} autoComplete="off" autoCapitalize="none" spellCheck={false} /></Field>
           <Field label={t('Open profile file')}><input type="file" accept=".conf,.txt,text/plain" disabled={busy} onChange={e => {
@@ -169,7 +193,7 @@ export default function VpnTab() {
           }} /></Field>
           <p className="text-xs text-ink2">{t('Supports VLESS and Hysteria2 links, and WireGuard, AmneziaWG 2 and 3.1 files. Import saves a profile; activation is a separate step.')}</p>
           <Button type="submit" variant="primary" loading={busy} disabled={!uri.trim()}>{t('Check and import')}</Button>
-        </form>
+        </form>}
       </Card>
       <Card title={t('VPN subscriptions')}>
         <div className="mb-3 flex flex-wrap items-center gap-3">

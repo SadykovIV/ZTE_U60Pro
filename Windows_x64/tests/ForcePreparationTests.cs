@@ -65,7 +65,7 @@ internal static class ForcePreparationTests
                     if(command.Contains(" -- '--preflight' ")||command.Contains(" -- '--reinstall' ")){preflights++;throw new Exception("Replay attempted");}
                     if(command.Contains(" -- '--verify-not-started' ")){body="INSTALL_ERROR NOT_STARTED_JOURNAL";code=1;}
                     else if(command.Contains(" -- '--verify-rollback' ")){verifications++;Check(!command.Contains(" -- '--reinstall' "),"rollback verification never receives a mutation flag");body="INSTALL_ROLLBACK_VERIFIED "+journal;if(scenario=="rollback-unknown"){body="unverified";code=71;}}
-                    else if(command.Contains("cat '"+journal+"/state'"))body=scenario=="pending"?"pending":"rolled-back";
+                    else if(command.Contains("ZTE_INSTALL_STATE_PROBE"))body=scenario=="pending"?"INSTALL_STATE pending":"INSTALL_STATE rolled-back";
                     else if(command.Contains("observed_hash()"))body=ImeiEngine.FirmwareHash+"  /firmware/image/modem.b16\n"+ImeiEngine.RouterHash+"  /usr/bin/diag-router\n"+Cid+"\n"+Boot;
                     else throw new Exception("Unexpected resume operation");
                     return Task.FromResult(Reply(prefix+body+"\n"+marker+code+"\n"));

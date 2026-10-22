@@ -11,7 +11,7 @@ use std::{
 };
 const HELPER: &str = "/data/zte-vpn/vpnctl";
 pub const REQUEST_LIMIT: usize = 32 * 1024 * 1024;
-const HELPER_SHA: &str = "8aaece533e2503c7a501497bb1bf191f37a0ffbba067e7a7ff3a4c6f9623673f";
+const HELPER_SHA: &str = "46257e8e24397f097b3ce3e53067ad59b265803f66aeb2da6d216b05dd2e5db7";
 
 // Keep reviewed controllers usable when only the agent is updated. The build
 // retains the previous source pin here; no device-provided hash is accepted.
@@ -23,6 +23,12 @@ const PREVIOUS_HELPER_SHAS: &[&str] = &[
     "82a8b6655ff6cd43938ffe3735e8841599ef6116bf33079d8d203db9415ca3f2",
     "b5f581427afd423be3931473db2ce4b496a387b685ab3c48adf26cc597000f9a",
     "e00749ed2a6273c95a4b0563212313c81e54928f6564fdbd8f9616d12a4df6ba",
+    "8aaece533e2503c7a501497bb1bf191f37a0ffbba067e7a7ff3a4c6f9623673f",
+    "3b572cf943d16a66dae1d62515b216eceaf77d397035320eb3c08a5db0e21fc4",
+    "a35d788005d4150cd909f85afc667073a03febd24b50a708facf506b051c8a65",
+    "ff5859edb44d83fad9723ccdc142f28ce918b02fae3da929667726d32746986c",
+    "4e8b92cc5089200f3fced24130e47e0918bf8931989af034f709344a42cd5b0d",
+    "61ccaf5fa0361178dd6fe4a0104d964168f4f79a8453a8617a80a7403240d393",
 ];
 fn supported_helper(hash: &str) -> bool {
     hash == HELPER_SHA || PREVIOUS_HELPER_SHAS.contains(&hash)
@@ -87,11 +93,7 @@ fn execute(body: &Value) -> (u16, Value) {
     }
     let code = reply["code"]
         .as_str()
-        .filter(|s| {
-            s.starts_with("VPN_")
-                && s.len() < 64
-                && s.bytes().all(|b| b.is_ascii_uppercase() || b == b'_')
-        })
+        .filter(|s| public_error_code(s))
         .unwrap_or("VPN_OPERATION_FAILED");
     error(
         if code == "VPN_BUSY" || code == "VPN_OTHER_TRANSACTION" {
@@ -101,6 +103,10 @@ fn execute(body: &Value) -> (u16, Value) {
         },
         code,
     )
+}
+fn public_error_code(code: &str) -> bool {
+    code.starts_with("VPN_") && code.len() < 64
+        && code.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
 }
 pub fn status() -> (u16, Value) {
     if matches!(fs::symlink_metadata("/data/zte-vpn"),Err(e) if e.kind()==std::io::ErrorKind::NotFound)
@@ -122,9 +128,16 @@ pub fn request(bytes: &[u8]) -> (u16, Value) {
     let Some(action) = body["action"].as_str() else {
         return error(400, "VPN_INVALID_REQUEST");
     };
-    if ![
+    if !public_action(action) {
+        return error(400, "VPN_INVALID_REQUEST");
+    }
+    execute(&body)
+}
+fn public_action(action: &str) -> bool {
+    [
         "import",
         "import_config",
+        "save_ikev2",
         "subscription_import",
         "subscription_update",
         "subscription_delete",
@@ -140,15 +153,19 @@ pub fn request(bytes: &[u8]) -> (u16, Value) {
         "recover",
     ]
     .contains(&action)
-    {
-        return error(400, "VPN_INVALID_REQUEST");
-    }
-    execute(&body)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn structured_ikev2_save_is_a_public_action() {
+        assert!(public_action("save_ikev2"));
+        assert!(!public_action("ipsec"));
+        assert!(!public_action("shell"));
+        assert!(public_error_code("VPN_IKEV2_INVALID_CERTIFICATE"));
+        assert!(!public_error_code("VPN_IKEV2_error: password"));
+    }
     #[test]
     fn previous_b31_controller_remains_supported_after_agent_update() {
         assert!(supported_helper(HELPER_SHA));

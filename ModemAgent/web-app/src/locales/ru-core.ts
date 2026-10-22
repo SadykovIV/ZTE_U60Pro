@@ -125,6 +125,8 @@ export const ruCore: Record<string, string> = {
   "Device": "Устройство",
   "Model": "Модель",
   "Firmware": "Прошивка",
+  "Internal firmware": "Внутренняя версия",
+  "Kernel": "Ядро",
   "Uptime": "Время работы",
   "CPU": "Процессор",
   "Memory": "Оперативная память",

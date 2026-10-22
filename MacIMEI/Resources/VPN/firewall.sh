@@ -12,13 +12,15 @@ add6() { chain=$1; shift; ip6 -C "$chain" "$@" 2>/dev/null || ip6 -A "$chain" "$
 hook4() { table=$1; chain=$2; target=$3; ipt -t "$table" -C "$chain" -j "$target" 2>/dev/null || ipt -t "$table" -I "$chain" 1 -j "$target"; }
 hook6() { ip6 -C "$1" -j "$2" 2>/dev/null || ip6 -I "$1" 1 -j "$2"; }
 remove() {
-    nft delete table inet zte_vpn_guard 2>/dev/null || true
-    for spec in 'filter INPUT ZVPN_IN' 'filter FORWARD ZVPN_FW' 'mangle PREROUTING ZVPN_PRE' 'nat PREROUTING ZVPN_DNS'; do
+    [ "${KEEP_GUARD:-0}" = 1 ] || nft delete table inet zte_vpn_guard 2>/dev/null || true
+    for spec in 'filter INPUT ZVPN_IN' 'filter FORWARD ZVPN_FW' 'mangle PREROUTING ZVPN_PRE' 'mangle FORWARD ZVPN_PRE' 'nat PREROUTING ZVPN_DNS' 'nat POSTROUTING ZVPN_IKE_NAT'; do
         set -- $spec
         while ipt -t "$1" -D "$2" -j "$3" 2>/dev/null; do :; done
         ipt -t "$1" -F "$3" 2>/dev/null || true
         ipt -t "$1" -X "$3" 2>/dev/null || true
     done
+    ipt -t nat -F ZVPN_IKE_SNAT 2>/dev/null || true
+    ipt -t nat -X ZVPN_IKE_SNAT 2>/dev/null || true
     for spec in 'INPUT ZVPN6_IN' 'FORWARD ZVPN6_FW'; do
         set -- $spec
         while ip6 -D "$1" -j "$2" 2>/dev/null; do :; done
@@ -34,12 +36,25 @@ remove() {
     ip rule del priority 19000 fwmark 0x40000000/0x40000000 lookup 19090 2>/dev/null || true
     ip route del local 0.0.0.0/0 dev lo table 19090 2>/dev/null || true
     ip route del default dev zvpn-tun table 19090 2>/dev/null || true
+    rm -f "$ROOT/firewall.backend"
 }
 if [ "${1:-apply}" = remove ]; then remove; exit; fi
 [ -f "$ROOT/configured" ] || exit 0
+backend=$("$ROOT/vpnctl" backend)
+case "$backend" in mihomo) guard=nft-guard.nft;; ikev2) guard=nft-ikev2-guard.nft;; *) exit 1;; esac
 # This separate nftables table survives fw3's legacy iptables reload/flush.
-if ! nft list table inet zte_vpn_guard >/dev/null 2>&1; then
-    nft -f "$ROOT/nft-guard.nft"
+if [ "$(cat "$ROOT/firewall.backend" 2>/dev/null || true)" != "$backend" ]; then
+    # Replace the guard in one nft transaction before touching legacy rules.
+    { if nft list table inet zte_vpn_guard >/dev/null 2>&1; then printf 'delete table inet zte_vpn_guard\n'; fi; cat "$ROOT/$guard"; } > "$ROOT/firewall-next.nft"
+    nft -f "$ROOT/firewall-next.nft"
+    KEEP_GUARD=1 remove
+    # Existing guest NAT mappings would otherwise retain the previous DNS/proxy.
+    if command -v conntrack >/dev/null 2>&1; then
+        conntrack -D -s 192.168.50.0/24 >/dev/null 2>&1 || true
+        conntrack -D -d 192.168.50.0/24 >/dev/null 2>&1 || true
+    fi
+elif ! nft list table inet zte_vpn_guard >/dev/null 2>&1; then
+    nft -f "$ROOT/$guard"
 fi
 bridge_sysctl() {
     # netifd can create/remove the two families at different boot stages.
@@ -51,6 +66,7 @@ bridge_sysctl /proc/sys/net/ipv6/conf/br-vpn/disable_ipv6 1
 bridge_sysctl /proc/sys/net/ipv4/conf/br-vpn/rp_filter 0
 
 # IPv4 guard remains while the proxy is stopped. Only UDP into our TUN may forward.
+if [ "$backend" = mihomo ]; then
 for c in ZVPN_IN ZVPN_FW; do ipt -N "$c" 2>/dev/null || true; done
 add4 filter ZVPN_FW -i br-vpn -j DROP
 add4 filter ZVPN_FW -o br-vpn -j DROP
@@ -73,6 +89,7 @@ for proto in tcp udp; do
     add4 filter ZVPN_IN ! -i lo -p "$proto" -m multiport --dports 17874,17890,17894 -j DROP
 done
 hook4 filter INPUT ZVPN_IN
+fi
 for c in ZVPN6_IN ZVPN6_FW; do ip6 -N "$c" 2>/dev/null || true; done
 add6 ZVPN6_IN -i br-vpn -j DROP
 add6 ZVPN6_FW -i br-vpn -j DROP
@@ -105,6 +122,12 @@ for spec in 'INPUT ZVPN_L2IN' 'FORWARD ZVPN_L2FW' 'OUTPUT ZVPN_L2OUT'; do
     ebtables -L "$1" | grep -Fqx -- "-j $2" || ebtables -I "$1" 1 -j "$2"
 done
 
+if [ "$backend" = ikev2 ]; then
+    "$ROOT/ikev2.sh" firewall
+    printf '%s\n' "$backend" > "$ROOT/firewall.backend"
+    exit 0
+fi
+
 ipt -t mangle -N ZVPN_PRE 2>/dev/null || true
 add4 mangle ZVPN_PRE -i br-vpn -p udp --dport 67 -j ACCEPT
 # DNS always goes to our resolver, including manually specified client DNS.
@@ -134,3 +157,4 @@ if ip link show zvpn-tun >/dev/null 2>&1; then
 fi
 ip rule show | grep -q '^19000:.*fwmark 0x40000000/0x40000000.*lookup 19090' ||
     ip rule add priority 19000 fwmark 0x40000000/0x40000000 lookup 19090
+printf '%s\n' "$backend" > "$ROOT/firewall.backend"

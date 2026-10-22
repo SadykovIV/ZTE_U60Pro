@@ -5,19 +5,24 @@ umask 077
 ROOT=/data/zte-vpn
 stage=${1:-}
 
-helper_sha=8aaece533e2503c7a501497bb1bf191f37a0ffbba067e7a7ff3a4c6f9623673f
-manager_sha=ef5989252bbcdea112f793234827105e320cb9e8fdfd1fd699e63b33833fa94c
+helper_sha=46257e8e24397f097b3ce3e53067ad59b265803f66aeb2da6d216b05dd2e5db7
+manager_sha=f4c6145fb08b13ff6e9b68caa399beee373e7c6daba2a4648b4ee70eeb1958a0
 configure_sha=0c392c8302d83ef4a12ed5669092f95637b7d3c5153677a9525642d8601575e8
-firewall_sha=7d8ce304153612d4097c78738aa0f23c5cc420060b76a48c26dd668ac2657c99
+firewall_sha=91a8bc05543e34916e37dfa0b0ccc9394c102c2e0f13d590340bc5de3646848d
 nft_guard_sha=4616ff9a72c5e5c6c34e7936600bb161af757dd357ab14de34670db90b34f23a
 dnsmasq_sha=a1c68c3e695b9f599bec5821871f6ba89a3543ac587627754573628ac9ca66b1
-service_sha=3411d076729a717024d50ae8feb0777acf7ab792bb3878cb16ab7b282cbde63a
+service_sha=a171e7764a2355b2ff86c0c0f87385f9029cddf92c5d1a2f8dd417f6f58b2af9
 network_stock_sha=093e5461be5ea5d23d24522374a27b9a134c4932df3c89b3b756274f123ac508
 # Keep the executable last: it verifies this complete set of runtime bytes.
-runtime_files='manager.sh firewall.sh configure.lua nft-guard.nft dnsmasq.conf service.sh vpnctl'
+base_runtime_files='manager.sh firewall.sh configure.lua nft-guard.nft dnsmasq.conf service.sh vpnctl'
+new_runtime_files='ikev2.sh ikev2-updown.sh nft-ikev2-guard.nft'
+runtime_files="manager.sh firewall.sh configure.lua nft-guard.nft dnsmasq.conf service.sh $new_runtime_files vpnctl"
+ikev2_sha=7ca9acbcac8cac4124769917d9c8a8528f27a675e48338437d4c9cd41cc3c5c0
+ikev2_updown_sha=4cf9e55f0730a34a8d5be0b5c3297b042ec367a7cf851c6e841cbebca89c3b32
+nft_ikev2_sha=28e1a636ff4f806eb17d79f14c95c11b740dc80826a123635896e664fedf64d1
 hash() { sha256sum "$1" | awk '{print $1}'; }
 known() {
-    case "$1" in 8f9e82ca45177fc19ffd4d7663764fa44750e05eed86ef83567ed2dec5ce7827|96a4717fe085a80479675486d23b260c3254084638d195d933d4d9d944b98e88|48b9af93098b4b1b31754a48707ac066a39977bcc0db0cc438ead64c62322bd4|572e2e1133cebb690584bda8b5ac047336451bc26c6a5e37522a756b6254fac5|80f16fafe203d661d6a90686c90a25c61eea38cf9e83e002c1cdffea85d02f23|3c8a139d9ba6f3372b009e9e0fb5ed9ff27faf1675dcb654f09eedec851661f3|e2ffd02708220d332bf31f7f1f4c3abe369fbc2af1665af885c1f4375a884ff0|c67f5fdc44ee1f90c38dca15fd452c18743def22f776018aaac270863eafb229|bdc6aa07f217ce38e34e113d279e0d983d307fefd0f58027a9c221861f953dbf|9c2e3c21eecace7031c4029c969efdec44241f000716447df805f3020dfce95e|29e98c9301609b4f20ea94c7e8b208c25786690be451bae05145721a35b91179|9e8b1a737888468a4be6a010a915524b84440037802c6cfc6a5e251abf0e81ce|cdb01d27775d61bcb3ae14a8d124ccbab683f940f1dcfd2adffa43a6b7b462f0|3142fb503e64ddba79d523be3c87f0344d6efa78673e30a4b740714d8e9389ca|f620dab27f951c7de2de77a89376975b51c79f57f8a8a24cec95392c9c61eea4|1cc33e3825a556a825e83392675c254ef22f738660d1016ae1413f7669f88231|a388d8fa771b3e4bb46d500202ff750df410b4e6608d0f4902288b6aad16d731|7a12d8b869d064229270a264e8de9adf64f620337995fb186854c35cadbee068|7a8b84c3502e711c6b66c943f883a984dd9ed82da41455fc083ed0cc7d44b6fb|1c0e3e6d308a6c4b161faf896a00437b8e011fe5b7eff7969b9870c85d8d0c5c|f5e1c9e627e3e978ff535de79b95ff920d7318e7ea3ce713e5b174efe313ca0c|cf15a6290316dd6832873e35972831a590d70cf0734eb93dbcd96aab87fab6f1|b2c3fcfafeccd50fa3000ad5f8f66f1e42ff157b295cdda11dddd31571612af7|fe1f6d535ccee6ec0f9333c01108b00f35006209850ed641023dbb937dd30b48|82a8b6655ff6cd43938ffe3735e8841599ef6116bf33079d8d203db9415ca3f2|82b2ef604c40bf523affa42f7ee85bd41155fac50a2e24af51a97a01b25dc7b9|0cccacc9fbaf10c16e6d6279e5d2972c5d2096dda8d6cf90c85e236d944f6ddf|b5f581427afd423be3931473db2ce4b496a387b685ab3c48adf26cc597000f9a|e00749ed2a6273c95a4b0563212313c81e54928f6564fdbd8f9616d12a4df6ba|"$helper_sha") return 0;; *) return 1;; esac
+    case "$1" in 8f9e82ca45177fc19ffd4d7663764fa44750e05eed86ef83567ed2dec5ce7827|96a4717fe085a80479675486d23b260c3254084638d195d933d4d9d944b98e88|48b9af93098b4b1b31754a48707ac066a39977bcc0db0cc438ead64c62322bd4|572e2e1133cebb690584bda8b5ac047336451bc26c6a5e37522a756b6254fac5|80f16fafe203d661d6a90686c90a25c61eea38cf9e83e002c1cdffea85d02f23|3c8a139d9ba6f3372b009e9e0fb5ed9ff27faf1675dcb654f09eedec851661f3|e2ffd02708220d332bf31f7f1f4c3abe369fbc2af1665af885c1f4375a884ff0|c67f5fdc44ee1f90c38dca15fd452c18743def22f776018aaac270863eafb229|bdc6aa07f217ce38e34e113d279e0d983d307fefd0f58027a9c221861f953dbf|9c2e3c21eecace7031c4029c969efdec44241f000716447df805f3020dfce95e|29e98c9301609b4f20ea94c7e8b208c25786690be451bae05145721a35b91179|9e8b1a737888468a4be6a010a915524b84440037802c6cfc6a5e251abf0e81ce|cdb01d27775d61bcb3ae14a8d124ccbab683f940f1dcfd2adffa43a6b7b462f0|3142fb503e64ddba79d523be3c87f0344d6efa78673e30a4b740714d8e9389ca|f620dab27f951c7de2de77a89376975b51c79f57f8a8a24cec95392c9c61eea4|1cc33e3825a556a825e83392675c254ef22f738660d1016ae1413f7669f88231|a388d8fa771b3e4bb46d500202ff750df410b4e6608d0f4902288b6aad16d731|7a12d8b869d064229270a264e8de9adf64f620337995fb186854c35cadbee068|7a8b84c3502e711c6b66c943f883a984dd9ed82da41455fc083ed0cc7d44b6fb|1c0e3e6d308a6c4b161faf896a00437b8e011fe5b7eff7969b9870c85d8d0c5c|f5e1c9e627e3e978ff535de79b95ff920d7318e7ea3ce713e5b174efe313ca0c|cf15a6290316dd6832873e35972831a590d70cf0734eb93dbcd96aab87fab6f1|b2c3fcfafeccd50fa3000ad5f8f66f1e42ff157b295cdda11dddd31571612af7|fe1f6d535ccee6ec0f9333c01108b00f35006209850ed641023dbb937dd30b48|82a8b6655ff6cd43938ffe3735e8841599ef6116bf33079d8d203db9415ca3f2|82b2ef604c40bf523affa42f7ee85bd41155fac50a2e24af51a97a01b25dc7b9|0cccacc9fbaf10c16e6d6279e5d2972c5d2096dda8d6cf90c85e236d944f6ddf|b5f581427afd423be3931473db2ce4b496a387b685ab3c48adf26cc597000f9a|e00749ed2a6273c95a4b0563212313c81e54928f6564fdbd8f9616d12a4df6ba|8aaece533e2503c7a501497bb1bf191f37a0ffbba067e7a7ff3a4c6f9623673f|3b572cf943d16a66dae1d62515b216eceaf77d397035320eb3c08a5db0e21fc4|a35d788005d4150cd909f85afc667073a03febd24b50a708facf506b051c8a65|ff5859edb44d83fad9723ccdc142f28ce918b02fae3da929667726d32746986c|4e8b92cc5089200f3fced24130e47e0918bf8931989af034f709344a42cd5b0d|61ccaf5fa0361178dd6fe4a0104d964168f4f79a8453a8617a80a7403240d393|"$helper_sha") return 0;; *) return 1;; esac
 }
 
 # Only fixed codes leave this script. Never echo helper output, state or profiles.
@@ -47,7 +52,7 @@ integrity() {
 same_device() { [ "$(cat "$ROOT/cid")" = "$(cat /sys/block/mmcblk0/device/cid)" ] && [ "$(cat "$ROOT/cid")" = "$cid" ]; }
 service=/etc/init.d/zte_vpn
 links='S99zte_vpn K01zte_vpn'
-state_names='configured configuring network-init.sha256 backup backup-deltas uci ipa-backup ipa-restored ipa-uci ipa-runtime'
+state_names='configured configuring network-init.sha256 backup backup-deltas uci ipa-backup ipa-restored ipa-uci ipa-runtime runtime-disabled'
 backup="$ROOT/controller-upgrade"
 restore() {
     [ -f "$backup/ready" ] && [ ! -L "$backup/ready" ] || return 0
@@ -58,6 +63,10 @@ restore() {
     restore_files='manager.sh configure.lua vpnctl'
     if [ -e "$backup/runtime-v2" ]; then
         plain "$backup/runtime-v2" && [ "$(cat "$backup/runtime-v2")" = 2 ] || return 1
+        restore_files=$base_runtime_files
+    fi
+    if [ -e "$backup/runtime-v3" ]; then
+        plain "$backup/runtime-v3" && [ "$(cat "$backup/runtime-v3")" = 3 ] || return 1
         restore_files=$runtime_files
     fi
     if [ -d "$backup/planned" ]; then
@@ -92,8 +101,14 @@ restore() {
         done
     fi
     for name in $restore_files; do
-        cp -p "$backup/$name" "$ROOT/$name.restore" || return 1
-        mv "$ROOT/$name.restore" "$ROOT/$name" || return 1
+        if [ -f "$backup/$name" ]; then
+            cp -p "$backup/$name" "$ROOT/$name.restore" || return 1
+            mv "$ROOT/$name.restore" "$ROOT/$name" || return 1
+        else
+            case " $new_runtime_files " in *" $name "*) ;; *) return 1;; esac
+            plain "$backup/absent-$name" || return 1
+            rm -f "$ROOT/$name" || return 1
+        fi
     done
     cp -p "$backup/network" /etc/init.d/network.vpn-restore && mv /etc/init.d/network.vpn-restore /etc/init.d/network || return 1
     if [ -f "$backup/service-v1" ]; then
@@ -154,7 +169,9 @@ for file in $runtime_files; do plain "$stage/$file" || fail PAYLOAD; done
 [ "$(hash "$stage/vpnctl")" = "$helper_sha" ] && [ "$(hash "$stage/manager.sh")" = "$manager_sha" ] &&
 [ "$(hash "$stage/configure.lua")" = "$configure_sha" ] && [ "$(hash "$stage/firewall.sh")" = "$firewall_sha" ] &&
 [ "$(hash "$stage/nft-guard.nft")" = "$nft_guard_sha" ] && [ "$(hash "$stage/dnsmasq.conf")" = "$dnsmasq_sha" ] &&
-[ "$(hash "$stage/service.sh")" = "$service_sha" ] || fail PAYLOAD
+[ "$(hash "$stage/service.sh")" = "$service_sha" ] &&
+[ "$(hash "$stage/ikev2.sh")" = "$ikev2_sha" ] && [ "$(hash "$stage/ikev2-updown.sh")" = "$ikev2_updown_sha" ] &&
+[ "$(hash "$stage/nft-ikev2-guard.nft")" = "$nft_ikev2_sha" ] || fail PAYLOAD
 [ ! -e /tmp/zte-vpn-screen ] && [ ! -L /tmp/zte-vpn-screen ] || fail SCREEN_BUSY
 plain "$ROOT/cid" || fail DEVICE_CHANGED
 cid=$(cat "$ROOT/cid"); same_device || fail DEVICE_CHANGED
@@ -204,15 +221,26 @@ archive="$ROOT/controller-reset-${stage##*/zte-vpn-agent-}"
 [ "$reset" = 0 ] || { [ ! -e "$archive" ] && [ ! -L "$archive" ]; } || fail SNAPSHOT
 phase=SNAPSHOT
 mkdir "$backup"
-for file in $runtime_files; do cp -p "$ROOT/$file" "$backup/$file"; done
+for file in $runtime_files; do
+    if [ -e "$ROOT/$file" ] || [ -L "$ROOT/$file" ]; then
+        plain "$ROOT/$file" || fail SNAPSHOT
+        cp -p "$ROOT/$file" "$backup/$file"
+    else
+        case " $new_runtime_files " in *" $file "*) : > "$backup/absent-$file";; *) fail SNAPSHOT;; esac
+    fi
+done
 printf '2\n' > "$backup/runtime-v2"
+printf '3\n' > "$backup/runtime-v3"
 cp -p /etc/init.d/network "$backup/network"
 if [ -e "$ROOT/network-init.sha256" ]; then plain "$ROOT/network-init.sha256" || fail STATE_UNSAFE; cp -p "$ROOT/network-init.sha256" "$backup/network-init.sha256"; fi
 if [ "$service_missing" = 0 ]; then cp -p "$service" "$backup/service"; fi
 for name in $links; do [ ! -L /etc/rc.d/$name ] || : > "$backup/link-$name"; done
 : > "$backup/service-v1"
 if [ "$reset" = 1 ]; then mkdir "$backup/reset-state"; : > "$backup/reset-v1"; fi
-(cd "$backup" && sha256sum $runtime_files runtime-v2 network > SHA256SUMS
+(cd "$backup" && sha256sum runtime-v2 runtime-v3 network > SHA256SUMS
+ for file in $runtime_files; do
+     if [ -f "$file" ]; then sha256sum "$file"; else sha256sum "absent-$file"; fi
+ done >> SHA256SUMS
  for file in service network-init.sha256; do [ ! -f "$file" ] || sha256sum "$file" >> SHA256SUMS; done)
 mkdir "$backup/planned"
 for name in $runtime_files; do hash "$stage/$name" > "$backup/planned/$name"; done

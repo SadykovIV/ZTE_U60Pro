@@ -6,9 +6,10 @@
 #include "info-layout.h"
 #define MAX_PROFILES 1024
 #define MAX_SUBSCRIPTIONS 1024
-struct profile_summary {char id[37],name[257];int active,insecure_tls;};
+struct profile_summary {char id[37],name[257];int active,insecure_tls,ikev2,update_available;};
+enum ikev2_state { IKEV2_DISCONNECTED, IKEV2_WAITING, IKEV2_CONNECTED };
 struct subscription_update {int total,done,succeeded,running,complete;char first_error[64];};
-struct snapshot {int valid,enabled,running,network_ok,count,busy,error;unsigned generation;char error_code[64],operation_error[64];char ssid[33],ssid_2g[33],ssid_5g[33];struct profile_summary profiles[MAX_PROFILES];int subscription_count;char subscriptions[MAX_SUBSCRIPTIONS][37];struct subscription_update subscription_update;struct modem_telemetry telemetry;struct info_layout layout;};
+struct snapshot {int valid,enabled,running,network_ok,count,busy,error,ikev2_state;unsigned generation;char error_code[64],operation_error[64];char ssid[33],ssid_2g[33],ssid_5g[33];struct profile_summary profiles[MAX_PROFILES];int subscription_count;char subscriptions[MAX_SUBSCRIPTIONS][37];struct subscription_update subscription_update;struct modem_telemetry telemetry;struct info_layout layout;};
 int backend_update_subscriptions(void);
 void backend_start(void);
 void backend_refresh(void);

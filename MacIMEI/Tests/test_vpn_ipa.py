@@ -50,6 +50,8 @@ if verb=='changes':
  for k,v in sorted(changes.items()):print(('' if v!='__delete__' else '-')+'zwrt_router.'+k+('='+repr(v) if v!='__delete__' else ''))
 elif verb=='get':
  if key.startswith('wireless.'):
+  selections=read(b/'wireless-selections')
+  if key in selections:print(selections[key]);sys.exit(0)
   selected=b/'wireless-disabled'
   print(selected.read_text() if key.endswith('.disabled') and selected.exists() else ('0' if key.endswith('mesh_onoff') else '1'));sys.exit(0)
  key=key.removeprefix('zwrt_router.');v=changes.get(key,db.get(key))
@@ -107,6 +109,7 @@ if [ "${FAIL_SIGNAL:-0}" = 1 ] && [ ! -f "$FIXTURE/signal-failed" ];then touch "
         self.command('sync',':');self.command('sleep',':')
         self.write('data/zte-vpn/firewall.sh','#!/bin/sh\necho "$*" >> "$FIXTURE/firewall"\n',0o700)
         self.write('data/zte-vpn/vpnctl','''#!/bin/sh
+if [ "$1" = backend ]; then echo mihomo; exit 0; fi
 [ "$1" = hook-network ] || exit 0
 echo hooked-network-init > "$FIXTURE/etc/init.d/network"
 /usr/bin/shasum -a 256 "$FIXTURE/etc/init.d/network" | awk '{print $1}' > "$FIXTURE/data/zte-vpn/network-init.sha256"
@@ -174,11 +177,13 @@ echo hooked-network-init > "$FIXTURE/etc/init.d/network"
         self.assertTrue((self.root/'ipa-restored').exists())
     def test_boot_reestablishes_off_policy_before_starting_core(self):
         self.ok(self.invoke());self.write('proc/sys/kernel/random/boot_id','next-boot')
+        self.write('wireless-disabled','0')
         self.write('data/zte-vpn/mihomo','#!/bin/sh\necho started > "$FIXTURE/core-started"\n',0o700)
         count=len(self.signals());self.ok(self.invoke('run-core'))
         self.assertEqual(len(self.signals()),count+1);self.assertTrue((self.base/'core-started').exists())
         self.assertEqual((self.root/'ipa-runtime').read_text(),'next-boot 10\n')
     def test_early_boot_registers_supervisor_before_ipacm_is_available(self):
+        self.write('wireless-disabled','0')
         for firmware,daemon in [(B31,IPACM),(B28,B28_IPACM),(B04,IPACM)]:
             with self.subTest(firmware=firmware[:8]):
                 self.ok(self.invoke('early',NO_PID='1',TEST_FIRMWARE=firmware,TEST_IPACM=daemon))
@@ -187,6 +192,7 @@ echo hooked-network-init > "$FIXTURE/etc/init.d/network"
                 self.assertEqual(self.signals(),[],'Early boot must not signal an unstable IPA daemon')
                 self.assertEqual((self.base/'etc/config/zwrt_router').read_bytes(),self.original)
     def test_boot_signal_failure_respawns_without_erasing_enabled_selection(self):
+        self.write('wireless-disabled','0')
         self.write('data/zte-vpn/mihomo','#!/bin/sh\necho started > "$FIXTURE/core-started"\n',0o700)
         for firmware,daemon in [(B31,IPACM),(B28,B28_IPACM),(B04,IPACM)]:
             with self.subTest(firmware=firmware[:8]):
@@ -266,6 +272,73 @@ elif tick==5:
         self.assertEqual((self.base/'reload').read_text(),'reload\n')
         self.assertFalse((self.base/'wifi').exists())
         self.assertEqual((self.base/'wireless-disabled').read_text(),'0')
+    def suspended_ikev2_runtime(self):
+        self.ok(self.invoke());self.ready_runtime();self.write('wireless-disabled','0')
+        self.write('proc/40/cmdline','--conf-file='+str(self.root/'ikev2/dnsmasq.conf')+'\0')
+        self.write('data/zte-vpn/vpnctl','#!/bin/sh\n[ "$1" != backend ] || echo ikev2\n',0o700)
+        self.write('data/zte-vpn/ikev2.sh','#!/bin/sh\necho "$*" >> "$FIXTURE/ike-calls"\n[ "$1" = ready ]\n',0o700)
+        for name in ['wlan1','wlan3']:
+            d=self.base/'sys/class/net'/name;d.mkdir();(d/'master').symlink_to(self.base/'sys/class/net/br-vpn')
+        self.command('hostapd_cli','[ "${DISABLED_HOSTAPD:-}" != "$4" ] && echo state=ENABLED')
+        self.command('ip',r'''import os,sys
+from pathlib import Path
+b=Path(os.environ['FIXTURE']);args=sys.argv[1:]
+with (b/'ip-calls').open('a') as f:f.write(' '.join(args)+'\n')
+if args[:3]==['link','show','dev']:
+ name=args[3];flags='BROADCAST,MULTICAST'+(',UP' if (b/('ap-up-'+name)).exists() else '')
+ print('2: '+name+': <'+flags+'> state DOWN')
+elif args[:2]==['link','set']:
+ marker=b/('ap-up-'+args[2])
+ if args[3]=='up':
+  marker.touch()
+  if os.environ.get('DISABLE_DURING_RESUME')=='1':(b/'wireless-disabled').write_text('1')
+ elif args[3]=='down':marker.unlink(missing_ok=True)
+''',python=True)
+        # A real vendor reload can return success without changing link flags.
+        self.command('ubus','echo reload >> "$FIXTURE/reload"')
+        self.command('sleep','rm "$FIXTURE/data/zte-vpn/configured"')
+    def test_guard_resumes_suspended_ikev2_ports_without_radio_reload_or_auth_restart(self):
+        self.suspended_ikev2_runtime()
+        self.ok(self.invoke('run-guard'))
+        for name in ['wlan1','wlan3']:self.assertTrue((self.base/('ap-up-'+name)).exists())
+        self.assertFalse((self.base/'reload').exists(),'No full radio reload for administratively suspended APs')
+        self.assertFalse((self.base/'wifi').exists(),'Do not write the saved guest selection')
+        self.assertFalse((self.base/'service').exists(),'Do not restart IKE or issue another PUSH')
+        self.assertEqual((self.base/'ike-calls').read_text(),'ready\n')
+    def test_guard_resumes_only_selected_guest_and_radio_bands(self):
+        self.suspended_ikev2_runtime()
+        for selections,expected in [
+            ({'wireless.guest_2g.disabled':'1'},['wlan3']),
+            ({'wireless.wifi1.disabled':'1'},['wlan1']),
+            ({'wireless.guest_2g.disabled':'1','wireless.wifi1.disabled':'1'},[]),
+        ]:
+            with self.subTest(selections=selections):
+                self.write('data/zte-vpn/configured','')
+                for name in ['wlan1','wlan3']:(self.base/('ap-up-'+name)).unlink(missing_ok=True)
+                self.write('wireless-selections',''.join(k+'='+v+'\n' for k,v in selections.items()))
+                self.ok(self.invoke('run-guard'))
+                self.assertEqual([name for name in ['wlan1','wlan3'] if (self.base/('ap-up-'+name)).exists()],expected)
+                self.assertFalse((self.base/'reload').exists())
+                self.assertFalse((self.base/'wifi').exists())
+    def test_user_disabling_during_direct_resume_puts_the_port_back_down(self):
+        self.suspended_ikev2_runtime()
+        self.ok(self.invoke('run-guard',DISABLE_DURING_RESUME='1'))
+        self.assertFalse(any((self.base/('ap-up-'+name)).exists() for name in ['wlan1','wlan3']))
+        self.assertEqual((self.base/'wireless-disabled').read_text(),'1')
+        self.assertFalse((self.base/'reload').exists())
+    def test_guard_never_resumes_ports_before_security_dns_bridge_and_hostapd_readiness(self):
+        self.suspended_ikev2_runtime()
+        for missing in ['dns','firewall','bridge','hostapd','ipa']:
+            with self.subTest(missing=missing):
+                self.write('data/zte-vpn/configured','')
+                for name in ['wlan1','wlan3']:(self.base/('ap-up-'+name)).unlink(missing_ok=True)
+                self.write('proc/40/cmdline','--conf-file='+str(self.root/'ikev2/dnsmasq.conf')+'\0')
+                self.write('data/zte-vpn/firewall.sh','#!/bin/sh\nexit '+('1' if missing=='firewall' else '0')+'\n',0o700)
+                master=self.base/'sys/class/net/wlan1/master';master.unlink();master.symlink_to(self.base/'sys/class/net'/('br-lan' if missing=='bridge' else 'br-vpn'))
+                if missing=='dns':(self.base/'proc/40/cmdline').unlink()
+                if missing=='ipa':self.write('proc/sys/kernel/random/boot_id','changed-boot')
+                self.ok(self.invoke('run-guard',DISABLED_HOSTAPD='wlan1' if missing=='hostapd' else ''))
+                self.assertFalse(any((self.base/('ap-up-'+name)).exists() for name in ['wlan1','wlan3']))
     def test_user_disabling_while_guard_waits_is_not_overridden(self):
         self.ok(self.invoke());self.ready_runtime();self.write('wireless-disabled','0')
         (self.base/'proc/40/cmdline').unlink()
@@ -282,7 +355,7 @@ else:(b/'data/zte-vpn/configured').unlink()
         self.assertFalse((self.base/'wifi').exists())
         self.assertEqual((self.base/'wireless-disabled').read_text(),'1')
     def test_ipacm_restart_restarts_verified_core_through_one_ipa_worker(self):
-        self.ok(self.invoke());self.ready_runtime();self.write('wireless-disabled','1')
+        self.ok(self.invoke());self.ready_runtime();self.write('wireless-disabled','0')
         self.write('data/zte-vpn/mihomo','#!/bin/sh\necho started > "$FIXTURE/core-started"\n',0o700)
         (self.base/'proc/11').mkdir();(self.base/'proc/11/exe').symlink_to(self.base/'usr/bin/ipacm')
         self.command('pidof','echo "20 11"')
@@ -305,6 +378,7 @@ else:(b/'data/zte-vpn/configured').unlink()
         self.assertTrue((self.base/'core-started').exists())
         self.assertFalse((self.base/'wifi').exists())
     def test_ttl_disable_close_zero_keeps_runtime_proof_without_extra_signal(self):
+        self.write('wireless-disabled','0')
         self.ok(self.invoke());self.write('pending','other.ipa_disable=1\ntmp_router.close_ipa_acce=0\n')
         self.write('data/zte-vpn/mihomo','#!/bin/sh\nexit 0\n',0o700)
         count=len(self.signals());self.ok(self.invoke('run-core'));self.assertEqual(len(self.signals()),count)

@@ -6,12 +6,40 @@ PATH=/usr/sbin:/usr/bin:/sbin:/bin
 ROOT=/data/zte-vpn
 CORE="$ROOT/mihomo"
 MODE=${1:-}
+backend() { "$ROOT/vpnctl" backend; }
+runtime_wanted() {
+    [ -f "$ROOT/configured" ] && [ -s "$ROOT/config.json" ] || return 1
+    [ ! -f "$ROOT/runtime-disabled" ] || return 1
+    # Use the persisted guest selection, not AP link state: the guard may hold
+    # selected APs DOWN while their backend is starting or being repaired.
+    for section in guest_2g guest_5g; do
+        [ "$(uci -q get wireless.$section.disabled 2>/dev/null || true)" != 0 ] || return 0
+    done
+    return 1
+}
+dns_config() {
+    kind=$(backend) || return 1
+    case "$kind" in ikev2) printf '%s' "$ROOT/ikev2/dnsmasq.conf";; mihomo) printf '%s' "$ROOT/dnsmasq.conf";; *) return 1;; esac
+}
+prepare_backend() {
+    kind=$(backend) || return 1
+    case "$kind" in ikev2) "$ROOT/ikev2.sh" prepare;; mihomo) return 0;; *) return 1;; esac
+}
+stop_backend() {
+    suspend_guest
+    stop_failed=0
+    /etc/init.d/zte_vpn stop || stop_failed=1
+    if [ -d "$ROOT/ikev2" ]; then "$ROOT/ikev2.sh" cleanup || stop_failed=1; fi
+    # Reconcile DNS/NAT even when the next profile uses the same backend.
+    rm -f "$ROOT/firewall.backend"
+    [ "$stop_failed" = 0 ]
+}
 log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*" >> "$ROOT/actions.log"; }
 fail() {
     log "$1"
     case "$1" in VPN_IPA_*)
         if [ -f "$ROOT/configured" ]; then
-            case "$MODE" in run-core|run-guard) suspend_guest;; *) disable_guest;; esac
+            case "$MODE" in activate|run-core|run-guard) suspend_guest;; *) disable_guest;; esac
         fi;;
     esac
     echo "$1" >&2; exit 1
@@ -21,6 +49,9 @@ suspend_guest() {
     for dev in wlan1 wlan3; do ip link set "$dev" down 2>/dev/null || true; done
 }
 disable_guest() {
+    # A durable stop fence also covers a failed/interrupted UCI commit. Only a
+    # successful explicit enable removes it; recovery never does.
+    : > "$ROOT/runtime-disabled"
     lua "$ROOT/configure.lua" disable >/dev/null 2>&1 || true
     suspend_guest
 }
@@ -215,6 +246,12 @@ configuration_restore() {
 }
 ipa_failure_restore() {
     result=$?; trap - EXIT HUP INT TERM
+    if [ "$result" != 0 ] && [ "$MODE" = enable ]; then
+        # Failed enable must not leave a hidden tunnel or respawning workers.
+        disable_guest
+        stop_backend || true
+        reload_wifi || true
+    fi
     if [ "$result" != 0 ] && [ ! -f "$ROOT/configured" ] && [ -d "$ROOT/ipa-backup" ]; then
         if configuration_restore; then
             if ! ipa_restore; then log VPN_IPA_RESTORE_FAILED; echo VPN_IPA_RESTORE_FAILED >&2; fi
@@ -251,10 +288,12 @@ prepare() {
         sync
         # Root-owned pinned hook is installed before the APs can be enabled.
         "$ROOT/vpnctl" hook-network
+        prepare_backend
         "$ROOT/firewall.sh"
         lua "$ROOT/configure.lua" apply >> "$ROOT/actions.log"
         ubus -t 15 call network reload '{}' >> "$ROOT/reload.log" 2>&1
     else
+        prepare_backend
         ipa_prepare
     fi
     for n in $(seq 1 20); do
@@ -275,6 +314,17 @@ runtime_process() {
     tr '\000' '\n' < "/proc/$runtime_pid/cmdline" | grep -Fx -- "$2" >/dev/null
 }
 wait_core() {
+    kind=$(backend) || return 1
+    if [ "$kind" = ikev2 ]; then
+        n=0
+        while [ "$n" -lt 20 ]; do
+            if "$ROOT/ikev2.sh" ready && runtime_process dns "--conf-file=$ROOT/ikev2/dnsmasq.conf"; then
+                "$ROOT/firewall.sh"; return 0
+            fi
+            n=$((n+1)); sleep 1
+        done
+        fail VPN_DHCP_NOT_READY
+    fi
     n=0
     while [ "$n" -lt 20 ]; do
         if runtime_process core "$CORE" && [ -e /sys/class/net/zvpn-tun ]; then
@@ -301,19 +351,55 @@ wait_wifi() {
     done
     return 1
 }
+guest_selection() {
+    case "$1" in
+        wlan1) selection_section=guest_2g; selection_radio=wifi0;;
+        wlan3) selection_section=guest_5g; selection_radio=wifi1;;
+        *) return 1;;
+    esac
+    case "$(uci -q get wireless.$selection_section.disabled 2>/dev/null)" in
+        1) printf disabled; return 0;;
+        0) ;;
+        *) return 1;;
+    esac
+    # An omitted radio disabled option means enabled in UCI. Respect a band
+    # explicitly switched off even when its guest section remains enabled.
+    case "$(uci -q get wireless.$selection_radio.disabled 2>/dev/null || true)" in
+        1) printf disabled;;
+        0|'') printf enabled;;
+        *) return 1;;
+    esac
+}
 guest_selection_ready() {
     for dev in wlan1 wlan3; do
-        case "$dev" in wlan1) section=guest_2g;; wlan3) section=guest_5g;; esac
-        case "$(uci -q get wireless.$section.disabled 2>/dev/null)" in
-            1) continue;;
-            0) ;;
-            *) return 1;;
-        esac
+        selection=$(guest_selection "$dev") || return 1
+        [ "$selection" != disabled ] || continue
         # The administrative UP flag does not require a connected client.
         ip link show dev "$dev" 2>/dev/null | head -1 | grep -Eq '<([^>]*,)?UP(,|>)' || return 1
         readlink "/sys/class/net/$dev/master" 2>/dev/null | grep -q '/br-vpn$' || return 1
         hostapd_cli -p /data/vendor/wifi/hostapd -i "$dev" status 2>/dev/null | grep -q '^state=ENABLED$' || return 1
     done
+}
+resume_guest() {
+    # Called only after the guard verified IPA, firewall and backend/DHCP.
+    # A vendor reload with unchanged UCI may leave our suspended ports DOWN.
+    # Restore just these existing APs; never enable a guest, band or hostapd.
+    for dev in wlan1 wlan3; do
+        selection=$(guest_selection "$dev") || return 1
+        [ "$selection" != disabled ] || continue
+        readlink "/sys/class/net/$dev/master" 2>/dev/null | grep -q '/br-vpn$' || return 1
+        hostapd_cli -p /data/vendor/wifi/hostapd -i "$dev" status 2>/dev/null | grep -q '^state=ENABLED$' || return 1
+        if ! ip link show dev "$dev" 2>/dev/null | head -1 | grep -Eq '<([^>]*,)?UP(,|>)'; then
+            selection=$(guest_selection "$dev") || return 1
+            [ "$selection" != disabled ] || continue
+            ip link set "$dev" up || return 1
+            # If the user disabled the guest/band during the link operation,
+            # put this port back down instead of retaining a stale selection.
+            selection=$(guest_selection "$dev") || { ip link set "$dev" down; return 1; }
+            [ "$selection" != disabled ] || ip link set "$dev" down || return 1
+        fi
+    done
+    guest_selection_ready
 }
 case "${1:-}" in prepare|activate|enable)
     trap ipa_failure_restore EXIT
@@ -321,84 +407,138 @@ case "${1:-}" in prepare|activate|enable)
     ;;
 esac
 case "${1:-}" in
+ runtime-wanted) runtime_wanted;;
  ipa-check) ipa_snapshot_valid && ipa_tools && ipa_flags || fail VPN_IPA_STATE_INVALID;;
  ipa-restore) ipa_restore || fail VPN_IPA_RESTORE_FAILED;;
  prepare) prepare;;
  activate)
+    stop_backend
     prepare
-    /etc/init.d/zte_vpn restart
-    wait_core || fail VPN_CORE_NOT_READY
+    if runtime_wanted; then
+        /etc/init.d/zte_vpn start
+        wait_core || fail VPN_CORE_NOT_READY
+    else
+        # Selecting/updating a profile while Wi-Fi is off saves it without
+        # leaving a tunnel, authentication attempt or owned XFRM device behind.
+        stop_backend
+    fi
     log PROFILE_ACTIVATED
     ;;
  enable)
     [ -f "$ROOT/config.json" ] || fail VPN_NO_ACTIVE_PROFILE
+    # Repeated enable is idempotent, including a pending or rejected MFA PUSH.
+    if runtime_wanted; then
+        if [ "$(uci -q get wireless.guest_2g.disabled 2>/dev/null || true)" = 0 ] &&
+           [ "$(uci -q get wireless.guest_5g.disabled 2>/dev/null || true)" = 0 ]; then
+            log WIFI_ALREADY_ENABLED; exit 0
+        fi
+        # Re-enable a guest section that was changed independently, retaining
+        # the existing tunnel and authentication attempt on the other band.
+        lua "$ROOT/configure.lua" enable >> "$ROOT/actions.log"
+        reload_wifi
+        wait_wifi || fail VPN_WIFI_NOT_READY
+        "$ROOT/firewall.sh"
+        log WIFI_ENABLED
+        exit 0
+    fi
+    stop_backend
     prepare
+    # Persist ON before service registration. APs remain suspended until the
+    # backend/DHCP guard is ready and the explicit reload below succeeds.
+    lua "$ROOT/configure.lua" enable >> "$ROOT/actions.log"
+    rm -f "$ROOT/runtime-disabled"
     /etc/init.d/zte_vpn start
     wait_core || fail VPN_CORE_NOT_READY
-    lua "$ROOT/configure.lua" enable >> "$ROOT/actions.log"
     reload_wifi
     if ! wait_wifi; then disable_guest; reload_wifi || true; fail VPN_WIFI_NOT_READY; fi
     "$ROOT/firewall.sh"
     log WIFI_ENABLED
     ;;
  disable)
-    [ -f "$ROOT/configured" ] || exit 0
-    disable_guest; reload_wifi
+    # Persist OFF before stopping procd so a racing respawn cannot connect.
+    : > "$ROOT/runtime-disabled"
+    if [ -f "$ROOT/configured" ]; then
+        lua "$ROOT/configure.lua" disable >> "$ROOT/actions.log" || { stop_backend; fail VPN_OPERATION_FAILED; }
+    fi
+    stop_backend
+    [ ! -f "$ROOT/configured" ] || reload_wifi
     log WIFI_DISABLED
     ;;
  early)
     [ -f "$ROOT/configured" ] || exit 0
     recover
-    if "$ROOT/vpnctl" integrity >/dev/null 2>&1 && "$ROOT/firewall.sh" >> "$ROOT/firewall.log" 2>&1; then
+    if ! runtime_wanted; then stop_backend; log BOOT_WIFI_DISABLED; exit 0; fi
+    if prepare_backend && "$ROOT/vpnctl" integrity >/dev/null 2>&1 && "$ROOT/firewall.sh" >> "$ROOT/firewall.log" 2>&1 && /etc/init.d/zte_vpn start; then
         # Register respawning workers before netifd. The vendor boot sequence
         # does not reliably run S99, and ipacm may still be restarting here.
         # run-core verifies IPA before starting the core; guard holds the APs.
-        /etc/init.d/zte_vpn start
         log BOOT_GUARD_READY
     else
-        disable_guest; log BOOT_GUARD_FAILED; exit 1
+        disable_guest; stop_backend || true; log BOOT_GUARD_FAILED; exit 1
     fi
     ;;
  recover)
+    stop_backend
     recover
     if [ ! -f "$ROOT/configured" ]; then
         configuration_restore || fail VPN_CONFIGURATION_PENDING
         ipa_restore || fail VPN_IPA_RESTORE_FAILED
     fi
-    /etc/init.d/zte_vpn restart
+    if runtime_wanted; then
+        prepare_backend
+        "$ROOT/firewall.sh"
+        /etc/init.d/zte_vpn start
+    fi
     ;;
  run-core)
+    runtime_wanted || exit 0
     "$ROOT/vpnctl" integrity >/dev/null
     [ -s "$ROOT/config.json" ] || exit 1
     ipa_active || ipa_prepare
     [ ! -f "$ROOT/core.log" ] || [ "$(wc -c < "$ROOT/core.log")" -lt 1048576 ] || mv "$ROOT/core.log" "$ROOT/core.previous.log"
     echo $$ > $ROOT/core.pid
+    kind=$(backend)
+    runtime_wanted || exit 0
+    if [ "$kind" = ikev2 ]; then
+        exec "$ROOT/ikev2.sh" run >> "$ROOT/core.log" 2>&1
+    fi
     exec "$CORE" -d "$ROOT" -f "$ROOT/config.json" >> "$ROOT/core.log" 2>&1
     ;;
  run-dns)
+    runtime_wanted || exit 0
     [ ! -f "$ROOT/dns.log" ] || [ "$(wc -c < "$ROOT/dns.log")" -lt 1048576 ] || mv "$ROOT/dns.log" "$ROOT/dns.previous.log"
     echo $$ > $ROOT/dns.pid
-    exec dnsmasq --keep-in-foreground --conf-file="$ROOT/dnsmasq.conf" >> "$ROOT/dns.log" 2>&1
+    config=$(dns_config)
+    runtime_wanted || exit 0
+    exec dnsmasq --keep-in-foreground --conf-file="$config" >> "$ROOT/dns.log" 2>&1
     ;;
  run-guard)
     # A previous core/guard process may have held APs down before this worker
     # started. Reconcile against current UCI and actual interfaces immediately.
     suspended=1; restart_pid=
-    while [ -f "$ROOT/configured" ]; do
+    while runtime_wanted; do
+        current_backend=$(backend) || { suspend_guest; exit 1; }
         ready=1
         if ! ipa_active; then
             ready=0; [ "$suspended" = 1 ] || log VPN_IPA_PREPARE_FAILED
             suspend_guest
-            # Only run-core prepares IPA. If its daemon changed underneath a
-            # running core, procd must run that same preparation path again.
-            if runtime_process core "$CORE" && [ "$runtime_pid" != "$restart_pid" ] &&
+            if [ "$current_backend" = ikev2 ]; then
+                # Repair acceleration policy without restarting authentication
+                # or issuing another MFA PUSH. APs remain down until verified.
+                ipa_prepare
+            elif runtime_process core "$CORE" && [ "$runtime_pid" != "$restart_pid" ] &&
                 [ "$(readlink "/proc/$runtime_pid/exe" 2>/dev/null)" = "$CORE" ]; then
                 if kill -TERM "$runtime_pid"; then restart_pid=$runtime_pid; log IPA_CORE_RESTART; fi
             fi
         else restart_pid=; fi
         if ! "$ROOT/firewall.sh" >> "$ROOT/firewall.log" 2>&1; then ready=0; [ "$suspended" = 1 ] || log FIREWALL_FAILED; fi
-        runtime_process core "$CORE" && [ -e /sys/class/net/zvpn-tun ] &&
-            runtime_process dns "--conf-file=$ROOT/dnsmasq.conf" || ready=0
+        if [ "$current_backend" = ikev2 ]; then
+            # Preserve public LTE during IKE reconnect or daemon failure.
+            "$ROOT/ikev2.sh" ready && runtime_process dns "--conf-file=$ROOT/ikev2/dnsmasq.conf" || ready=0
+        else
+            runtime_process core "$CORE" && [ -e /sys/class/net/zvpn-tun ] &&
+                runtime_process dns "--conf-file=$ROOT/dnsmasq.conf" || ready=0
+        fi
         for dev in wlan1 wlan3; do
             master=$(readlink "/sys/class/net/$dev/master" 2>/dev/null || true)
             case "$master" in */br-vpn|'') ;; *) ready=0; [ "$suspended" = 1 ] || log BRIDGE_MISMATCH;; esac
@@ -408,7 +548,7 @@ case "${1:-}" in
         elif [ "$suspended" = 1 ] || ! guest_selection_ready; then
             # Reload uses the current UCI selection, including a user disable
             # made while we were waiting. A failed reload is retried next pass.
-            if guest_selection_ready || { reload_wifi && guest_selection_ready; }; then
+            if guest_selection_ready || resume_guest || { reload_wifi && resume_guest; }; then
                 suspended=0; log RUNTIME_WIFI_RESTORED
             else suspended=1; fi
         fi

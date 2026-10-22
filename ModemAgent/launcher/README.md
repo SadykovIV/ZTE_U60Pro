@@ -6,9 +6,17 @@ widgets, palette, fonts, touch pipeline, lock screen and panel orientation are
 retained. The VPN row uses the native SwitchButton from Wi-Fi settings, including
 its on/off styling. It is disabled during an operation and reconciles its state
 with the controller response. Page indicators follow the selected count (two stock pages plus zero to three extras). VPN labels follow the
-stock English/Russian language setting. Long profile names are truncated; they
-do not scroll horizontally. Three profiles fit per view, with Previous/Next
-controls for a list of up to 32.
+stock English/Russian language setting. A compact fixed top row shows VPN status
+on the left and the Wi-Fi switch on the right. A small profile count precedes
+the native vertical list at y80–422 (342px, five complete profile rows). There is
+no separate VPN title, Wi-Fi card or SSID caption. Names use two lines with an ellipsis
+and do not scroll horizontally. The list retains its position during status
+updates; adding, deleting or reordering profiles resets it to the beginning.
+Horizontal gestures still change the launcher page. Catalogs of up to 1024
+profiles are supported: ordinary lists scroll continuously, while lists larger
+than 128 use “Профили выше/ниже” / “Earlier/More profiles” rows inside the list to
+load the adjacent block. This keeps widget coordinates within the stock LVGL
+range. The heading identifies the current block in large catalogs.
 
 `launcher.c` hooks five verified pointer slots of an exact UI profile. The
 registry in `abi-profiles.json` contains B31, FLY B28 and XCBZHK B04, each with stock and
@@ -25,6 +33,29 @@ hashes, slots and globals. Set `ZTE_STOCK_UI`, `ZTE_RUSSIAN_UI`,
 `--verify-only` for this audit or `--output /private/staging/path` to build without
 changing bundled resources or the VPN controller's launcher pin. No vendor ELF or
 font is included in the launcher package.
+
+### Names and emoji on the modem display
+
+`display-text.c` provides a display-only fallback for VPN and eSIM names.
+The audited stock font API has a size selector but no verified
+custom-font or fallback-glyph hook. This extension therefore does not claim
+full or color emoji support: flag pairs such as 🇩🇪 and 🇺🇸 become `[DE]` and
+`[US]`, common symbols become short labels such as `[fast]`, `[lock]`, `[VIP]`
+and `[OK]`, and another emoji or a joined emoji sequence becomes one `[*]`.
+Skin-tone, variation and flag-tag suffixes do not leave separate empty boxes.
+Styled mathematical Latin letters and digits become ordinary letters/digits.
+Other valid BMP text is retained for the stock font, including Cyrillic and
+Latin names; this helper is not a general Unicode shaping engine.
+
+Only the rendered copy is transformed. Stored names, profile IDs and actual
+Wi-Fi SSIDs are unchanged. Output is bounded, NUL-terminated and valid UTF-8;
+invalid input gets `[?]`, and a capacity limit adds `...` at a whole token
+boundary. Existing newlines remain available for multi-line captions. The
+profile label's stock two-line truncation handles its actual pixel width.
+`python3 ModemAgent/launcher/tests/test_display_text.py` runs synthetic flags,
+joined emoji, malformed UTF-8, every output-capacity boundary and randomized
+byte input under AddressSanitizer/UndefinedBehaviorSanitizer. These are host
+checks, not evidence of color emoji support or a real-device rendering test.
 
 The runtime wrapper checks the exact UI hash, Linux/ARM64/root, component
 manifest, directory permissions and device identity. The constructor selects a
@@ -146,7 +177,8 @@ checks must additionally cover gestures, sleep/wake, original settings, profile
 confirmation, network controls, and startup after reboot.
 
 
-VPN network labels use the controller's actual `ssid`, `ssid_2g` and `ssid_5g` status values. Different guest names are displayed on two lines with 2.4G/5G labels; unavailable status is explicit. The launcher does not substitute a default name and installing it does not rename an existing network.
+SSID settings remain available in the agent; the compact VPN display does not
+repeat them. Installing the launcher does not rename an existing network.
 
 ## Physical eUICC page
 
@@ -194,20 +226,24 @@ agent on UI exit. Fixed diagnostics (no card IDs or protocol bodies) are written
 to `/tmp/zte-launcher/esim-status`; the latest failure is retained separately in
 `esim-error` and reported to syslog. These files are private and lost on reboot.
 
-### Updating subscriptions from the VPN page
+### VPN display controls
 
-“Обновить подписки” / “Update subscriptions” appears beside the VPN title. It is
-unavailable when no subscriptions are saved, while an operation is running, or
-before a valid status has been read. The worker captures the saved subscription
-IDs and calls the existing `subscription_update` RPC once per ID. Each request
-has its own process supervision; failure does not skip later subscriptions.
-The final status refresh updates the profile list without activating a profile
-or restarting the active connection. The screen shows progress and the number
-of successful/failed updates, plus the first fixed error code. Full controller
-operation logs are included in desktop diagnostics.
+The display shows a short one-line connection status at the top, including
+IKEv2 connected, waiting for phone PUSH approval and disconnected states, with
+the standard Wi-Fi switch on its right. Errors show “Ошибка VPN” / “VPN error”
+plus “Подробнее в агенте” / “More details in the agent” on a second line.
+TLS warnings and empty-catalog guidance use the same second line. Only those
+exceptional states reduce the list to y102–422; long error text is never clipped
+into the compact status row. Selecting a profile opens the
+existing “Подключиться” / “Connect” confirmation. A selected profile can be
+connected when Wi-Fi VPN is off; a waiting or connected IKEv2 profile with Wi-Fi
+on does not start a duplicate connection. Profiles with `VPN_INSECURE_TLS` show
+the TLS verification warning in the confirmation and while that profile is
+active.
 
-The launcher can queue up to 1024 subscriptions. An oversized list is reported
-on screen and cannot be partially submitted. Legacy controllers without a
-subscription list continue to display their profiles, with the update button
-disabled. Profiles with `VPN_INSECURE_TLS` show the TLS verification warning in
-the connection confirmation and while that profile is active.
+The connection confirmation stays within y126–373, leaving the compact header
+visible. Polling preserves the list position, including when a hint appears or
+disappears; no scroll-to-top is issued for connection status changes.
+
+Subscription updating remains in the web agent. There is no subscription
+update button or batch-update status on the modem display.

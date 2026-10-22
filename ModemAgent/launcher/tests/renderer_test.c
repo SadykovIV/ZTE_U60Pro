@@ -17,11 +17,6 @@ static struct snapshot sample(void){
 }
 int main(void){
  struct snapshot s={0};struct info_text out;
- char ssid[96];assert(!format_wifi_ssid(&s,0,ssid,sizeof ssid)&&!strcmp(ssid,"SSID unavailable"));tests++;
- s.valid=1;snprintf(s.ssid,sizeof s.ssid,"Existing Guest Network");assert(!format_wifi_ssid(&s,0,ssid,sizeof ssid)&&!strcmp(ssid,"Existing Guest Network"));tests++;
- snprintf(s.ssid_2g,sizeof s.ssid_2g,"Guest24");snprintf(s.ssid_5g,sizeof s.ssid_5g,"Guest5");assert(format_wifi_ssid(&s,0,ssid,sizeof ssid)&&!strcmp(ssid,"2.4G: Guest24\n5G: Guest5"));tests++;
- snprintf(s.ssid_2g,sizeof s.ssid_2g,"Actual VPN");snprintf(s.ssid_5g,sizeof s.ssid_5g,"Actual VPN");snprintf(s.ssid,sizeof s.ssid,"Actual VPN");assert(!format_wifi_ssid(&s,0,ssid,sizeof ssid)&&!strcmp(ssid,"Actual VPN"));tests++;
- memset(&s,0,sizeof s);
  format_info(&s,0,&out);
  for(int i=0;i<INFO_ROWS;i++)assert(!strcmp(out.values[i],"—"));
  assert(!strcmp(out.status,"— unavailable"));tests++;

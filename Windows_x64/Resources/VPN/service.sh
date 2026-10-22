@@ -4,7 +4,7 @@ START=99
 STOP=01
 ROOT=/data/zte-vpn
 start_service() {
-    [ -f "$ROOT/configured" ] && [ -f "$ROOT/config.json" ] || return 0
+    /bin/sh "$ROOT/manager.sh" runtime-wanted || return 0
     for kind in core dns guard; do
         procd_open_instance "$kind"
         procd_set_param command /bin/sh "$ROOT/manager.sh" "run-$kind"

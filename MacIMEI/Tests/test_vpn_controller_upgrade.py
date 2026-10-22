@@ -2,6 +2,7 @@ from pathlib import Path
 import hashlib, os, subprocess, tempfile, unittest, uuid
 SOURCE=Path(__file__).resolve().parents[1]/'Resources/VPN/upgrade-controller.sh'
 sha=lambda b:hashlib.sha256(b).hexdigest()
+NEW_RUNTIME=['ikev2.sh','ikev2-updown.sh','nft-ikev2-guard.nft']
 RUNTIME=['manager.sh','firewall.sh','configure.lua','nft-guard.nft','dnsmasq.conf','service.sh']
 class UpgradeTests(unittest.TestCase):
  def setUp(self):
@@ -14,11 +15,11 @@ class UpgradeTests(unittest.TestCase):
   self.service_bytes=b'#!/bin/sh /etc/rc.common\nSTART=99\nSTOP=01\n'
   self.new_service_bytes=self.service_bytes+b'# changed service implementation\n'
   self.old_files={name:('old-'+name+'\n').encode() for name in RUNTIME}
-  self.new_files={name:('new-'+name+'\n').encode() for name in RUNTIME}
+  self.new_files={name:('new-'+name+'\n').encode() for name in RUNTIME+NEW_RUNTIME}
   self.old_files.update({'manager.sh':b'old\n','configure.lua':b'old-config\n','service.sh':self.service_bytes})
   self.new_files.update({'manager.sh':b'new\n','configure.lua':b'new-config\n','service.sh':self.new_service_bytes})
   def helper(files):
-   return ('#!/bin/sh\n'+ ' &&\n'.join('test "$(sha256sum "$(dirname "$0")/'+name+'" | cut -d " " -f1)" = '+sha(files[name]) for name in RUNTIME)+'\n').encode()
+   return ('#!/bin/sh\n'+ ' &&\n'.join('test "$(sha256sum "$(dirname "$0")/'+name+'" | cut -d " " -f1)" = '+sha(files[name]) for name in files)+'\n').encode()
   self.old_helper=helper(self.old_files);self.new_helper=helper(self.new_files)
   self.old_sha=sha(self.old_helper);self.new_sha=sha(self.new_helper)
   for root,helper,files in [(self.root,self.old_helper,self.old_files),(self.stage,self.new_helper,self.new_files)]:
@@ -36,7 +37,7 @@ class UpgradeTests(unittest.TestCase):
   script=script.replace('80f16fafe203d661d6a90686c90a25c61eea38cf9e83e002c1cdffea85d02f23',self.old_sha)
   import re
   script=re.sub(r'(?m)^helper_sha=.*','helper_sha='+self.new_sha,script);script=re.sub(r'(?m)^manager_sha=.*','manager_sha='+sha(b'new\n'),script);script=re.sub(r'(?m)^configure_sha=.*','configure_sha='+sha(b'new-config\n'),script)
-  for variable,name in [('firewall_sha','firewall.sh'),('nft_guard_sha','nft-guard.nft'),('dnsmasq_sha','dnsmasq.conf'),('service_sha','service.sh')]:
+  for variable,name in [('firewall_sha','firewall.sh'),('nft_guard_sha','nft-guard.nft'),('dnsmasq_sha','dnsmasq.conf'),('service_sha','service.sh'),('ikev2_sha','ikev2.sh'),('ikev2_updown_sha','ikev2-updown.sh'),('nft_ikev2_sha','nft-ikev2-guard.nft')]:
    script=re.sub(r'(?m)^'+variable+'=.*',variable+'='+sha(self.new_files[name]),script)
   script=re.sub(r'(?m)^network_stock_sha=.*','network_stock_sha='+sha(self.stock),script)
   self.script=self.base/'upgrade.sh';self.script.write_text(script)
@@ -57,7 +58,9 @@ class UpgradeTests(unittest.TestCase):
  def run_upgrade(self):
   return subprocess.run(['sh',str(self.script),str(self.stage)],env={**os.environ,'PATH':str(self.bin)+':/usr/bin:/bin'},capture_output=True,timeout=15)
  def test_complete_upgrade_changes_controller_and_boot_pins_together(self):
+  (self.root/'runtime-disabled').touch()
   result=self.run_upgrade();self.assertEqual(result.returncode,0,result.stderr.decode())
+  self.assertEqual((self.root/'runtime-disabled').read_bytes(),b'')
   self.assertEqual((self.root/'vpnctl').read_bytes(),self.new_helper)
   self.assertEqual((self.root/'configure.lua').read_text(),'new-config\n')
   for name,contents in self.new_files.items():self.assertEqual((self.root/name).read_bytes(),contents)
@@ -95,7 +98,7 @@ class UpgradeTests(unittest.TestCase):
   self.assertEqual(self.network.read_bytes(),self.initial)
   self.assertFalse((self.root/'controller-upgrade').exists())
  def test_failure_at_each_runtime_replace_restores_entire_set(self):
-  for failed in RUNTIME+['vpnctl']:
+  for failed in RUNTIME+NEW_RUNTIME+['vpnctl']:
    with self.subTest(file=failed):
     self.command('mv','case "$1" in */'+failed+'.new) exit 73;; esac\nexec /bin/mv "$@"\n')
     result=self.run_upgrade();self.assertNotEqual(result.returncode,0,result.stderr.decode())
@@ -104,6 +107,7 @@ class UpgradeTests(unittest.TestCase):
     for name,contents in self.old_files.items():self.assertEqual((self.root/name).read_bytes(),contents)
     self.assertEqual(self.service.read_bytes(),self.service_bytes);self.assertEqual(self.network.read_bytes(),self.initial)
     self.assertFalse((self.root/'controller-upgrade').exists())
+    for name in NEW_RUNTIME:self.assertFalse((self.root/name).exists(), name)
  def test_new_integrity_failure_restores_all_files_and_profiles(self):
   for name in ['active','config.json','wifi-settings.json','catalog.json']:(self.root/name).write_bytes(('private-fixture-'+name).encode())
   (self.root/'profiles').mkdir();(self.root/'profiles/profile.json').write_bytes(b'private-profile-fixture')
@@ -114,7 +118,7 @@ class UpgradeTests(unittest.TestCase):
   for name,contents in self.old_files.items():self.assertEqual((self.root/name).read_bytes(),contents)
   self.assertEqual((self.root/'vpnctl').read_bytes(),self.old_helper);self.assert_preserved_profiles()
  def test_all_runtime_payloads_are_verified_before_writes(self):
-  for name in RUNTIME+['vpnctl']:
+  for name in RUNTIME+NEW_RUNTIME+['vpnctl']:
    with self.subTest(file=name):
     original=(self.stage/name).read_bytes();(self.stage/name).write_bytes(b'corrupted')
     result=self.run_upgrade();self.assertNotEqual(result.returncode,0);self.assertIn(b'VPN_UPGRADE_ERROR PAYLOAD',result.stderr)
@@ -179,6 +183,7 @@ class UpgradeTests(unittest.TestCase):
   for name in ['backup','backup-deltas','uci','ipa-backup','ipa-restored','ipa-uci']:
    (self.root/name).mkdir(mode=0o700);(self.root/name/'kept').write_bytes(('original-'+name).encode())
   (self.root/'ipa-runtime').write_text('boot pid')
+  (self.root/'runtime-disabled').touch()
   for name in ['active','config.json','wifi-settings.json','catalog.json']:(self.root/name).write_bytes(('private-fixture-'+name).encode())
   (self.root/'profiles').mkdir();(self.root/'profiles'/'profile.json').write_bytes(b'private-profile-fixture')
   if current:
@@ -191,7 +196,7 @@ class UpgradeTests(unittest.TestCase):
   self.reset_state();result=self.run_upgrade();self.assertEqual(result.returncode,0,result.stderr.decode())
   self.assertEqual(self.network.read_bytes(),self.stock)
   archives=list(self.root.glob('controller-reset-*'));self.assertEqual(len(archives),1)
-  for name in ['configured','network-init.sha256','backup','backup-deltas','uci','ipa-backup','ipa-restored','ipa-uci','ipa-runtime']:
+  for name in ['configured','network-init.sha256','backup','backup-deltas','uci','ipa-backup','ipa-restored','ipa-uci','ipa-runtime','runtime-disabled']:
    self.assertFalse((self.root/name).exists());self.assertTrue((archives[0]/'reset-state'/name).exists())
   self.assertEqual(self.service.read_bytes(),self.new_service_bytes)
   for name in ['S99zte_vpn','K01zte_vpn']:self.assertEqual(os.readlink(self.rc/name),'../init.d/zte_vpn')
@@ -219,7 +224,7 @@ class UpgradeTests(unittest.TestCase):
   result=self.run_upgrade();self.assertNotEqual(result.returncode,0)
   self.assertFalse(self.service.exists());self.assertFalse((self.rc/'S99zte_vpn').exists())
   self.assertEqual((self.root/'vpnctl').read_bytes(),self.old_helper);self.assertEqual(self.network.read_bytes(),self.stock)
-  for name in ['configured','network-init.sha256','backup','backup-deltas','uci','ipa-backup','ipa-restored','ipa-uci','ipa-runtime']:self.assertTrue((self.root/name).exists())
+  for name in ['configured','network-init.sha256','backup','backup-deltas','uci','ipa-backup','ipa-restored','ipa-uci','ipa-runtime','runtime-disabled']:self.assertTrue((self.root/name).exists())
   self.assert_preserved_profiles();self.assertFalse((self.root/'controller-upgrade').exists())
  def test_reset_changed_cid_refuses_without_writes(self):
   self.reset_state();self.cid.write_text('b'*32+'\n');self.assertNotEqual(self.run_upgrade().returncode,0)

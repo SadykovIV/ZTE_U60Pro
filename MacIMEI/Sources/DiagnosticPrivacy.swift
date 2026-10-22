@@ -30,7 +30,7 @@ extension ActivityJournal {
     }
     static func diagnosticOutput(_ data: Data, command: String) -> String {
         // Auth replies and raw credential stores can have unlabelled secrets.
-        let sensitiveSources = ["profiles.json", "config.yaml", "config.json", "uci export", "/api/auth/", "/etc/shadow", "start_zte_agent.sh", "back_parameter", "cat /etc/config/wireless", "uci show wireless", "/profiles/", "export-profile", "ssh-keygen"]
+        let sensitiveSources = ["profiles.json", "config.yaml", "config.json", "uci export", "/api/auth/", "/etc/shadow", "start_zte_agent.sh", "back_parameter", "cat /etc/config/wireless", "uci show wireless", "/profiles/", "export-profile", "ssh-keygen", "/data/zte-vpn/vpnctl request"]
         if sensitiveSources.contains(where: { command.contains($0) }) {
             // The pinned inline preflight contains startup-file names even
             // though it never reads their contents. Keep only its fixed error

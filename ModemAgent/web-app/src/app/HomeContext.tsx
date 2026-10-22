@@ -42,7 +42,7 @@ export function deriveAlerts(data: HomeData | null, t = translate): Alert[] {
   for (const [source, freshness] of Object.entries(data.sources ?? {})) {
     if (freshness.stale) {
       const age = freshness.age_ms == null ? t('No successful reading') : t('Last reading {seconds}s ago', { seconds: Math.floor(freshness.age_ms / 1000) })
-      const names: Record<string, string> = { signal: 'Signal', battery: 'Battery', thermal: 'Temperatures', cpu: 'CPU', memory: 'Memory', device: 'Device', speed: 'Throughput', usage: 'Data usage', data_usage: 'Data usage', wan: 'IPv4 connection', wan6: 'IPv6 connection', charge_control: 'Charge control', cellular: 'Cellular network' }
+      const names: Record<string, string> = { signal: 'Signal', battery: 'Battery', thermal: 'Temperatures', cpu: 'CPU', memory: 'Memory', device: 'Device', firmware: 'Firmware', speed: 'Throughput', usage: 'Data usage', data_usage: 'Data usage', wan: 'IPv4 connection', wan6: 'IPv6 connection', charge_control: 'Charge control', cellular: 'Cellular network' }
       alerts.push({ level: 'warning', message: t('{source} unavailable: {age}', { source: t(names[source] ?? 'Data source'), age }), details: [source, freshness.error].filter(Boolean).join(': ') })
     }
   }

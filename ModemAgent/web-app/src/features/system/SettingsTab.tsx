@@ -257,7 +257,9 @@ export default function SettingsTab({ onLogout }: { onLogout: () => void }) {
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
         <Card title={t("Device")}>
           <Row label={t("Model")} value={device?.model ?? '\u2014'} mono />
-          <Row label={t("Firmware")} value={device?.firmware ?? '\u2014'} mono />
+          <Row label={t("Firmware")} value={device?.firmware ?? '\u2014'} mono wrap />
+          <Row label={t("Internal firmware")} value={device?.internal_firmware ?? '\u2014'} mono wrap />
+          <Row label={t("Kernel")} value={device?.kernel ?? '\u2014'} mono wrap />
           <Row label={t("Uptime")} value={formatUptime(device?.uptime_secs)} />
           <Row label={t("Load")} value={device?.load_avg?.map((v) => n(v, { minimumFractionDigits: 2, maximumFractionDigits: 2 })).join(', ') ?? '\u2014'} mono />
           <Row label="IMEI" value={imei || '\u2014'} mono />

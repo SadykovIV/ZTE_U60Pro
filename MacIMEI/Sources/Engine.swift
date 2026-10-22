@@ -8,10 +8,18 @@ final class SSHTransport: RemoteTransport {
     init(_ connection: Connection) { self.connection = connection }
     func run(_ command: String, input: Data? = nil, timeout: TimeInterval = 30) throws -> CommandResult {
         try connection.validate()
+        // VPN bodies contain write-only passwords and subscription tokens. Keep
+        // them in memory instead of creating the general transport's stdin file.
+        let privateVPNInput = command.hasSuffix("exec /data/zte-vpn/vpnctl request")
+        if privateVPNInput { try require((input?.count ?? 0) <= 32 * 1024 * 1024, "Запрос VPN превышает 32 МиБ.") }
+        let privatePipe = privateVPNInput ? Pipe() : nil
+        if let privatePipe {
+            try require(fcntl(privatePipe.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1) != -1, "Не удалось подготовить защищённую передачу VPN.")
+        }
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("zte-process-" + UUID().uuidString)
         try secureDirectory(dir); defer { try? FileManager.default.removeItem(at: dir) }
         let out = dir.appendingPathComponent("stdout"), err = dir.appendingPathComponent("stderr"), src = dir.appendingPathComponent("stdin")
-        try savePrivate(Data(), out); try savePrivate(Data(), err); try savePrivate(input ?? Data(), src)
+        try savePrivate(Data(), out); try savePrivate(Data(), err); try savePrivate(privateVPNInput ? Data() : (input ?? Data()), src)
         let output = try FileHandle(forWritingTo: out), errors = try FileHandle(forWritingTo: err), source = try FileHandle(forReadingFrom: src)
         defer { try? output.close(); try? errors.close(); try? source.close() }
         let process = Process(); process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
@@ -20,8 +28,19 @@ final class SSHTransport: RemoteTransport {
             "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3", "-o", "StrictHostKeyChecking=yes",
             "-o", "UserKnownHostsFile=\"" + connection.knownHostsPath.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\"", "-o", "GlobalKnownHostsFile=/dev/null",
             "root@" + connection.host, command]
-        process.standardInput = source; process.standardOutput = output; process.standardError = errors
-        try process.run(); let limit = Date().addingTimeInterval(timeout)
+        process.standardInput = privatePipe?.fileHandleForReading ?? source; process.standardOutput = output; process.standardError = errors
+        try process.run()
+        if let privatePipe {
+            try? privatePipe.fileHandleForReading.close()
+            let body = input ?? Data()
+            DispatchQueue.global(qos: .userInitiated).async {
+                defer { try? privatePipe.fileHandleForWriting.close() }
+                // SSH failures may close stdin before reading it. The exit status
+                // below remains authoritative; neither body nor write error is logged.
+                try? privatePipe.fileHandleForWriting.write(contentsOf: body)
+            }
+        }
+        let limit = Date().addingTimeInterval(timeout)
         while process.isRunning && Date() < limit { Thread.sleep(forTimeInterval: 0.05) }
         if process.isRunning {
             process.terminate(); let grace = Date().addingTimeInterval(3)

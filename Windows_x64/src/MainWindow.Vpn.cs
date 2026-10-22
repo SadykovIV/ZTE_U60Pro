@@ -1,5 +1,6 @@
 using Avalonia.Controls;
 using Avalonia.Layout;
+using Avalonia.LogicalTree;
 using Avalonia.Platform.Storage;
 using System.Text;
 using ZteImeiStudio.Windows.Features;
@@ -39,6 +40,8 @@ public sealed partial class MainWindow
             panel.Children.Add(Muted(vpn is null ? "Обновите состояние, чтобы прочитать профили с модема." : vpn.Enabled ? "Wi-Fi с VPN включён" : "Wi-Fi с VPN выключен"));
             if (vpn is not null)
             {
+                if (vpn.Enabled && vpn.ProfileDetails?.Any(p => p.Active && p.Protocol == "ikev2") == true)
+                    panel.Children.Add(Muted(vpn.Ikev2Connected ? "IKEv2 подключён: частные сети доступны через VPN." : vpn.Ikev2State == "waiting" ? "Ожидание подключения IKEv2: подтвердите PUSH в приложении MFA." : "IKEv2 не подключён: частные сети и DNS недоступны. Публичные IPv4 доступны через LTE, если адрес уже известен."));
                 panel.Children.Add(VpnButton(vpn.Enabled ? "Выключить Wi-Fi с VPN" : "Включить Wi-Fi с VPN", async () =>
                 {
                     if (await ConfirmAsync("Wi-Fi с VPN", vpn.Enabled ? "Выключить Wi-Fi с VPN? Устройства этой сети потеряют подключение." : "Включить Wi-Fi с VPN с выбранным профилем?"))
@@ -58,16 +61,18 @@ public sealed partial class MainWindow
                     if (! _form.ContainsKey(renameKey)) _form[renameKey] = profile.Name;
                     row.Children.Add(Field("Название профиля", renameKey, profile.Name));
                     var actions = new WrapPanel { Orientation = Orientation.Horizontal };
-                    actions.Children.Add(VpnButton(profile.UpdateAvailable ? "Применить обновление" : "Сделать активным", async () =>
+                    actions.Children.Add(VpnButton(profile.Protocol == "ikev2" && profile.Active ? "Переподключить IKEv2" : profile.UpdateAvailable ? "Применить обновление" : "Сделать активным", async () =>
                     {
-                        if (await ConfirmAsync("Выбрать профиль VPN?", "При первой активации будет настроена и включена сеть Wi-Fi с VPN. При смене работающего профиля VPN переподключится."))
+                        if (await ConfirmAsync("Выбрать профиль VPN?", profile.Protocol == "ikev2" ? "Подключить IKEv2? Подтвердите PUSH в приложении MFA после запуска подключения. Если время ожидания истекло, повторите подключение вручную." : "При первой активации будет настроена и включена сеть Wi-Fi с VPN. При смене работающего профиля VPN переподключится."))
                             await ExecuteAsync(ModemOperation.ActivateVpnProfile, new Dictionary<string,string> { ["vpn_profile_id"] = profile.Id });
-                    }, () => VpnReady && (!profile.Active || profile.UpdateAvailable)));
+                    }, () => VpnReady && (profile.Protocol == "ikev2" || !profile.Active || profile.UpdateAvailable)));
                     actions.Children.Add(VpnButton("Переименовать", async () =>
                     {
                         if (await ConfirmAsync("Переименовать профиль VPN?", "Сохранить новое название выбранного профиля VPN?"))
                             await ExecuteAsync(ModemOperation.RenameVpnProfile, new Dictionary<string,string> { ["vpn_profile_id"] = profile.Id, ["vpn_profile_name"] = Get(renameKey) });
                     }, () => VpnReady));
+                    if (profile.Protocol == "ikev2")
+                        actions.Children.Add(VpnButton("Редактировать IKEv2", () => ExecuteAsync(ModemOperation.LoadVpnIkev2, new Dictionary<string,string> { ["vpn_profile_id"] = profile.Id }), () => VpnReady));
                     actions.Children.Add(VpnButton("Удалить профиль", async () =>
                     {
                         if (await ConfirmAsync("Удалить профиль VPN?", "Для повторного импорта понадобится исходная ссылка или файл профиля."))
@@ -101,6 +106,7 @@ public sealed partial class MainWindow
             }, () => VpnReady, true));
             panel.Children.Add(Muted("Данные профиля не записываются в журнал программы и очищаются после отправки."));
         });
+        BuildVpnIkev2();
         AddCard("Подписки VPN", "Программа загружает подписку через интернет компьютера. Все её профили появляются в общем списке на модеме.", panel =>
         {
             panel.Children.Add(Field("HTTPS-ссылка подписки", "vpn_subscription_url", "https://…", secret: true));
@@ -138,7 +144,58 @@ public sealed partial class MainWindow
         });
     }
     private static string VpnProtocolLabel(string protocol) => protocol switch
-    { "vless" => "VLESS", "hysteria2" => "HY2", "wireguard" => "WireGuard", "amneziawg2" => "AWG 2", "amneziawg3" => "AWG 3", "amneziawg3.1" => "AWG 3.1", _ => protocol };
+    { "vless" => "VLESS", "hysteria2" => "HY2", "ikev2" => "IKEv2", "wireguard" => "WireGuard", "amneziawg2" => "AWG 2", "amneziawg3" => "AWG 3", "amneziawg3.1" => "AWG 3.1", _ => protocol };
+
+    private void BuildVpnIkev2()
+    {
+        if (!_form.ContainsKey("vpn_ikev2_name")) _form["vpn_ikev2_name"] = "UserGate";
+        if (!_form.ContainsKey("vpn_ikev2_dns")) _form["vpn_ikev2_dns"] = "10.0.2.1";
+        var editing = Get("vpn_ikev2_id").Length > 0;
+        AddCard(editing ? "Редактировать IKEv2" : "Добавить профиль IKEv2", "В отдельной сети VPN Wi-Fi: частные сети 10/8, 172.16/12 и 192.168/16 — через VPN; публичные IPv4 — через LTE. DNS направляется через VPN. Основная Wi-Fi сеть сохраняет свои настройки.", panel =>
+        {
+            panel.Children.Add(Field("Название профиля", "vpn_ikev2_name", "UserGate"));
+            panel.Children.Add(Field("Адрес сервера IKEv2", "vpn_ikev2_server", "vpn.example.com"));
+            panel.Children.Add(Field("Имя сервера в сертификате (по умолчанию адрес сервера)", "vpn_ikev2_server_id", "vpn.example.com"));
+            panel.Children.Add(Field("Логин IKEv2", "vpn_ikev2_username", "Логин"));
+            panel.Children.Add(Field(editing ? "Новый пароль IKEv2 (пусто — сохранить прежний)" : "Пароль IKEv2", "vpn_ikev2_password", "Пароль", secret: true));
+            panel.Children.Add(Field("DNS через VPN", "vpn_ikev2_dns", "10.0.2.1"));
+            panel.Children.Add(Field("Сертификат центра сертификации (CA), PEM", "vpn_ikev2_ca", "-----BEGIN CERTIFICATE-----", multiline: true));
+            panel.Children.Add(VpnButton("Открыть сертификат PEM", ReadVpnIkev2CertificateAsync, () => !_busy));
+            if (editing) panel.Children.Add(VpnButton("Новый профиль IKEv2", () =>
+            {
+                foreach (var key in _form.Keys.Where(key => key.StartsWith("vpn_ikev2_", StringComparison.Ordinal)).ToArray()) _form.Remove(key);
+                ClearSecrets(); RenderPage(); return Task.CompletedTask;
+            }, () => !_busy));
+            panel.Children.Add(VpnButton("Сохранить IKEv2", () => ExecuteAsync(ModemOperation.SaveVpnIkev2,
+                new[] { "vpn_ikev2_id", "vpn_ikev2_name", "vpn_ikev2_server", "vpn_ikev2_server_id", "vpn_ikev2_username", "vpn_ikev2_password", "vpn_ikev2_ca", "vpn_ikev2_dns" }), () => VpnReady, true));
+            panel.Children.Add(Muted("Сохранение не переключает подключение. Выберите профиль и нажмите «Сделать активным». Пароль передаётся по SSH и не возвращается при чтении настроек."));
+            panel.Children.Add(Muted("После запуска подключения подтвердите PUSH в приложении MFA. Если время ожидания истекло, нажмите «Переподключить IKEv2»."));
+        });
+    }
+
+    private async Task ReadVpnIkev2CertificateAsync()
+    {
+        var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions { Title = Localization.Translate("Открыть сертификат PEM"), AllowMultiple = false });
+        if (files.Count != 1) return;
+        try
+        {
+            await using var stream = await files[0].OpenReadAsync();
+            var bytes = new byte[65537]; var size = 0;
+            while (size < bytes.Length)
+            {
+                var read = await stream.ReadAsync(bytes.AsMemory(size), _lifetime.Token);
+                if (read == 0) break;
+                size += read;
+            }
+            if (size > 65536) throw new InvalidDataException();
+            _form["vpn_ikev2_ca"] = new UTF8Encoding(false, true).GetString(bytes, 0, size).TrimStart('\uFEFF');
+            // Updating the visible certificate field does not rebuild or clear the password field.
+            var input = _body.GetLogicalDescendants().OfType<TextBox>().FirstOrDefault(box => box.Tag as string == "vpn_ikev2_ca");
+            if (input is not null) input.Text = _form["vpn_ikev2_ca"];
+        }
+        catch (OperationCanceledException) { throw; }
+        catch { SetStatus(VpnMessages.Errors["VPN_IKEV2_INVALID_CERTIFICATE"], true); }
+    }
     private async Task ReadVpnProfileFileAsync()
     {
         var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions { Title = Localization.Translate("Открыть файл профиля"), AllowMultiple = false });

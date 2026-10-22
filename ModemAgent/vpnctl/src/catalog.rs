@@ -23,6 +23,7 @@ impl Catalog {
                 || !p["proxy"].is_object() || profile::name(p["name"].as_str().unwrap_or("")).is_err() {
                 return Err("VPN_INVALID_STATE");
             }
+            if crate::ikev2::is_ikev2(&p["proxy"]) { crate::ikev2::validate(&p["proxy"])?; }
         }
         ids.clear();
         for s in &self.subscriptions {

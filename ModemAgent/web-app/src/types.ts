@@ -50,6 +50,8 @@ export interface SpeedInfo {
 export interface DeviceInfo {
   model: string
   firmware?: string
+  internal_firmware?: string
+  kernel?: string
   uptime_secs?: number
   load_avg?: number[]
 }

@@ -37,6 +37,11 @@ def main():
         subprocess.run([str(binary)], check=True,
                        env={**os.environ, "ASAN_OPTIONS": f"detect_leaks={int(sys.platform != 'darwin')}:halt_on_error=1",
                             "UBSAN_OPTIONS": "halt_on_error=1"})
+        viewport = Path(temporary) / "vpn-view-test"
+        subprocess.run([*flags, str(Path(__file__).with_name("vpn_view_test.c")), "-o", str(viewport)], check=True)
+        subprocess.run([str(viewport)], check=True,
+                       env={**os.environ, "ASAN_OPTIONS": f"detect_leaks={int(sys.platform != 'darwin')}:halt_on_error=1",
+                            "UBSAN_OPTIONS": "halt_on_error=1"})
     print(f"VPN error table: {len(entries)} exact producer codes; synthetic tests only")
 
 

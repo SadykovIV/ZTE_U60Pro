@@ -160,7 +160,7 @@ try
         var shell = new Shell { Firmware = firmware, Helper = release12422Helper };
         var before = await Service(shell).GetVpnStatusAsync();
         var after = await Service(shell).InstallVpnAsync();
-        string[] required = ["upgrade-controller.sh", "vpnctl", "manager.sh", "firewall.sh", "configure.lua", "nft-guard.nft", "dnsmasq.conf", "service.sh"];
+        string[] required = ["upgrade-controller.sh", "vpnctl", "manager.sh", "firewall.sh", "configure.lua", "nft-guard.nft", "dnsmasq.conf", "service.sh", "ikev2.sh", "ikev2-updown.sh", "nft-ikev2-guard.nft"];
         Check(shell.StagedFiles.Keys.Order().SequenceEqual(required.Order()));
         foreach (var name in required)
             Check(shell.StagedFiles[name].AsSpan().SequenceEqual(File.ReadAllBytes(Path.Combine("Windows_x64/Resources/VPN", name))));
@@ -350,6 +350,39 @@ try
         foreach (var file in Directory.EnumerateFiles(storage, "*.jsonl", SearchOption.AllDirectories))
             Check(!(await File.ReadAllTextAsync(file)).Contains("PRIVATE_DISPATCH"));
     });
+    await Test("IKEv2 save uses private stdin, preserves an empty edit password and does not activate", async () =>
+    {
+        const string certificate = "-----BEGIN CERTIFICATE-----\nZml4dHVyZQ==\n-----END CERTIFICATE-----";
+        var config = new VpnIkev2Configuration("vpn.example.com", "", "fixture", "PRIVATE_IKEV2_CANARY", certificate);
+        var shell = new Shell { ProfileMode = true }; var service = Service(shell);
+        var created = await service.SaveVpnIkev2Async(null, "IKEv2", config);
+        var id = created.Profiles.Single().Id;
+        Check(!created.Enabled && created.ActiveProfile == "" && created.Profiles.Single().Protocol == "ikev2");
+        var create = shell.Bodies.Single(x => x.GetProperty("action").GetString() == "save_ikev2");
+        Check(!create.TryGetProperty("id", out _) && create.GetProperty("ikev2").GetProperty("server_id").GetString() == "vpn.example.com");
+        Check(create.GetProperty("ikev2").GetProperty("dns").GetString() == "10.0.2.1");
+        Check(create.GetProperty("ikev2").GetProperty("password").GetString() == config.Password && !config.ToString().Contains(config.Password));
+        var edited = await service.SaveVpnIkev2Async(id, "Updated", config with { Password = "" });
+        Check(edited.Profiles.Single().Id == id && edited.Profiles.Single().Name == "Updated" && !edited.Enabled);
+        Check(!shell.Bodies.Last(x => x.GetProperty("action").GetString() == "save_ikev2").GetProperty("ikev2").TryGetProperty("password", out _));
+        Check(shell.Commands.All(command => !command.Contains("PRIVATE_IKEV2_CANARY") && !command.Contains(certificate)));
+        var invalid = new Shell(); var invalidService = Service(invalid);
+        foreach (var value in new[] { config with { Password = "" }, config with { Dns = "8.8.8.8" }, config with { Dns = "10.00.2.1" }, config with { ServerId = "%any" }, config with { CaCertificate = new string('A',65537) } })
+            await Rejected(() => invalidService.SaveVpnIkev2Async(null, "IKEv2", value));
+        Check(invalid.Commands.Count == 0);
+        var ignored = new Shell { ProfileMode = true, IgnoreProfileMutation = true };
+        await Rejected(() => Service(ignored).SaveVpnIkev2Async(null, "IKEv2", config));
+    });
+    await Test("IKEv2 details reject a returned password", async () =>
+    {
+        const string id = "11111111-1111-1111-1111-111111111111";
+        var proxy = new Dictionary<string,object> { ["type"] = "ikev2", ["server"] = "vpn.example.com", ["server_id"] = "vpn.example.com", ["username"] = "fixture", ["dns"] = "10.0.2.1", ["password_set"] = true, ["ca_certificate"] = "-----BEGIN CERTIFICATE-----\nZml4dHVyZQ==\n-----END CERTIFICATE-----" };
+        RemoteResult Reply() => Shell.Reply(JsonSerializer.Serialize(new { ok = true, data = new { profile = new { id, name = "IKEv2", protocol = "ikev2", proxy } } }));
+        var shell = new Shell { RequestReply = Reply() };
+        Check((await Service(shell).GetVpnIkev2Async(id)).Configuration.Password == "");
+        proxy["password"] = "PRIVATE_IKEV2_CANARY"; shell.RequestReply = Reply();
+        await Rejected(() => Service(shell).GetVpnIkev2Async(id));
+    });
     await Test("Profile validation rejects unsupported input before SSH", async () =>
     {
         var shell = new Shell(); var service = Service(shell);
@@ -480,6 +513,31 @@ try
             var busy = typeof(MainWindow).GetMethod("SetBusy", BindingFlags.NonPublic | BindingFlags.Instance)!;
             busy.Invoke(window, [true]); busy.Invoke(window, [false]);
             Check(!Find("Удалить профиль").IsEnabled && !Find("Сделать активным").IsEnabled && Find("Импортировать профиль").IsEnabled);
+            window.Close(); Dispatcher.UIThread.RunJobs();
+        }, CancellationToken.None);
+    });
+    await Test("IKEv2 UI exposes masked credentials, split DNS and explicit reconnect after MFA timeout", async () =>
+    {
+        await session.Dispatch(() =>
+        {
+            var window = new MainWindow(new FakeModem(), persistPreferences: false); window.Show(); Dispatcher.UIThread.RunJobs();
+            foreach (var state in new[] { "waiting", "disconnected" })
+            {
+                typeof(MainWindow).GetField("_snapshot", BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(window,
+                    new DeviceSnapshot(true, "SSH", ConnectionMode: "SSH", VpnPage: new VpnPageSnapshot(true, true, true, true, true, "Fixture", ["IKEv2"], "IKEv2",
+                        [new VpnProfileSnapshot("11111111-1111-1111-1111-111111111111", "IKEv2", "", true, "ikev2")], true, Ikev2State: state)));
+                window.GetLogicalDescendants().OfType<Button>().Single(b => b.Name == "Navigation4").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                typeof(MainWindow).GetMethod("RenderPage", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(window, null);
+                Dispatcher.UIThread.RunJobs();
+                Button Find(string title) => window.GetLogicalDescendants().OfType<Button>().Single(b => b.Content?.ToString() == Localization.Translate(title));
+                Check(Find("Переподключить IKEv2").IsEnabled && Find("Редактировать IKEv2").IsEnabled && Find("Сохранить IKEv2").IsEnabled);
+                var fields = window.GetLogicalDescendants().OfType<TextBox>().Where(field => field.Tag is string).ToDictionary(field => (string)field.Tag!);
+                Check(fields["vpn_ikev2_password"].PasswordChar == '●' && fields["vpn_ikev2_password"].Text == "");
+                Check(fields["vpn_ikev2_dns"].Text == "10.0.2.1" && fields["vpn_ikev2_ca"].AcceptsReturn);
+                Check(fields["vpn_ikev2_name"].Text == "UserGate");
+                var texts = string.Join("\n", window.GetLogicalDescendants().OfType<TextBlock>().Select(b => b.Text));
+                Check(texts.Contains(Localization.Translate(state == "waiting" ? "Ожидание подключения IKEv2: подтвердите PUSH в приложении MFA." : "IKEv2 не подключён: частные сети и DNS недоступны. Публичные IPv4 доступны через LTE, если адрес уже известен.")));
+            }
             window.Close(); Dispatcher.UIThread.RunJobs();
         }, CancellationToken.None);
     });
@@ -619,6 +677,10 @@ sealed class Shell : IRemoteShell
                     var id = body.TryGetProperty("id", out var idValue) ? idValue.GetString() : "";
                     switch (action)
                     {
+                        case "save_ikev2":
+                            if (string.IsNullOrEmpty(id)) profiles.Add(new JsonObject { ["id"] = "11111111-1111-1111-1111-111111111111", ["name"] = body.GetProperty("name").GetString(), ["transport"] = "", ["protocol"] = "ikev2", ["active"] = false });
+                            else foreach (var p in profiles.Where(p => p!["id"]!.GetValue<string>() == id)) p!["name"] = body.GetProperty("name").GetString();
+                            break;
                         case "import_config": profiles.Add(new JsonObject { ["id"] = "11111111-1111-1111-1111-111111111111", ["name"] = body.GetProperty("name").GetString() ?? "Imported", ["transport"] = "udp", ["protocol"] = "amneziawg3.1", ["active"] = false }); break;
                         case "subscription_delete": ProfileState["subscriptions"] = new JsonArray(); break;
                         case "import": profiles.Add(new JsonObject { ["id"] = "11111111-1111-1111-1111-111111111111", ["name"] = body.GetProperty("name").GetString() ?? "Imported", ["transport"] = "tcp", ["active"] = false }); break;

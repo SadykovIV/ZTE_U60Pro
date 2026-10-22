@@ -15,14 +15,14 @@ public sealed record VpnStatus(
     bool Configured, bool Enabled, bool CoreRunning, string Version, string Ssid,
     string? DesiredSsid, string? PasswordMode, bool SettingsSupported,
     IReadOnlyList<VpnProfile> Profiles, string ActiveProfile, string? Detail = null,
-    IReadOnlyList<VpnSubscription>? Subscriptions = null, VpnImportSummary? LastImport = null);
+    IReadOnlyList<VpnSubscription>? Subscriptions = null, VpnImportSummary? LastImport = null, bool Ikev2Connected = false, string? Ikev2State = null);
 
 public enum VpnPasswordMode { Main, Custom, Preserve }
 
 public sealed partial class DeviceFeatureService
 {
     private const string VpnRoot = "/data/zte-vpn";
-    private const string VpnHelperHash = "8aaece533e2503c7a501497bb1bf191f37a0ffbba067e7a7ff3a4c6f9623673f";
+    private const string VpnHelperHash = "46257e8e24397f097b3ce3e53067ad59b265803f66aeb2da6d216b05dd2e5db7";
     private const string Legacy12422VpnHelperHash = "b5f581427afd423be3931473db2ce4b496a387b685ab3c48adf26cc597000f9a";
     private const string Legacy12421VpnHelperHash = "82a8b6655ff6cd43938ffe3735e8841599ef6116bf33079d8d203db9415ca3f2";
     private const string Legacy12420VpnHelperHash = "fe1f6d535ccee6ec0f9333c01108b00f35006209850ed641023dbb937dd30b48";
@@ -38,25 +38,30 @@ public sealed partial class DeviceFeatureService
     // Public 1.24.4 build 42 controller. It may only serve a status request.
     private const string LegacyCardStatusVpnHelperHash = "7a8b84c3502e711c6b66c943f883a984dd9ed82da41455fc083ed0cc7d44b6fb";
     private const string VpnAgentHash = AgentPackage.Sha256;
-    private const string DashboardHash = "e7362584a399d4acd292c5ca896295cd4d50fa79eff63549b6dfbf97a91a9a2c";
-    private const string LauncherHash = "eb01a6f3c6cb914ded0e2f069f6f5072cd8445245b9b7f0d5f572f6662e9dc70";
-    private static readonly string[] VpnInstallNames = ["install.sh", "manager.sh", "firewall.sh", "configure.lua", "nft-guard.nft", "dnsmasq.conf", "service.sh", "vpnctl", "mihomo"];
-    private static readonly string[] VpnUpgradeNames = ["upgrade-controller.sh", "vpnctl", "manager.sh", "firewall.sh", "configure.lua", "nft-guard.nft", "dnsmasq.conf", "service.sh"];
+    private const string DashboardHash = "870b88a3725b3b989d82a6a117e7077f74c927ca7dab25667d12be6165ea0b2a";
+    private const string LauncherHash = "6e24686d0310c710c734ccc7c21469858e42a2e474f4a3c073bf1c476b460c50";
+    private static readonly string[] VpnInstallNames = ["install.sh", "manager.sh", "firewall.sh", "configure.lua", "nft-guard.nft", "dnsmasq.conf", "service.sh", "ikev2.sh", "ikev2-updown.sh", "nft-ikev2-guard.nft", "vpnctl", "mihomo"];
+    private static readonly string[] VpnUpgradeNames = ["upgrade-controller.sh", "vpnctl", "manager.sh", "firewall.sh", "configure.lua", "nft-guard.nft", "dnsmasq.conf", "service.sh", "ikev2.sh", "ikev2-updown.sh", "nft-ikev2-guard.nft"];
     private static readonly FrozenSet<string> SupportedVpnStatusHashes = new[]
     {
         VpnHelperHash,
         "1cc33e3825a556a825e83392675c254ef22f738660d1016ae1413f7669f88231",
         "3142fb503e64ddba79d523be3c87f0344d6efa78673e30a4b740714d8e9389ca",
+        "3b572cf943d16a66dae1d62515b216eceaf77d397035320eb3c08a5db0e21fc4",
         "3c8a139d9ba6f3372b009e9e0fb5ed9ff27faf1675dcb654f09eedec851661f3",
         "48b9af93098b4b1b31754a48707ac066a39977bcc0db0cc438ead64c62322bd4",
+        "4e8b92cc5089200f3fced24130e47e0918bf8931989af034f709344a42cd5b0d",
         "572e2e1133cebb690584bda8b5ac047336451bc26c6a5e37522a756b6254fac5",
+        "61ccaf5fa0361178dd6fe4a0104d964168f4f79a8453a8617a80a7403240d393",
         "7a8b84c3502e711c6b66c943f883a984dd9ed82da41455fc083ed0cc7d44b6fb",
         "80f16fafe203d661d6a90686c90a25c61eea38cf9e83e002c1cdffea85d02f23",
         "82a8b6655ff6cd43938ffe3735e8841599ef6116bf33079d8d203db9415ca3f2",
+        "8aaece533e2503c7a501497bb1bf191f37a0ffbba067e7a7ff3a4c6f9623673f",
         "8f9e82ca45177fc19ffd4d7663764fa44750e05eed86ef83567ed2dec5ce7827",
         "96a4717fe085a80479675486d23b260c3254084638d195d933d4d9d944b98e88",
         "9c2e3c21eecace7031c4029c969efdec44241f000716447df805f3020dfce95e",
         "9e8b1a737888468a4be6a010a915524b84440037802c6cfc6a5e251abf0e81ce",
+        "a35d788005d4150cd909f85afc667073a03febd24b50a708facf506b051c8a65",
         "b2c3fcfafeccd50fa3000ad5f8f66f1e42ff157b295cdda11dddd31571612af7",
         "b5f581427afd423be3931473db2ce4b496a387b685ab3c48adf26cc597000f9a",
         "cdb01d27775d61bcb3ae14a8d124ccbab683f940f1dcfd2adffa43a6b7b462f0",
@@ -65,6 +70,7 @@ public sealed partial class DeviceFeatureService
         "f5e1c9e627e3e978ff535de79b95ff920d7318e7ea3ce713e5b174efe313ca0c",
         "f620dab27f951c7de2de77a89376975b51c79f57f8a8a24cec95392c9c61eea4",
         "fe1f6d535ccee6ec0f9333c01108b00f35006209850ed641023dbb937dd30b48",
+        "ff5859edb44d83fad9723ccdc142f28ce918b02fae3da929667726d32746986c",
     }.ToFrozenSet(StringComparer.Ordinal);
     private static bool CanReadVpnStatus(string hash) => SupportedVpnStatusHashes.Contains(hash);
     // Literal errors from the pinned controller; an arbitrary JSON string is not a log message.
@@ -167,7 +173,7 @@ true
             configured, enabled, coreRunning,
             StringProperty(json, "version") ?? "", StringProperty(json, "ssid") ?? "",
             StringProperty(json, "desired_ssid"), StringProperty(json, "password_mode"),
-            settingsSupported, profiles, StringProperty(json, "active_profile") ?? "", helper ? null : "Компоненты VPN требуют обновления; сохранённое состояние прочитано.", ParseVpnSubscriptions(json), ParseVpnImportSummary(json));
+            settingsSupported, profiles, StringProperty(json, "active_profile") ?? "", helper ? null : "Компоненты VPN требуют обновления; сохранённое состояние прочитано.", ParseVpnSubscriptions(json), ParseVpnImportSummary(json), BoolProperty(json, "ikev2_connected"), StringProperty(json, "ikev2_state"));
     }
 
     private static IReadOnlyList<string> VpnWarnings(JsonElement profile)

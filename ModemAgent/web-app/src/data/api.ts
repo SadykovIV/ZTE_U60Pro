@@ -344,11 +344,15 @@ function mapSpeed(d: Record<string, unknown>): SpeedInfo {
 }
 
 function mapDevice(d: Record<string, unknown>): DeviceInfo {
-  const kernel = d.kernel as string | undefined
-  const ver = kernel?.match(/Linux version (\S+)/)?.[1]
+  const version = (value: unknown): string | undefined =>
+    typeof value === 'string' && value.length <= 256 && !/[^A-Za-z0-9._/+ -]/.test(value)
+      ? value.trim() || undefined : undefined
+  const kernel = typeof d.kernel === 'string' ? d.kernel.match(/^Linux version (\S+)/)?.[1] : undefined
   return {
     model: 'ZTE U60 Pro',
-    firmware: ver,
+    firmware: version(d.integrate_version),
+    internal_firmware: version(d.wa_inner_version),
+    kernel: version(kernel),
     uptime_secs: d.uptime_secs as number | undefined,
     load_avg: d.load_avg as number[] | undefined,
   }

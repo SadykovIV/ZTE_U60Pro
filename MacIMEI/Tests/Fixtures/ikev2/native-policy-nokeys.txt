@@ -1,0 +1,4 @@
+src 198.18.0.1/32 dst 10.0.4.0/24 \	dir out priority 0 \	tmpl src 192.0.2.1 dst 192.0.2.2\		proto esp reqid 123 mode tunnel\	if_id 0x4a92\
+src 198.18.0.1/32 dst 10.0.3.0/24 \	dir out priority 0 \	mark 0x1/0xffffffff \	tmpl src 192.0.2.1 dst 192.0.2.2\		proto esp reqid 19090 mode tunnel\	if_id 0x4a92\
+src 198.18.0.1/32 dst 10.0.2.0/24 \	dir out priority 0 \	tmpl src 192.0.2.1 dst 192.0.2.2\		proto esp reqid 19090 mode tunnel\	if_id 0x4d\
+src 198.18.0.1/32 dst 10.0.1.0/24 \	dir out priority 0 \	tmpl src 192.0.2.1 dst 192.0.2.2\		proto esp reqid 19090 mode tunnel\	if_id 0x4a92\

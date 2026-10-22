@@ -12,6 +12,16 @@ internal static class VpnMessages
 
     internal static readonly IReadOnlyDictionary<string, string> Errors = new Dictionary<string, string>
     {
+        ["VPN_IKEV2_INVALID_SERVER"] = "Укажите имя или IPv4-адрес сервера IKEv2 без https:// и порта.",
+        ["VPN_IKEV2_INVALID_ID"] = "Укажите имя сервера из сертификата. Шаблоны и %any не допускаются.",
+        ["VPN_IKEV2_INVALID_USERNAME"] = "Введите логин IKEv2 до 256 байт без управляющих символов.",
+        ["VPN_IKEV2_INVALID_PASSWORD"] = "Введите пароль IKEv2 до 1024 байт без управляющих символов. При редактировании пустое поле сохраняет прежний пароль.",
+        ["VPN_IKEV2_INVALID_CERTIFICATE"] = "Нужен сертификат центра сертификации в формате PEM до 64 КиБ, без закрытого ключа.",
+        ["VPN_IKEV2_INVALID_DNS"] = "DNS должен быть IPv4-адресом из частных сетей 10/8, 172.16/12 или 192.168/16.",
+        ["VPN_IKEV2_UNAVAILABLE"] = "Компоненты strongSwan IKEv2 недоступны в прошивке модема.",
+        ["VPN_IKEV2_CONFLICT"] = "На модеме уже работает другая служба IPsec. Завершите её перед включением IKEv2.",
+        ["VPN_IKEV2_NOT_READY"] = "Туннель IKEv2 не подключён. Проверьте сервер, логин, пароль и сертификат.",
+        ["VPN_IKEV2_INVALID_PROFILE"] = "Параметры профиля IKEv2 повреждены. Откройте и сохраните профиль заново.",
         ["VPN_SUBSCRIPTION_FILE_REFERENCE"] = "Профиль подписки ссылается на локальный файл сертификата или ключа. Нужны встроенные данные PEM.",
         ["VPN_SUBSCRIPTION_EXISTS"] = "Эта подписка уже добавлена. Обновите её в списке.",
         ["VPN_AWG_DUPLICATE_OPTION"] = "Некорректный параметр в файле WireGuard/AmneziaWG. Проверьте исходную конфигурацию.",

@@ -150,6 +150,45 @@ internal static class PreparationRecoveryTests
                 }
                 else Check(await File.ReadAllTextAsync(pendingPath) == original, "Unknown or changed-device pending intent stays byte-identical: " + scenario);
             }
+            foreach (var state in new[] { "MISSING", "UNREADABLE", "UNEXPECTED_TYPE", "EMPTY", "INVALID_CONTENT", "malformed", "forged", "transport" })
+            {
+                var folder = Path.Combine(root, "state-diagnostic-" + state); Directory.CreateDirectory(folder);
+                var id = Guid.NewGuid().ToString(); var backup = Path.Combine(folder, "SetupBackups", id); Directory.CreateDirectory(backup);
+                var path = Path.Combine(folder, "setup-pending.json");
+                var pending = new OnboardingPending { Id=id, WebIdentity=B31, IdentitySource="web-matched", BackupDirectory=backup,
+                    Cid=Cid, FirmwareHash=ImeiEngine.FirmwareHash, RouterHash=ImeiEngine.RouterHash, BootId=Boot, AdbSerial="one", Profile="b31",
+                    Intent="preparation", InstallRequested=true, Phase="install-requested", RemoteStage="/data/zte-imei-studio/stage-"+id,
+                    RemoteJournal="/data/zte-imei-studio/installations/"+id };
+                var original = JsonSerializer.Serialize(pending); await File.WriteAllTextAsync(path, original);
+                await File.WriteAllTextAsync(Path.Combine(backup, "original.fixture"), "preserved");
+                var verification=0; var stateReads=0; var mutations=0;
+                var adb = new AdbTransport((arguments, stream, _, _) =>
+                {
+                    if (arguments[0]=="devices") return Task.FromResult(Reply("one device usb:1\n"));
+                    if (arguments[0]=="-d") return Task.FromResult(Reply("one\n"));
+                    var command=stream?.OriginalCommand ?? arguments[^1];
+                    var marker=stream?.Result ?? Regex.Match(command,"__ZTE_RESULT_[A-F0-9]{32}__").Value;
+                    var prefix=stream is null ? "" : "\n"+stream.Ready+"\n\n"+stream.Begin+"\n";
+                    string body; var code=0;
+                    if (command.Contains("'--verify-not-started'")) { verification++;body="INSTALL_ERROR RECOVERY_PENDING_OWN_LOCK\nsynthetic-private-content";code=1; }
+                    else if (command.Contains("ZTE_INSTALL_STATE_PROBE")) { stateReads++;body=state=="malformed"?"synthetic-private-content":state=="forged"?"INSTALL_STATE ready\nsynthetic-private-content":"INSTALL_STATE "+state;code=state=="transport"?1:0; }
+                    else if (command.Contains("observed_hash()")) {
+                        body=ImeiEngine.FirmwareHash+"  /firmware/image/modem.b16\n"+ImeiEngine.RouterHash+"  /usr/bin/diag-router\n"+Cid+"\n"+Boot;
+                        if(command.Contains("ubus call"))body+="\n"+JsonSerializer.Serialize(new{imei=B31.Imei,integrate_version=B31.Firmware,wa_inner_version=B31.Inner});
+                    } else { mutations++;throw new Exception("Unexpected mutation during recovery diagnosis"); }
+                    return Task.FromResult(Reply(prefix+body+"\n"+marker+code+"\n"));
+                },Path.GetFullPath("Windows_x64/Resources/Onboarding/adb-stream.sh"));
+                var engine=new OnboardingEngine("192.0.2.1",folder,Path.GetFullPath("Windows_x64/Resources"),adb)
+                    {WebFactory=()=>new ModemWebClient("192.0.2.1",new FailingWeb(new HttpRequestException("fixture")))};
+                string failure="";
+                try { await engine.PrepareAsync("synthetic-password","synthetic-agent-password",""); }
+                catch (IOException error) { failure=error.Message; }
+                var expected=state is "malformed" or "forged"?"PROBE_INVALID":state=="transport"?"PROBE_FAILED":state;
+                Check(failure.Contains("STATE_"+expected)&&failure.Contains("RECOVERY_PENDING_OWN_LOCK"),"Both recovery diagnostic stages remain visible: "+state);
+                Check(!failure.Contains("synthetic-private-content"),"Recovery errors contain no arbitrary output: "+state);
+                Check(verification==1&&stateReads==1&&mutations==0&&!Directory.Exists(Path.Combine(folder,"SSH")),"State diagnostics are read-only with no installer replay: "+state);
+                Check(await File.ReadAllTextAsync(path)==original&&await File.ReadAllTextAsync(Path.Combine(backup,"original.fixture"))=="preserved", "Failed diagnosis preserves pending bytes and backup: "+state);
+            }
             foreach (var scenario in new[] { "before-dispatch", "dispatched-reset", "same-boot-dispatched", "wrong-cid", "changed-second-read", "cleanup-timeout", "cleanup-socket" })
             {
                 var folder = Path.Combine(root, "reset-" + scenario); Directory.CreateDirectory(folder);

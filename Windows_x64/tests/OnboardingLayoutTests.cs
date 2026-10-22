@@ -60,7 +60,7 @@ internal static class OnboardingLayoutTests
                     var cmd=args[^1];calls.Add(cmd);
                     var marker=Regex.Match(cmd,"__ZTE_RESULT_[A-F0-9]{32}__").Value;
                     string body;
-                    if(cmd.Contains("cat '"+expected.Journal+"/state'"))body="ready";
+                    if(cmd.Contains("ZTE_INSTALL_STATE_PROBE"))body="INSTALL_STATE ready";
                     else if(cmd.Contains("observed_hash()"))body=identity.FirmwareHash+"  /firmware/image/modem.b16\n"+identity.RouterHash+"  /usr/bin/diag-router\n"+identity.Cid+"\n"+identity.BootId;
                     else if(cmd.Contains("'"+expected.DropbearKey+"' -y -f /etc/dropbear/dropbear_ed25519_host_key"))body="invalid synthetic host key";
                     else throw new Exception("Unexpected resume command");
@@ -89,7 +89,7 @@ internal static class OnboardingLayoutTests
             {
                 if(args[0]!="-s"||args[2]!="shell")throw new Exception("Unexpected non-read ADB operation");
                 var cmd=args[^1];var marker=Regex.Match(cmd,"__ZTE_RESULT_[A-F0-9]{32}__").Value;
-                var body=cmd.Contains("/state'")?"ready":cmd.Contains("dropbearkey'")?"ssh-ed25519 "+Convert.ToBase64String(blob):cmd.Contains("observed_hash()")?proof:throw new Exception("Unexpected ADB operation");
+                var body=cmd.Contains("ZTE_INSTALL_STATE_PROBE")?"INSTALL_STATE ready":cmd.Contains("dropbearkey'")?"ssh-ed25519 "+Convert.ToBase64String(blob):cmd.Contains("observed_hash()")?proof:throw new Exception("Unexpected ADB operation");
                 return Task.FromResult(new RemoteResult(0,Encoding.UTF8.GetBytes(body+"\n"+marker+"0\n"),[]));
             });
             var engine=new OnboardingEngine("192.0.2.1",authStorage,"unused",adb){InstalledSshFactory=()=>remote};

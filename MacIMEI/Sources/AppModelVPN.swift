@@ -4,6 +4,22 @@ extension AppModel {
     func refreshVPN() { performVPN() }
     func installVPN() { performVPN(install: true) }
     func performVPNProfile(_ operation: VPNOperation) { performVPN(operation: operation) }
+    func loadVPNIKEv2(_ id: String, completion: @escaping @MainActor (VPNIKEv2Profile) -> Void) {
+        guard canManage else { return }
+        let config = connection, root = storage, assets = resources, target = sshSelectionContext
+        busy = true; vpnError = ""
+        operationTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let profile = try await Task.detached(priority: .userInitiated) {
+                    let engine = try ModemEngine(root: root, resources: assets, connection: config) { _, _ in }
+                    return try engine.locked { try target.verify(engine); let profile = try VPNSettingsManager(engine: engine).ikev2Profile(id); try target.verify(engine); return profile }
+                }.value
+                completion(profile)
+            } catch { vpnError = error.localizedDescription }
+            busy = false; operationTask = nil
+        }
+    }
     func saveVPNWiFi(_ configuration: VPNWiFiConfiguration, completion: @escaping @MainActor (Bool) -> Void) {
         guard canManage else { completion(false); return }
         performVPN(configuration: configuration, completion: completion)

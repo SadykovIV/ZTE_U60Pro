@@ -182,6 +182,47 @@ pub struct DeviceInfo {
     pub kernel: String,
 }
 
+/// Only the two public version labels from zwrt_web.device_info. The original
+/// response also contains device identifiers and must never be cached or sent.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct FirmwareInfo {
+    pub integrate_version: Option<String>,
+    pub wa_inner_version: Option<String>,
+}
+
+fn firmware_label(value: &serde_json::Value) -> Option<String> {
+    let raw = value.as_str()?;
+    if raw.len() > 256
+        || !raw
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || b"._/+ -".contains(&c))
+    {
+        return None;
+    }
+    let value = raw.trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+fn parse_firmware_info(value: &serde_json::Value) -> FirmwareInfo {
+    FirmwareInfo {
+        integrate_version: firmware_label(&value["integrate_version"]),
+        wa_inner_version: firmware_label(&value["wa_inner_version"]),
+    }
+}
+
+pub fn read_firmware_info() -> Result<FirmwareInfo, String> {
+    // ubus::call uses the shared process runner's 10-second / 2-MiB bounds.
+    // Neither subprocess output nor raw device_info errors enter API metadata.
+    const UNAVAILABLE: &str = "Firmware version unavailable";
+    let response = crate::ubus::call("zwrt_web", "device_info", Some("{}"))
+        .map_err(|_| UNAVAILABLE.to_string())?;
+    let firmware = parse_firmware_info(&response);
+    if firmware.integrate_version.is_none() && firmware.wa_inner_version.is_none() {
+        return Err(UNAVAILABLE.to_string());
+    }
+    Ok(firmware)
+}
+
 pub fn read_device_info() -> DeviceInfo {
     let hostname = fs::read_to_string("/proc/sys/kernel/hostname")
         .unwrap_or_default()
@@ -790,6 +831,124 @@ fn read_proc_name_rss(pid: u32) -> Option<(String, u64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn firmware_versions_are_an_allowlist_not_a_device_info_passthrough() {
+        let parsed = parse_firmware_info(&serde_json::json!({
+            "integrate_version": "CN_ZTE_MU5250V1.0.0B31",
+            "wa_inner_version": "BD_CNMU5250V1.0.0B31",
+            "imei": "PRIVATE_IDENTIFIER_CANARY",
+            "password": "PRIVATE_PASSWORD_CANARY",
+            "kernel": "Linux version 5.15.194-perf",
+        }));
+        let encoded = serde_json::to_value(&parsed).unwrap();
+        assert_eq!(
+            encoded,
+            serde_json::json!({
+                "integrate_version": "CN_ZTE_MU5250V1.0.0B31",
+                "wa_inner_version": "BD_CNMU5250V1.0.0B31",
+            })
+        );
+        assert!(!encoded.to_string().contains("PRIVATE"));
+    }
+
+    #[test]
+    fn firmware_versions_reject_bad_fields_independently_without_fallback() {
+        for bad in [
+            serde_json::Value::Null,
+            serde_json::json!(5),
+            serde_json::json!({}),
+            serde_json::json!([]),
+            serde_json::json!(""),
+            serde_json::json!("   "),
+            serde_json::json!("B31\n"),
+            serde_json::json!("B31\0hidden"),
+            serde_json::json!("B31\u{202e}"),
+            serde_json::json!("x".repeat(257)),
+        ] {
+            let parsed = parse_firmware_info(&serde_json::json!({
+                "integrate_version": bad, "wa_inner_version": "BD_FLYMU5250V1.0.0B28",
+                "kernel": "Linux version 5.15.194-perf",
+            }));
+            assert!(parsed.integrate_version.is_none());
+            assert_eq!(
+                parsed.wa_inner_version.as_deref(),
+                Some("BD_FLYMU5250V1.0.0B28")
+            );
+        }
+        for value in [
+            serde_json::Value::Null,
+            serde_json::json!([]),
+            serde_json::json!({"kernel":"Linux version 5.15.194-perf"}),
+        ] {
+            assert_eq!(parse_firmware_info(&value), FirmwareInfo::default());
+        }
+        assert_eq!(
+            firmware_label(&serde_json::json!(" XCBZ_HK_MU5250V1.0.0B04 ")).as_deref(),
+            Some("XCBZ_HK_MU5250V1.0.0B04")
+        );
+        assert_eq!(
+            firmware_label(&serde_json::json!("x".repeat(256)))
+                .unwrap()
+                .len(),
+            256
+        );
+    }
+
+    #[test]
+    fn firmware_read_uses_fixed_bounded_ubus_and_discards_raw_failures() {
+        use std::os::unix::process::ExitStatusExt;
+        crate::process::with_commands(
+            |command| {
+                assert_eq!(command.get_program(), "ubus");
+                assert_eq!(
+                    command.get_args().collect::<Vec<_>>(),
+                    ["call", "zwrt_web", "device_info", "{}"]
+                );
+                Ok(std::process::Output {
+                    status: std::process::ExitStatus::from_raw(0),
+                    stdout: br#"{"integrate_version":"XCBZ_HK_MU5250V1.0.0B04","imei":"PRIVATE"}"#
+                        .to_vec(),
+                    stderr: Vec::new(),
+                })
+            },
+            || {
+                assert_eq!(
+                    read_firmware_info().unwrap().integrate_version.as_deref(),
+                    Some("XCBZ_HK_MU5250V1.0.0B04")
+                )
+            },
+        );
+        crate::process::with_commands(
+            |_| {
+                Ok(std::process::Output {
+                    status: std::process::ExitStatus::from_raw(256),
+                    stdout: b"PRIVATE_STDOUT".to_vec(),
+                    stderr: b"PRIVATE_STDERR".to_vec(),
+                })
+            },
+            || {
+                assert_eq!(
+                    read_firmware_info().unwrap_err(),
+                    "Firmware version unavailable"
+                )
+            },
+        );
+        crate::process::with_commands(
+            |_| {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "PRIVATE_TIMEOUT",
+                ))
+            },
+            || {
+                assert_eq!(
+                    read_firmware_info().unwrap_err(),
+                    "Firmware version unavailable"
+                )
+            },
+        );
+    }
 
     /// These payloads are consumed directly by the dashboard, so their key sets
     /// are a contract. Renaming a field here means updating

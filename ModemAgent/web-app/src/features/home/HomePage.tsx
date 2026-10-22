@@ -215,7 +215,8 @@ export default function HomePage() {
 
         <Card title={t("Device")}>
           <Row label={t("Model")} value={device?.model ?? '\u2014'} />
-          <Row label={t("Firmware")} value={device?.firmware ?? '\u2014'} />
+          <Row label={t("Firmware")} value={device?.firmware ?? '\u2014'} wrap />
+          <Row label={t("Kernel")} value={device?.kernel ?? '\u2014'} wrap />
           <Row label={t("Uptime")} value={formatUptime(device?.uptime_secs)} />
           <div className="mt-2 space-y-2 border-t border-line/8 pt-2.5">
             <div>

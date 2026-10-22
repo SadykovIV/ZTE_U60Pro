@@ -41,7 +41,7 @@ def main():
     helper=ROOT/'ModemAgent/target/aarch64-unknown-linux-musl/release/zte-vpnctl'
     vpn_path=ROOT/'MacIMEI/Sources/VPNSettings.swift'
     vpn_source=retain_previous_hash(vpn_path.read_text(),sha(helper),'helperHash','supportedStatusHashes')
-    version='2.9.0-esim.12';mac=ROOT/'MacIMEI/Resources';win=ROOT/'Windows_x64/Resources';dist=ROOT/'ModemAgent/web-app/dist'
+    version='2.9.0-esim.13';mac=ROOT/'MacIMEI/Resources';win=ROOT/'Windows_x64/Resources';dist=ROOT/'ModemAgent/web-app/dist'
     if not (dist/'index.html').is_file():raise SystemExit('Build dashboard first')
     helper=ROOT/'ModemAgent/target/aarch64-unknown-linux-musl/release/zte-vpnctl'
     shutil.copy2(helper,mac/'VPN/vpnctl')
@@ -51,7 +51,8 @@ def main():
     if old!=sha(helper) and '|'+old+'|' not in s:s=s.replace('|"$helper_sha")','|'+old+'|"$helper_sha")',1)
     for key,name in [('helper_sha','vpnctl'),('manager_sha','manager.sh'),('configure_sha','configure.lua'),
                      ('firewall_sha','firewall.sh'),('nft_guard_sha','nft-guard.nft'),
-                     ('dnsmasq_sha','dnsmasq.conf'),('service_sha','service.sh')]:
+                     ('dnsmasq_sha','dnsmasq.conf'),('service_sha','service.sh'),
+                     ('ikev2_sha','ikev2.sh'),('ikev2_updown_sha','ikev2-updown.sh'),('nft_ikev2_sha','nft-ikev2-guard.nft')]:
         s,n=re.subn(r'(?m)^'+key+r'=.*',key+'='+sha(mac/'VPN'/name),s)
         if n!=1:raise SystemExit('Missing or ambiguous VPN upgrade pin '+key)
     p.write_text(s)

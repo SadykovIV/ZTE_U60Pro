@@ -22,6 +22,9 @@ extension ContentView {
     @StudioState private var confirmationText = ""
     @StudioState private var confirmationPresented = false
     @StudioState private var wifi = VPNWiFiDraft()
+    @StudioState private var ikev2 = VPNIKEv2Configuration()
+    @StudioState private var ikev2ID: String?
+    @StudioState private var ikev2Name = "UserGate"
     private var status: VPNStatus? { model.vpnInspection?.status }
     private var selected: VPNProfile? { status?.profiles.first { $0.id == selectedID } }
     private var ready: Bool { model.canManage && model.vpnInspection?.helperReady == true }
@@ -32,6 +35,7 @@ extension ContentView {
             components
             profiles
             importer
+            ikev2Editor
             subscriptions
             wifiSettings
             if !model.vpnError.isEmpty { StudioNote(symbol: "exclamationmark.triangle", text: model.vpnError) }
@@ -46,7 +50,9 @@ extension ContentView {
             if !busy { wifi.refresh(status); if selected == nil { selectedID = "" }; renameName = selected?.name ?? "" }
         }
         .onAppear { wifi.refresh(status) }
-        .onDisappear { uri = ""; configuration = ""; subscriptionURL = ""; wifi.password = ""; wifi.confirmation = ""; pending = nil }
+        .onChange(of: model.host) { _ in ikev2 = VPNIKEv2Configuration(); ikev2ID = nil; ikev2Name = "UserGate" }
+        .onChange(of: model.connected) { connected in if !connected { ikev2 = VPNIKEv2Configuration(); ikev2ID = nil; ikev2Name = "UserGate" } }
+        .onDisappear { uri = ""; configuration = ""; subscriptionURL = ""; wifi.password = ""; wifi.confirmation = ""; ikev2.password = ""; pending = nil }
     }
 
     private var components: some View {
@@ -75,6 +81,10 @@ extension ContentView {
             if let status {
                 Text(L10n.text(status.enabled ? "Wi-Fi с VPN включён" : "Wi-Fi с VPN выключен"))
                     .foregroundStyle(status.enabled ? StudioStyle.accent : StudioStyle.secondary)
+                if status.enabled && status.profiles.contains(where: { $0.active && $0.protocolName == "ikev2" }) {
+                    Text(L10n.text(status.ikev2Connected == true ? "IKEv2 подключён: частные сети доступны через VPN." : status.ikev2State == "waiting" ? "Ожидание подключения IKEv2: подтвердите PUSH в приложении MFA." : "IKEv2 не подключён: частные сети и DNS недоступны. Публичные IPv4 доступны через LTE, если адрес уже известен."))
+                        .foregroundStyle(status.ikev2Connected == true ? StudioStyle.accent : StudioStyle.warning)
+                }
                 if status.profiles.isEmpty { Text(L10n.text("Профили не добавлены")).foregroundStyle(StudioStyle.secondary) }
                 TextField(L10n.text("Поиск профилей"), text: $profileSearch).textFieldStyle(.roundedBorder)
                 ForEach(status.profiles.filter { profileSearch.isEmpty || $0.name.localizedCaseInsensitiveContains(profileSearch) || ($0.protocolName ?? "vless").localizedCaseInsensitiveContains(profileSearch) }) { profile in
@@ -98,9 +108,9 @@ extension ContentView {
                     }.buttonStyle(.plain).disabled(model.busy)
                 }
                 HStack {
-                    Button(L10n.text("Сделать активным")) {
+                    Button(L10n.text(selected?.protocolName == "ikev2" && selected?.active == true ? "Переподключить IKEv2" : "Сделать активным")) {
                         guard let profile = selected else { return }
-                        confirm(.activate(profile.id), "Выбрать профиль VPN? При первой активации будет настроена и включена сеть Wi-Fi с VPN. При смене работающего профиля VPN переподключится.")
+                        confirm(.activate(profile.id), profile.protocolName == "ikev2" ? "Подключить IKEv2? Подтвердите PUSH в приложении MFA после запуска подключения. Если время ожидания истекло, повторите подключение вручную." : "Выбрать профиль VPN? При первой активации будет настроена и включена сеть Wi-Fi с VPN. При смене работающего профиля VPN переподключится.")
                     }.buttonStyle(StudioButtonStyle()).disabled(!ready || selected?.canActivate != true)
                     Button(L10n.text(status.enabled ? "Выключить Wi-Fi с VPN" : "Включить Wi-Fi с VPN")) {
                         confirm(.setEnabled(!status.enabled), status.enabled ? "Выключить Wi-Fi с VPN? Устройства этой сети потеряют подключение." : "Включить Wi-Fi с VPN с выбранным профилем?")
@@ -111,6 +121,12 @@ extension ContentView {
                     }.buttonStyle(StudioButtonStyle()).disabled(!ready || selected == nil || selected?.active == true)
                 }
                 if selected != nil {
+                    if selected?.protocolName == "ikev2" {
+                        Button(L10n.text("Редактировать IKEv2")) {
+                            guard let selected else { return }
+                            model.loadVPNIKEv2(selected.id) { profile in ikev2ID = profile.id; ikev2Name = profile.name; ikev2 = profile.configuration }
+                        }.buttonStyle(StudioButtonStyle()).disabled(!ready)
+                    }
                     HStack {
                         TextField(L10n.text("Название профиля"), text: $renameName).textFieldStyle(.roundedBorder)
                         Button(L10n.text("Переименовать")) {
@@ -152,6 +168,51 @@ extension ContentView {
             Text(L10n.text("Импорт сохраняет профиль без активации. Ссылка не записывается в журнал программы."))
                 .font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
         }
+    }
+
+    private var ikev2Editor: some View {
+        StudioCard {
+            Text(L10n.text(ikev2ID == nil ? "Добавить профиль IKEv2" : "Редактировать IKEv2")).font(.system(size: 18, weight: .semibold))
+            Text(L10n.text("В отдельной сети VPN Wi-Fi: частные сети 10/8, 172.16/12 и 192.168/16 — через VPN; публичные IPv4 — через LTE. DNS направляется через VPN. Основная Wi-Fi сеть сохраняет свои настройки."))
+                .font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
+            TextField(L10n.text("Название профиля"), text: $ikev2Name).textFieldStyle(.roundedBorder)
+            TextField(L10n.text("Адрес сервера IKEv2"), text: $ikev2.server).textFieldStyle(.roundedBorder)
+            TextField(L10n.text("Имя сервера в сертификате (по умолчанию адрес сервера)"), text: $ikev2.serverID).textFieldStyle(.roundedBorder)
+            TextField(L10n.text("Логин IKEv2"), text: $ikev2.username).textFieldStyle(.roundedBorder)
+            SecureField(L10n.text(ikev2ID == nil ? "Пароль IKEv2" : "Новый пароль IKEv2 (пусто — сохранить прежний)"), text: $ikev2.password).textFieldStyle(.roundedBorder)
+            TextField(L10n.text("DNS через VPN"), text: $ikev2.dns).textFieldStyle(.roundedBorder)
+            Text(L10n.text("Сертификат центра сертификации (CA), PEM")).font(.caption)
+            TextEditor(text: $ikev2.caCertificate).font(.system(.caption, design: .monospaced)).frame(height: 120)
+            HStack {
+                Button(L10n.text("Открыть сертификат PEM"), action: chooseIKEv2Certificate).buttonStyle(StudioButtonStyle())
+                if ikev2ID != nil {
+                    Button(L10n.text("Новый профиль IKEv2")) { ikev2ID = nil; ikev2Name = "UserGate"; ikev2 = VPNIKEv2Configuration() }.buttonStyle(StudioButtonStyle())
+                }
+                Spacer()
+                Button(L10n.text("Сохранить IKEv2")) {
+                    let operation = VPNOperation.saveIKEv2(id: ikev2ID, name: ikev2Name, configuration: ikev2)
+                    do { try operation.validate(); inputError = ""; ikev2.password = ""; model.performVPNProfile(operation) }
+                    catch { inputError = error.localizedDescription }
+                }.buttonStyle(StudioButtonStyle(prominent: true)).disabled(!ready)
+            }
+            Text(L10n.text("Сохранение не переключает подключение. Выберите профиль и нажмите «Сделать активным». Пароль передаётся по SSH и не возвращается при чтении настроек."))
+                .font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
+            Text(L10n.text("После запуска подключения подтвердите PUSH в приложении MFA. Если время ожидания истекло, нажмите «Переподключить IKEv2»."))
+                .font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
+        }.disabled(model.busy)
+    }
+
+    private func chooseIKEv2Certificate() {
+        let panel = NSOpenPanel(); panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.plainText, UTType(filenameExtension: "pem") ?? .data, UTType(filenameExtension: "crt") ?? .data]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let file = try FileHandle(forReadingFrom: url); defer { try? file.close() }
+            let data = try file.read(upToCount: 65537) ?? Data()
+            guard data.count <= 65536, let pem = String(data: data, encoding: .utf8) else { throw VPNRequestFailure.invalidResponse }
+            ikev2.caCertificate = pem.hasPrefix("\u{FEFF}") ? String(pem.dropFirst()) : pem
+            inputError = ""
+        } catch { inputError = VPNSettingsManager.message("VPN_IKEV2_INVALID_CERTIFICATE") }
     }
 
     private var subscriptions: some View {

@@ -64,18 +64,28 @@ args=[a for a in sys.argv[1:] if a != '-L'];field=args[1];path=args[2]
 if path.endswith('/proc/1234/exe'):path=os.environ['MOCK_ROOT']+'/data/zte-agent'
 if path.endswith('/proc/5678/exe'):path=os.environ['MOCK_ROOT']+'/data/zte-imei-studio/bin/dropbear'
 value=os.fstat(9) if path.endswith('/proc/self/fd/9') else os.stat(path); mode=oct(stat.S_IMODE(value.st_mode))[2:]
-if field=='%u': print(0)
+owner=os.environ.get('MOCK_STARTUP_OWNER','0') if path.endswith('/start_zte_agent.sh') else '0'
+if field=='%u': print(owner)
 elif field=='%a': print(mode)
+elif field=='%h': print(value.st_nlink)
 elif field=='%s': print(value.st_size)
-elif field=='%u:%a': print('0:'+mode)
-elif field=='%u:%h': print('0:'+str(value.st_nlink))
-elif field=='%d:%i:%u:%a:%h': print(str(value.st_dev)+':'+str(value.st_ino)+':0:'+mode+':'+str(value.st_nlink))
+elif field=='%u:%a': print(owner+':'+mode)
+elif field=='%u:%h': print(owner+':'+str(value.st_nlink))
+elif field=='%d:%i:%u:%a:%h': print(str(value.st_dev)+':'+str(value.st_ino)+':'+owner+':'+mode+':'+str(value.st_nlink))
 else: sys.exit(1)
 ''')
         self.command('sha256sum', f'''#!{shutil.which('python3')}
 from pathlib import Path
 import hashlib,sys,os
 def h(p):
+ if p.endswith('/proc/self/fd/9'):
+  if os.environ.get('MOCK_STARTUP_HASH_FAIL'):sys.exit(1)
+  value=os.pread(9,os.fstat(9).st_size,0)
+  mutation=os.environ.get('MOCK_STARTUP_CHANGE')
+  marker=Path(os.environ['MOCK_ROOT'])/'startup-mutated'
+  if mutation and not marker.exists():
+   source=Path(mutation);data=source.read_bytes();source.write_bytes(bytes([data[0]^1])+data[1:]);marker.touch()
+  return hashlib.sha256(value).hexdigest()
  if p.endswith('/proc/1234/exe'):
   saved=Path(os.environ['MOCK_ROOT'])/'running-hash'
   return saved.read_text().strip() if saved.exists() else h(os.environ['MOCK_ROOT']+'/data/zte-agent')
@@ -83,6 +93,11 @@ def h(p):
  if p.endswith('/before/data_zte-agent') and os.environ.get('MOCK_AGENT_START_ON_SNAPSHOT'):
   (Path(os.environ['MOCK_ROOT'])/'running').touch()
  if p.endswith('/firmware/image/modem.b16'):
+  if os.environ.get('MOCK_STARTUP_CHANGE_LATE'):
+   marker=Path(os.environ['MOCK_ROOT'])/'startup-late-read-count'
+   reads=int(marker.read_text())+1 if marker.exists() else 1;marker.write_text(str(reads))
+   if reads==2:
+    source=Path(os.environ['MOCK_STARTUP_CHANGE_LATE']);data=source.read_bytes();source.write_bytes(bytes([data[0]^1])+data[1:])
   if os.environ.get('MOCK_FIRMWARE_CHANGE_AFTER'):
    count=Path(os.environ['MOCK_ROOT'])/'firmware-read-count'
    reads=int(count.read_text())+1 if count.exists() else 1
@@ -758,9 +773,131 @@ esac
                 if kind=='hardlink':os.link(legacy,alias)
                 elif kind=='symlink':legacy.rename(alias);legacy.symlink_to(alias)
                 else:legacy.chmod(0o777)
-                self.assertIn('EXISTING_AGENT_STARTUP_TYPE',self.run_setup().stderr)
+                expected={'hardlink':'HARDLINK','symlink':'LINK','writable':'WRITABLE'}[kind]
+                self.assertIn('EXISTING_AGENT_STARTUP_'+expected,self.run_setup().stderr)
                 self.assertFalse(self.journal.parent.exists())
                 legacy.unlink();alias.unlink(missing_ok=True)
+
+    def known_startup(self, location, mode):
+        self.write('/data/zte-agent','#!/bin/sh\n# preserved old agent\n',0o700)
+        source=self.legacy_startup()
+        if location=='anchor':
+            destination=self.root/'data/zte-imei-studio/start_zte_agent.sh'
+            source.rename(destination);source=destination
+        source.chmod(mode)
+        return source
+
+    def check_readable_startup_migration(self, location, mode):
+        source=self.known_startup(location,mode);original=source.read_bytes()
+        old_agent=(self.root/'data/zte-agent').read_bytes()
+        self.assert_success(self.run_setup())
+        private=self.root/'data/zte-imei-studio/start_zte_agent.sh'
+        self.assertEqual(private.read_bytes(),original)
+        self.assertEqual(private.stat().st_mode & 0o777,0o700)
+        snapshot=self.stage/'legacy-agent.private.sh'
+        self.assertEqual(snapshot.read_bytes(),original)
+        self.assertEqual(snapshot.stat().st_mode & 0o777,0o600)
+        self.assertEqual((self.journal/'before/data_zte-agent').read_bytes(),old_agent)
+        preserved=source if location=='legacy' else self.journal/'before/data_zte-imei-studio_start_zte_agent.sh'
+        self.assertEqual(preserved.read_bytes(),original)
+        self.assertEqual(preserved.stat().st_mode & 0o777,mode)
+        self.assert_success(self.commit())
+
+    def test_known_anchor_startup_0640_migrates(self):self.check_readable_startup_migration('anchor',0o640)
+    def test_known_anchor_startup_0644_migrates(self):self.check_readable_startup_migration('anchor',0o644)
+    def test_known_anchor_startup_0750_migrates(self):self.check_readable_startup_migration('anchor',0o750)
+    def test_known_anchor_startup_0755_migrates(self):self.check_readable_startup_migration('anchor',0o755)
+    def test_known_legacy_startup_0640_migrates(self):self.check_readable_startup_migration('legacy',0o640)
+    def test_known_legacy_startup_0644_migrates(self):self.check_readable_startup_migration('legacy',0o644)
+    def test_known_legacy_startup_0750_migrates(self):self.check_readable_startup_migration('legacy',0o750)
+    def test_known_legacy_startup_0755_migrates(self):self.check_readable_startup_migration('legacy',0o755)
+
+    def test_readable_unknown_startup_grammar_preserves_source(self):
+        source=self.known_startup('anchor',0o755)
+        source.write_text(source.read_text()+'touch "$MOCK_ROOT/forbidden"\n');original=source.read_bytes()
+        result=self.run_setup()
+        self.assertIn('LEGACY_STARTUP_GRAMMAR',result.stderr)
+        self.assertEqual(source.read_bytes(),original)
+        self.assertEqual(source.stat().st_mode & 0o777,0o755)
+        self.assertFalse(self.journal.parent.exists())
+        self.assertFalse((self.root/'forbidden').exists())
+
+    def test_readable_startup_nonroot_owner_preserves_source(self):
+        source=self.known_startup('anchor',0o755);original=source.read_bytes()
+        self.env['MOCK_STARTUP_OWNER']='1000'
+        result=self.run_setup()
+        self.assertIn('EXISTING_AGENT_STARTUP_OWNER',result.stderr)
+        self.assertEqual(source.read_bytes(),original)
+        self.assertFalse(self.journal.parent.exists())
+
+    def test_startup_group_and_world_write_remain_refused(self):
+        source=self.known_startup('anchor',0o755);original=source.read_bytes()
+        for mode in (0o620,0o602,0o660,0o664,0o775,0o777):
+            with self.subTest(mode=oct(mode)):
+                source.chmod(mode)
+                self.assertIn('EXISTING_AGENT_STARTUP_WRITABLE',self.run_setup().stderr)
+                self.assertEqual(source.read_bytes(),original)
+                self.assertEqual(source.stat().st_mode & 0o777,mode)
+                self.assertFalse(self.journal.parent.exists())
+
+    def test_readable_startup_source_change_during_copy_refused(self):
+        source=self.known_startup('legacy',0o644)
+        self.env['MOCK_STARTUP_CHANGE']=str(source)
+        original_agent=(self.root/'data/zte-agent').read_bytes()
+        result=self.run_setup()
+        self.assertIn('LEGACY_STARTUP_CHANGED',result.stderr)
+        self.assertEqual((self.root/'data/zte-agent').read_bytes(),original_agent)
+        self.assertEqual(source.stat().st_mode & 0o777,0o644)
+        self.assertFalse(self.journal.parent.exists())
+        self.assertFalse((self.root/'running').exists())
+
+    def test_readable_startup_source_change_before_mutation_refused(self):
+        source=self.known_startup('anchor',0o755)
+        self.env['MOCK_STARTUP_CHANGE_LATE']=str(source)
+        original_agent=(self.root/'data/zte-agent').read_bytes()
+        result=self.run_setup()
+        self.assertIn('LEGACY_STARTUP_CHANGED',result.stderr)
+        self.assertEqual((self.root/'data/zte-agent').read_bytes(),original_agent)
+        self.assertEqual(source.stat().st_mode & 0o777,0o755)
+        self.assertFalse(self.journal.parent.exists())
+        self.assertFalse((self.root/'running').exists())
+
+    def test_readable_startup_failed_digest_cannot_look_unchanged(self):
+        source=self.known_startup('anchor',0o755);original=source.read_bytes()
+        self.env['MOCK_STARTUP_HASH_FAIL']='1'
+        result=self.run_setup()
+        self.assertIn('LEGACY_STARTUP_READ',result.stderr)
+        self.assertEqual(source.read_bytes(),original)
+        self.assertFalse(self.journal.parent.exists())
+        self.assertFalse((self.root/'running').exists())
+
+    def test_recovery_markers_have_distinct_diagnostics_and_are_preserved(self):
+        markers={
+            '/data/zte-imei-studio/installations/active':'OWN_ACTIVE',
+            '/data/zte-imei-studio/installations/lock':'OWN_LOCK',
+            '/data/local/tmp/zte-imei-installations/active':'LEGACY_ACTIVE',
+            '/data/local/tmp/zte-imei-installations/lock':'LEGACY_LOCK',
+            '/data/local/tmp/open-u60-transactions/active':'NV',
+            '/tmp/fota_install_processing':'FOTA',
+            '/tmp/zte-imei-app.lock':'APP_LOCK',
+        }
+        for path,category in markers.items():
+            for kind in ('file','directory','dangling-link'):
+                with self.subTest(marker=category,kind=kind):
+                    marker=self.root/path.lstrip('/');marker.parent.mkdir(parents=True,exist_ok=True)
+                    if path.startswith('/data/zte-imei-studio/'):
+                        marker.parent.chmod(0o700)
+                    if kind=='file':marker.write_text('synthetic-owner-token-not-for-output\n')
+                    elif kind=='directory':marker.mkdir()
+                    else:marker.symlink_to(self.root/'absent-target')
+                    result=self.preflight()
+                    self.assertEqual(result.stderr.strip(),'INSTALL_ERROR RECOVERY_PENDING_'+category)
+                    self.assertNotIn('synthetic-owner-token',result.stdout+result.stderr)
+                    self.assertTrue(marker.exists() or marker.is_symlink())
+                    self.assertFalse(self.journal.exists())
+                    self.assertFalse((self.root/'data/zte-agent').exists())
+                    if kind=='directory':marker.rmdir()
+                    else:marker.unlink()
 
     def test_running_orphan_agent_never_gets_new_credentials(self):
         self.write('/data/zte-agent',(self.stage/'zte-agent').read_text(),0o700)

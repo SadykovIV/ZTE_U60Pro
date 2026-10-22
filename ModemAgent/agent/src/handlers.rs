@@ -23,9 +23,12 @@ const WAN_TTL: Duration = Duration::from_secs(30);
 const DATA_USAGE_TTL: Duration = Duration::from_secs(30);
 /// Billing-cycle dates move once a month.
 const CYCLE_DATE_TTL: Duration = Duration::from_secs(300);
+/// Firmware labels are constant during normal operation; do not poll ubus per client.
+const FIRMWARE_TTL: Duration = Duration::from_secs(300);
 
 #[derive(Default)]
 pub struct DashboardCache {
+    firmware: Observed<system::FirmwareInfo>,
     wan: Observed<Value>,
     wan6: Observed<Value>,
     thermal: Observed<Value>,
@@ -136,16 +139,26 @@ fn is_mobile_user_agent(user_agent: &str) -> bool {
 /// GET /api/device
 pub fn device(state: &AppState) -> (u16, Value) {
     let info = system::read_device_info();
-    (
-        200,
-        json!({"ok": true, "data": {
-            "auth": {"pin_enabled": state.auth.has_pin()},
-            "hostname": info.hostname,
-            "uptime_secs": info.uptime_secs,
-            "load_avg": info.load_avg,
-            "kernel": info.kernel,
-        }}),
-    )
+    let firmware = read_firmware(&state.dash);
+    let mut data = device_payload(&info, &firmware.value.unwrap_or_default());
+    data["auth"] = json!({"pin_enabled": state.auth.has_pin()});
+    data["sources"] = json!({"firmware": firmware.freshness});
+    (200, json!({"ok": true, "data": data}))
+}
+
+fn read_firmware(cache: &DashboardCache) -> Sample<system::FirmwareInfo> {
+    cache.firmware.read(FIRMWARE_TTL, system::read_firmware_info)
+}
+
+fn device_payload(info: &system::DeviceInfo, firmware: &system::FirmwareInfo) -> Value {
+    json!({
+        "hostname": info.hostname,
+        "uptime_secs": info.uptime_secs,
+        "load_avg": info.load_avg,
+        "kernel": info.kernel,
+        "integrate_version": firmware.integrate_version,
+        "wa_inner_version": firmware.wa_inner_version,
+    })
 }
 
 /// GET /api/cpu
@@ -340,6 +353,7 @@ pub fn dashboard(state: &AppState) -> (u16, Value) {
     let cpu_usage = state.cpu.sample();
     let meminfo = system::read_meminfo();
     let speed = state.speed.sample();
+    let firmware = read_firmware(cache);
 
     // Raw ubus passthroughs — the dashboard client maps these itself.
     let signal = read_radio(&state.radio);
@@ -359,12 +373,7 @@ pub fn dashboard(state: &AppState) -> (u16, Value) {
     let mut result = serde_json::Map::new();
     result.insert(
         "device".into(),
-        json!({
-            "hostname": device_info.hostname,
-            "uptime_secs": device_info.uptime_secs,
-            "load_avg": device_info.load_avg,
-            "kernel": device_info.kernel,
-        }),
+        device_payload(&device_info, &firmware.value.unwrap_or_default()),
     );
     result.insert("battery".into(), json!(battery));
     result.insert("cpu".into(), json!(cpu_usage));
@@ -380,6 +389,7 @@ pub fn dashboard(state: &AppState) -> (u16, Value) {
         json!({
             "signal": signal.freshness, "wan": wan.freshness, "wan6": wan6.freshness,
             "thermal": thermal.freshness, "data_usage": data_usage.freshness,
+            "firmware": firmware.freshness,
         }),
     );
     result.insert(
@@ -393,4 +403,103 @@ pub fn read_radio(source: &Observed<Value>) -> Sample<Value> {
     source.read(SIGNAL_TTL, || {
         ubus::call("zte_nwinfo_api", "nwinfo_get_netinfo", Some("{}"))
     })
+}
+
+#[cfg(test)]
+mod firmware_tests {
+    use super::*;
+    use std::os::unix::process::ExitStatusExt;
+
+    #[test]
+    fn firmware_cache_is_shared_and_throttles_failure_retries() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = calls.clone();
+        let cache = DashboardCache::default();
+        crate::process::with_commands(
+            move |_| {
+                count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(std::process::Output {
+                    status: std::process::ExitStatus::from_raw(0),
+                    stdout: br#"{"integrate_version":"CN_ZTE_MU5250V1.0.0B31"}"#.to_vec(),
+                    stderr: Vec::new(),
+                })
+            },
+            || {
+                assert_eq!(
+                    read_firmware(&cache)
+                        .value
+                        .unwrap()
+                        .integrate_version
+                        .as_deref(),
+                    Some("CN_ZTE_MU5250V1.0.0B31")
+                );
+                assert!(read_firmware(&cache).value.is_some());
+            },
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        cache.firmware.invalidate();
+        crate::process::with_commands(
+            |_| {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "PRIVATE_FAILURE",
+                ))
+            },
+            || {
+                let stale = read_firmware(&cache);
+                assert!(stale.freshness.stale);
+                assert_eq!(
+                    stale.value.unwrap().integrate_version.as_deref(),
+                    Some("CN_ZTE_MU5250V1.0.0B31")
+                );
+                assert_eq!(
+                    stale.freshness.error.as_deref(),
+                    Some("Firmware version unavailable")
+                );
+            },
+        );
+        crate::process::with_commands(
+            |_| panic!("failed read must respect the shared TTL"),
+            || {
+                read_firmware(&cache);
+            },
+        );
+        let missing = DashboardCache::default();
+        crate::process::with_commands(
+            |_| {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "PRIVATE_FAILURE",
+                ))
+            },
+            || {
+                assert!(read_firmware(&missing).value.is_none());
+            },
+        );
+    }
+
+    #[test]
+    fn firmware_payload_is_additive_and_preserves_the_kernel_contract() {
+        let info = system::DeviceInfo {
+            hostname: "fixture".into(),
+            uptime_secs: 42,
+            load_avg: [0.1, 0.2, 0.3],
+            kernel: "Linux version 5.15.194-perf fixture build".into(),
+        };
+        let versions = system::FirmwareInfo {
+            integrate_version: Some("CN_ZTE_MU5250V1.0.0B31".into()),
+            wa_inner_version: Some("BD_CNMU5250V1.0.0B31".into()),
+        };
+        assert_eq!(
+            device_payload(&info, &versions),
+            json!({
+                "hostname":"fixture", "uptime_secs":42, "load_avg":[0.1,0.2,0.3],
+                "kernel":"Linux version 5.15.194-perf fixture build",
+                "integrate_version":"CN_ZTE_MU5250V1.0.0B31", "wa_inner_version":"BD_CNMU5250V1.0.0B31",
+            })
+        );
+        let missing = device_payload(&info, &system::FirmwareInfo::default());
+        assert!(missing["integrate_version"].is_null() && missing["wa_inner_version"].is_null());
+        assert_eq!(missing["kernel"], info.kernel);
+    }
 }

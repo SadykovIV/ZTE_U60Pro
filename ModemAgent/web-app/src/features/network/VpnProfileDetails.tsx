@@ -1,13 +1,16 @@
 import { translate as t } from '../../i18n'
 import { Button } from '../../ui/controls'
+import { IKEV2_DNS_HINT, IKEV2_ROUTING } from './vpnModel'
 
 export type ProfileDetails = { schema_version: number; active: boolean; profile: {
-  id: string; name: string; proxy: Record<string, unknown>; source_uri?: string; source_config?: string; warnings: string[]
+  id: string; name: string; proxy: Record<string, unknown>; protocol?: string; password_set?: boolean; source_uri?: string; source_config?: string; warnings: string[]
 } }
 
 export function VpnProfileDetails({ value, onClose }: { value: ProfileDetails; onClose: () => void }) {
   const { profile } = value
-  const proxy = profile.proxy
+  const isIkev2 = profile.protocol === 'ikev2' || profile.proxy.type === 'ikev2'
+  // IKEv2 details never expose a saved login password, including stale replies.
+  const proxy = isIkev2 ? Object.fromEntries(Object.entries(profile.proxy).filter(([key]) => ['type', 'server', 'server_id', 'username', 'ca_certificate', 'dns'].includes(key))) : profile.proxy
   const labels: Record<string, string> = {
     type: t('Protocol'), server: t('Server'), port: t('Port'), uuid: t('VLESS identifier'),
     network: t('Transport'), tls: t('TLS'), servername: t('Server name (SNI)'),
@@ -15,6 +18,7 @@ export function VpnProfileDetails({ value, onClose }: { value: ProfileDetails; o
     'reality-opts': t('REALITY settings'), 'xhttp-opts': t('XHTTP settings'),
     'ws-opts': t('WebSocket settings'), 'grpc-opts': t('gRPC settings'), udp: t('UDP'),
     'packet-encoding': t('Packet encoding'), 'skip-cert-verify': t('Skip certificate verification'),
+    server_id: t('Server certificate identity'), username: t('IKEv2 username'), ca_certificate: t('CA certificate (PEM)'), dns: t('VPN DNS server'),
   }
   return <section className="w-full min-w-0 space-y-3 rounded-xl bg-surface2/60 p-4" aria-label={t('Profile details')}>
     <div className="flex items-center justify-between gap-2">
@@ -27,7 +31,12 @@ export function VpnProfileDetails({ value, onClose }: { value: ProfileDetails; o
         <dd className="min-w-0 whitespace-pre-wrap break-all font-mono text-ink">{typeof item === 'boolean' ? (item ? t('Yes') : t('No')) : typeof item === 'object' ? JSON.stringify(item, null, 2) : String(item)}</dd>
       </div>)}
     </dl>
-    {(profile.source_config || profile.source_uri) && <label className="block text-xs font-semibold text-ink2">
+    {isIkev2 && <>
+      <p className="text-xs text-ink2">{t('The saved IKEv2 password is not displayed. Leave the password empty when editing to keep it.')}</p>
+      <p className="text-xs text-ink2">{t(IKEV2_ROUTING)}</p>
+      <p className="text-xs text-ink2">{t(IKEV2_DNS_HINT)}</p>
+    </>}
+    {!isIkev2 && (profile.source_config || profile.source_uri) && <label className="block text-xs font-semibold text-ink2">
       {t('Original profile data')}
       <textarea className="mt-2 block h-28 w-full resize-y rounded-lg border border-line/15 bg-surface p-3 font-mono text-xs font-normal text-ink" readOnly value={profile.source_config ?? profile.source_uri ?? ''} spellCheck={false} onFocus={e => e.currentTarget.select()} />
     </label>}

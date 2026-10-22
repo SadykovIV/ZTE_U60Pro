@@ -181,6 +181,7 @@ void backend_snapshot(struct snapshot *out){pthread_mutex_lock(&mutex);*out=stat
 int backend_action(int enable,const char *id){
  if(enable<0&&!uuid(id))return 0;
  pthread_mutex_lock(&mutex);if(!started||!state.valid||state.busy||pending>=2){pthread_mutex_unlock(&mutex);return 0;}
+ if(enable<0){int selected=-1;for(int i=0;i<state.count;i++)if(!strcmp(state.profiles[i].id,id))selected=i;if(!vpn_can_activate(&state,selected)){pthread_mutex_unlock(&mutex);return 0;}}
  if(enable<0)snprintf(request,sizeof request,"{\"action\":\"activate\",\"id\":\"%s\"}",id);
  else snprintf(request,sizeof request,"{\"action\":\"set_enabled\",\"enabled\":%s}",enable?"true":"false");
  memset(&state.subscription_update,0,sizeof state.subscription_update);

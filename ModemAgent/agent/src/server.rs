@@ -577,7 +577,12 @@ mod tests {
                     ("luci-rpc", "getDHCPLeases"), ("zwrt_wlan", "report"),
                     ("zwrt_zte_mdm.api", "get_sim_info"), ("zwrt_zte_mdm.api", "get_imei"),
                     ("zwrt_router.api", "router_get_dns_para"), ("zwrt_apn_object", "get_apn_mode"),
-                    ("zwrt_apn_object", "get_manu_apn_list"), ("zwrt_bsp.usb", "list")].contains(&pair), "unexpected RPC {pair:?}");
+                    ("zwrt_apn_object", "get_manu_apn_list"), ("zwrt_bsp.usb", "list"),
+                    ("zwrt_web", "device_info")].contains(&pair), "unexpected RPC {pair:?}");
+                if pair == ("zwrt_web", "device_info") {
+                    assert_eq!(args, ["call", "zwrt_web", "device_info", "{}"]);
+                    return fake_output(r#"{"integrate_version":"CN_ZTE_MU5250V1.0.0B31","wa_inner_version":"BD_CNMU5250V1.0.0B31","imei":"PRIVATE_IMEI_CANARY","serial":"PRIVATE_SERIAL_CANARY","password":"PRIVATE_PASSWORD_CANARY"}"#, true);
+                }
                 fake_output(if pair.1 == "getDHCPLeases" {r#"{"dhcp_leases":[]}"#} else {"{}"}, true)
             },
             "uci" => {
@@ -607,6 +612,95 @@ mod tests {
                 assert!(status == 200 || status == 503, "{path} {body}");
             }
         });
+    }
+    #[test]
+    fn device_and_dashboard_firmware_require_auth_and_exclude_vendor_identifiers() {
+        for path in ["/api/device", "/api/dashboard"] {
+            let state = crate::handlers::AppState::new();
+            state.auth.set_password("fixture-password");
+            assert!(super::needs_auth(&tiny_http::Method::Get, path));
+            crate::process::with_commands(
+                |_| panic!("unauthorized firmware reads must not reach ubus"),
+                || {
+                    super::handle_request(
+                        tiny_http::TestRequest::new().with_path(path).into(),
+                        &state,
+                    );
+                    super::handle_request(
+                        tiny_http::TestRequest::new()
+                            .with_path(path)
+                            .with_header(
+                                tiny_http::Header::from_bytes(
+                                    "Authorization",
+                                    "Bearer invalid-fixture",
+                                )
+                                .unwrap(),
+                            )
+                            .into(),
+                        &state,
+                    );
+                },
+            );
+            let crate::auth::LoginResult::Ok { token } =
+                state.auth.login_password("fixture-password", "127.0.0.1")
+            else {
+                panic!("fixture login failed");
+            };
+            let called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let observed = called.clone();
+            crate::process::with_commands(
+                move |cmd| {
+                    observed.store(true, std::sync::atomic::Ordering::SeqCst);
+                    read_command(cmd)
+                },
+                || {
+                    super::handle_request(
+                        tiny_http::TestRequest::new()
+                            .with_path(path)
+                            .with_header(
+                                tiny_http::Header::from_bytes(
+                                    "Authorization",
+                                    format!("Bearer {token}"),
+                                )
+                                .unwrap(),
+                            )
+                            .into(),
+                        &state,
+                    )
+                },
+            );
+            assert!(
+                called.load(std::sync::atomic::Ordering::SeqCst),
+                "authenticated {path} must reach the audited reads"
+            );
+            crate::process::with_commands(read_command, || {
+                let (status, body) = super::route(
+                    &tiny_http::Method::Get,
+                    path,
+                    &state,
+                    b"",
+                    "127.0.0.1",
+                    None,
+                );
+                assert_eq!(status, 200, "{path}");
+                let device = if path == "/api/device" {
+                    &body["data"]
+                } else {
+                    &body["data"]["device"]
+                };
+                assert_eq!(device["integrate_version"], "CN_ZTE_MU5250V1.0.0B31");
+                assert_eq!(device["wa_inner_version"], "BD_CNMU5250V1.0.0B31");
+                assert!(device["kernel"].is_string());
+                for private in ["imei", "serial", "password"] {
+                    assert!(device.get(private).is_none(), "{path}: {private}");
+                }
+                assert!(!body.to_string().contains("PRIVATE_"), "{path}");
+                assert_eq!(body["data"]["sources"]["firmware"]["stale"], false);
+                if path == "/api/device" {
+                    assert_eq!(device["auth"]["pin_enabled"], false);
+                }
+            });
+        }
     }
     #[test]
     fn wifi_sources_and_station_failures_are_not_false_empty_success() {

@@ -253,6 +253,7 @@ final class OnboardingEngine: @unchecked Sendable {
     let researchRunner: ResearchProcessRunning
     let adbWaitAttempts: Int, directADBWaitAttempts: Int, adbPollDelay: TimeInterval
     private var lastADBFailure = ""
+    var unstartedDiagnostic: String?
     let fm = FileManager.default
     var assets: URL { resources.appendingPathComponent("Onboarding") }
     var pending: URL { root.appendingPathComponent("setup-pending.json") }
@@ -700,6 +701,7 @@ final class OnboardingEngine: @unchecked Sendable {
     }
     private func runPreparation(webPassword: String, agentPassword: String, expectedIdentity: Identity? = nil, expectedIMEI: String? = nil, forceReinstall: Bool = false, cleanComponents: Bool = false) throws -> SetupResult {
         try locked {
+            unstartedDiagnostic = nil
             if ComponentCleanup.hasPending(root: root) {
                 if cleanComponents, let plan = try ComponentCleanup.undispatchedRecoveryPlan(root: root) {
                     try require(currentConnection.host == plan.connection.host, "Журнал очистки относится к другому адресу модема")
@@ -844,13 +846,13 @@ final class OnboardingEngine: @unchecked Sendable {
             let paths = try SetupRemotePaths(id: journal.id, installRequested: journal.installRequested, stage: journal.remoteStage, journal: journal.remoteJournal)
             if journal.installRequested {
                 let remoteJournal = paths.journal
-                let phase = try adb.shell(serial, "cat " + shellQuote(remoteJournal + "/state"))
+                let phase = try readInstallationState(adb, serial: serial, journal: remoteJournal)
                 if phase == "rolled-back" && journal.forceReinstall == true {
                     try reconcileForcedRollback(adb, serial: serial, paths: paths, id: journal.id,
                         policy: [deviceID.cid, profile, deviceID.firmwareHash, ModemEngine.routerHash], directory: URL(fileURLWithPath: journal.directory))
                     throw IMEIError.message(Self.rollbackRestoredMessage)
                 }
-                try require(phase == "ready" || phase == "complete", "Предыдущая установка прервалась до готовности. Журнал сохранён: " + remoteJournal)
+                if phase != "ready" && phase != "complete" { throw installationStateFailure(phase.uppercased().replacingOccurrences(of: "-", with: "_")) }
                 let key = root.appendingPathComponent("SSH/id_ed25519")
                 try require(fm.fileExists(atPath: key.path), "Отсутствует собственный ключ незавершённой установки")
                 let connection = try pinSSH(adb: adb, serial: serial, expected: identity, deviceID: deviceID, key: key, dropbearKey: paths.dropbearKey)

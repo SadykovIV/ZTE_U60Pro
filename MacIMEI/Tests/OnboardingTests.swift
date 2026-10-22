@@ -163,6 +163,7 @@ private final class MockHost: HostCommandRunner {
     var installerCalls = 0, stage = "", remoteJournal = "", uploads = [String:Data]()
     var onInstall: (() -> Void)?
     var rollbackVerified = false, rollbackReply: String?, remoteState: String?
+    var stateProbeReply: String?, stateProbeCode = "0", stateProbeCalls = 0
     var unstartedVerified = false, unstartedReply: String?, onUnstartedProof: (() throws -> Void)?
     var lastDeviceList = "", usbSerialOverride: String?
     private func quoted(_ text: String) throws -> [String] {
@@ -217,6 +218,10 @@ private final class MockHost: HostCommandRunner {
             } else if command.hasPrefix("(sh -c ") && command.contains("'--preflight'") {
                 value = preflightError ? "INSTALL_ERROR PREFLIGHT_TOOL" : "INSTALL_PREFLIGHT " + (command.contains("'linux-arm64-access'") ? "linux-arm64-access" : command.contains("'b02-experimental'") ? "b02-experimental" : "b31") + " imei_config=unknown"
                 if preflightError { shellCode = "1" }
+            } else if command.contains("ZTE_INSTALL_STATE_PROBE") {
+                stateProbeCalls += 1
+                let answer = stateProbeReply ?? ("INSTALL_STATE " + (remoteState ?? (installed ? "ready" : "pending")))
+                return CommandResult(status: 0, stdout: Data((answer + "\n" + command[range] + stateProbeCode + "\n").utf8), stderr: Data())
             } else if fullInstaller {
                 if command.contains("printf 'INSTALL_STAGE_READY") {
                     stage=try quoted(command)[0];try check(stage.hasPrefix("/data/zte-imei-studio/stage-"),"Owned staging path");value="INSTALL_STAGE_READY"
@@ -432,6 +437,33 @@ private struct Fixture {
                     try check(f.host.installerCalls == 0 && f.host.pushCount == 0 && f.web.requests.isEmpty && f.ssh.calls.isEmpty, "Read-only recovery performed unrelated operation")
                     try check(try Data(contentsOf: directory.appendingPathComponent("original.fixture")) == Data("preserved".utf8), "Recovery changed original backups")
                 }
+            }
+        }
+        for state in ["MISSING", "UNREADABLE", "UNEXPECTED_TYPE", "EMPTY", "INVALID_CONTENT", "malformed", "forged", "transport"] {
+            run("Read-only recovery preserves both diagnostics: \(state)") {
+                let f = try Fixture(); defer { f.remove() }
+                let id = UUID().uuidString
+                let directory = f.root.appendingPathComponent("SetupBackups/" + id); try secureDirectory(directory)
+                let saved = AccessSetupJournal(id: id, cid: testCID, bootID: "01234567-89ab-4cde-8f01-23456789abcd", firmwareHash: ModemEngine.firmwareHash,
+                    routerHash: ModemEngine.routerHash, installerProfile: "b31", directory: directory.path, adbSerial: "ABC", phase: "install-requested", installRequested: true,
+                    remoteJournal: "/data/zte-imei-studio/installations/" + id, remoteStage: "/data/zte-imei-studio/stage-" + id)
+                try saveJSON(saved, f.engine.pending); let original = try Data(contentsOf: f.engine.pending)
+                try savePrivate(Data("preserved".utf8), directory.appendingPathComponent("original.fixture"))
+                f.host.deviceList = "List of devices attached\nABC device usb:1\n"
+                f.host.identityMode = true; f.host.fullInstaller = true
+                f.host.unstartedReply = "INSTALL_ERROR RECOVERY_PENDING_OWN_LOCK\nsynthetic-private-content"
+                f.host.stateProbeReply = state == "malformed" ? "synthetic-private-content" : state == "forged" ? "INSTALL_STATE ready\nsynthetic-private-content" : "INSTALL_STATE " + state
+                f.host.stateProbeCode = state == "transport" ? "1" : "0"
+                var failure = ""
+                do { _ = try f.engine.run(webPassword: testPassword, agentPassword: testPassword) }
+                catch { failure = error.localizedDescription }
+                let expected = ["malformed", "forged"].contains(state) ? "PROBE_INVALID" : state == "transport" ? "PROBE_FAILED" : state
+                try check(failure.contains("STATE_" + expected) && failure.contains("RECOVERY_PENDING_OWN_LOCK"), "Lost recovery diagnostic: " + failure)
+                try check(!failure.contains("synthetic-private-content"), "Raw remote output escaped into error")
+                try check(f.host.stateProbeCalls == 1 && f.host.installerCalls == 0 && f.host.pushCount == 0 && f.web.restoreCount == 0 && f.ssh.calls.isEmpty, "Recovery diagnosis mutated modem")
+                try check(!FileManager.default.fileExists(atPath: f.root.appendingPathComponent("SSH").path), "Diagnosis created keys")
+                try check(try Data(contentsOf: f.engine.pending) == original, "Diagnosis rewrote pending journal")
+                try check(try Data(contentsOf: directory.appendingPathComponent("original.fixture")) == Data("preserved".utf8), "Diagnosis changed backup")
             }
         }
         run("Diagnostic ADB activates despite existing SSH and never installs components") {
@@ -879,7 +911,7 @@ private struct Fixture {
             try saveJSON(pending,f.engine.pending)
             f.host.deviceListSequence=["List of devices attached\n","List of devices attached\nABC device\n"]
             f.host.identityMode=true;f.host.shellText="pending"
-            try rejects("прервалась до готовности") {_ = try f.engine.run(password:testPassword)}
+            try rejects("STATE_PENDING") {_ = try f.engine.run(password:testPassword)}
             try check(f.web.uploadedData == nil && f.web.restoreCount == 0,"No web restore after install intent")
             let saved=try readJSON(SetupJournal.self,f.engine.pending)
             try check(saved.directory == directory.path,"Recovery keeps original journal directory")

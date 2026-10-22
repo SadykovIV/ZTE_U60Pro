@@ -78,6 +78,10 @@ int vpn_parse_status(struct snapshot *out, const char *json) {
             !cJSON_IsBool(get(profile, "active"))) goto done;
         for (int j = 0; j < i; j++) if (!strcmp(next->profiles[j].id, id)) goto done;
         next->profiles[i].active = cJSON_IsTrue(get(profile, "active"));
+        next->profiles[i].ikev2 = equal(cJSON_GetStringValue(get(profile, "protocol")), "ikev2");
+        cJSON *updated = get(profile, "update_available");
+        if (updated && !cJSON_IsBool(updated)) goto done;
+        next->profiles[i].update_available = cJSON_IsTrue(updated);
         if (next->profiles[i].active && ++active > 1) goto done;
         cJSON *warnings = get(profile, "warnings");
         /* Older controllers omit warnings (or return null). Only known warning
@@ -105,8 +109,17 @@ int vpn_parse_status(struct snapshot *out, const char *json) {
     next->enabled = cJSON_IsTrue(get(data, "enabled"));
     next->running = cJSON_IsTrue(get(data, "core_running"));
     next->network_ok = cJSON_IsTrue(get(data, "network_ok"));
+    cJSON *ike_state = get(data, "ikev2_state"), *ike_connected = get(data, "ikev2_connected");
+    if (ike_connected && !cJSON_IsBool(ike_connected)) goto done;
+    if (ike_state) {
+        const char *value = cJSON_GetStringValue(ike_state);
+        if (equal(value,"connected")) next->ikev2_state=IKEV2_CONNECTED;
+        else if (equal(value,"waiting")) next->ikev2_state=IKEV2_WAITING;
+        else if (!equal(value,"disconnected")) goto done;
+    } else if (cJSON_IsTrue(ike_connected)) next->ikev2_state=IKEV2_CONNECTED;
     ssid(next->ssid, data, "ssid"); ssid(next->ssid_2g, data, "ssid_2g"); ssid(next->ssid_5g, data, "ssid_5g");
     out->enabled = next->enabled; out->running = next->running; out->network_ok = next->network_ok;
+    out->ikev2_state = next->ikev2_state;
     out->count = next->count;
     out->subscription_count = next->subscription_count;
     memcpy(out->subscriptions,next->subscriptions,sizeof out->subscriptions);
@@ -122,10 +135,59 @@ done:
     return ok;
 }
 
+int vpn_can_activate(const struct snapshot *s,int index) {
+    if (!s || !s->valid || s->busy || index < 0 || index >= s->count) return 0;
+    const struct profile_summary *profile=&s->profiles[index];
+    return !s->enabled || !profile->active || profile->update_available || (profile->ikev2 && s->ikev2_state==IKEV2_DISCONNECTED);
+}
+const char *vpn_connection_text(const struct snapshot *s,int ru) {
+    if (!s || !s->valid || !s->enabled) return NULL;
+    for (int i=0;i<s->count;i++) if (s->profiles[i].active && s->profiles[i].ikev2) {
+        if (s->ikev2_state==IKEV2_CONNECTED) return ru?"IKEv2 подключён\nИнтернет через LTE":"IKEv2 connected\nInternet via LTE";
+        if (s->ikev2_state==IKEV2_WAITING) return ru?"Подтвердите push на телефоне\nИнтернет через LTE":"Approve push on your phone\nInternet via LTE";
+        return ru?"IKEv2 не подключён\nИнтернет через LTE":"IKEv2 disconnected\nInternet via LTE";
+    }
+    return NULL;
+}
+const char *vpn_display_status(const struct snapshot *s,int ru) {
+    if (s && s->busy) return ru?"Применение...":"Applying...";
+    if (s && s->error) return ru?"Ошибка VPN":"VPN error";
+    if (!s || !s->valid) return ru?"Получение данных...":"Loading...";
+    if (!s->enabled) return ru?"VPN выключен":"VPN is off";
+    if (!s->count) return ru?"Нет профилей":"No profiles";
+    for (int i=0;i<s->count;i++) if (s->profiles[i].active && s->profiles[i].ikev2) {
+        if (s->ikev2_state==IKEV2_CONNECTED) return ru?"IKEv2 подключён":"IKEv2 connected";
+        if (s->ikev2_state==IKEV2_WAITING) return ru?"Подтвердите push":"Approve push";
+        return ru?"IKEv2 отключён":"IKEv2 disconnected";
+    }
+    return s->running&&s->network_ok?(ru?"VPN работает":"VPN is running"):(ru?"VPN не подключён":"VPN disconnected");
+}
+const char *vpn_display_hint(const struct snapshot *s,int ru) {
+    if (!s || s->busy) return NULL;
+    if (s->error) return ru?"Подробнее в агенте":"More details in the agent";
+    if (!s->valid) return NULL;
+    if (!s->count) return ru?"Добавьте профиль в агенте":"Add a profile in the agent";
+    if (s->enabled) for (int i=0;i<s->count;i++) if (s->profiles[i].active && s->profiles[i].insecure_tls)
+        return ru?"Проверка TLS выключена":"TLS verification is off";
+    return NULL;
+}
+
 struct error_text { const char *code, *ru, *en; };
 /* Controller error literals only. Fixture environment names and warnings are
  * deliberately absent; no card, process or server text is displayed. */
 static const struct error_text errors[] = {
+    {"VPN_IKEV2_CONFLICT", "Другая служба IPsec уже работает.", "Another IPsec service is running."},
+    {"VPN_IKEV2_INVALID_CERTIFICATE", "Проверьте сертификат CA в агенте.", "Check the CA certificate in the agent."},
+    {"VPN_IKEV2_INVALID_DNS", "Проверьте частный DNS в агенте.", "Check the private DNS server in the agent."},
+    {"VPN_IKEV2_INVALID_ID", "Проверьте имя сервера в сертификате.", "Check the server certificate identity."},
+    {"VPN_IKEV2_INVALID_PASSWORD", "Введите пароль IKEv2 в агенте.", "Enter the IKEv2 password in the agent."},
+    {"VPN_IKEV2_INVALID_PROFILE", "Проверьте профиль IKEv2 в агенте.", "Check the IKEv2 profile in the agent."},
+    {"VPN_IKEV2_INVALID_SERVER", "Проверьте адрес IKEv2 в агенте.", "Check the IKEv2 server in the agent."},
+    {"VPN_IKEV2_INVALID_USERNAME", "Введите логин IKEv2 в агенте.", "Enter the IKEv2 username in the agent."},
+    {"VPN_IKEV2_LTE_UNAVAILABLE", "Мобильный интернет недоступен.", "Mobile internet is unavailable."},
+    {"VPN_IKEV2_NOT_READY", "IKEv2 не подключён. Проверьте push.", "IKEv2 is disconnected. Check the push."},
+    {"VPN_IKEV2_ROUTE_CONFLICT", "Маршрут IKEv2 уже занят.", "The IKEv2 route is already in use."},
+    {"VPN_IKEV2_UNAVAILABLE", "Установите компоненты IKEv2.", "Install the IKEv2 components."},
     {"VPN_SUBSCRIPTION_FILE_REFERENCE", "Профиль ссылается на файл устройства. Используйте встроенные ключи.", "Profile references a device file. Use inline keys."},
     {"VPN_REQUEST_TOO_LARGE", "Слишком большой запрос. Разделите импорт.", "Request is too large. Split the import."},
     {"VPN_SUBSCRIPTION_EXISTS", "Такая подписка уже добавлена.", "This subscription is already saved."},

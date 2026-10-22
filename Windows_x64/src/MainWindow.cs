@@ -1449,6 +1449,7 @@ public sealed partial class MainWindow : Window
         stack.Children.Add(new TextBlock { Text = Localization.Translate(label), Foreground = Secondary, FontSize = 12 });
         var input = new TextBox
         {
+            Tag = key,
             Text = secret ? _preparationSecrets.GetValueOrDefault(key, "") : Get(key),
             IsReadOnly = readOnly,
             Watermark = Localization.Translate(watermark),
@@ -1809,6 +1810,7 @@ public sealed partial class MainWindow : Window
             {
                 foreach (var item in values)
                     if (item.Key is "feeds" or "ssid" or "password_mode") _form[item.Key] = item.Value;
+                    else if (operation == ModemOperation.LoadVpnIkev2 && result.Success && item.Key is ("vpn_ikev2_id" or "vpn_ikev2_name" or "vpn_ikev2_server" or "vpn_ikev2_server_id" or "vpn_ikev2_username" or "vpn_ikev2_ca" or "vpn_ikev2_dns")) _form[item.Key] = item.Value;
             }
             if (!string.IsNullOrWhiteSpace(result.Details))
                 await ShowMessageAsync(result.Success ? "Результат" : "Ошибка", result.Details);
@@ -1887,6 +1889,8 @@ public sealed partial class MainWindow : Window
         _snapshot = await _service.GetDeviceSnapshotAsync(_lifetime.Token);
         if (prior?.IsConnected == true && _snapshot.IsConnected &&
             (prior.IpAddress != _snapshot.IpAddress || prior.Serial != _snapshot.Serial)) ClearSecrets();
+        if (!_snapshot.IsConnected || prior?.IpAddress != _snapshot.IpAddress || prior?.Serial != _snapshot.Serial)
+            foreach (var key in _form.Keys.Where(key => key.StartsWith("vpn_ikev2_", StringComparison.Ordinal)).ToArray()) _form.Remove(key);
         if (!_snapshot.IsConnected || _snapshot.Serial != prior?.Serial || _snapshot.IpAddress != prior?.IpAddress || _snapshot.ConnectionMode != prior?.ConnectionMode) { _esimAuthorized = false; _esimSnapshot = null; _esimSelected = null; }
         if (_snapshot.Serial != prior?.Serial || _snapshot.IpAddress != prior?.IpAddress) _launcherPagesDirty = false;
         if (!_launcherPagesDirty && _snapshot.LauncherPages is { } pages)

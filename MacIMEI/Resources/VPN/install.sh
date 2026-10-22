@@ -50,7 +50,7 @@ phase=NO_SPACE
 free=$(df -Pk /data | awk 'END {print $4}')
 [ "$free" -ge 131072 ] || { echo VPN_NO_SPACE >&2; exit 1; }
 phase=PAYLOAD
-for name in vpnctl mihomo manager.sh firewall.sh configure.lua nft-guard.nft dnsmasq.conf service.sh; do
+for name in vpnctl mihomo manager.sh firewall.sh configure.lua nft-guard.nft dnsmasq.conf service.sh ikev2.sh ikev2-updown.sh nft-ikev2-guard.nft; do
     [ -f "$stage/$name" ] && [ ! -L "$stage/$name" ] && [ "$(stat -c %u "$stage/$name")" = 0 ] || exit 1
 done
 [ "$(sha256sum "$stage/mihomo" | awk '{print $1}')" = 1b315bc038d05f84ee86d232f3c3d2b020b5044e9b971bb8fe215b6e6a2148f3 ]
@@ -58,8 +58,8 @@ phase=WRITE
 pending="$ROOT.install-${stage##*-install-}"
 [ ! -e "$pending" ] && [ ! -L "$pending" ] || exit 1
 mkdir "$pending" "$pending/profiles"
-for name in vpnctl mihomo manager.sh firewall.sh configure.lua nft-guard.nft dnsmasq.conf service.sh; do cp "$stage/$name" "$pending/$name"; done
-chmod 700 "$pending/vpnctl" "$pending/mihomo" "$pending/manager.sh" "$pending/firewall.sh" "$pending/service.sh"
+for name in vpnctl mihomo manager.sh firewall.sh configure.lua nft-guard.nft dnsmasq.conf service.sh ikev2.sh ikev2-updown.sh nft-ikev2-guard.nft; do cp "$stage/$name" "$pending/$name"; done
+chmod 700 "$pending/vpnctl" "$pending/mihomo" "$pending/manager.sh" "$pending/firewall.sh" "$pending/service.sh" "$pending/ikev2.sh" "$pending/ikev2-updown.sh"
 printf '%s' zte-vpn-v1 > "$pending/owner"
 cat /sys/block/mmcblk0/device/cid > "$pending/cid"
 sync

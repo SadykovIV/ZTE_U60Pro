@@ -31,6 +31,8 @@ public enum ModemOperation
     RefreshVpn,
     ImportVpnProfile,
     ImportVpnConfig,
+    SaveVpnIkev2,
+    LoadVpnIkev2,
     ImportVpnSubscription,
     UpdateVpnSubscription,
     DeleteVpnSubscription,
@@ -123,7 +125,9 @@ public sealed record VpnPageSnapshot(
     IReadOnlyList<VpnProfileSnapshot>? ProfileDetails = null,
     bool SettingsSupported = false,
     IReadOnlyList<Features.VpnSubscription>? Subscriptions = null,
-    Features.VpnImportSummary? LastImport = null);
+    Features.VpnImportSummary? LastImport = null,
+    bool Ikev2Connected = false,
+    string? Ikev2State = null);
 
 public sealed record VpnProfileSnapshot(string Id, string Name, string Transport, bool Active, string Protocol = "vless",
     string? SubscriptionId = null, bool UpdateAvailable = false, bool RemovedFromSubscription = false, IReadOnlyList<string>? Warnings = null);

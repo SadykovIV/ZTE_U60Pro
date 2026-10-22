@@ -1,5 +1,50 @@
 import Foundation
 
+/// Passwords are write-only; profile details contain only a password-presence flag.
+struct VPNIKEv2Configuration: Sendable, CustomStringConvertible, CustomDebugStringConvertible {
+    var description: String { "IKEv2 configuration (private)" }
+    var debugDescription: String { description }
+    var server = ""
+    var serverID = ""
+    var username = ""
+    var password = ""
+    var caCertificate = ""
+    var dns = "10.0.2.1"
+
+    var request: [String: Any] {
+        var value: [String: Any] = ["server": server.trimmingCharacters(in: .whitespacesAndNewlines), "server_id": serverID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? server.trimmingCharacters(in: .whitespacesAndNewlines) : serverID.trimmingCharacters(in: .whitespacesAndNewlines), "username": username, "ca_certificate": caCertificate, "dns": dns.trimmingCharacters(in: .whitespacesAndNewlines)]
+        if !password.isEmpty { value["password"] = password }
+        return value
+    }
+    func validate(editing: Bool) throws {
+        func validHost(_ value: String) -> Bool {
+            guard value.utf8.count <= 253 && value.contains(".") else { return false }
+            let labels = value.split(separator: ".", omittingEmptySubsequences: false)
+            if value.utf8.allSatisfy({ (48...57).contains($0) || $0 == 46 }) {
+                return labels.count == 4 && labels.allSatisfy { label in Int(label).map { (0...255).contains($0) && String($0) == label } ?? false }
+            }
+            return labels.allSatisfy { $0.utf8.count <= 63 && $0.range(of: #"^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$"#, options: .regularExpression) != nil }
+        }
+        let value = request
+        try require(validHost(value["server"] as! String), VPNSettingsManager.message("VPN_IKEV2_INVALID_SERVER"))
+        try require(validHost(value["server_id"] as! String), VPNSettingsManager.message("VPN_IKEV2_INVALID_ID"))
+        try require(!username.isEmpty && username.utf8.count <= 256 && !username.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }), VPNSettingsManager.message("VPN_IKEV2_INVALID_USERNAME"))
+        try require((editing || !password.isEmpty) && password.utf8.count <= 1024 && !password.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }), VPNSettingsManager.message("VPN_IKEV2_INVALID_PASSWORD"))
+        try require(caCertificate.utf8.count <= 65536 && caCertificate.contains("-----BEGIN CERTIFICATE-----") && caCertificate.contains("-----END CERTIFICATE-----") && !caCertificate.contains("PRIVATE KEY") && !caCertificate.contains("\0"), VPNSettingsManager.message("VPN_IKEV2_INVALID_CERTIFICATE"))
+        let parts = (value["dns"] as! String).split(separator: ".", omittingEmptySubsequences: false)
+        let numbers = parts.compactMap { part -> Int? in
+            guard !part.isEmpty, part.allSatisfy({ $0 >= "0" && $0 <= "9" }), let n = Int(part), (0...255).contains(n), String(n) == part else { return nil }; return n
+        }
+        try require(numbers.count == 4 && !(numbers[0] == 192 && numbers[1] == 168 && numbers[2] == 50) && (numbers[0] == 10 || (numbers[0] == 172 && (16...31).contains(numbers[1])) || (numbers[0] == 192 && numbers[1] == 168)), VPNSettingsManager.message("VPN_IKEV2_INVALID_DNS"))
+    }
+}
+
+struct VPNIKEv2Profile: Sendable {
+    var id: String
+    var name: String
+    var configuration: VPNIKEv2Configuration
+}
+
 struct VPNProfile: Decodable, Identifiable, Sendable {
     var id: String
     var name: String
@@ -10,7 +55,7 @@ struct VPNProfile: Decodable, Identifiable, Sendable {
     var subscriptionId: String? = nil
     var updateAvailable: Bool? = nil
     var removedFromSubscription: Bool? = nil
-    var canActivate: Bool { !active || updateAvailable == true }
+    var canActivate: Bool { protocolName == "ikev2" || !active || updateAvailable == true }
     enum CodingKeys: String, CodingKey { case id, name, transport, warnings, active, protocolName = "protocol", subscriptionId, updateAvailable, removedFromSubscription }
 }
 struct VPNSubscription: Decodable, Identifiable, Sendable {
@@ -27,6 +72,7 @@ struct VPNImportSummary: Decodable, Sendable {
 }
 /// Profile credentials exist only in the request body sent through SSH stdin.
 enum VPNOperation: Sendable {
+    case saveIKEv2(id: String?, name: String, configuration: VPNIKEv2Configuration)
     case importProfile(uri: String, name: String)
     case importConfiguration(config: String, name: String)
     case importSubscription(url: String, name: String, documents: [String]? = nil)
@@ -44,6 +90,10 @@ enum VPNOperation: Sendable {
 
     var request: [String: Any] {
         switch self {
+        case .saveIKEv2(let id, let name, let configuration):
+            var value: [String: Any] = ["action": "save_ikev2", "name": name.trimmingCharacters(in: .whitespacesAndNewlines), "ikev2": configuration.request]
+            if let id { value["id"] = id }
+            return value
         case .importProfile(let uri, let name):
             var value: [String: Any] = ["action": "import", "uri": uri.trimmingCharacters(in: .whitespacesAndNewlines)]
             if !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { value["name"] = name.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -70,6 +120,7 @@ enum VPNOperation: Sendable {
     }
     var message: String {
         switch self {
+        case .saveIKEv2: return "Профиль IKEv2 сохранён. Выберите «Сделать активным», чтобы применить настройки."
         case .importProfile, .importConfiguration: return "Профиль VPN импортирован"
         case .importSubscription: return "Подписка VPN импортирована"
         case .updateSubscription: return "Подписка VPN обновлена; действующее подключение сохранено"
@@ -81,6 +132,7 @@ enum VPNOperation: Sendable {
         }
     }
     func validate() throws {
+        if case .saveIKEv2(let id, _, let configuration) = self { try configuration.validate(editing: id != nil) }
         let value = request
         if let id = value["id"] as? String { try require(id.utf8.count == 36 && UUID(uuidString: id) != nil, "Недопустимый идентификатор VPN-профиля.") }
         if let name = value["name"] as? String {
@@ -100,6 +152,12 @@ enum VPNOperation: Sendable {
     func verify(before: VPNStatus, after: VPNStatus) throws {
         let confirmed: Bool
         switch self {
+        case .saveIKEv2(let id, let name, _):
+            if let id {
+                confirmed = after.profiles.count == before.profiles.count && after.profiles.contains { $0.id == id && $0.protocolName == "ikev2" && $0.name == name.trimmingCharacters(in: .whitespacesAndNewlines) } && after.activeProfile == before.activeProfile && after.enabled == before.enabled
+            } else {
+                confirmed = after.profiles.count == before.profiles.count + 1 && after.profiles.filter { profile in !before.profiles.contains { $0.id == profile.id } && profile.protocolName == "ikev2" && profile.name == name.trimmingCharacters(in: .whitespacesAndNewlines) }.count == 1 && after.activeProfile == before.activeProfile && after.enabled == before.enabled
+            }
         case .importProfile, .importConfiguration:
             confirmed = after.profiles.count == before.profiles.count + 1 && after.profiles.filter { profile in !before.profiles.contains { $0.id == profile.id } }.count == 1
         case .importSubscription:
@@ -126,6 +184,8 @@ struct VPNStatus: Decodable, Sendable {
     var configured = false
     var enabled = false
     var coreRunning = false
+    var ikev2Connected: Bool?
+    var ikev2State: String?
     var networkOk = false
     var meshConflict = false
     var ssid = ""
@@ -251,14 +311,20 @@ enum VPNRequestFailure: LocalizedError, Equatable {
 /// Both the desktop and agent send private JSON on stdin to the same modem helper.
 final class VPNSettingsManager {
     static let root = "/data/zte-vpn"
-    static let launcherHash = "eb01a6f3c6cb914ded0e2f069f6f5072cd8445245b9b7f0d5f572f6662e9dc70"
+    static let launcherHash = "6e24686d0310c710c734ccc7c21469858e42a2e474f4a3c073bf1c476b460c50"
     static let agentHash = BundledAgent.sha256
-    static let dashboardIndexHash = "e7362584a399d4acd292c5ca896295cd4d50fa79eff63549b6dfbf97a91a9a2c"
-    static let helperHash = "8aaece533e2503c7a501497bb1bf191f37a0ffbba067e7a7ff3a4c6f9623673f"
+    static let dashboardIndexHash = "870b88a3725b3b989d82a6a117e7077f74c927ca7dab25667d12be6165ea0b2a"
+    static let helperHash = "46257e8e24397f097b3ce3e53067ad59b265803f66aeb2da6d216b05dd2e5db7"
     // Exact previously shipped controllers may serve read-only status before upgrade.
     // Mutations continue to require the current controller hash.
     static let supportedStatusHashes: Set<String> = [
         helperHash,
+        "61ccaf5fa0361178dd6fe4a0104d964168f4f79a8453a8617a80a7403240d393",
+        "4e8b92cc5089200f3fced24130e47e0918bf8931989af034f709344a42cd5b0d",
+        "ff5859edb44d83fad9723ccdc142f28ce918b02fae3da929667726d32746986c",
+        "a35d788005d4150cd909f85afc667073a03febd24b50a708facf506b051c8a65",
+        "3b572cf943d16a66dae1d62515b216eceaf77d397035320eb3c08a5db0e21fc4",
+        "8aaece533e2503c7a501497bb1bf191f37a0ffbba067e7a7ff3a4c6f9623673f",
         "e00749ed2a6273c95a4b0563212313c81e54928f6564fdbd8f9616d12a4df6ba",
         "b5f581427afd423be3931473db2ce4b496a387b685ab3c48adf26cc597000f9a",
         "82a8b6655ff6cd43938ffe3735e8841599ef6116bf33079d8d203db9415ca3f2",
@@ -295,6 +361,16 @@ final class VPNSettingsManager {
 
     static func message(_ code: String) -> String {
         let messages = [
+            "VPN_IKEV2_INVALID_SERVER": "Укажите имя или IPv4-адрес сервера IKEv2 без https:// и порта.",
+            "VPN_IKEV2_INVALID_ID": "Укажите имя сервера из сертификата. Шаблоны и %any не допускаются.",
+            "VPN_IKEV2_INVALID_USERNAME": "Введите логин IKEv2 до 256 байт без управляющих символов.",
+            "VPN_IKEV2_INVALID_PASSWORD": "Введите пароль IKEv2 до 1024 байт без управляющих символов. При редактировании пустое поле сохраняет прежний пароль.",
+            "VPN_IKEV2_INVALID_CERTIFICATE": "Нужен сертификат центра сертификации в формате PEM до 64 КиБ, без закрытого ключа.",
+            "VPN_IKEV2_INVALID_DNS": "DNS должен быть IPv4-адресом из частных сетей 10/8, 172.16/12 или 192.168/16.",
+            "VPN_IKEV2_UNAVAILABLE": "Компоненты strongSwan IKEv2 недоступны в прошивке модема.",
+            "VPN_IKEV2_CONFLICT": "На модеме уже работает другая служба IPsec. Завершите её перед включением IKEv2.",
+            "VPN_IKEV2_NOT_READY": "Туннель IKEv2 не подключён. Проверьте сервер, логин, пароль и сертификат.",
+            "VPN_IKEV2_INVALID_PROFILE": "Параметры профиля IKEv2 повреждены. Откройте и сохраните профиль заново.",
             "VPN_BUSY": "На модеме выполняется другая операция. Повторите после её завершения.",
             "VPN_OTHER_TRANSACTION": "Сначала завершите обновление или настройку модема.",
             "VPN_VLESS_ONLY": "Вставьте ссылку профиля VLESS или Hysteria2 (vless://, hy2://, hysteria2://).",
@@ -428,11 +504,26 @@ final class VPNSettingsManager {
         _ = try VPNSubscriptionDownload.validatedURL(url)
         return url
     }
+    func ikev2Profile(_ id: String) throws -> VPNIKEv2Profile {
+        try VPNOperation.activate(id).validate()
+        let target = try engine.diagnosticIdentity()
+        let payload = try requestPayload(["action": "details", "id": id], expectedTarget: target)
+        let current = try engine.diagnosticIdentity()
+        try require(current.0 == target.0 && current.1 == target.1, "Модем изменился или перезагрузился. Обновите состояние VPN.")
+        guard let profile = payload["profile"] as? [String: Any], profile["id"] as? String == id, profile["protocol"] as? String == "ikev2",
+              let name = profile["name"] as? String, let proxy = profile["proxy"] as? [String: Any], proxy["password"] == nil,
+              let server = proxy["server"] as? String, let serverID = proxy["server_id"] as? String, let username = proxy["username"] as? String,
+              let ca = proxy["ca_certificate"] as? String, let dns = proxy["dns"] as? String else { throw VPNRequestFailure.invalidResponse }
+        let configuration = VPNIKEv2Configuration(server: server, serverID: serverID, username: username, caCertificate: ca, dns: dns)
+        try configuration.validate(editing: true)
+        return VPNIKEv2Profile(id: id, name: name, configuration: configuration)
+    }
     private func requestPayload(_ value: [String: Any], expectedTarget: (Identity, String)? = nil) throws -> [String: Any] {
         let current = try engine.diagnosticIdentity()
         if let expectedTarget { try require(current.0 == expectedTarget.0 && current.1 == expectedTarget.1, "Модем изменился или перезагрузился. Проверьте подключение заново.") }
         let data = try JSONSerialization.data(withJSONObject: value)
         try require(data.count <= 32 * 1024 * 1024, "Запрос VPN превышает 32 МиБ.")
+        if value["action"] as? String == "save_ikev2" { try require(data.count <= 256 * 1024, Self.message("VPN_REQUEST_TOO_LARGE")) }
         let accepted = value["action"] as? String == "status" ? Self.supportedStatusHashes.sorted().joined(separator: "|") : Self.helperHash
         let targetGuard = expectedTarget.map { target in
             "test \"$(cat /sys/block/mmcblk0/device/cid)\" = " + shellQuote(target.0.cid) + "; test \"$(cat /proc/sys/kernel/random/boot_id)\" = " + shellQuote(target.1) + "; "
@@ -540,12 +631,12 @@ final class VPNSettingsManager {
     }
 
     private func installComponents() throws {
-        let names = ["install.sh", "manager.sh", "firewall.sh", "configure.lua", "nft-guard.nft", "dnsmasq.conf", "service.sh", "vpnctl", "mihomo"]
+        let names = ["install.sh", "manager.sh", "firewall.sh", "configure.lua", "nft-guard.nft", "dnsmasq.conf", "service.sh", "ikev2.sh", "ikev2-updown.sh", "nft-ikev2-guard.nft", "vpnctl", "mihomo"]
         try runInstaller(names: names, prefix: "zte-vpn-install", script: "install.sh", receipt: "VPN_COMPONENTS_INSTALLED")
     }
 
     private func upgradeController() throws {
-        let names = ["upgrade-controller.sh", "vpnctl", "manager.sh", "firewall.sh", "configure.lua", "nft-guard.nft", "dnsmasq.conf", "service.sh"]
+        let names = ["upgrade-controller.sh", "vpnctl", "manager.sh", "firewall.sh", "configure.lua", "nft-guard.nft", "dnsmasq.conf", "service.sh", "ikev2.sh", "ikev2-updown.sh", "nft-ikev2-guard.nft"]
         try runInstaller(names: names, prefix: "zte-vpn-agent", script: "upgrade-controller.sh", receipt: "VPN_CONTROLLER_UPDATED")
     }
 

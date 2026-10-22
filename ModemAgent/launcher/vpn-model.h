@@ -19,6 +19,11 @@ typedef int (*vpn_request_fn)(void *,struct snapshot *,const char *,const char *
 typedef void (*vpn_progress_fn)(void *,const struct snapshot *);
 int vpn_update_subscriptions(struct snapshot *,vpn_request_fn,vpn_progress_fn,void *);
 int vpn_can_update_subscriptions(const struct snapshot *);
+int vpn_can_activate(const struct snapshot *,int index);
+const char *vpn_connection_text(const struct snapshot *,int ru);
+/* Compact fixed display header; hints occupy a second line only for exceptions. */
+const char *vpn_display_status(const struct snapshot *,int ru);
+const char *vpn_display_hint(const struct snapshot *,int ru);
 void vpn_subscription_text(const struct snapshot *,int ru,char *,size_t);
 const char *vpn_warning_text(const char *,int ru);
 

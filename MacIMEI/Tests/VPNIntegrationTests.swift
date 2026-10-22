@@ -89,7 +89,7 @@ private final class IntegrationRemote: RemoteTransport {
         }
         func completeUpgrade(_ remote: IntegrationRemote) throws {
             let names = Set(remote.uploaded.keys.map { URL(fileURLWithPath: $0).lastPathComponent })
-            let runtime = Set(["upgrade-controller.sh", "vpnctl", "manager.sh", "firewall.sh", "configure.lua", "nft-guard.nft", "dnsmasq.conf", "service.sh"])
+            let runtime = Set(["upgrade-controller.sh", "vpnctl", "manager.sh", "firewall.sh", "configure.lua", "nft-guard.nft", "dnsmasq.conf", "service.sh", "ikev2.sh", "ikev2-updown.sh", "nft-ikev2-guard.nft"])
             try check(names == runtime, "Upgrade omitted a required runtime component")
             for path in remote.uploaded.keys {
                 let original = try Data(contentsOf: resources.appendingPathComponent("VPN/" + URL(fileURLWithPath: path).lastPathComponent))
@@ -98,7 +98,11 @@ private final class IntegrationRemote: RemoteTransport {
         }
         for firmware in [ModemEngine.firmwareHash, "5a4489882538b5ab1d3e0049371f1b620d28d262a429923299b4f2626d40d478", "absent", "c57e063d390983229dfc53aa87380b3d4655ee8daa1c748e1a032ac90cd0df81"] {
             let fresh=IntegrationRemote();fresh.firmware=firmware;try run(fresh);try isolated(fresh)
-            try check(fresh.present && fresh.ready && fresh.uploaded.count==9,"Fresh standalone VPN installation failed")
+            try check(fresh.present && fresh.ready && fresh.uploaded.count==12,"Fresh standalone VPN installation failed")
+            for name in ["ikev2.sh", "ikev2-updown.sh", "nft-ikev2-guard.nft"] {
+                let original = try Data(contentsOf: resources.appendingPathComponent("VPN/" + name))
+                try check(fresh.uploaded.first { URL(fileURLWithPath: $0.key).lastPathComponent == name }?.value == original, "Fresh install omitted or altered IKEv2 runtime bytes")
+            }
             let upgrade=IntegrationRemote();upgrade.firmware=firmware;upgrade.present=true
             upgrade.helperHash="b2c3fcfafeccd50fa3000ad5f8f66f1e42ff157b295cdda11dddd31571612af7"
             try run(upgrade);try isolated(upgrade)

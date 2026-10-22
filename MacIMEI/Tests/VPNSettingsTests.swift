@@ -80,7 +80,7 @@ private final class Remote: RemoteTransport {
                     payload["ssid"] = request["ssid"]; payload["ssid_2g"] = bad2GReceipt ? "Old 2G name" : request["ssid"]; payload["ssid_5g"] = request["ssid"]
                 }
                 if enabledReceipt { payload["enabled"] = true }
-            } else if let action, ["import", "import_config", "subscription_import", "subscription_update", "subscription_delete", "activate", "rename", "delete", "set_enabled"].contains(action) {
+            } else if let action, ["save_ikev2", "import", "import_config", "subscription_import", "subscription_update", "subscription_delete", "activate", "rename", "delete", "set_enabled"].contains(action) {
                 try check(!locked, "Desktop took the lock owned by vpnctl")
                 try check(command.contains(cid) && command.contains(boot), "Profile request omitted target guard")
                 try check(request["lock_token"] == nil, "Unexpected borrowed lock token")
@@ -89,6 +89,9 @@ private final class Remote: RemoteTransport {
                     var profiles = payload["profiles"] as! [[String: Any]]
                     let id = request["id"] as? String ?? ""
                     switch action {
+                    case "save_ikev2":
+                        if id.isEmpty { profiles.append(["id": "11111111-1111-1111-1111-111111111111", "name": request["name"] ?? "IKEv2", "transport": "", "protocol": "ikev2", "active": false, "warnings": []]) }
+                        else { for i in profiles.indices where profiles[i]["id"] as? String == id { profiles[i]["name"] = request["name"] } }
                     case "import", "import_config": profiles.append(["id": "11111111-1111-1111-1111-111111111111", "name": request["name"] ?? "Imported", "transport": "tcp", "protocol": action == "import_config" ? "amneziawg" : "vless", "active": false, "warnings": []])
                     case "subscription_import":
                         let sid = "33333333-3333-3333-3333-333333333333"
@@ -131,6 +134,75 @@ private final class Fixture {
     static func main() throws {
         var count = 0
         func test(_ name: String, _ body: () throws -> Void) throws { try body(); count += 1; print("PASS " + name) }
+        try test("IKEv2 validates split DNS and preserves passwords on edit") {
+            var config = VPNIKEv2Configuration(server: "vpn.example.com", username: "fixture", password: "PRIVATE_IKEV2_CANARY", caCertificate: "-----BEGIN CERTIFICATE-----\nZml4dHVyZQ==\n-----END CERTIFICATE-----")
+            let create = VPNOperation.saveIKEv2(id: nil, name: "IKEv2 fixture", configuration: config)
+            try create.validate()
+            try check(create.request["id"] == nil, "Create must omit id")
+            let wire = create.request["ikev2"] as! [String: Any]
+            try check(wire["server_id"] as? String == "vpn.example.com" && wire["dns"] as? String == "10.0.2.1" && wire["password"] as? String == config.password, "IKEv2 request contract differs")
+            try check(!String(reflecting: config).contains(config.password), "Debug text leaked password")
+            config.password = ""
+            try rejects { try config.validate(editing: false) }
+            try config.validate(editing: true)
+            try check(config.request["password"] == nil, "Edit must omit empty password")
+            for dns in ["8.8.8.8", "100.64.0.1", "10.0.2.1\n", "10.00.2.1", "::1"] {
+                config.dns = dns
+                if dns.hasSuffix("\n") { try config.validate(editing: true) }
+                else { try rejects { try config.validate(editing: true) } }
+            }
+            config.dns = "10.0.2.1"; config.serverID = "%any"
+            try rejects { try config.validate(editing: true) }
+            config.serverID = "vpn.example.com"; config.caCertificate = String(repeating: "A", count: 65537)
+            try rejects { try config.validate(editing: true) }
+        }
+        try test("IKEv2 manager saves through guarded stdin without logging credentials") {
+            let f = try Fixture()
+            var config = VPNIKEv2Configuration(server: "vpn.example.com", username: "fixture", password: "PRIVATE_IKEV2_CANARY", caCertificate: "-----BEGIN CERTIFICATE-----\nZml4dHVyZQ==\n-----END CERTIFICATE-----")
+            let created = try f.engine.locked { try f.manager.perform(.saveIKEv2(id: nil, name: "IKEv2", configuration: config)).status }
+            let id = created.profiles[0].id
+            try check(!created.enabled && created.activeProfile.isEmpty, "Saving activated the profile")
+            let request = f.remote.requests.first { $0["action"] as? String == "save_ikev2" }!
+            try check((request["ikev2"] as? [String: Any])?["password"] as? String == config.password, "Password missing from stdin")
+            try check(f.remote.commands.allSatisfy { !$0.contains(config.password) }, "Password entered command arguments")
+            if let paths = FileManager.default.enumerator(at: f.root, includingPropertiesForKeys: nil) {
+                for case let url as URL in paths where url.pathExtension == "json" || url.pathExtension == "jsonl" {
+                    try check(!(try String(contentsOf: url)).contains(config.password), "Password entered diagnostics")
+                }
+            }
+            config.password = ""
+            let edited = try f.engine.locked { try f.manager.perform(.saveIKEv2(id: id, name: "Updated", configuration: config)).status }
+            try check(edited.profiles[0].id == id && edited.profiles[0].name == "Updated" && !edited.enabled, "Edited profile identity or activation changed")
+            try check((f.remote.requests.last { $0["action"] as? String == "save_ikev2" }?["ikev2"] as? [String: Any])?["password"] == nil, "Edit did not preserve password")
+        }
+        try test("IKEv2 save verification cannot enable WiFi or switch active profile") {
+            let id = "11111111-1111-1111-1111-111111111111"
+            let operation = VPNOperation.saveIKEv2(id: nil, name: "IKEv2", configuration: .init())
+            let before = VPNStatus(); var after = before
+            after.profiles = [.init(id: id, name: "IKEv2", transport: "", warnings: [], active: false, protocolName: "ikev2")]
+            try operation.verify(before: before, after: after)
+            after.enabled = true
+            try rejects { try operation.verify(before: before, after: after) }
+            after.enabled = false; after.activeProfile = id
+            try rejects { try operation.verify(before: before, after: after) }
+            let edit = VPNOperation.saveIKEv2(id: id, name: "Updated", configuration: .init())
+            var updated = after; updated.profiles[0].name = "Updated"
+            try edit.verify(before: after, after: updated)
+            updated.profiles[0].protocolName = "vless"
+            try rejects { try edit.verify(before: after, after: updated) }
+        }
+        try test("IKEv2 details never accept a returned password") {
+            let f = try Fixture(), id = "11111111-1111-1111-1111-111111111111"
+            let config = VPNIKEv2Configuration(server: "vpn.example.com", username: "fixture", caCertificate: "-----BEGIN CERTIFICATE-----\nZml4dHVyZQ==\n-----END CERTIFICATE-----")
+            var proxy = config.request
+            func reply() throws -> CommandResult { CommandResult(status: 0, stdout: try JSONSerialization.data(withJSONObject: ["ok": true, "data": ["profile": ["id": id, "name": "IKEv2 fixture", "protocol": "ikev2", "proxy": proxy]]]), stderr: Data()) }
+            f.remote.requestOverride = try reply()
+            let profile = try f.manager.ikev2Profile(id)
+            try check(profile.configuration.password.isEmpty && profile.configuration.dns == "10.0.2.1", "Details unexpectedly contained credentials")
+            proxy["password"] = "PRIVATE_IKEV2_CANARY"; f.remote.requestOverride = try reply()
+            try rejects { _ = try f.manager.ikev2Profile(id) }
+            try check(!ActivityJournal.diagnosticOutput(f.remote.requestOverride!.stdout, command: "exec /data/zte-vpn/vpnctl request").contains("PRIVATE_IKEV2_CANARY"), "Trace leaked malformed details password")
+        }
         try test("Updated active profiles can be explicitly reactivated") {
             var profile = VPNProfile(id: "11111111-1111-1111-1111-111111111111", name: "Synthetic", transport: "", warnings: [], active: true)
             try check(!profile.canActivate, "Unchanged active profile unexpectedly needs activation")

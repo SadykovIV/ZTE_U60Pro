@@ -87,6 +87,7 @@ pub fn host(url: &str) -> Result<String> {
 }
 pub fn protocol(proxy: &Value) -> &'static str {
     match proxy["type"].as_str().unwrap_or("") {
+        "ikev2" => "ikev2",
         "wireguard" => awg::protocol(proxy),
         "vless" => "vless", "vmess" => "vmess", "trojan" => "trojan",
         "hysteria2" => "hysteria2", "hysteria" => "hysteria", "ss" => "shadowsocks",
@@ -94,12 +95,13 @@ pub fn protocol(proxy: &Value) -> &'static str {
         _ => "unknown",
     }
 }
+fn is_native_ikev2(proxy: &Value) -> bool { proxy["type"] == "ikev2" }
 fn native(mut proxy: Value) -> Result<Value> {
     proxy.as_object().ok_or("VPN_SUBSCRIPTION_ENTRY")?;
     if serde_json::to_vec(&proxy).map_err(|_| "VPN_SUBSCRIPTION_ENTRY")?.len() > 128 * 1024 {
         return Err("VPN_PROFILE_TOO_LARGE");
     }
-    if protocol(&proxy) == "unknown" { return Err("VPN_UNSUPPORTED_PROTOCOL"); }
+    if is_native_ikev2(&proxy) || protocol(&proxy) == "unknown" { return Err("VPN_UNSUPPORTED_PROTOCOL"); }
     check_fields(&proxy, proxy["type"] == "wireguard", true)?;
     let raw_name = proxy["name"].as_str().ok_or("VPN_INVALID_NAME")?.trim();
     let name: String = raw_name.chars().take(64).collect();

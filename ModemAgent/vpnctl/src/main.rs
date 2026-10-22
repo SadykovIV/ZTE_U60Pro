@@ -1,5 +1,6 @@
 mod awg;
 mod catalog;
+mod ikev2;
 mod profile;
 mod screen;
 mod subscription;
@@ -53,6 +54,9 @@ const FILES: &[(&str, &[u8])] = &[
         "service.sh",
         include_bytes!("../../../MacIMEI/Resources/VPN/service.sh"),
     ),
+    ("ikev2.sh", include_bytes!("../../../MacIMEI/Resources/VPN/ikev2.sh")),
+    ("ikev2-updown.sh", include_bytes!("../../../MacIMEI/Resources/VPN/ikev2-updown.sh")),
+    ("nft-ikev2-guard.nft", include_bytes!("../../../MacIMEI/Resources/VPN/nft-ikev2-guard.nft")),
 ];
 fn path(s: &str) -> PathBuf {
     Path::new(ROOT).join(s)
@@ -181,6 +185,11 @@ fn run(program: &str, args: &[&str], seconds: u64) -> Result<Vec<u8>> {
     Ok(output.stdout)
 }
 const ERRORS: &[&str] = &[
+    "VPN_IKEV2_UNAVAILABLE",
+    "VPN_IKEV2_CONFLICT",
+    "VPN_IKEV2_NOT_READY",
+    "VPN_IKEV2_ROUTE_CONFLICT",
+    "VPN_IKEV2_LTE_UNAVAILABLE",
     "VPN_MESH_CONFLICT",
     "VPN_IPA_ENABLED",
     "VPN_IPA_UNSUPPORTED",
@@ -209,6 +218,23 @@ const ERRORS: &[&str] = &[
 ];
 fn manager(action: &str) -> Result<()> {
     run("/bin/sh", &["/data/zte-vpn/manager.sh", action], 170).map(|_| ())
+}
+fn recover_runtime(stop_requested: bool, mut action: impl FnMut(&str) -> Result<()>) -> Result<()> {
+    // A request to turn Wi-Fi OFF must take precedence over transaction repair.
+    if stop_requested { action("disable")?; }
+    action("recover")
+}
+fn connect_profile(mut action: impl FnMut(&str) -> Result<()>) -> Result<()> {
+    // Activate is the explicit Connect action; profile saves are separate.
+    let result = action("activate").and_then(|_| action("enable"));
+    if let Err(error) = result {
+        // Stop first, then restore the old profile without an automatic PUSH.
+        // The durable runtime-disabled fence survives a failed UCI commit.
+        let _ = action("disable");
+        let _ = action("recover");
+        return Err(error);
+    }
+    Ok(())
 }
 struct Lock {
     token: Vec<u8>,
@@ -341,7 +367,41 @@ fn import_profile(mut p: Value) -> Result<()> {
     catalog.profiles.push(p);
     save_catalog(&catalog)
 }
+fn live_proxy(config: &Value) -> Value {
+    if config["backend"] == "ikev2" { config["ikev2"].clone() }
+    else { config["proxies"][0].clone() }
+}
+fn runtime_config(proxy: &Value) -> Value {
+    if ikev2::is_ikev2(proxy) { json!({"backend":"ikev2","ikev2":proxy}) }
+    else { profile::config(proxy.clone(), false) }
+}
+fn backend() -> Result<&'static str> {
+    if !path("config.json").exists() { return Ok("mihomo"); }
+    let config = json_file(&path("config.json"))?;
+    if config["backend"] == "ikev2" { Ok("ikev2") }
+    else if config.get("backend").is_none() && config["proxies"].is_array() { Ok("mihomo") }
+    else { Err("VPN_INVALID_STATE") }
+}
+fn prepare_ikev2() -> Result<()> {
+    let config = json_file(&path("config.json"))?;
+    if config["backend"] != "ikev2" { return Err("VPN_IKEV2_INVALID_PROFILE"); }
+    let proxy = ikev2::validate(&config["ikev2"])?;
+    ikev2::check_certificate(&proxy)?;
+    let directory = Path::new(ikev2::DIRECTORY);
+    match fs::symlink_metadata(directory) {
+        Ok(m) if m.is_dir() && m.uid() == 0 && m.mode() & 0o777 == 0o700 => (),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            DirBuilder::new().mode(0o700).create(directory).map_err(|_| "VPN_WRITE_FAILED")?;
+        }
+        _ => return Err("VPN_UNSAFE_FILE"),
+    }
+    for (name, data) in ikev2::files(&proxy)? { atomic(&directory.join(name), data.as_bytes())?; }
+    Ok(())
+}
 fn core_running() -> bool {
+    if backend().ok() == Some("ikev2") {
+        return run("/bin/sh", &["/data/zte-vpn/ikev2.sh", "running"], 5).is_ok();
+    }
     let Some(pid) = fs::read_to_string(path("core.pid"))
         .ok()
         .and_then(|s| s.trim().parse::<u32>().ok())
@@ -468,15 +528,29 @@ fn status() -> Result<Value> {
     let live = json_file(&path("config.json")).ok();
     for p in &catalog.profiles {
         let selected = p["id"].as_str()==Some(&active);
-        list.push(json!({"id":p["id"],"name":p["name"],"transport":p["proxy"]["network"].as_str().unwrap_or(""),"protocol":subscription::protocol(&p["proxy"]),"warnings":p["warnings"],"active":selected,"subscription_id":p["subscription_id"],"update_available":selected&&live.as_ref().is_some_and(|v| v["proxies"][0]!=p["proxy"]),"removed_from_subscription":p["removed_from_subscription"]==true}));
+        list.push(json!({"id":p["id"],"name":p["name"],"transport":p["proxy"]["network"].as_str().unwrap_or(""),"protocol":subscription::protocol(&p["proxy"]),"warnings":p["warnings"],"active":selected,"subscription_id":p["subscription_id"],"update_available":selected&&live.as_ref().is_some_and(|v| live_proxy(v)!=p["proxy"]),"removed_from_subscription":p["removed_from_subscription"]==true}));
     }
     list.sort_by_key(|p| p["name"].as_str().unwrap_or("").to_lowercase());
+    let ike_active = live.as_ref().is_some_and(|v| v["backend"] == "ikev2");
+    let ike_available = Path::new("/usr/lib/ipsec/charon").is_file() && Path::new("/usr/sbin/swanctl").is_file();
+    let ike_connected = ike_active && run("/bin/sh", &["/data/zte-vpn/ikev2.sh", "connected"], 5).is_ok();
+    let ike_state = if ike_connected { "connected" } else {
+        match fs::read_to_string(path("ikev2/auth-state")).ok().as_deref().map(str::trim) {
+            Some("waiting") | Some("connecting") if ike_active => "waiting",
+            _ => "disconnected",
+        }
+    };
+    let enabled = configured && network["enabled"] == true && !path("runtime-disabled").exists();
     let subscriptions: Vec<Value> = catalog.subscriptions.iter().map(|s| json!({"id":s["id"],"name":s["name"],"host":s["host"],"updated_at":s["updated_at"],"profile_count":catalog.profiles.iter().filter(|p|p["subscription_id"]==s["id"]).count()})).collect();
     Ok(
-        json!({"schema_version":1,"installed":true,"version":env!("CARGO_PKG_VERSION"),"core_version":"1.19.31","core_available":path("mihomo").is_file(),"configured":configured,"enabled":configured&&network["enabled"]==true,"core_running":core_running(),"network_ok":configured&&network["network_ok"]==true,"mesh_conflict":network["mesh"],"ssid":network["ssid"],"ssid_2g":network["ssid_2g"],"ssid_5g":network["ssid_5g"],"main_ssid":network["main_ssid"],"desired_ssid":desired_ssid,"password_mode":password_mode,"wifi_settings_pending":!configured||path("wifi-settings.pending").exists(),"settings_supported":true,"profiles":list,"subscriptions":subscriptions,"active_profile":active,"screen":screen::status(),"recovery_pending":path("transaction").exists()}),
+        json!({"schema_version":1,"installed":true,"version":env!("CARGO_PKG_VERSION"),"core_version":if ike_active {"strongSwan"} else {"1.19.31"},"core_available":if ike_active {ike_available} else {path("mihomo").is_file()},"backend":if ike_active {"ikev2"} else {"mihomo"},"ikev2_available":ike_available,"ikev2_connected":ike_connected,"ikev2_state":ike_state,"routing_mode":if ike_active {"private_vpn_public_lte"} else {"vpn"},"configured":configured,"enabled":enabled,"core_running":core_running(),"network_ok":configured&&network["network_ok"]==true,"mesh_conflict":network["mesh"],"ssid":network["ssid"],"ssid_2g":network["ssid_2g"],"ssid_5g":network["ssid_5g"],"main_ssid":network["main_ssid"],"desired_ssid":desired_ssid,"password_mode":password_mode,"wifi_settings_pending":!configured||path("wifi-settings.pending").exists(),"settings_supported":true,"profiles":list,"subscriptions":subscriptions,"active_profile":active,"screen":screen::status(),"recovery_pending":path("transaction").exists()}),
     )
 }
 fn validate(proxy: Value) -> Result<()> {
+    if ikev2::is_ikev2(&proxy) {
+        let p = ikev2::validate(&proxy)?;
+        return ikev2::check_certificate(&p);
+    }
     validate_config(profile::config(proxy, true))
 }
 fn validate_config(config: Value) -> Result<()> {
@@ -529,6 +603,7 @@ enum Request {
         name: Option<String>,
     },
     ImportConfig { config: String, name: Option<String> },
+    SaveIkev2 { id: Option<String>, name: String, ikev2: ikev2::Input },
     SubscriptionImport { url: String, name: Option<String>, documents: Option<Vec<String>> },
     SubscriptionUpdate { id: String, documents: Option<Vec<String>> },
     SubscriptionDelete { id: String },
@@ -582,7 +657,7 @@ fn dispatch_inner(req: Request) -> Result<Value> {
         base()?;
         let catalog = catalog()?;
         let p = catalog.profile(&id)?;
-        return Ok(json!({"schema_version":1,"profile":p,"active":active()?==id}));
+        return Ok(json!({"schema_version":1,"profile":ikev2::redacted(p),"active":active()?==id}));
     }
     if let Request::SubscriptionDetails { id } = req {
         base()?;
@@ -608,7 +683,7 @@ fn dispatch_inner(req: Request) -> Result<Value> {
         || path("transaction.preparing").exists()
         || path("transaction.done").exists()
     {
-        manager("recover")?;
+        recover_runtime(matches!(req, Request::SetEnabled { enabled: false }), manager)?;
     }
     let mut summary = None;
     match req {
@@ -627,6 +702,24 @@ fn dispatch_inner(req: Request) -> Result<Value> {
         Request::Import { uri, name } => {
             let (name, proxy, warnings) = profile::parse(&uri, name.as_deref())?;
             import_profile(json!({"name":name,"protocol":subscription::protocol(&proxy),"proxy":proxy,"warnings":warnings,"source_uri":uri}))?;
+        }
+        Request::SaveIkev2 { id, name, ikev2 } => {
+            let name = profile::name(&name)?;
+            let mut catalog = catalog()?;
+            let previous = id.as_ref().map(|id| catalog.profile(id)).transpose()?;
+            if previous.is_some_and(|p| !crate::ikev2::is_ikev2(&p["proxy"])) {
+                return Err("VPN_IKEV2_INVALID_PROFILE");
+            }
+            let proxy = ikev2.into_proxy(previous.map(|p| &p["proxy"]))?;
+            validate(proxy.clone())?;
+            if let Some(id) = id {
+                audit("ikev2_saved", &id)?;
+                *catalog.profiles.iter_mut().find(|p| p["id"] == id).unwrap() =
+                    json!({"id":id,"name":name,"protocol":"ikev2","proxy":proxy,"warnings":[]});
+                save_catalog(&catalog)?;
+            } else {
+                import_profile(json!({"name":name,"protocol":"ikev2","proxy":proxy,"warnings":[]}))?;
+            }
         }
         Request::ImportConfig { config, name } => {
             let parsed = awg::parse(&config)?;
@@ -683,7 +776,9 @@ fn dispatch_inner(req: Request) -> Result<Value> {
             let catalog = catalog()?;
             let p = catalog.profile(&id)?;
             validate(p["proxy"].clone())?;
-            let first = !path("configured").exists();
+            if ikev2::is_ikev2(&p["proxy"]) {
+                run("/bin/sh", &["/data/zte-vpn/ikev2.sh", "check"], 10)?;
+            }
             audit("activate_requested", &id)?;
             // Publish a complete rollback snapshot before changing either live file.
             DirBuilder::new()
@@ -705,14 +800,9 @@ fn dispatch_inner(req: Request) -> Result<Value> {
                 .map_err(|_| "VPN_WRITE_FAILED")?;
             write_json(
                 &path("config.json"),
-                &profile::config(p["proxy"].clone(), false),
+                &runtime_config(&p["proxy"]),
             )?;
-            let applied =
-                manager("activate").and_then(|_| if first { manager("enable") } else { Ok(()) });
-            if let Err(e) = applied {
-                let _ = manager("recover");
-                return Err(e);
-            }
+            connect_profile(manager)?;
             atomic(&path("active"), id.as_bytes())?;
             // One durable rename commits the pair. Interrupted cleanup cannot trigger rollback.
             fs::rename(path("transaction"), path("transaction.done"))
@@ -814,6 +904,16 @@ fn main() {
                 integrity()?;
                 Ok(json!({"verified":true}))
             }
+            Some("backend") => {
+                base()?;
+                println!("{}", backend()?);
+                std::process::exit(0);
+            }
+            Some("prepare-ikev2") => {
+                integrity()?;
+                prepare_ikev2()?;
+                Ok(json!({"prepared":true}))
+            }
             Some("hook-network") => {
                 hook_network()?;
                 Ok(json!({"installed":true}))
@@ -846,6 +946,58 @@ fn main() {
 #[cfg(test)]
 mod wifi_request_tests {
     use super::*;
+    #[test]
+    fn explicit_connect_enables_previously_disabled_wifi_once() {
+        let mut enabled = false;
+        let mut connections = 0;
+        connect_profile(|action| {
+            match action {
+                "activate" => assert!(!enabled),
+                "enable" => { enabled = true; connections += 1; }
+                _ => panic!("unexpected recovery on successful Connect"),
+            }
+            Ok(())
+        }).unwrap();
+        assert!(enabled);
+        assert_eq!(connections, 1);
+    }
+    #[test]
+    fn failed_connect_restores_profile_only_after_stopping_runtime() {
+        for failed_action in ["activate", "enable"] {
+            let mut enabled = true;
+            let mut restored = false;
+            let error = connect_profile(|action| {
+                if action == failed_action { return Err("VPN_CORE_NOT_READY"); }
+                match action {
+                    "disable" => enabled = false,
+                    "recover" => { assert!(!enabled, "rollback must not issue a PUSH"); restored = true; }
+                    _ => (),
+                }
+                Ok(())
+            });
+            assert_eq!(error, Err("VPN_CORE_NOT_READY"));
+            assert!(!enabled);
+            assert!(restored);
+        }
+    }
+    #[test]
+    fn off_request_dominates_pending_profile_recovery() {
+        let mut enabled = true;
+        let mut restored = false;
+        recover_runtime(true, |action| {
+            match action {
+                "disable" => enabled = false,
+                "recover" => { assert!(!enabled); restored = true; }
+                _ => unreachable!(),
+            }
+            Ok(())
+        }).unwrap();
+        assert!(restored);
+        assert_eq!(recover_runtime(true, |action| {
+            assert_eq!(action, "disable", "failed OFF must not proceed to recovery");
+            Err("VPN_OPERATION_FAILED")
+        }), Err("VPN_OPERATION_FAILED"));
+    }
     #[test]
     fn legacy_deployment_journals_do_not_block_vpn_but_firmware_update_does() {
         let root = std::env::temp_dir().join(format!("zte-vpn-transactions-{}", std::process::id()));
