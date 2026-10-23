@@ -564,7 +564,7 @@ try
             busy.Invoke(window, [false]); Check(Find("Применить обновление").IsEnabled && !Find("Удалить профиль").IsEnabled);
             if (args.Contains("--render-vpn"))
             {
-                var output = "/Users/isadykov/Desktop/ZTE/evidence/vpn-multiprotocol-20261013/ui/windows-preview";
+                var output = Path.GetFullPath(Path.Combine(".build", "vpn-ui-preview"));
                 Directory.CreateDirectory(output); window.Width = 1280; window.Height = 1100;
                 foreach (var language in new[] { "ru", "en" })
                 {

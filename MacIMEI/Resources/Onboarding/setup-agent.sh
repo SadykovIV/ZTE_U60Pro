@@ -378,40 +378,149 @@ reconcile_completed_owner() {
     release_completed_owner || return 1
     printf 'INSTALL_COMPLETED_OWNER_CLEARED\n' >&2
 }
+recovery_conflicts_clear() {
+    for pending in /data/local/tmp/zte-imei-installations/active /data/local/tmp/zte-imei-installations/lock /data/local/tmp/open-u60-transactions/active /tmp/fota_install_processing /tmp/zte-imei-app.lock; do
+        test ! -e "$pending" && test ! -L "$pending" || fail CLEAN_RECOVERY_FOREIGN_PENDING
+    done
+}
+recovery_installer_absent() {
+    test -d /proc && test -r /proc && test -x /proc || fail CLEAN_RECOVERY_PROCESS_UNREADABLE
+    recovery_process_seen=0
+    for process_directory in /proc/[0-9]*; do
+        test -d "$process_directory" || continue
+        # This trusted invocation is the recovery worker itself.
+        test "${process_directory##*/}" != "$$" || continue
+        cmdline=$process_directory/cmdline
+        if test ! -r "$cmdline"; then
+            test ! -d "$process_directory" || fail CLEAN_RECOVERY_PROCESS_UNREADABLE
+            continue
+        fi
+        if ! command_line=$(tr '\000' '\n' < "$cmdline" 2>/dev/null); then
+            test ! -d "$process_directory" || fail CLEAN_RECOVERY_PROCESS_UNREADABLE
+            continue
+        fi
+        recovery_process_seen=1
+        # Also match a standalone stage argv (without a trailing slash), shell
+        # command strings and legacy paths. Do not kill an uncertain owner.
+        if test "${empty_lock:-0}" = 1; then
+            case "$command_line" in
+              *"$anchor/stage-"*|*"$base/"*|*"/data/local/tmp/zte-imei-setup-"*) fail CLEAN_RECOVERY_BUSY;;
+            esac
+        fi
+        case "$command_line" in
+          *"$anchor/stage-$old_token"*|*"$old_journal"*|*"/data/local/tmp/zte-imei-setup-$old_token"*) fail CLEAN_RECOVERY_BUSY;;
+        esac
+    done
+    test "$recovery_process_seen" = 1 || fail CLEAN_RECOVERY_PROCESS_UNREADABLE
+}
+recovery_journal_inventory() {
+    for entry in "$old_journal" "$base/lock" "$base/lock"/* "$base/lock"/.[!.]* "$base/lock"/..?* "$old_journal"/* "$old_journal"/.[!.]* "$old_journal"/..?* \
+        "$old_journal"/before/* "$old_journal"/before/.[!.]* "$old_journal"/before/..?* \
+        "$old_journal"/present/* "$old_journal"/present/.[!.]* "$old_journal"/present/..?* \
+        "$old_journal"/planned/* "$old_journal"/planned/.[!.]* "$old_journal"/planned/..?* \
+        "$old_journal"/completed-lock/* "$old_journal"/completed-lock/.[!.]* "$old_journal"/completed-lock/..?*; do
+        test -e "$entry" || test -L "$entry" || continue
+        entry_metadata=$(stat -c %d:%i:%u:%a:%h "$entry") || return 1
+        printf '%s %s\n' "$entry_metadata" "$entry" || return 1
+    done
+}
+recovery_record_source() {
+    plain_file "$1" && test "$(stat -c %u:%h "$1")" = 0:1 || fail CLEAN_RECOVERY_CHANGED
+    source_metadata=$(stat -c %d:%i:%u:%a:%h "$1") || fail CLEAN_RECOVERY_CHANGED
+    source_digest=$(hash "${2:-$1}") || fail CLEAN_RECOVERY_CHANGED
+    hex "$source_digest" && test "${#source_digest}" = 64 &&
+    test "$(hash "$1")" = "$source_digest" || fail CLEAN_RECOVERY_CHANGED
+    if test "$#" = 2; then
+        test "$(stat -c %u:%a "$1")" = "$(stat -c %u:%a "$2")" || fail CLEAN_RECOVERY_CHANGED
+    fi
+    printf '%s  %s\n' "$source_digest" "$1" >> "$archive/sources.sha256"
+    printf '%s %s\n' "$source_metadata" "$1" >> "$archive/sources.metadata"
+}
+recovery_empty_lock() {
+    test -d "$1" || fail CLEAN_RECOVERY_OWNER
+    private_directory "$1"
+    for lock_entry in "$1"/* "$1"/.[!.]* "$1"/..?*; do
+        test ! -e "$lock_entry" && test ! -L "$lock_entry" || fail CLEAN_RECOVERY_OWNER
+    done
+}
 archive_previous_boot_owner() (
-    # Explicit clean installation can supersede our transaction from an earlier
-    # boot. Its files and today's targets are backed up, never rolled back.
-    test "$clean_reinstall" = 1 && test "$profile" = linux-arm64-access || exit 1
+    # Explicit clean installation may supersede an abandoned owned transaction
+    # on this boot or an earlier one. Preserve its journal and today's targets;
+    # never roll back current data or clear another operation's markers.
+    test "$clean_reinstall" = 1 || exit 1
+    recovery_conflicts_clear
+    recovery_boot=$(cat /proc/sys/kernel/random/boot_id) || fail CLEAN_RECOVERY_IDENTITY
+    printf '%s\n' "$recovery_boot" | grep -qE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' || fail CLEAN_RECOVERY_IDENTITY
     private_directory "$anchor"; private_directory "$base"
+    empty_lock=0
     if test -e "$base/active" || test -L "$base/active"; then
         private_file "$base/active" || fail CLEAN_RECOVERY_OWNER
         old_token=$(cat "$base/active")
-    else
+    elif test -e "$base/lock/owner" || test -L "$base/lock/owner"; then
         private_file "$base/lock/owner" || fail CLEAN_RECOVERY_OWNER
         old_token=$(cat "$base/lock/owner")
+    else
+        # mkdir(lock) precedes owner creation. Only the explicit requested stage
+        # can supply identity for this empty, private application lock.
+        test -n "${expected_recovery_token:-}" || fail CLEAN_RECOVERY_OWNER
+        recovery_empty_lock "$base/lock"
+        old_token=$expected_recovery_token; empty_lock=1
     fi
     safe_id "$old_token" || fail CLEAN_RECOVERY_OWNER
     old_journal=$base/$old_token
-    test -d "$old_journal" || fail CLEAN_RECOVERY_JOURNAL
+    test -z "${expected_recovery_token:-}" || test "$old_token" = "$expected_recovery_token" || fail CLEAN_RECOVERY_OWNER
+    test ! -L "$old_journal" || fail CLEAN_RECOVERY_JOURNAL
     private_directory "$old_journal"
-    for item in cid state profile.identity targets; do private_file "$old_journal/$item" || fail CLEAN_RECOVERY_METADATA; done
-    test "$(cat "$old_journal/cid")" = "$cid" && test "$(cat "$old_journal/targets")" = "$expected_targets" || fail CLEAN_RECOVERY_IDENTITY
-    case "$(cat "$old_journal/state")" in preparing|pending|ready|complete|rolled-back) ;; *) fail CLEAN_RECOVERY_STATE;; esac
-    IFS=' ' read -r old_profile old_fw old_router old_boot extra < "$old_journal/profile.identity" || fail CLEAN_RECOVERY_IDENTITY
-    test -z "$extra" && test "$old_profile $old_fw $old_router" = "$profile $firmware_sha $router_sha" || fail CLEAN_RECOVERY_IDENTITY
-    printf '%s\n' "$old_boot" | grep -qE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' || fail CLEAN_RECOVERY_IDENTITY
-    test "$old_boot" != "$boot_id" || fail CLEAN_RECOVERY_CURRENT_BOOT
-    for cmdline in /proc/[0-9]*/cmdline; do
-        test -r "$cmdline" || continue
-        command_line=$(tr '\000' ' ' < "$cmdline")
-        case "$command_line" in *"$anchor/stage-$old_token/"*) fail CLEAN_RECOVERY_BUSY;; esac
+    partial_metadata=$empty_lock
+    for item in cid state profile.identity targets; do
+        if test -e "$old_journal/$item" || test -L "$old_journal/$item"; then
+            private_file "$old_journal/$item" || fail CLEAN_RECOVERY_METADATA
+        else partial_metadata=1; fi
     done
+    old_boot=
+    if test -e "$old_journal/profile.identity"; then
+        IFS=' ' read -r old_profile old_fw old_router old_boot extra < "$old_journal/profile.identity" || fail CLEAN_RECOVERY_IDENTITY
+        test -z "$extra" && test "$old_profile $old_fw $old_router" = "$profile $firmware_sha $router_sha" || fail CLEAN_RECOVERY_IDENTITY
+    fi
+    if test "$partial_metadata" = 1; then
+        # The first persistent lock precedes journal metadata. A private staged
+        # owner is the independent witness for missing fields, never a substitute
+        # for contradictory fields that were already written.
+        old_stage=$anchor/stage-$old_token
+        test -d "$old_stage" || fail CLEAN_RECOVERY_METADATA
+        private_directory "$old_stage"
+        private_file "$old_stage/.owner" && test "$(stat -c %a "$old_stage/.owner")" = 600 || fail CLEAN_RECOVERY_METADATA
+        IFS=' ' read -r stage_token stage_cid stage_profile stage_fw stage_router stage_boot extra < "$old_stage/.owner" || fail CLEAN_RECOVERY_IDENTITY
+        test -z "$extra" && test "$stage_token $stage_cid $stage_profile $stage_fw $stage_router" = "$old_token $cid $profile $firmware_sha $router_sha" || fail CLEAN_RECOVERY_IDENTITY
+        test ! -e "$old_journal/profile.identity" || test "$stage_boot" = "$old_boot" || fail CLEAN_RECOVERY_IDENTITY
+        old_boot=$stage_boot
+    fi
+    test ! -e "$old_journal/cid" || test "$(cat "$old_journal/cid")" = "$cid" || fail CLEAN_RECOVERY_IDENTITY
+    test ! -e "$old_journal/targets" || test "$(cat "$old_journal/targets")" = "$expected_targets" || fail CLEAN_RECOVERY_IDENTITY
+    if test -e "$old_journal/state"; then
+        case "$(cat "$old_journal/state")" in preparing|pending|ready|complete|rolled-back) ;; *) fail CLEAN_RECOVERY_STATE;; esac
+    fi
+    case "$profile" in
+      linux-arm64-access)
+        printf '%s\n' "$old_boot" | grep -qE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' || fail CLEAN_RECOVERY_IDENTITY
+        test "$recovery_boot" = "$boot_id" || fail CLEAN_RECOVERY_IDENTITY;;
+      b31|b02-experimental) test -z "$old_boot" || fail CLEAN_RECOVERY_IDENTITY;;
+      *) fail CLEAN_RECOVERY_IDENTITY;;
+    esac
+    bound_profile="$profile $firmware_sha $router_sha"
+    if test "$profile" = linux-arm64-access; then bound_profile="$bound_profile $old_boot"; fi
+    test ! -e "$old_journal/profile.identity" || test "$(cat "$old_journal/profile.identity")" = "$bound_profile" || fail CLEAN_RECOVERY_IDENTITY
+    if test "$partial_metadata" = 1; then
+        test "$(cat "$old_stage/.owner")" = "$old_token $cid $bound_profile" || fail CLEAN_RECOVERY_IDENTITY
+    fi
+    recovery_installer_absent
     if test -e "$base/active" || test -L "$base/active"; then
         private_file "$base/active" && test "$(cat "$base/active")" = "$old_token" || fail CLEAN_RECOVERY_OWNER
     fi
     if test -e "$base/lock" || test -L "$base/lock"; then
         private_directory "$base/lock"
-        private_file "$base/lock/owner" && test "$(cat "$base/lock/owner")" = "$old_token" || fail CLEAN_RECOVERY_OWNER
+        if test "$empty_lock" = 1; then recovery_empty_lock "$base/lock"
+        else private_file "$base/lock/owner" && test "$(cat "$base/lock/owner")" = "$old_token" || fail CLEAN_RECOVERY_OWNER; fi
         for item in "$base/lock"/* "$base/lock"/.[!.]* "$base/lock"/..?*; do
             test -e "$item" || test -L "$item" || continue
             test "$item" = "$base/lock/owner" || fail CLEAN_RECOVERY_FOREIGN_FILE
@@ -441,19 +550,38 @@ archive_previous_boot_owner() (
           *) fail CLEAN_RECOVERY_FOREIGN_FILE;;
         esac
     done
+    old_inventory=$(recovery_journal_inventory) || fail CLEAN_RECOVERY_CHANGED
+    validated_metadata=$(
+        for metadata_file in cid state profile.identity targets; do
+            test ! -e "$old_journal/$metadata_file" || sha256sum "$old_journal/$metadata_file" || exit 1
+        done
+        if test "$partial_metadata" = 1; then sha256sum "$old_stage/.owner" || exit 1; fi
+    ) || fail CLEAN_RECOVERY_CHANGED
     archive_id=$(cat /proc/sys/kernel/random/uuid)
     safe_id "$archive_id" || fail CLEAN_RECOVERY_ARCHIVE
     archive=$anchor/reset-recovery-$old_token-$archive_id
     test ! -e "$archive" && test ! -L "$archive" || fail CLEAN_RECOVERY_ARCHIVE
     mkdir "$archive" "$archive/current" || fail CLEAN_RECOVERY_ARCHIVE
-    cp -Rp "$old_journal" "$archive/journal" || fail CLEAN_RECOVERY_ARCHIVE
+    if test -d "$old_journal"; then cp -Rp "$old_journal" "$archive/journal" || fail CLEAN_RECOVERY_ARCHIVE
+    else mkdir "$archive/journal" || fail CLEAN_RECOVERY_ARCHIVE; fi
     : > "$archive/snapshot.sha256"
+    : > "$archive/sources.sha256"
+    : > "$archive/sources.metadata"
+    : > "$archive/absent"
+    printf '%s\n' "$validated_metadata" > "$archive/validated.sha256"
+    if test ! -e "$old_journal"; then printf '%s\n' "$old_journal" >> "$archive/absent"; fi
+    if test "$partial_metadata" = 1; then
+        cp -p "$old_stage/.owner" "$archive/stage.owner" || fail CLEAN_RECOVERY_ARCHIVE
+        recovery_record_source "$old_stage/.owner" "$archive/stage.owner"
+        sha256sum "$archive/stage.owner" >> "$archive/snapshot.sha256"
+    fi
     for original in "$old_journal"/* "$old_journal"/before/* "$old_journal"/present/* "$old_journal"/planned/* "$old_journal"/completed-lock/*; do
         test -e "$original" || test -L "$original" || continue
         test ! -d "$original" || continue
         copied=$archive/journal${original#"$old_journal"}
         plain_file "$original" && plain_file "$copied" && test "$(hash "$original")" = "$(hash "$copied")" || fail CLEAN_RECOVERY_CHANGED
         sha256sum "$copied" >> "$archive/snapshot.sha256"
+        recovery_record_source "$original" "$copied"
     done
     for target in $expected_targets; do
         if test -e "/$target" || test -L "/$target"; then
@@ -462,16 +590,50 @@ archive_previous_boot_owner() (
             cp -p "/$target" "$archive/current/$name" || fail CLEAN_RECOVERY_ARCHIVE
             test "$(hash "/$target")" = "$(hash "$archive/current/$name")" || fail CLEAN_RECOVERY_CHANGED
             sha256sum "$archive/current/$name" >> "$archive/snapshot.sha256"
+            recovery_record_source "/$target" "$archive/current/$name"
+        else
+            printf '%s\n' "/$target" >> "$archive/absent"
         fi
     done
+    for marker in "$base/active" "$base/lock/owner"; do
+        if test -e "$marker" || test -L "$marker"; then
+            case "$marker" in "$base/active") marker_copy=proof-active;; *) marker_copy=proof-lock-owner;; esac
+            cp -p "$marker" "$archive/$marker_copy" || fail CLEAN_RECOVERY_ARCHIVE
+            recovery_record_source "$marker" "$archive/$marker_copy"
+            sha256sum "$archive/$marker_copy" >> "$archive/snapshot.sha256"
+        else printf '%s\n' "$marker" >> "$archive/absent"; fi
+    done
+    if test "$empty_lock" = 1; then
+        : > "$archive/proof-empty-lock"
+        sha256sum "$archive/proof-empty-lock" >> "$archive/snapshot.sha256"
+    fi
     printf '%s\n' "$cid" > "$archive/cid"
-    printf '%s\n' "$boot_id" > "$archive/boot"
+    printf '%s\n' "$recovery_boot" > "$archive/boot"
     sync
     identity "$cid"
+    test "$(cat /proc/sys/kernel/random/boot_id)" = "$recovery_boot" || fail CLEAN_RECOVERY_IDENTITY
+    recovery_conflicts_clear
+    recovery_installer_absent
+    current_inventory=$(recovery_journal_inventory) || fail CLEAN_RECOVERY_CHANGED
+    test "$current_inventory" = "$old_inventory" || fail CLEAN_RECOVERY_CHANGED
+    sha256sum -c "$archive/snapshot.sha256" >/dev/null 2>&1 &&
+    sha256sum -c "$archive/validated.sha256" >/dev/null 2>&1 &&
+    sha256sum -c "$archive/sources.sha256" >/dev/null 2>&1 || fail CLEAN_RECOVERY_CHANGED
+    while IFS=' ' read -r metadata original; do
+        plain_file "$original" && test "$(stat -c %d:%i:%u:%a:%h "$original")" = "$metadata" || fail CLEAN_RECOVERY_CHANGED
+    done < "$archive/sources.metadata"
+    while IFS= read -r original; do
+        test ! -e "$original" && test ! -L "$original" || fail CLEAN_RECOVERY_CHANGED
+    done < "$archive/absent"
+    # Persist the bound receipt before marker moves so a lost final response or
+    # interruption after both moves remains provable without recreating a lock.
+    printf '%s\n' "$old_token $cid $profile $firmware_sha $router_sha" > "$archive/recovery.prepared"
+    sync
     # Moving the owned markers retains their exact bytes and makes interruption
     # resumable: either remaining marker still identifies this old journal.
     if test -e "$base/lock"; then
-        test "$(cat "$base/lock/owner")" = "$old_token" || fail CLEAN_RECOVERY_CHANGED
+        if test "$empty_lock" = 1; then recovery_empty_lock "$base/lock"
+        else test "$(cat "$base/lock/owner")" = "$old_token" || fail CLEAN_RECOVERY_CHANGED; fi
         mv "$base/lock" "$archive/lock" || fail CLEAN_RECOVERY_ARCHIVE
     fi
     if test -e "$base/active"; then
@@ -480,6 +642,37 @@ archive_previous_boot_owner() (
     fi
     sync
     printf 'INSTALL_RESET_ARCHIVED %s\n' "$archive" >&2
+)
+recovery_archive_proof() (
+    old_token=$expected_recovery_token
+    for archive in "$anchor"/reset-recovery-"$old_token"-*; do
+        test -e "$archive" || test -L "$archive" || continue
+        private_directory "$archive"
+        private_file "$archive/recovery.prepared" || continue
+        test "$(cat "$archive/recovery.prepared")" = "$old_token $cid $profile $firmware_sha $router_sha" || continue
+        private_file "$archive/snapshot.sha256" || fail CLEAN_RECOVERY_ARCHIVE
+        sha256sum -c "$archive/snapshot.sha256" >/dev/null 2>&1 || fail CLEAN_RECOVERY_ARCHIVE
+        moved=0
+        for name in active lock; do
+            case "$name" in active) proof=proof-active; moved_owner=$archive/active;; lock) proof=proof-lock-owner; moved_owner=$archive/lock/owner;; esac
+            if test -e "$archive/$proof" || test -L "$archive/$proof"; then
+                private_file "$archive/$proof" && private_file "$moved_owner" || fail CLEAN_RECOVERY_ARCHIVE
+                test "$(cat "$moved_owner")" = "$old_token" && test "$(hash "$moved_owner")" = "$(hash "$archive/$proof")" || fail CLEAN_RECOVERY_ARCHIVE
+                if test "$name" = lock; then private_directory "$archive/lock"; fi
+                moved=1
+            fi
+        done
+        if test -e "$archive/proof-empty-lock" || test -L "$archive/proof-empty-lock"; then
+            private_file "$archive/proof-empty-lock" && test ! -s "$archive/proof-empty-lock" || fail CLEAN_RECOVERY_ARCHIVE
+            recovery_empty_lock "$archive/lock"
+            empty_lock=1; moved=1
+        fi
+        test "$moved" = 1 || fail CLEAN_RECOVERY_ARCHIVE
+        old_journal=$base/$old_token
+        recovery_installer_absent
+        exit 0
+    done
+    exit 1
 )
 cleanup_old_stage() (
     candidate=$1
@@ -603,6 +796,24 @@ if test "${1:-}" = --verify-rollback; then
     rollback_verified || fail ROLLBACK_UNVERIFIED
     identity "$cid"
     printf 'INSTALL_ROLLBACK_VERIFIED %s\n' "$journal"
+    exit 0
+fi
+
+if test "${1:-}" = --recover-owned; then
+    test "$clean_reinstall" = 1 || fail ARGUMENTS
+    test "$#" = 6 || test "$#" = 7 || fail ARGUMENTS
+    expected_recovery_token=$2; safe_id "$expected_recovery_token" || fail JOURNAL_ID
+    cid=$3; select_profile "$4" "$5" "$6" "${7:-}"
+    identity "$cid"
+    safe_directory /data; private_directory "$anchor"; private_directory "$base"
+    recovery_conflicts_clear
+    if test -e "$base/active" || test -L "$base/active" || test -e "$base/lock" || test -L "$base/lock"; then
+        archive_previous_boot_owner || fail CLEAN_RECOVERY_UNPROVEN
+    fi
+    recovery_archive_proof || fail CLEAN_RECOVERY_UNPROVEN
+    identity "$cid"
+    check_recovery_markers
+    printf 'INSTALL_RECOVERY_ARCHIVED %s/%s\n' "$base" "$expected_recovery_token"
     exit 0
 fi
 

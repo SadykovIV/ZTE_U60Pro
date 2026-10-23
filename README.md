@@ -6,13 +6,25 @@ Manage the **ZTE U60 Pro / MU5250**: access preparation, backups, IMEI, TTL,
 Russian screen localization, VPN over a separate Wi-Fi network, removable
 physical eUICC cards, and diagnostics.
 
-Version **1.26** (macOS build **65**, Windows FileVersion **1.26.0.0**),
+Version **1.26.1** (macOS build **66**, Windows FileVersion **1.26.1.0**),
 agent **2.9.0-esim.13**, VPN controller **1.5.0**.
-[Download macOS ARM64](https://github.com/SadykovIV/ZTE_U60Pro/releases/download/v1.26/ZTE-U60Pro-Manager-1.26-macOS-arm64.zip) ·
-[Download Windows x64](https://github.com/SadykovIV/ZTE_U60Pro/releases/download/v1.26/ZTE-U60Pro-Manager-1.26-Windows-x64-portable.zip) ·
-[Release and checksums](https://github.com/SadykovIV/ZTE_U60Pro/releases/tag/v1.26).
+[Download macOS ARM64](https://github.com/SadykovIV/ZTE_U60Pro/releases/download/v1.26.1/ZTE-U60Pro-Manager-1.26.1-macOS-arm64.zip) ·
+[Download Windows x64](https://github.com/SadykovIV/ZTE_U60Pro/releases/download/v1.26.1/ZTE-U60Pro-Manager-1.26.1-Windows-x64-portable.zip) ·
+[Release and checksums](https://github.com/SadykovIV/ZTE_U60Pro/releases/tag/v1.26.1).
 
-## Changes since the previous GitHub release, 1.25
+## Changes since 1.26
+
+- Clean reinstall accepts the bundled and supported earlier VPN components.
+  Release builds check this compatibility before packaging.
+- Cleanup stops its own VPN after a verified backup and resumes interrupted
+  configuration changes, including after a modem reboot.
+- Explicit clean reinstall can archive abandoned owned preparation transactions
+  without requiring a factory reset. Backups and unrelated services are preserved.
+- Cleanup errors show the failed stage and a fixed diagnostic code.
+
+[1.26.1 changes and verification scope](docs/RELEASE-1.26.1.md).
+
+## Features introduced in 1.26
 
 - IKEv2 with the modem's native strongSwan, EAP-MSCHAPv2 and server CA verification.
   Private IPv4 networks and profile DNS use VPN; public IPv4 uses LTE.
@@ -42,7 +54,7 @@ not general firmware incompatibility.
   other components are checked on demand.
 - Preparation uses observed device capabilities, with fixes for legacy ADB
   responses and long commands. Each operation checks the components it needs.
-- **Clean installation after a factory reset** beside the preparation button:
+- **Clean reinstall** beside the preparation button:
   reinstall the agent and SSH with a new password, back up components, and verify
   the downloaded archive before cleanup. The **ⓘ** button explains its scope.
 - Recovery of VPN and extra screen-page services after a reset, better VPN error
@@ -273,7 +285,7 @@ adaptation before switching is allowed.
 5. For eSIM, insert a physical eUICC, select the physical SIM slot, and request profiles on the **eSIM** page. Profile downloads through the desktop app use the computer's internet connection; downloads through the web dashboard use the modem's connection. [Details and limitations](docs/ESIM-DESKTOP.md).
 6. Open the agent with the application's button or at `http://192.168.0.1:8080`. The API uses port **9090**. Set the agent password during preparation; the build has no shared agent password.
 
-After a factory reset, select **Clean installation after a factory reset** beside
+After a factory reset, select **Clean reinstall** beside
 the preparation button and enter a new agent password in the initial SSH
 preparation settings. This reinstalls the agent and SSH and cleans only
 application components after archiving them. To reinstall without component

@@ -121,33 +121,51 @@ extension OnboardingEngine {
         return (serial, first!)
     }
 
-    /// Explicit clean setup may retire a transaction from a previous boot only
-    /// after the device helper preserves its owned journal and current targets.
+    /// Explicit clean setup retires an abandoned owned transaction only after
+    /// the device helper proves archival of this exact ID and current targets.
     func archivePreviousBootForClean(webPassword: String) throws {
         guard fm.fileExists(atPath: pending.path) else { return }
         let raw = try DeviceBackups.smallFile(pending, maximum: 65536)
         guard let object = try JSONSerialization.jsonObject(with: raw) as? [String: Any],
-              object["intent"] as? String == "linux-arm64-access", object["installRequested"] as? Bool == true else { return }
-        let saved = try JSONDecoder().decode(AccessSetupJournal.self, from: raw)
-        try saved.validate(root: root)
-        guard saved.installerProfile == "linux-arm64-access" else { return }
+              object["installRequested"] as? Bool == true else { return }
+        let id: String, cid: String, firmware: String, router: String, profile: String, directory: URL
+        let stage: String?, journal: String?, savedBoot: String?
+        if object["intent"] as? String == "linux-arm64-access" {
+            let saved = try JSONDecoder().decode(AccessSetupJournal.self, from: raw)
+            try saved.validate(root: root)
+            (id,cid,firmware,router,profile,directory,stage,journal,savedBoot) =
+                (saved.id,saved.cid,saved.firmwareHash,saved.routerHash,saved.installerProfile,URL(fileURLWithPath:saved.directory),saved.remoteStage,saved.remoteJournal,saved.bootID)
+        } else {
+            let saved = try JSONDecoder().decode(SetupJournal.self, from: raw)
+            guard saved.intent == nil, saved.phase == "install-requested",
+                  let measuredCID = saved.cid, let fw = saved.firmwareHash,
+                  let rh = saved.routerHash, let kind = saved.installerProfile else { return }
+            (id,cid,firmware,router,profile,directory,stage,journal,savedBoot) =
+                (saved.id,measuredCID,fw,rh,kind,URL(fileURLWithPath:saved.directory),saved.remoteStage,saved.remoteJournal,nil)
+            try require(directory.standardizedFileURL.deletingLastPathComponent() == root.appendingPathComponent("SetupBackups").standardizedFileURL &&
+                        UUID(uuidString:directory.lastPathComponent) != nil, "Неверный каталог журнала подготовки")
+        }
+        let paths = try SetupRemotePaths(id:id,installRequested:true,stage:stage,journal:journal)
+        // Legacy shared stages have no private owner witness for this protocol.
+        guard paths.stage == "/data/zte-imei-studio/stage-" + id else { return }
         let (serial, proof) = try cleanRecoveryUSBProof(webPassword: webPassword,
-            expectedIdentity: Identity(cid: saved.cid, firmwareHash: saved.firmwareHash), expectedRouter: saved.routerHash)
-        guard proof.bootID != saved.bootID else { return }
+            expectedIdentity: Identity(cid:cid,firmwareHash:firmware),expectedRouter:router)
+        if savedBoot == proof.bootID && object["phase"] as? String != "install-requested" { return }
         let adb = ADBClient(binary: assets.appendingPathComponent("adb"), runner: runner)
         let hashes = try verifyAssets()
         let bytes = try Data(contentsOf: assets.appendingPathComponent("setup-agent.sh"))
         try require(hashes["setup-agent.sh"] == digest(bytes), "Повреждён установщик подготовки")
-        let args = ["--clean-reinstall", "--preflight", saved.cid, saved.installerProfile, saved.firmwareHash, saved.routerHash, proof.bootID]
-        let answer = try adb.shell(serial, "sh -c " + shellQuote(String(decoding: bytes, as: UTF8.self)) + " -- " + args.map(shellQuote).joined(separator: " "), timeout: 60)
-        let freshResponse = try adb.shellResult(serial, AccessIdentity.command, timeout: 20)
+        let policy = [cid,profile,firmware,router] + (profile == "linux-arm64-access" ? [proof.bootID] : [])
+        let args = ["--clean-reinstall","--recover-owned",id] + policy
+        let answer = try adb.shell(serial, "sh -c " + shellQuote(String(decoding:bytes,as:UTF8.self)) + " -- " + args.map(shellQuote).joined(separator:" "), timeout:60)
+        let freshResponse = try adb.shellResult(serial, AccessIdentity.command, timeout:20)
         try require(freshResponse.status == 0, "Повторная идентификация USB недоступна")
         let fresh = try AccessIdentity.parse(freshResponse.stdout)
-        try require(answer == "INSTALL_PREFLIGHT linux-arm64-access imei_config=unknown" && fresh.identity == proof.identity && fresh.routerHash == proof.routerHash && fresh.bootID == proof.bootID &&
-                    (try DeviceBackups.smallFile(pending, maximum: 65536)) == raw, "Не подтверждён архив предыдущей установки; журнал сохранён")
-        try savePrivate(raw, URL(fileURLWithPath: saved.directory).appendingPathComponent("setup-before-reset-" + UUID().uuidString + ".json"))
-        try fm.removeItem(at: pending)
-        update("Состояние предыдущей загрузки сохранено. Начинается новая чистая установка с заданным паролем.", 0.05)
+        try require(answer == "INSTALL_RECOVERY_ARCHIVED " + paths.journal && fresh == proof &&
+                    (try DeviceBackups.smallFile(pending,maximum:65536)) == raw, "Не подтверждён архив предыдущей установки; журнал сохранён")
+        try savePrivate(raw,directory.appendingPathComponent("setup-before-reset-" + UUID().uuidString + ".json"))
+        try fm.removeItem(at:pending)
+        update("Предыдущая незавершённая установка сохранена. Начинается новая чистая установка с заданным паролем.",0.05)
     }
 
     /// An early preflight failure has no remote transaction to resume. Preserve

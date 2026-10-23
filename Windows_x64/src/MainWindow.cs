@@ -405,7 +405,7 @@ public sealed partial class MainWindow : Window
                     var clean = new CheckBox
                     {
                         Name = "CleanPreparation", IsChecked = Get("clean_components") == "true",
-                        Content = Localization.Translate("Чистая установка после заводского сброса"),
+                        Content = Localization.Translate("Чистая переустановка"),
                         Foreground = Foreground, IsEnabled = CanSelectCleanPreparation(),
                     };
                     _cleanPreparationCheckBox = clean;
@@ -426,7 +426,7 @@ public sealed partial class MainWindow : Window
                     cleanInfo.Name = "CleanPreparationInfo";
                     cleanRow.Children.Add(cleanInfo);
                     var preparation = new WrapPanel { Orientation = Orientation.Horizontal };
-                    _preparationButton = ActionButton(_snapshot?.ComponentCleanupPending == true ? "Продолжить очистку компонентов" : "Выполнить предварительную подготовку модема", async () =>
+                    _preparationButton = ActionButton(_snapshot?.ComponentCleanupPending == true ? "Продолжить чистую установку" : "Выполнить предварительную подготовку модема", async () =>
                         await ExecuteAsync(ModemOperation.PrepareSsh, ["host", "username", "web_password", "agent_password", "backup_key_suffix", "skip_firmware_check", "key_path", "known_hosts_path", "force_reinstall", "clean_components"]), true);
                     _preparationButton.IsEnabled = CanPrepare();
                     preparation.Children.Add(_preparationButton);

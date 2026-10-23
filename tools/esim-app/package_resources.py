@@ -50,7 +50,8 @@ def source_archive():
         'ModemAgent/web-app/tsconfig.node.json','ModemAgent/web-app/index.html','ModemAgent/web-app/tailwind.config.js',
         'ModemAgent/web-app/postcss.config.js','ModemAgent/web-app/eslint.config.js',
         'tools/esim-app/fixtures', 'tools/esim-app/build_runtime.py','tools/esim-app/package_resources.py','tools/esim-app/package_permanent.py','tools/esim-app/verify_public_build.py','tools/esim-app/verify_public_release.py','tools/esim-app/test_source_packaging.py','tools/esim-app/test_agent_http.py',
-        'tools/build.py','tools/test_build_pins.py','tools/fetch_dependencies.py','tools/dependencies.json',
+        'tools/build.py','tools/test_build_pins.py','tools/check_cleanup_compatibility.py',
+        'MacIMEI/Tests/test_component_cleanup.py','MacIMEI/Tests/test_onboarding_install.py','tools/fetch_dependencies.py','tools/dependencies.json',
         'tools/radio-inspect', 'MacIMEI/DeviceHelpers/build_support.py', 'MacIMEI/DeviceHelpers/src',
         'MacIMEI/Sources/BundledAgent.swift','MacIMEI/Sources/VPNSettings.swift',
         'MacIMEI/Sources/FirmwareRadioSupport.swift','Windows_x64/src/Diagnostics/FirmwareRadioSupport.cs',
@@ -96,7 +97,7 @@ def main():
     sources, count = source_archive()
     readme = '''# eSIM для физической eUICC
 
-Версия агента: 2.9.0-esim.13. Приложения: ZTE U60Pro Manager 1.26.
+Версия агента: 2.9.0-esim.13. Приложения: ZTE U60Pro Manager 1.26.1.
 
 Нужна съёмная физическая eUICC в SIM-слоте модема. Проверено: 9eSIM V0,
 ZTE MU5250, CN_ZTE_MU5250V1.0.0B31. Обычная SIM распознаётся отдельно:

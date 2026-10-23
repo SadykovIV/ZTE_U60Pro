@@ -12,6 +12,15 @@ using ZteImeiStudio.Windows.Research;
 Check(MainWindow.PublicVersion("1.25+commit", new Version(1,25,0,0)) == "1.25", "About uses public minor version without git metadata");
 Check(MainWindow.PublicVersion("1.25.1+commit", new Version(1,25,1,0)) == "1.25.1", "About preserves public patch version");
 Check(MainWindow.PublicVersion(null, new Version(1,24,22,0)) == "1.24.22", "About retains legacy assembly version fallback");
+Localization.SetLanguage("en", persist:false);
+foreach(var stage in new[]{"проверка состояния","подготовка копии","сохранение копии","подтверждение новой загрузки","очистка"})
+ foreach(var reason in new[]{"Не подтверждена установленная версия компонентов или их запуска.","SSH не подтвердил результат команды. Проверьте подключение к модему."})
+  foreach(var next in new[]{"Журнал сохранён; продолжите чистую установку для проверки состояния.","Журнал сохранён. Сохраните диагностический отчёт с этим кодом."})
+  {
+   var translated=Localization.Translate($"Чистая установка: {stage} [VPN_INTEGRITY]. {reason} {next}");
+   Check(!translated.Any(c=>c is >= '\u0400' and <= '\u04ff')&&translated.Contains("[VPN_INTEGRITY]"),"cleanup diagnostic is translated and preserves its fixed error code");
+  }
+Localization.SetLanguage("ru", persist:false);
 var windowsRoot=Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,"../../../../"));
 var lockPath=Path.Combine(windowsRoot,"src","packages.lock.json");
 var screenshots=Path.Combine(Path.GetTempPath(),"zte-diagnostic-terminal-ui");Directory.CreateDirectory(screenshots);
@@ -429,7 +438,7 @@ await session.Dispatch(()=> {
   var forcedWindow=new MainWindow(forced,persistPreferences:false);forcedWindow.Show();Pump();
   var cleanBox=forcedWindow.GetLogicalDescendants().OfType<CheckBox>().SingleOrDefault(b=>b.Name=="CleanPreparation");
   Check(cleanBox is not null&&cleanBox.IsChecked==false&&cleanBox.IsEnabled,language+" explicit clean preparation defaults off on connected SSH");
-  Check(cleanBox!.Content?.ToString()==Localization.Translate("Чистая установка после заводского сброса"),language+" clean preparation has the explicit factory-reset label");
+  Check(cleanBox!.Content?.ToString()==Localization.Translate("Чистая переустановка"),language+" clean preparation has the explicit clean-reinstall label");
   Check(ReferenceEquals(cleanBox.Parent?.Parent,FindButton(forcedWindow,"Выполнить предварительную подготовку модема").Parent),language+" clean preparation is beside the preparation action");
   var forceBox=forcedWindow.GetLogicalDescendants().OfType<CheckBox>().SingleOrDefault(b=>b.Name=="ForcePreparation");
   Check(forceBox is not null&&forceBox.IsChecked==false&&forceBox.IsEnabled&&forceBox.Content?.ToString()==Localization.Translate("Принудительная подготовка: переустановить агент и SSH"),language+" explicit force option is available but defaults off on connected SSH");
@@ -457,7 +466,7 @@ await session.Dispatch(()=> {
   forcedWindow.Close();Pump();
   var cleanupOnly=new FakeModem{AllowPreparation=true,PrepareSuccess=true,Snapshot=new(true,"Synthetic SSH",ConnectionMode:"SSH",PreparationPending:true,ComponentCleanupPending:true)};
   var cleanupWindow=new MainWindow(cleanupOnly,persistPreferences:false);cleanupWindow.Show();Pump();
-  var resumeCleanup=FindButton(cleanupWindow,"Продолжить очистку компонентов");
+  var resumeCleanup=FindButton(cleanupWindow,"Продолжить чистую установку");
   Check(resumeCleanup.IsEnabled&&cleanupOnly.Requests.Count==0,language+" saved cleanup is explicit and available without a password or navigation action");
   resumeCleanup.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();
   Check(cleanupOnly.Events.All(x=>x!="bootstrap-research")&&cleanupOnly.Requests.Count==1&&cleanupOnly.Requests[0].Operation==ModemOperation.PrepareSsh&&cleanupOnly.Requests[0].Parameters!["agent_password"]=="",language+" cleanup resume sends one explicit request without demanding or manufacturing credentials");

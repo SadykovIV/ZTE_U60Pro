@@ -128,6 +128,8 @@ internal static class PreparationRecoveryTests
                             (scenario == "changed-cid" || scenario == "changed-after-proof" && reads > 1 ? new string('b', 32) : Cid) + "\n" + Boot;
                         if (command.Contains("ubus call", StringComparison.Ordinal)) body += "\n" + JsonSerializer.Serialize(new { imei = B31.Imei, integrate_version = B31.Firmware, wa_inner_version = B31.Inner });
                     }
+                    else if(command.Contains(" -- '--clean-reinstall' '--recover-owned' ",StringComparison.Ordinal))
+                    { body="INSTALL_ERROR CLEAN_RECOVERY_UNPROVEN";code=1; }
                     else { mutations++; throw new Exception("Unexpected mutation during intent verification"); }
                     return Task.FromResult(Reply(prefix + body + "\n" + marker + code + "\n"));
                 }, Path.GetFullPath("Windows_x64/Resources/Onboarding/adb-stream.sh"));
@@ -189,7 +191,7 @@ internal static class PreparationRecoveryTests
                 Check(verification==1&&stateReads==1&&mutations==0&&!Directory.Exists(Path.Combine(folder,"SSH")),"State diagnostics are read-only with no installer replay: "+state);
                 Check(await File.ReadAllTextAsync(path)==original&&await File.ReadAllTextAsync(Path.Combine(backup,"original.fixture"))=="preserved", "Failed diagnosis preserves pending bytes and backup: "+state);
             }
-            foreach (var scenario in new[] { "before-dispatch", "dispatched-reset", "same-boot-dispatched", "wrong-cid", "changed-second-read", "cleanup-timeout", "cleanup-socket" })
+            foreach (var scenario in new[] { "before-dispatch", "dispatched-reset", "same-boot-dispatched", "native-b31-dispatched", "wrong-receipt-dispatched", "changed-proof-dispatched", "local-changed-dispatched", "lost-reply-dispatched", "wrong-cid", "changed-second-read", "cleanup-timeout", "cleanup-socket" })
             {
                 var folder = Path.Combine(root, "reset-" + scenario); Directory.CreateDirectory(folder);
                 var id = Guid.NewGuid().ToString(); var backup = Path.Combine(folder,"SetupBackups",id); Directory.CreateDirectory(backup);
@@ -197,6 +199,8 @@ internal static class PreparationRecoveryTests
                 var old = new OnboardingPending { Id=id, BackupDirectory=backup, IdentitySource="single-usb", Intent="linux-arm64-access",
                     Cid=Cid, FirmwareHash="absent", RouterHash=ImeiEngine.RouterHash, Profile="linux-arm64-access", AdbSerial="one",
                     BootId=scenario=="same-boot-dispatched"?Boot:"22222222-2222-2222-2222-222222222222", Phase=scenario.StartsWith("cleanup-",StringComparison.Ordinal)?"complete":dispatched?"install-requested":"adb-ready", InstallRequested=dispatched, ForceReinstall=scenario.StartsWith("cleanup-",StringComparison.Ordinal), CleanComponents=scenario.StartsWith("cleanup-",StringComparison.Ordinal) };
+                if (dispatched) { old.RemoteStage="/data/zte-imei-studio/stage-"+id; old.RemoteJournal="/data/zte-imei-studio/installations/"+id; }
+                if (scenario=="native-b31-dispatched") { old.WebIdentity=B31;old.IdentitySource="web-matched";old.Intent="preparation";old.Profile="b31";old.FirmwareHash=ImeiEngine.FirmwareHash;old.BootId=Boot; }
                 var path=Path.Combine(folder,"setup-pending.json"); var original=JsonSerializer.Serialize(old); await File.WriteAllTextAsync(path,original);
                 if(scenario.StartsWith("cleanup-",StringComparison.Ordinal))
                 {
@@ -205,24 +209,32 @@ internal static class PreparationRecoveryTests
                     var plan=new ComponentCleanupPending {Id=id,Cid=Cid,BootId=old.BootId!,FirmwareHash="absent",RouterHash=ImeiEngine.RouterHash,Host="192.0.2.1",KeyPath=Path.Combine(folder,"SSH/id_ed25519"),KnownHostsPath=Path.Combine(folder,"SSH/known_hosts"),BackupDirectory=backup,SetupReceipt=Path.Combine(backup,"setup-result.json"),Profile="linux-arm64-access",Token=Guid.NewGuid().ToString()};
                     await File.WriteAllTextAsync(Path.Combine(folder,OnboardingEngine.CleanupPendingName),JsonSerializer.Serialize(plan));
                 }
-                var reads=0;var preflights=0;var boundary=false;
+                var reads=0;var preflights=0;var boundary=false;var recoveryCalls=0;var changedAfterProof=false;string? changedLocal=null;
                 var adb=new AdbTransport((arguments,stream,_,_)=>
                 {
                     if(arguments[0]=="devices")return Task.FromResult(Reply("one device usb:1\n"));
                     if(arguments[0]=="-d")return Task.FromResult(Reply("one\n"));
                     var command=stream?.OriginalCommand??arguments[^1];var marker=stream?.Result??Regex.Match(command,"__ZTE_RESULT_[A-F0-9]{32}__").Value;
                     var prefix=stream is null?"":"\n"+stream.Ready+"\n\n"+stream.Begin+"\n";string body;var code=0;
-                    if(command.Contains("'--preflight'",StringComparison.Ordinal))
+                    if(command.Contains("'--recover-owned'",StringComparison.Ordinal))
                     {
-                        preflights++;Check(command.Contains(" -- '--clean-reinstall' '--preflight' ",StringComparison.Ordinal),"Reset path uses explicit clean helper: "+scenario);
-                        if((scenario=="dispatched-reset"||scenario.StartsWith("cleanup-",StringComparison.Ordinal))&&preflights==1)body="INSTALL_PREFLIGHT linux-arm64-access imei_config=unknown";
-                        else throw new Boundary();
+                        recoveryCalls++;Check(command.Contains(" -- '--clean-reinstall' '--recover-owned' '"+id+"' ",StringComparison.Ordinal),"Recovery is bound to exact pending ID: "+scenario);
+                        body="INSTALL_RECOVERY_ARCHIVED /data/zte-imei-studio/installations/"+(scenario=="wrong-receipt-dispatched"?Guid.NewGuid().ToString():id);
+                        changedAfterProof=scenario=="changed-proof-dispatched";
+                        if(scenario=="local-changed-dispatched") {changedLocal=original+"\n";File.WriteAllText(path,changedLocal);}
+                        if(scenario=="lost-reply-dispatched"&&recoveryCalls==1)throw new IOException("synthetic lost receipt");
+                    }
+                    else if(command.Contains("'--preflight'",StringComparison.Ordinal))
+                    {
+                        preflights++;Check(command.Contains(" -- '--clean-reinstall' '--preflight' ",StringComparison.Ordinal),"New attempt uses explicit clean helper: "+scenario);
+                        throw new Boundary();
                     }
                     else if(command.Contains("'--verify-not-started'",StringComparison.Ordinal)){body="INSTALL_ERROR INSTALLATION_STARTED";code=1;}
                     else if(command.Contains("observed_hash()",StringComparison.Ordinal))
                     {
-                        reads++;body="absent  /firmware/image/modem.b16\n"+ImeiEngine.RouterHash+"  /usr/bin/diag-router\n"+
-                            (scenario=="wrong-cid"||scenario=="changed-second-read"&&reads>1?new string('b',32):Cid)+"\n"+Boot;
+                        reads++;body=old.FirmwareHash+"  /firmware/image/modem.b16\n"+ImeiEngine.RouterHash+"  /usr/bin/diag-router\n"+
+                            (scenario=="wrong-cid"||scenario=="changed-second-read"&&reads>1||changedAfterProof?new string('b',32):Cid)+"\n"+Boot;
+                        if(command.Contains("ubus call",StringComparison.Ordinal))body+="\n"+JsonSerializer.Serialize(new {imei=B31.Imei,integrate_version=B31.Firmware,wa_inner_version=B31.Inner});
                     }
                     else throw new Exception("Unexpected reset mutation: "+command);
                     return Task.FromResult(Reply(prefix+body+"\n"+marker+code+"\n"));
@@ -231,7 +243,13 @@ internal static class PreparationRecoveryTests
                 try{await engine.PrepareAsync("","synthetic-new-password","",cleanComponents:true);}
                 catch(Boundary){boundary=true;}
                 catch(Exception error) when(error is IOException or InvalidDataException or InvalidOperationException){}
-                var accepted=scenario is "before-dispatch" or "dispatched-reset" or "cleanup-timeout" or "cleanup-socket";
+                if(scenario=="lost-reply-dispatched")
+                {
+                    Check(await File.ReadAllTextAsync(path)==original,"Lost receipt preserves pending intent");
+                    try{await engine.PrepareAsync("","synthetic-new-password","",cleanComponents:true);}
+                    catch(Boundary){boundary=true;}
+                }
+                var accepted=scenario is "before-dispatch" or "dispatched-reset" or "same-boot-dispatched" or "native-b31-dispatched" or "lost-reply-dispatched" or "cleanup-timeout" or "cleanup-socket";
                 Check(boundary==accepted,"Only same-device reset resumes clean setup: "+scenario);
                 if(accepted)
                 {
@@ -239,7 +257,7 @@ internal static class PreparationRecoveryTests
                     Check(next.Id!=id&&next.BootId==Boot&&next.CleanComponents&&next.ForceReinstall&&!next.InstallRequested,"New reset attempt owns fresh stage and explicit clean mode: "+scenario);
                     var histories=Directory.GetFiles(backup,"setup-before-*.json");Check(histories.Length==1&&await File.ReadAllTextAsync(histories[0])==original,"Reset keeps exact old local journal: "+scenario);
                 }
-                else Check(await File.ReadAllTextAsync(path)==original&&preflights==0,"Unsafe reset leaves original journal and modem untouched: "+scenario);
+                else Check(await File.ReadAllTextAsync(path)==(changedLocal??original)&&preflights==0,"Unverified archival retains local journal and does not install: "+scenario);
             }
         }
         finally { Directory.Delete(root, true); }

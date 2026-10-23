@@ -31,6 +31,22 @@ if ((Test-Path -LiteralPath (Join-Path $resourceRoot 'Applications/ssclash-linux
 }
 
 if (Get-ChildItem -LiteralPath $resourceRoot -Recurse -File | Where-Object { $_.Name -eq 'trusted_known_hosts' }) { throw 'User known_hosts must not enter the public bundle.' }
+# A valid resource manifest alone cannot prove that the cleanup helper accepts
+# the same VPN payloads. Catch drift before producing an unusable installer.
+$cleanupSource = Get-Content -LiteralPath (Join-Path $resourceRoot 'Onboarding/clean-components.sh') -Raw
+$cleanupRegistry = [regex]::Match($cleanupSource, '(?s)known_payload\(\)\s*\{.*?\n\}')
+if (-not $cleanupRegistry.Success) { throw 'Cleanup compatibility registry is missing.' }
+$cleanupPayloads = @{
+    'vpn-service' = 'VPN/service.sh'; 'launcher-service' = 'VPN/launcher-service.sh'
+    'manager' = 'VPN/manager.sh'; 'firewall' = 'VPN/firewall.sh'
+    'configure' = 'VPN/configure.lua'; 'ikev2' = 'VPN/ikev2.sh'
+}
+foreach ($entry in $cleanupPayloads.GetEnumerator()) {
+    $digest = (Get-FileHash -LiteralPath (Join-Path $resourceRoot $entry.Value) -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($cleanupRegistry.Value -notmatch ([regex]::Escape($entry.Key + ':' + $digest) + '(?![0-9a-f])')) {
+        throw "Cleanup does not support the bundled payload: $($entry.Value)"
+    }
+}
 $requiredResources = @(
     'Tools/adb.exe',
     'Tools/AdbWinApi.dll',

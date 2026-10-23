@@ -210,11 +210,11 @@ public sealed partial class OnboardingEngine
                 catch (Exception sshError) when (!ct.IsCancellationRequested && sshError is IOException or InvalidDataException or InvalidOperationException or TimeoutException or SocketException or Renci.SshNet.Common.SshException)
                 {
                     if (!File.Exists(CleanupPendingPath) || !(await File.ReadAllBytesAsync(CleanupPendingPath, ct).ConfigureAwait(false)).AsSpan().SequenceEqual(original)) throw;
-                    // A component error on a still-proven original boot is not a reset.
+                    // A component error on a still-proven accepted boot is not a reset.
                     DeviceIdentity? currentSsh = null;
                     try { currentSsh = await AccessIdentity.ReadAsync(CleanupSshFactory?.Invoke() ?? new SshTransport(cleanupPlan.Host, cleanupPlan.Port, cleanupPlan.KeyPath, cleanupPlan.KnownHostsPath), ct).ConfigureAwait(false); }
                     catch (Exception) when (!ct.IsCancellationRequested) { }
-                    if (currentSsh == new DeviceIdentity(cleanupPlan.Cid, cleanupPlan.FirmwareHash, cleanupPlan.BootId, cleanupPlan.RouterHash)) throw;
+                    if (currentSsh == new DeviceIdentity(cleanupPlan.Cid, cleanupPlan.FirmwareHash, cleanupPlan.AcceptedBootId ?? cleanupPlan.BootId, cleanupPlan.RouterHash)) throw;
                     try
                     {
                         var (_, proof) = await ReadCleanRecoveryUsbAsync(new DeviceIdentity(cleanupPlan.Cid, cleanupPlan.FirmwareHash, cleanupPlan.BootId, cleanupPlan.RouterHash),
@@ -228,12 +228,12 @@ public sealed partial class OnboardingEngine
             else return await ResumeComponentCleanupAsync(ct).ConfigureAwait(false);
         }
         if (File.Exists(Path.Combine(_storage, "adb-access-pending.json")) &&
-            !(cleanComponents && savedPending is { InstallRequested: true, Profile: "linux-arm64-access" }))
+            !(cleanComponents && savedPending is { InstallRequested: true }))
             throw new InvalidOperationException("Сначала завершите включение ADB для диагностики.");
         if (savedPending is { InstallRequested: true, Phase: "install-requested" } &&
             await ArchiveVerifiedNotStartedAsync(savedPending, ct).ConfigureAwait(false))
             savedPending = null;
-        if (cleanComponents && savedPending is { InstallRequested: true, Profile: "linux-arm64-access" } &&
+        if (cleanComponents && savedPending is { InstallRequested: true } &&
             await ArchivePreviousBootForCleanAsync(savedPending, webPassword, backupKeySuffix, ct).ConfigureAwait(false))
             savedPending = null;
         if (cleanComponents && savedPending is { InstallRequested: true, CleanComponents: false, Phase: "ready" or "complete" })
@@ -1170,27 +1170,30 @@ public sealed partial class OnboardingEngine
 
     private async Task<bool> ArchivePreviousBootForCleanAsync(OnboardingPending pending, string webPassword, string backupKeySuffix, CancellationToken ct)
     {
+        if (pending.Profile != "linux-arm64-access" && pending.Phase != "install-requested") return false;
+        var paths = InstallationPaths(pending);
+        if (paths.Stage != "/data/zte-imei-studio/stage-" + pending.Id) return false;
         var original = await File.ReadAllBytesAsync(PendingPath, ct).ConfigureAwait(false);
         var (serial, identity) = await ReadCleanRecoveryUsbAsync(
             new DeviceIdentity(pending.Cid ?? "", pending.FirmwareHash ?? "", pending.BootId ?? "", pending.RouterHash ?? ""),
             pending.WebIdentity, webPassword, backupKeySuffix, ct).ConfigureAwait(false);
-        if (identity.BootId == pending.BootId) return false;
+        if (identity.BootId == pending.BootId && pending.Phase != "install-requested") return false;
         if (pending.Cid != identity.Cid || pending.FirmwareHash != identity.FirmwareHash || pending.RouterHash != identity.RouterHash ||
-            InstallerProfile(pending.WebIdentity, identity) != "linux-arm64-access")
+            InstallerProfile(pending.WebIdentity, identity) != pending.Profile)
             throw new InvalidDataException("После перезагрузки обнаружено другое устройство или прошивка; прежняя установка сохранена.");
         await VerifySingleUsbAsync(serial, ct).ConfigureAwait(false);
         var hashes = await VerifyAssetsAsync(ct).ConfigureAwait(false);
         var bytes = await File.ReadAllBytesAsync(Path.Combine(_resources, "Onboarding", "setup-agent.sh"), ct).ConfigureAwait(false);
         if (Sha(bytes) != hashes["setup-agent.sh"]) throw new InvalidDataException("Повреждён установщик подготовки.");
-        var arguments = new[] { "--clean-reinstall", "--preflight" }.Concat(InstallerPolicy(identity, "linux-arm64-access"));
+        var arguments = new[] { "--clean-reinstall", "--recover-owned", pending.Id }.Concat(InstallerPolicy(identity, pending.Profile));
         var proof = await AdbTextAsync(serial, "sh -c " + Quote(StrictUtf8.GetString(bytes)) + " -- " +
             string.Join(' ', arguments.Select(Quote)), TimeSpan.FromSeconds(60), ct).ConfigureAwait(false);
-        if (proof != "INSTALL_PREFLIGHT linux-arm64-access imei_config=unknown" ||
+        if (proof != "INSTALL_RECOVERY_ARCHIVED " + paths.Journal ||
             await ReadAdbIdentityAsync(serial, pending.WebIdentity, ct).ConfigureAwait(false) != identity ||
             !(await File.ReadAllBytesAsync(PendingPath, ct).ConfigureAwait(false)).AsSpan().SequenceEqual(original))
             throw new InvalidDataException("Не подтверждён архив предыдущей установки; журнал сохранён.");
         File.Move(PendingPath, Path.Combine(pending.BackupDirectory, "setup-before-reset-" + Guid.NewGuid().ToString("N") + ".json"));
-        _progress?.Invoke("Состояние предыдущей загрузки сохранено. Начинается новая чистая установка с заданным паролем.");
+        _progress?.Invoke("Предыдущая незавершённая установка сохранена. Начинается новая чистая установка с заданным паролем.");
         return true;
     }
 

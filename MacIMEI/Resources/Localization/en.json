@@ -745,8 +745,6 @@
   "Осталась незавершённая операция русификации (SCREEN_RU_TRANSACTION_PENDING).": "A localization operation is unfinished (SCREEN_RU_TRANSACTION_PENDING).",
   "Процесс штатного экрана не запущен (SCREEN_RU_UI_NOT_RUNNING).": "The stock screen process is not running (SCREEN_RU_UI_NOT_RUNNING).",
   "Состояние русификации не подтверждено (SCREEN_RU_STATUS_UNVERIFIED).": "Localization status could not be verified (SCREEN_RU_STATUS_UNVERIFIED).",
-  "Чистая установка после заводского сброса": "Clean installation after a factory reset",
-  "После заводского сброса переустанавливает агент и SSH с введённым новым паролем. Затем сохраняет проверенный архив компонентов программы и очищает их данные и временные файлы. Штатная прошивка, IMEI и SIM не сбрасываются. Флажок выключен по умолчанию; открытие справки ничего не меняет.": "After a factory reset, reinstalls the agent and SSH using the newly entered password. Then saves a verified archive of application components and clears their data and temporary files. Stock firmware, IMEI and SIM are not reset. The checkbox is off by default; opening help makes no changes.",
   "Незавершённая подготовка ещё не готова к чистой переустановке.": "The unfinished preparation is not ready for a clean reinstall.",
   "Не подтверждены файлы и резервная копия предыдущей подготовки. Журнал сохранён.": "The files and backup of the previous preparation could not be verified. Its journal was preserved.",
   "Предыдущую подготовку не удалось завершить; новая установка не запускалась.": "The previous preparation could not be completed; no new installation was started.",
@@ -1176,5 +1174,7 @@
   "Для снимка работающего модема нужна прошивка с проверенной разметкой": "A live modem snapshot requires firmware with a verified partition layout.",
   "Плитки доступны только для экранного интерфейса с проверенным ABI-профилем (B31, FLY B28 или XCBZHK B04, штатного или русифицированного). Общая проверка прошивки не заменяет проверку экранного интерфейса.": "Tiles require a verified screen ABI profile (B31, FLY B28 or XCBZHK B04, stock or Russian-localized). General firmware checks do not replace screen compatibility checks.",
   "Параметр spx сохранён в исходной ссылке, но не используется этим ядром VPN.": "The spx parameter is preserved in the source link but is not used by this VPN core.",
-  "Название профиля сокращено до 64 символов.": "The profile name was shortened to 64 characters."
+  "Название профиля сокращено до 64 символов.": "The profile name was shortened to 64 characters.",
+  "Чистая переустановка": "Clean reinstall",
+  "Переустанавливает агент и SSH после ошибки или заводского сброса с введённым новым паролем. Затем сохраняет проверенный архив компонентов программы и очищает их данные и временные файлы. Штатная прошивка, IMEI и SIM не сбрасываются. Флажок выключен по умолчанию; открытие справки ничего не меняет.": "After an error or factory reset, reinstalls the agent and SSH using the newly entered password. Then saves a verified archive of application components and clears their data and temporary files. Stock firmware, IMEI and SIM are not reset. The checkbox is off by default; opening help makes no changes."
 }

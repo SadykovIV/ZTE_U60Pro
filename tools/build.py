@@ -25,7 +25,11 @@ def update_agent_helper_pin(source,helper):
  return re.sub(pin_pattern,lambda _:f'const HELPER_SHA: &str = "{helper}";',source)
 def main():
  ap=argparse.ArgumentParser();ap.add_argument('--modem-only',action='store_true');ap.add_argument('--tests',action='store_true');args=ap.parse_args()
- if args.tests:run([sys.executable,ROOT/'tools/test_build_pins.py'])
+ run([sys.executable,ROOT/'tools/check_cleanup_compatibility.py','--source-only'])
+ if args.tests:
+  run([sys.executable,ROOT/'tools/test_build_pins.py'])
+  run([sys.executable,ROOT/'MacIMEI/Tests/test_component_cleanup.py'])
+  run([sys.executable,ROOT/'MacIMEI/Tests/test_onboarding_install.py'])
  spec=importlib.util.spec_from_file_location('esim_build',ROOT/'tools/esim-app/build_runtime.py');runtime=importlib.util.module_from_spec(spec);spec.loader.exec_module(runtime)
  env=runtime.environment();logs=ROOT/'.build/esim';logs.mkdir(parents=True,exist_ok=True)
  for name in ['Onboarding/adb','Onboarding/dropbear','SSHAccounts/doas','VPN/mihomo','VPN/dashboard-uhttpd']:
@@ -55,6 +59,7 @@ def main():
  # The corresponding modem-source archive has no desktop application sources.
  if (ROOT/'Windows_x64/src/Core/AgentPackage.cs').is_file():
   run([sys.executable,'Windows_x64/sync_public_resources.py'])
+  run([sys.executable,ROOT/'tools/check_cleanup_compatibility.py'])
  receipt={'agent_version':'2.9.0-esim.13','public_source_rebuild':True,'hardware_tested':False,'agent_sha256':agent_sha,'vpnctl_sha256':helper,'launcher_sha256':sha(RES/'VPN/launcher.so'),'dashboard_installer_sha256':sha(RES/'AgentInstallation/dashboard.sh'),'dashboard_index_sha256':sha(RES/'AgentDashboard/index.html'),'esim_manifest_sha256':sha(RES/'Esim/SHA256.json')}
  (logs/'public-modem-build.json').write_text(json.dumps(receipt,indent=2)+'\n');print(json.dumps(receipt,indent=2))
  if not args.modem_only:

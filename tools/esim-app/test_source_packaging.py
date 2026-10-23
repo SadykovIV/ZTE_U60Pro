@@ -64,7 +64,10 @@ class BootstrapSnapshotTests(unittest.TestCase):
     def test_extracted_archive_can_run_build_pin_tests_without_checkout(self):
         project = Path(__file__).resolve().parents[2]
         self.path.write_bytes(self.baseline)
-        inputs = ['tools/build.py', 'tools/test_build_pins.py', 'ModemAgent/agent/src/vpn.rs']
+        inputs = ['tools/build.py', 'tools/test_build_pins.py', 'tools/check_cleanup_compatibility.py',
+                  'MacIMEI/Tests/test_component_cleanup.py', 'MacIMEI/Tests/test_onboarding_install.py',
+                  'MacIMEI/Resources/Onboarding/clean-components.sh', 'ModemAgent/agent/src/vpn.rs']
+        inputs += ['MacIMEI/Resources/VPN/'+name for name in ['service.sh','manager.sh','firewall.sh','configure.lua','ikev2.sh','launcher-service.sh']]
         for name in inputs:
             target = self.root / name
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -79,6 +82,10 @@ class BootstrapSnapshotTests(unittest.TestCase):
                                 capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('Ran 4 tests', result.stderr)
+        result = subprocess.run([sys.executable, 'tools/check_cleanup_compatibility.py', '--source-only'],
+                                cwd=extracted, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('PASS', result.stdout)
 
 
 class AgentUpgradeRetentionTests(unittest.TestCase):
@@ -106,10 +113,10 @@ class AgentUpgradeRetentionTests(unittest.TestCase):
         self.put(self.root / 'ModemAgent/vpnctl/THIRD-PARTY.txt', 'synthetic license')
         self.put(self.root / 'ModemAgent/web-app/dist/index.html', 'synthetic dashboard')
         self.put(self.root / 'ModemAgent/web-app/node_modules/jsqr/LICENSE', 'synthetic license')
-        for name in ['manager.sh','configure.lua','firewall.sh','nft-guard.nft','dnsmasq.conf','service.sh','launcher.so','launcher.sha256','dashboard-uhttpd','start-dashboard.sh','dashboard-html.sh','stop-owned-listener.sh','update-rc-local.sh','preserve-dashboard-assets.sh']:
+        for name in ['manager.sh','configure.lua','firewall.sh','nft-guard.nft','dnsmasq.conf','service.sh','ikev2.sh','ikev2-updown.sh','nft-ikev2-guard.nft','launcher.so','launcher.sha256','dashboard-uhttpd','start-dashboard.sh','dashboard-html.sh','stop-owned-listener.sh','update-rc-local.sh','preserve-dashboard-assets.sh']:
             self.put(self.mac / 'VPN' / name, 'synthetic '+name)
         self.put(self.mac / 'VPN/README.md', 'обновление агента 2.7.0-vpn.1')
-        self.put(self.mac / 'VPN/upgrade-controller.sh', 'helper_sha='+self.first+'\ncase "$old" in '+self.historical+'|"$helper_sha") :;; esac\n'+''.join(key+'='+self.first+'\n' for key in ['manager_sha','configure_sha','firewall_sha','nft_guard_sha','dnsmasq_sha','service_sha']))
+        self.put(self.mac / 'VPN/upgrade-controller.sh', 'helper_sha='+self.first+'\ncase "$old" in '+self.historical+'|"$helper_sha") :;; esac\n'+''.join(key+'='+self.first+'\n' for key in ['manager_sha','configure_sha','firewall_sha','nft_guard_sha','dnsmasq_sha','service_sha','ikev2_sha','ikev2_updown_sha','nft_ikev2_sha']))
         self.put(self.mac / 'VPN/update-agent.sh', 'agent_sha='+self.first+'\ncase "$old" in '+self.historical+'|"$agent_sha") :;; esac\ndashboard_sha='+self.first+'\ndashboard_installer_sha='+self.first+'\n')
         self.put(self.mac / 'AgentInstallation/dashboard.sh', 'payload_sha='+self.first+'\n')
         self.put(self.mac / 'AgentInstallation/manager.sh', 'synthetic installer')
@@ -193,11 +200,11 @@ class AgentUpgradeRetentionTests(unittest.TestCase):
 
     def test_runtime_file_changes_refresh_all_upgrade_pins(self):
         self.generate(b'synthetic agent');self.synchronize()
-        for name in ['firewall.sh','nft-guard.nft','dnsmasq.conf','service.sh']:
+        for name in ['firewall.sh','nft-guard.nft','dnsmasq.conf','service.sh','ikev2.sh','ikev2-updown.sh','nft-ikev2-guard.nft']:
             (self.mac/'VPN'/name).write_text('changed '+name)
         self.generate(b'synthetic agent');self.synchronize()
         script=(self.mac/'VPN/upgrade-controller.sh').read_text()
-        for key,name in [('helper_sha','vpnctl'),('manager_sha','manager.sh'),('configure_sha','configure.lua'),('firewall_sha','firewall.sh'),('nft_guard_sha','nft-guard.nft'),('dnsmasq_sha','dnsmasq.conf'),('service_sha','service.sh')]:
+        for key,name in [('helper_sha','vpnctl'),('manager_sha','manager.sh'),('configure_sha','configure.lua'),('firewall_sha','firewall.sh'),('nft_guard_sha','nft-guard.nft'),('dnsmasq_sha','dnsmasq.conf'),('service_sha','service.sh'),('ikev2_sha','ikev2.sh'),('ikev2_updown_sha','ikev2-updown.sh'),('nft_ikev2_sha','nft-ikev2-guard.nft')]:
             self.assertEqual(re.findall(r'(?m)^'+key+r'=(.*)$',script),[permanent.sha(self.mac/'VPN'/name)])
         self.assertEqual(script,(self.win/'Resources/VPN/upgrade-controller.sh').read_text())
         self.synchronize(check=True)

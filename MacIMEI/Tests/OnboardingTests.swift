@@ -165,6 +165,7 @@ private final class MockHost: HostCommandRunner {
     var rollbackVerified = false, rollbackReply: String?, remoteState: String?
     var stateProbeReply: String?, stateProbeCode = "0", stateProbeCalls = 0
     var unstartedVerified = false, unstartedReply: String?, onUnstartedProof: (() throws -> Void)?
+    var recoveryReply: String?, onRecoveryProof: (() throws -> Void)?
     var lastDeviceList = "", usbSerialOverride: String?
     private func quoted(_ text: String) throws -> [String] {
         let text = text.components(separatedBy: "); zte_code=").first ?? text
@@ -215,6 +216,12 @@ private final class MockHost: HostCommandRunner {
             } else if command.hasPrefix("(sh -c ") && command.contains("'--verify-rollback'") {
                 value = rollbackReply ?? (rollbackVerified ? "INSTALL_ROLLBACK_VERIFIED " + remoteJournal : "INSTALL_ERROR ROLLBACK_UNVERIFIED")
                 shellCode = rollbackVerified ? "0" : "1"
+            } else if command.hasPrefix("(sh -c ") && command.contains("'--recover-owned'") {
+                let arguments = Array(try quoted(command).drop(while: { $0 != "--recover-owned" }))
+                try check(arguments.count == (arguments.contains("linux-arm64-access") ? 7 : 6), "Exact recovery helper profile arity")
+                try onRecoveryProof?()
+                value = recoveryReply ?? (preflightError ? "INSTALL_ERROR CLEAN_RECOVERY_BUSY" : "INSTALL_RECOVERY_ARCHIVED /data/zte-imei-studio/installations/" + arguments[1])
+                if preflightError { shellCode = "1" }
             } else if command.hasPrefix("(sh -c ") && command.contains("'--preflight'") {
                 value = preflightError ? "INSTALL_ERROR PREFLIGHT_TOOL" : "INSTALL_PREFLIGHT " + (command.contains("'linux-arm64-access'") ? "linux-arm64-access" : command.contains("'b02-experimental'") ? "b02-experimental" : "b31") + " imei_config=unknown"
                 if preflightError { shellCode = "1" }
@@ -1146,24 +1153,39 @@ private struct Fixture {
             try check(history.count==1 && (try Data(contentsOf:history[0]))==original,"Old preparation history changed")
             try check(f.host.stage.hasSuffix(next.id) && f.host.installerCalls==0 && f.web.restoreCount==0,"Reboot replayed Web or old stage")
         }
-        run("Explicit clean archives only verified previous-boot dispatched preparation") {
-            for scenario in ["reset", "same-boot", "foreign-cid", "archive-refused"] {
+        run("Explicit clean archives only the exact verified abandoned preparation on this or a previous boot") {
+            for scenario in ["reset", "same-boot", "native-b31", "foreign-cid", "archive-refused", "wrong-receipt", "changed-after-proof", "changed-local-journal", "lost-reply"] {
                 let f=try Fixture();defer {f.remove()}
                 f.host.identityMode=true;f.host.fullInstaller=true;f.host.deviceList="List of devices attached\nABC device usb:1\n";f.host.failPushAt=2
                 f.host.identityFirmware="absent"
                 if scenario=="foreign-cid" {f.host.identityCID=String(repeating:"b",count:32)}
                 f.host.preflightError=scenario=="archive-refused"
+                if scenario=="wrong-receipt" { f.host.recoveryReply="INSTALL_RECOVERY_ARCHIVED /data/zte-imei-studio/installations/"+UUID().uuidString }
+                if scenario=="changed-after-proof" { f.host.onRecoveryProof={ f.host.identityCID=String(repeating:"b",count:32) } }
+                if scenario=="lost-reply" { f.host.onRecoveryProof={ throw IMEIError.message("synthetic lost recovery reply") } }
                 let id=UUID().uuidString,directory=f.root.appendingPathComponent("SetupBackups/"+id);try secureDirectory(directory)
                 var saved=AccessSetupJournal(id:id,cid:testCID,bootID:scenario=="same-boot" ? "01234567-89ab-4cde-8f01-23456789abcd":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",firmwareHash:"absent",routerHash:ModemEngine.routerHash,installerProfile:"linux-arm64-access",directory:directory.path,adbSerial:"ABC")
                 saved.installRequested=true;saved.phase="install-requested";saved.remoteStage="/data/zte-imei-studio/stage-"+id;saved.remoteJournal="/data/zte-imei-studio/installations/"+id
-                try saveJSON(saved,f.engine.pending);let original=try Data(contentsOf:f.engine.pending)
+                if scenario=="native-b31" {
+                    f.host.identityFirmware=ModemEngine.firmwareHash
+                    let native=SetupJournal(id:id,identity:try WebIdentity(deviceObject()),phase:"install-requested",directory:directory.path,installRequested:true,adbSerial:"ABC",cid:testCID,remoteJournal:saved.remoteJournal,remoteStage:saved.remoteStage,installerProfile:"b31",firmwareHash:ModemEngine.firmwareHash,routerHash:ModemEngine.routerHash)
+                    try saveJSON(native,f.engine.pending)
+                } else { try saveJSON(saved,f.engine.pending) }
+                let original=try Data(contentsOf:f.engine.pending)
+                var changedJournal=Data()
+                if scenario=="changed-local-journal" { f.host.onRecoveryProof={ changedJournal=original+Data("\n".utf8);try savePrivate(changedJournal,f.engine.pending) } }
                 try rejects {_ = try f.engine.run(webPassword:"",agentPassword:testPassword,cleanComponents:true)}
-                if scenario=="reset" {
+                if scenario=="lost-reply" {
+                    try check(try Data(contentsOf:f.engine.pending)==original,"Lost receipt retired local intent")
+                    f.host.onRecoveryProof=nil
+                    try rejects("interrupted upload") {_ = try f.engine.run(webPassword:"",agentPassword:testPassword,cleanComponents:true)}
+                }
+                if ["reset","same-boot","native-b31","lost-reply"].contains(scenario) {
                     let next=try readJSON(AccessSetupJournal.self,f.engine.pending)
                     try check(next.id != id && !next.installRequested && next.cleanComponents==true,"Reset failed to start a fresh attempt")
                     let history=try FileManager.default.contentsOfDirectory(at:directory,includingPropertiesForKeys:nil).filter{$0.lastPathComponent.hasPrefix("setup-before-reset-")}
                     try check(history.count==1 && (try Data(contentsOf:history[0]))==original,"Dispatched reset journal not archived exactly")
-                } else {try check(try Data(contentsOf:f.engine.pending)==original,"Unverified reset changed original journal")}
+                } else {try check(try Data(contentsOf:f.engine.pending)==(scenario=="changed-local-journal" ? changedJournal:original),"Unverified reset changed original journal")}
                 try check(f.host.installerCalls==0 && f.web.restoreCount==0,"Recovery replayed installation or Web restore")
             }
         }
@@ -1272,6 +1294,41 @@ private struct Fixture {
                       f.web.requests.isEmpty && f.host.calls.isEmpty && f.ssh.authenticationCalls==0 && f.ssh.commitCalls==0,
                       "Completed preparation required USB, authentication or replayed commit")
             try check(!FileManager.default.fileExists(atPath:f.engine.pending.path),"Complete setup journal was not handed off")
+        }
+        run("Cleanup refusal on an accepted boot never falls back to USB reset recovery") {
+            for phase in ["prepared", "backup-verified"] {
+                let f=try Fixture();defer { f.remove() }
+                let id=UUID().uuidString.lowercased(), directory=f.root.appendingPathComponent("SetupBackups/"+id)
+                try secureDirectory(directory);f.ssh.ready=true
+                try savePrivate(Data("synthetic key".utf8),URL(fileURLWithPath:f.engine.currentConnection.keyPath))
+                try savePrivate(Data("synthetic known hosts".utf8),URL(fileURLWithPath:f.engine.currentConnection.knownHostsPath))
+                try ComponentCleanup.schedule(root:f.root,connection:f.engine.currentConnection,setupID:id,setupDirectory:directory,
+                    expectedIdentity:Identity(cid:testCID,firmwareHash:ModemEngine.firmwareHash),transport:f.ssh)
+                let url=ComponentCleanup.pendingURL(root:f.root)
+                var plan=try readJSON(ComponentCleanupPlan.self,url)
+                plan.acceptedBootID=plan.bootID
+                plan.bootID="11234567-89ab-4cde-8f01-23456789abcd"
+                plan.phase=phase
+                let archive=Data("synthetic verified component archive".utf8)
+                let backup=URL(fileURLWithPath:plan.backupDirectory).appendingPathComponent("components.tar")
+                if phase=="backup-verified" {
+                    try secureDirectory(URL(fileURLWithPath:plan.backupDirectory))
+                    try savePrivate(archive,backup)
+                    plan.archiveSha=digest(archive);plan.archiveBytes=Int64(archive.count)
+                }
+                try saveJSON(plan,url)
+                let original=try Data(contentsOf:url)
+                var failure=""
+                do { _ = try f.engine.run(webPassword:"",agentPassword:"",forceReinstall:true,cleanComponents:true) }
+                catch { failure=error.localizedDescription }
+                try check(failure.contains("[BUSY]") && !failure.contains("Восстановление доступа"),
+                          "Accepted-boot component refusal entered USB reset recovery: "+phase)
+                try check(f.ssh.cleanupActions==["status"] && f.host.calls.isEmpty && f.web.requests.isEmpty &&
+                          f.ssh.authenticationCalls==0 && f.ssh.commitCalls==0,
+                          "Accepted-boot refusal replayed cleanup, USB, Web or preparation: "+phase)
+                try check(try Data(contentsOf:url)==original,"Accepted-boot refusal changed the original cleanup journal")
+                if phase=="backup-verified" {try check(try Data(contentsOf:backup)==archive,"Accepted-boot refusal changed the verified archive")}
+            }
         }
         run("Cleanup cancellation preserves receipts and never dispatches setup or removal") {
             let f=try Fixture();defer { f.remove() }

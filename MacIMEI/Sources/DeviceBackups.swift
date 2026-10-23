@@ -73,7 +73,10 @@ extension BackupStreamTransport {
 final class SSHBackupStreamTransport: BackupStreamTransport {
     let connection: Connection
     let sshExecutable: URL
-    init(_ connection: Connection, sshExecutable: URL = URL(fileURLWithPath: "/usr/bin/ssh")) { self.connection = connection; self.sshExecutable = sshExecutable }
+    let failureFormatter: ((Int32, Data) -> String)?
+    init(_ connection: Connection, sshExecutable: URL = URL(fileURLWithPath: "/usr/bin/ssh"), failureFormatter: ((Int32, Data) -> String)? = nil) {
+        self.connection = connection; self.sshExecutable = sshExecutable; self.failureFormatter = failureFormatter
+    }
     func stream(_ command: String, to destination: URL, maxBytes: Int64, timeout: TimeInterval, cancelled: @escaping @Sendable () -> Bool) throws -> BackupStreamResult {
         try stream(command, input: nil, to: destination, maxBytes: maxBytes, timeout: timeout, cancelled: cancelled)
     }
@@ -129,7 +132,9 @@ final class SSHBackupStreamTransport: BackupStreamTransport {
         }
         process.waitUntilExit(); try output.synchronize(); try errors.synchronize()
         let diagnostic = try DeviceBackups.smallFile(errorURL, maximum: 1_048_576)
-        try require(process.terminationStatus == 0, Self.failureMessage(String(decoding: diagnostic, as: UTF8.self), exitCode: process.terminationStatus))
+        if process.terminationStatus != 0 {
+            throw IMEIError.message(failureFormatter?(process.terminationStatus, diagnostic) ?? Self.failureMessage(String(decoding: diagnostic, as: UTF8.self), exitCode: process.terminationStatus))
+        }
         let remote = try Self.parseReceipt(String(decoding: diagnostic, as: UTF8.self))
         let local = try DeviceBackups.hashFile(destination, cancelled: cancelled)
         try require(local.bytes <= maxBytes && local.bytes == remote.bytes && local.sha256 == remote.sha256, "Контрольная сумма или размер переданной копии не совпали")

@@ -15,6 +15,8 @@ struct ComponentCleanupPlan: Codable {
     var id: String
     var cid: String
     var bootID: String
+    // The original boot remains the immutable transaction/setup owner identity.
+    var acceptedBootID: String?
     var firmwareHash: String
     var routerHash: String
     var connection: Connection
@@ -25,6 +27,7 @@ struct ComponentCleanupPlan: Codable {
     var archiveBytes: Int64?
     var identity: Identity { Identity(cid: cid, firmwareHash: firmwareHash) }
     var transaction: String { "/data/zte-imei-studio/cleanup-" + id }
+    var effectiveBootID: String { acceptedBootID ?? bootID }
 
     func validate(root: URL) throws {
         try require(schema == 1 && UUID(uuidString: id)?.uuidString.lowercased() == id &&
@@ -33,6 +36,7 @@ struct ComponentCleanupPlan: Codable {
                     (firmwareHash == "absent" || DeviceBackups.validHash(firmwareHash)) && (routerHash == "absent" || DeviceBackups.validHash(routerHash)),
                     "Повреждён журнал чистой установки")
         try require(["prepared", "backup-verified", "clean-requested", "complete", "cancelled"].contains(phase), "Повреждён журнал чистой установки")
+        try require(acceptedBootID == nil || UUID(uuidString: acceptedBootID!)?.uuidString.lowercased() == acceptedBootID, "Повреждён журнал чистой установки")
         try require(URL(fileURLWithPath: backupDirectory).standardizedFileURL.path == root.appendingPathComponent("ComponentBackups/" + id).standardizedFileURL.path,
                     "Некорректный путь резервной копии компонентов")
         let receipt = URL(fileURLWithPath: setupReceipt).standardizedFileURL
@@ -70,7 +74,7 @@ final class ComponentCleanup {
         try require(connection.host == plan.connection.host && proof.identity == plan.identity && proof.routerHash == plan.routerHash &&
                     UUID(uuidString: proof.bootID)?.uuidString.lowercased() == proof.bootID,
                     "После перезагрузки обнаружено другое устройство или прошивка; журнал очистки сохранён")
-        guard proof.bootID != plan.bootID else { return false }
+        guard proof.bootID != plan.effectiveBootID else { return false }
         try validateRemainingSetup(plan, root: root)
         let directory = URL(fileURLWithPath: plan.backupDirectory)
         if let sha = plan.archiveSha {
@@ -106,7 +110,7 @@ final class ComponentCleanup {
     private static func verifyCancellation(_ plan: ComponentCleanupPlan) throws {
         let url = URL(fileURLWithPath: plan.backupDirectory).appendingPathComponent("cleanup-cancelled.json")
         let saved = try JSONDecoder().decode(ComponentCleanupPlan.self, from: DeviceBackups.smallFile(url, maximum: 65536))
-        try require(saved.phase == "cancelled" && saved.id == plan.id && saved.cid == plan.cid && saved.bootID == plan.bootID &&
+        try require(saved.phase == "cancelled" && saved.id == plan.id && saved.cid == plan.cid && saved.bootID == plan.bootID && saved.acceptedBootID == plan.acceptedBootID &&
                     saved.firmwareHash == plan.firmwareHash && saved.routerHash == plan.routerHash && saved.backupDirectory == plan.backupDirectory,
                     "Отмена очистки компонентов не подтверждена")
     }
@@ -151,13 +155,78 @@ final class ComponentCleanup {
         guard let text = String(data: bytes, encoding: .utf8), !text.contains("\0") else { throw IMEIError.message("Повреждён встроенный инструмент чистой установки") }
         return text
     }
-    static func message(_ code: String) -> String {
-        switch code {
-        case "BUSY", "PENDING": return "Другая операция модема ещё не завершена. Чистая установка сохранена для продолжения."
-        case "VPN_CONFIGURATION": return "Сначала выключите Wi-Fi с VPN. Если он уже выключен, настройки VPN отличаются от установленных программой; очистка остановлена."
-        case "CHANGED", "IDENTITY": return "Состав компонентов или модем изменился. Очистка остановлена; копия и журнал сохранены."
-        case "RECOVERY_REQUIRED", "STOP", "VPN_RESTORE": return "Очистка прервана. Резервная копия и удалённые компоненты сохранены для восстановления; повторная подготовка не запускается."
-        default: return "Не удалось безопасно очистить компоненты. Резервная копия и журнал сохранены; чужие файлы не удаляются."
+    static let errorCodes: Set<String> = [
+        "ARCHIVE", "BACKUP_NOT_VERIFIED", "BUSY", "CHANGED", "IDENTITY", "LAYOUT", "MOUNT", "OWNER", "PATH", "PENDING",
+        "PLATFORM", "PROCESS", "RECOVERY_REQUIRED", "SERVICE", "SNAPSHOT", "STARTUP", "STOP", "SYMLINK", "TRANSACTION",
+        "VPN_BACKUP", "VPN_CONFIGURATION", "VPN_INTEGRITY", "VPN_NETWORK", "VPN_RESTORE",
+        "PENDING_AGENT", "PENDING_FOREIGN", "PENDING_LIVE", "PENDING_OWNER", "IKE_RESTORE", "VPN_PLAN", "WRITE",
+        "CLEAN", "LOCK", "MOVE", "PLAN", "PREPARE", "RESTORE"
+    ]
+    struct ReplyFailure: LocalizedError {
+        let action: String, code: String
+        var outcomeUnknown = false
+        var errorDescription: String? { ComponentCleanup.message(code, action: action) }
+    }
+    static func message(_ code: String, action: String = "clean") -> String {
+        let safeCode = errorCodes.contains(code) || ["TRANSPORT", "TIMEOUT", "PROTOCOL"].contains(code) ? code : "REMOTE_FAILURE"
+        let stage = action == "status" ? "проверка состояния" : action == "prepare" ? "подготовка копии" : action == "stream" ? "сохранение копии" : action == "rebind" ? "подтверждение новой загрузки" : "очистка"
+        let reason: String
+        switch safeCode {
+        case "BUSY", "PENDING", "PENDING_FOREIGN", "PENDING_LIVE", "LOCK": reason = "Другая операция модема ещё не завершена."
+        case "SERVICE", "VPN_INTEGRITY", "STARTUP": reason = "Не подтверждена установленная версия компонентов или их запуска."
+        case "VPN_CONFIGURATION", "VPN_NETWORK", "VPN_PLAN": reason = "Настройки VPN не соответствуют подтверждённой установке."
+        case "VPN_BACKUP", "ARCHIVE", "BACKUP_NOT_VERIFIED", "SNAPSHOT": reason = "Не подтверждена резервная копия компонентов."
+        case "CHANGED", "IDENTITY": reason = "Состав компонентов или модем изменился."
+        case "LAYOUT", "MOUNT", "OWNER", "PATH", "SYMLINK": reason = "Не подтверждены расположение или принадлежность файлов компонентов."
+        case "PLATFORM": reason = "Не подтверждены необходимые возможности прошивки."
+        case "PROCESS", "STOP": reason = "Не подтверждена остановка процессов компонентов."
+        case "RECOVERY_REQUIRED", "TRANSACTION", "VPN_RESTORE", "IKE_RESTORE", "PENDING_AGENT", "PENDING_OWNER": reason = "Не завершено восстановление сохранённой операции."
+        case "CLEAN", "MOVE", "PLAN", "PREPARE", "RESTORE", "WRITE": reason = "Инструмент очистки прервался на сохранённом этапе."
+        case "TRANSPORT": reason = "SSH не подтвердил результат команды. Проверьте подключение к модему."
+        case "TIMEOUT": reason = "Истекло время ожидания ответа модема."
+        case "PROTOCOL": reason = "Ответ инструмента очистки имеет неподтверждённый формат."
+        default: reason = "Инструмент очистки завершился без подтверждённого кода причины."
+        }
+        let retry = ["BUSY", "PENDING", "PENDING_FOREIGN", "PENDING_LIVE", "LOCK", "STOP", "PROCESS", "VPN_RESTORE", "IKE_RESTORE", "CLEAN", "MOVE", "PLAN", "PREPARE", "RESTORE", "WRITE", "TRANSPORT", "TIMEOUT", "PROTOCOL", "REMOTE_FAILURE"].contains(safeCode)
+        let next = retry ? "Журнал сохранён; продолжите чистую установку для проверки состояния." : "Журнал сохранён. Сохраните диагностический отчёт с этим кодом."
+        return "Чистая установка: \(stage) [\(safeCode)]. \(reason) \(next)"
+    }
+    static func parseReply(_ reply: CommandResult, action: String) throws -> String {
+        if reply.status != 0 {
+            if reply.status < 0 || reply.status > 254 { throw ReplyFailure(action: action, code: "TRANSPORT", outcomeUnknown: true) }
+            let text = reply.stderr.count <= 4096 ? String(data: reply.stderr, encoding: .utf8) : nil
+            let codes = text?.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n").filter { $0.hasPrefix("CLEAN_ERROR ") } ?? []
+            let code = codes.count == 1 ? String(codes[0].dropFirst(12)) : ""
+            throw ReplyFailure(action: action, code: errorCodes.contains(code) ? code : "REMOTE_FAILURE")
+        }
+        var text = reply.stdout.count <= 512 ? String(data: reply.stdout, encoding: .utf8) ?? "" : ""
+        text = text.replacingOccurrences(of: "\r\n", with: "\n")
+        if text.hasSuffix("\n") { text.removeLast() }
+        var valid = action != "rebind" && text == "CLEAN_COMPLETE"
+        if action == "rebind", text.range(of: #"\ACLEAN_REBOUND [0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12} (none|[0-9a-f]{64}) (0|[1-9][0-9]*)\z"#, options: .regularExpression) != nil {
+            let fields = text.split(separator: " ")
+            valid = Int64(fields[3]).map { $0 <= DeviceBackups.maximumBytes && (fields[2] == "none" ? $0 == 0 : $0 > 0) } == true
+        }
+        if action == "status" && ["CLEAN_ABSENT", "CLEAN_INCOMPLETE"].contains(text) { valid = true }
+        if ["status", "prepare"].contains(action), text.range(of: #"\ACLEAN_(PREPARED|PENDING) [0-9a-f]{64} [1-9][0-9]*\z"#, options: .regularExpression) != nil {
+            let fields = text.split(separator: " ")
+            valid = (action == "status" || fields[0] == "CLEAN_PREPARED") && Int64(fields[2]).map { $0 <= DeviceBackups.maximumBytes } == true
+        }
+        guard valid else { throw ReplyFailure(action: action, code: "PROTOCOL", outcomeUnknown: true) }
+        return text
+    }
+    static func streamFailureMessage(_ status: Int32, _ diagnostic: Data) -> String {
+        do { _ = try parseReply(.init(status: status, stdout: Data(), stderr: diagnostic), action: "stream") }
+        catch let failure as ReplyFailure { return failure.localizedDescription }
+        catch { }
+        return message("PROTOCOL", action: "stream")
+    }
+    private static func invoke(_ ssh: RemoteTransport, command: String, body: String, action: String) throws -> String {
+        do {
+            let reply = try ssh.run(command, input: Data(body.utf8), timeout: ["prepare", "status", "rebind"].contains(action) ? 300 : 180)
+            return try parseReply(reply, action: action)
+        } catch let failure as CommandFailure {
+            throw ReplyFailure(action: action, code: failure.partial.status == -1 ? "TIMEOUT" : "TRANSPORT", outcomeUnknown: true)
         }
     }
     private static func validateRemainingSetup(_ plan: ComponentCleanupPlan, root: URL) throws {
@@ -195,15 +264,13 @@ final class ComponentCleanup {
             let answer = try ssh.run(AccessIdentity.command, input: nil, timeout: 20)
             try require(answer.status == 0, "Не удалось подтвердить модем перед отменой очистки")
             let proof = try AccessIdentity.parse(answer.stdout)
-            try require(proof.identity == plan.identity && proof.routerHash == plan.routerHash && proof.bootID == plan.bootID,
+            try require(proof.identity == plan.identity && proof.routerHash == plan.routerHash && proof.bootID == plan.effectiveBootID,
                         "Модем изменился; журнал очистки сохранён")
         }
-        let body = try source(), token = UUID().uuidString.lowercased()
-        let args = ["status", plan.transaction, plan.id, plan.cid, plan.bootID, plan.firmwareHash, plan.routerHash, token]
+        let body = try source()
+        let args = ["status", plan.transaction, plan.id, plan.cid, plan.bootID, plan.firmwareHash, plan.routerHash, UUID().uuidString.lowercased()]
         try bound()
-        let reply = try ssh.run("sh -s -- " + args.map(shellQuote).joined(separator: " "), input: Data(body.utf8), timeout: 30)
-        try require(reply.status == 0 && reply.stdout.count <= 512, "Состояние очистки неизвестно; журнал сохранён")
-        let status = CommandText.decode(reply.stdout).trimmingCharacters(in: .whitespacesAndNewlines)
+        let status = try Self.invoke(ssh, command: "sh -s -- " + args.map(shellQuote).joined(separator: " "), body: body, action: "status")
         if status == "CLEAN_ABSENT" || status == "CLEAN_INCOMPLETE" {
             try require(plan.phase == "prepared" && plan.archiveSha == nil, "Удалённая копия изменилась; журнал сохранён")
         } else {
@@ -245,29 +312,50 @@ final class ComponentCleanup {
             do { try journal.record(operationID: operationID, category: "cleanup", title: message, result: value >= 1 ? "completed" : "progress", details: ["progress": String(value)]) }
             catch { journal.markIncomplete(operationID) }
         }
-        let body = try source(), token = UUID().uuidString.lowercased()
+        let body = try source()
         func bound() throws {
             try DeviceBackups.checkCancelled(cancelled)
             let reply = try ssh.run(AccessIdentity.command, input: nil, timeout: 20)
             try require(reply.status == 0, "Не удалось подтвердить модем перед очисткой")
             let proof = try AccessIdentity.parse(reply.stdout)
-            try require(proof.identity == plan.identity && proof.bootID == plan.bootID && proof.routerHash == plan.routerHash,
+            try require(proof.identity == plan.identity && proof.bootID == plan.effectiveBootID && proof.routerHash == plan.routerHash,
                         "Модем или его загрузка изменились; журнал чистой установки сохранён")
         }
         func command(_ action: String, _ hash: String? = nil) -> String {
-            let args = [action, plan.transaction, plan.id, plan.cid, plan.bootID, plan.firmwareHash, plan.routerHash, token] + (hash.map { [$0] } ?? [])
+            // A new token lets the helper prove an earlier lock owner is gone;
+            // reusing it in this argv would make a stale lock appear live.
+            let args = [action, plan.transaction, plan.id, plan.cid, plan.bootID, plan.firmwareHash, plan.routerHash, UUID().uuidString.lowercased()] + (hash.map { [$0] } ?? [])
             return "sh -s -- " + args.map(shellQuote).joined(separator: " ")
+        }
+        try DeviceBackups.checkCancelled(cancelled)
+        let initial = try ssh.run(AccessIdentity.command, input: nil, timeout: 20)
+        try require(initial.status == 0, "Не удалось подтвердить модем перед очисткой")
+        let observed = try AccessIdentity.parse(initial.stdout)
+        try require(observed.identity == plan.identity && observed.routerHash == plan.routerHash, "Модем или его загрузка изменились; журнал чистой установки сохранён")
+        if observed.bootID != plan.effectiveBootID {
+            if let sha = plan.archiveSha {
+                let archive = try DeviceBackups.hashFile(URL(fileURLWithPath: plan.backupDirectory).appendingPathComponent("components.tar"), cancelled: cancelled)
+                try require(archive.sha256 == sha && archive.bytes == plan.archiveBytes, "Не подтверждена локальная копия завершённой очистки")
+            }
+            progress("Подтверждаю продолжение чистой установки после перезагрузки…", 0.89)
+            let receipt = try Self.invoke(ssh, command: command("rebind", plan.archiveSha ?? "none") + " " + shellQuote(observed.bootID), body: body, action: "rebind")
+            let fields = receipt.split(separator: " ")
+            try require(fields[1] == observed.bootID && (plan.archiveSha == nil || (String(fields[2]) == plan.archiveSha && Int64(fields[3]) == plan.archiveBytes)), "Удалённый журнал очистки изменился; автоматическое продолжение остановлено")
+            try DeviceBackups.checkCancelled(cancelled)
+            let repeated = try ssh.run(AccessIdentity.command, input: nil, timeout: 20)
+            try require(repeated.status == 0, "Не удалось подтвердить модем перед очисткой")
+            let confirmed = try AccessIdentity.parse(repeated.stdout)
+            try require(confirmed.identity == observed.identity && confirmed.routerHash == observed.routerHash && confirmed.bootID == observed.bootID, "Модем или его загрузка изменились; журнал чистой установки сохранён")
+            // Save only after the durable remote receipt and repeated proof.
+            // Lost responses can repeat this metadata step without replaying clean.
+            plan.acceptedBootID = observed.bootID
+            try saveJSON(plan, Self.pendingURL(root))
         }
         func invoke(_ action: String, hash: String? = nil) throws -> String {
             try bound()
-            let reply = try ssh.run(command(action, hash), input: Data(body.utf8), timeout: action == "prepare" ? 300 : action == "clean" ? 180 : 30)
-            if reply.status != 0 {
-                let lines = CommandText.decode(reply.stderr).split(separator: "\n")
-                let code = lines.first(where: { $0.hasPrefix("CLEAN_ERROR ") }).map { String($0.dropFirst(12)) } ?? ""
-                throw IMEIError.message(Self.message(code))
-            }
+            let receipt = try Self.invoke(ssh, command: command(action, hash), body: body, action: action)
             try bound()
-            return CommandText.decode(reply.stdout).trimmingCharacters(in: .whitespacesAndNewlines)
+            return receipt
         }
         progress("Проверяю компоненты перед чистой установкой…", 0.90)
         var status = try invoke("status")
@@ -295,7 +383,8 @@ final class ComponentCleanup {
             } else {
                 try require(try DeviceBackups.freeBytes(at: directory) >= count + DeviceBackups.reserveBytes, "Недостаточно места для копии компонентов")
                 let partial = directory.appendingPathComponent(".partial-" + UUID().uuidString.lowercased())
-                let receiver = streamer ?? SSHBackupStreamTransport(plan.connection)
+                defer { try? FileManager.default.removeItem(at: partial) }
+                let receiver = streamer ?? SSHBackupStreamTransport(plan.connection, failureFormatter: Self.streamFailureMessage)
                 try bound()
                 progress("Сохраняю резервную копию компонентов на компьютер…", 0.92)
                 let result = try receiver.stream(command("stream"), input: Data(body.utf8), to: partial, maxBytes: count, timeout: 600, cancelled: cancelled)
@@ -306,12 +395,22 @@ final class ComponentCleanup {
                 try FileManager.default.moveItem(at: partial, to: archive)
             }
             progress("Резервная копия компонентов проверена: " + directory.path, 0.95)
-            plan.archiveSha = expectedHash; plan.archiveBytes = count; plan.phase = "backup-verified"
+            plan.archiveSha = expectedHash; plan.archiveBytes = count
+            // Do not move a dispatched transaction backwards during recovery:
+            // a crash between these writes must still permit CLEAN_PENDING.
+            if plan.phase == "prepared" { plan.phase = "backup-verified" }
             try saveJSON(plan, directory.appendingPathComponent("backup-receipt.json"))
             try saveJSON(plan, Self.pendingURL(root))
             plan.phase = "clean-requested"; try saveJSON(plan, Self.pendingURL(root))
             progress("Очищаю подтверждённые компоненты программы…", 0.97)
-            complete = try invoke("clean", hash: expectedHash) == "CLEAN_COMPLETE"
+            do { complete = try invoke("clean", hash: expectedHash) == "CLEAN_COMPLETE" }
+            catch let failure as ReplyFailure where failure.outcomeUnknown {
+                // Confirm a possibly committed command once, read-only, using
+                // the same identity and archive. Never repeat clean/prepare here.
+                do { complete = try invoke("status") == "CLEAN_COMPLETE" }
+                catch is ReplyFailure { complete = false }
+                if !complete { throw failure }
+            }
         }
         try require(complete && plan.archiveSha != nil && plan.archiveBytes != nil, "Не подтверждено завершение чистой установки")
         let checked = try DeviceBackups.hashFile(directory.appendingPathComponent("components.tar"), cancelled: cancelled)

@@ -11,6 +11,8 @@ internal sealed class ComponentCleanupPending
     public string Id { get; set; } = "";
     public string Cid { get; set; } = "";
     public string BootId { get; set; } = "";
+    // BootId remains the immutable remote transaction/setup owner identity.
+    public string? AcceptedBootId { get; set; }
     public string FirmwareHash { get; set; } = "";
     public string RouterHash { get; set; } = "";
     public string Host { get; set; } = "";
@@ -64,7 +66,7 @@ public sealed partial class OnboardingEngine
         if (proof.Cid != plan.Cid || proof.FirmwareHash != plan.FirmwareHash || proof.RouterHash != plan.RouterHash ||
             !Guid.TryParseExact(proof.BootId, "D", out var boot) || proof.BootId != boot.ToString("D"))
             throw new InvalidDataException("После перезагрузки обнаружено другое устройство или прошивка; журнал очистки сохранён.");
-        if (proof.BootId == plan.BootId) return false;
+        if (proof.BootId == (plan.AcceptedBootId ?? plan.BootId)) return false;
         var setup = File.Exists(PendingPath) ? await LoadPendingAsync(ct).ConfigureAwait(false) : null;
         if (setup is not null) ValidateCleanupSetup(setup, plan);
         if (plan.ArchiveSha is not null && !await CleanupArchiveMatchesAsync(Path.Combine(plan.BackupDirectory, "components.tar"), plan.ArchiveSha, plan.ArchiveBytes, ct).ConfigureAwait(false))
@@ -113,13 +115,12 @@ public sealed partial class OnboardingEngine
         }
         var body = await ReadCleanupHelperAsync(ct).ConfigureAwait(false);
         var ssh = CleanupSshFactory?.Invoke() ?? new SshTransport(pending.Host, pending.Port, pending.KeyPath, pending.KnownHostsPath);
-        var expected = new DeviceIdentity(pending.Cid, pending.FirmwareHash, pending.BootId, pending.RouterHash);
+        var expected = new DeviceIdentity(pending.Cid, pending.FirmwareHash, pending.AcceptedBootId ?? pending.BootId, pending.RouterHash);
         if (await AccessIdentity.ReadAsync(ssh, ct).ConfigureAwait(false) != expected) throw new InvalidDataException("Устройство изменилось перед очисткой компонентов.");
-        var command = "sh -s -- " + string.Join(' ', new[] { "status", "/data/zte-imei-studio/cleanup-" + pending.Id, pending.Id, pending.Cid, pending.BootId, pending.FirmwareHash, pending.RouterHash, pending.Token }.Select(Quote));
-        var reply = await ssh.RunAsync(command, Encoding.UTF8.GetBytes(body), TimeSpan.FromSeconds(30), ct).ConfigureAwait(false);
-        if (!reply.Success || reply.Stdout.Length > 512) throw new IOException(CleanupFailureMessage(reply));
+        var command = "sh -s -- " + string.Join(' ', new[] { "status", "/data/zte-imei-studio/cleanup-" + pending.Id, pending.Id, pending.Cid, pending.BootId, pending.FirmwareHash, pending.RouterHash, Guid.NewGuid().ToString("D") }.Select(Quote));
+        var reply = await RunCleanupCommandAsync(ssh, command, body, "status", 300, ct).ConfigureAwait(false);
+        var state = ParseCleanupReply(reply, "status");
         if (await AccessIdentity.ReadAsync(ssh, ct).ConfigureAwait(false) != expected) throw new InvalidDataException("Устройство изменилось перед очисткой компонентов.");
-        var state = StrictUtf8.GetString(reply.Stdout).TrimEnd('\n');
         if (!CancellationStateAllowed(pending, state))
             throw new InvalidOperationException("Отмена недоступна: удаление уже запрошено или его результат неизвестен. Журнал сохранён.");
         if (!(await File.ReadAllBytesAsync(CleanupPendingPath, ct).ConfigureAwait(false)).AsSpan().SequenceEqual(original))
@@ -208,7 +209,7 @@ public sealed partial class OnboardingEngine
     {
         static bool Uuid(string value) => Guid.TryParseExact(value, "D", out var id) && value == id.ToString("D");
         var backupRoot = Path.GetFullPath(Path.Combine(_storage, "SetupBackups")) + Path.DirectorySeparatorChar;
-        if (!Uuid(pending.Id) || !Uuid(pending.Token) || !Uuid(pending.BootId) ||
+        if (!Uuid(pending.Id) || !Uuid(pending.Token) || !Uuid(pending.BootId) || (pending.AcceptedBootId is not null && !Uuid(pending.AcceptedBootId)) ||
             !Regex.IsMatch(pending.Cid, "^[0-9a-f]{32}$") ||
             !Regex.IsMatch(pending.FirmwareHash, "^(?:absent|[0-9a-f]{64})$") ||
             !Regex.IsMatch(pending.RouterHash, "^(?:absent|[0-9a-f]{64})$") ||
@@ -258,7 +259,7 @@ public sealed partial class OnboardingEngine
         }
         var body = await ReadCleanupHelperAsync(ct).ConfigureAwait(false);
         var ssh = CleanupSshFactory?.Invoke() ?? new SshTransport(pending.Host, pending.Port, pending.KeyPath, pending.KnownHostsPath);
-        var identity = new DeviceIdentity(pending.Cid, pending.FirmwareHash, pending.BootId, pending.RouterHash);
+        var identity = new DeviceIdentity(pending.Cid, pending.FirmwareHash, pending.AcceptedBootId ?? pending.BootId, pending.RouterHash);
         async Task Identity()
         {
             if (await AccessIdentity.ReadAsync(ssh, ct).ConfigureAwait(false) != identity)
@@ -266,21 +267,44 @@ public sealed partial class OnboardingEngine
         }
         string Command(string action, string? hash = null)
         {
+            // Never reuse the interrupted command's lock token: its presence in
+            // our own argv would make a provably stale lock look live forever.
             var args = new[] { action, "/data/zte-imei-studio/cleanup-" + pending.Id, pending.Id, pending.Cid,
-                pending.BootId, pending.FirmwareHash, pending.RouterHash, pending.Token };
+                pending.BootId, pending.FirmwareHash, pending.RouterHash, Guid.NewGuid().ToString("D") };
             return "sh -s -- " + string.Join(' ', (hash is null ? args : args.Append(hash)).Select(Quote));
+        }
+        var observed = await AccessIdentity.ReadAsync(ssh, ct).ConfigureAwait(false);
+        if (observed.Cid != identity.Cid || observed.FirmwareHash != identity.FirmwareHash || observed.RouterHash != identity.RouterHash)
+            throw new InvalidDataException("Устройство изменилось перед очисткой компонентов.");
+        if (observed.BootId != identity.BootId)
+        {
+            // Explicit continuation may bind a new boot to the original owner,
+            // but only the helper's separate metadata action can authorize it.
+            if (pending.ArchiveSha is not null && !await CleanupArchiveMatchesAsync(Path.Combine(pending.BackupDirectory, "components.tar"), pending.ArchiveSha, pending.ArchiveBytes, ct).ConfigureAwait(false))
+                throw new InvalidDataException("Локальная резервная копия компонентов не подтверждена; журнал сохранён.");
+            _progress?.Invoke("Подтверждаю продолжение чистой установки после перезагрузки…");
+            var reply = await RunCleanupCommandAsync(ssh, Command("rebind", pending.ArchiveSha ?? "none") + " " + Quote(observed.BootId), body, "rebind", 300, ct).ConfigureAwait(false);
+            var fields = ParseCleanupReply(reply, "rebind").Split(' ');
+            if (fields[1] != observed.BootId || (pending.ArchiveSha is not null && (fields[2] != pending.ArchiveSha || fields[3] != pending.ArchiveBytes.ToString(System.Globalization.CultureInfo.InvariantCulture))))
+                throw new InvalidDataException("Удалённый журнал очистки изменён; автоматическое продолжение остановлено.");
+            if (await AccessIdentity.ReadAsync(ssh, ct).ConfigureAwait(false) != observed)
+                throw new InvalidDataException("Устройство изменилось перед очисткой компонентов.");
+            // A lost reply leaves the old host state intact. Repeating rebind is
+            // safe because the helper retains the original owner and archive.
+            pending.AcceptedBootId = observed.BootId;
+            await WriteJsonAsync(CleanupPendingPath, pending, ct).ConfigureAwait(false);
+            identity = observed;
         }
         async Task<string> Call(string action, int seconds, string? hash = null)
         {
             await Identity().ConfigureAwait(false);
-            var reply = await ssh.RunAsync(Command(action, hash), Encoding.UTF8.GetBytes(body), timeout: TimeSpan.FromSeconds(seconds), ct: ct).ConfigureAwait(false);
-            if (!reply.Success || reply.Stdout.Length > 512)
-                throw new IOException(CleanupFailureMessage(reply));
+            var reply = await RunCleanupCommandAsync(ssh, Command(action, hash), body, action, seconds, ct).ConfigureAwait(false);
+            var receipt = ParseCleanupReply(reply, action);
             await Identity().ConfigureAwait(false);
-            return StrictUtf8.GetString(reply.Stdout).TrimEnd('\n');
+            return receipt;
         }
         _progress?.Invoke("Проверяю компоненты перед очисткой…");
-        var state = await Call("status", 30).ConfigureAwait(false);
+        var state = await Call("status", 300).ConfigureAwait(false);
         if ((pending.Phase == "complete" && state != "CLEAN_COMPLETE") ||
             (state == "CLEAN_COMPLETE" && pending.Phase is not ("clean-requested" or "complete")))
             throw new InvalidDataException("Удалённый журнал очистки изменён; автоматическое продолжение остановлено.");
@@ -317,6 +341,8 @@ public sealed partial class OnboardingEngine
                     ProtectPrivateFile(partial);
                     if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(partial, UnixFileMode.UserRead | UnixFileMode.UserWrite);
                     await Identity().ConfigureAwait(false);
+                    if (!streamed.Success)
+                        throw new CleanupReplyException("stream", CleanupFailureCode(new RemoteResult(streamed.ExitCode, [], streamed.Stderr)));
                     var receipt = StrictUtf8.GetString(streamed.Stderr).TrimEnd('\n');
                     if (!streamed.Success || streamed.Bytes != bytes || streamed.Sha256 != sha || receipt != $"BACKUP_RESULT sha256={sha} bytes={bytes}" ||
                         !await CleanupArchiveMatchesAsync(partial, sha, bytes, ct).ConfigureAwait(false))
@@ -342,8 +368,17 @@ public sealed partial class OnboardingEngine
             // One dispatch per explicit operation. A later operation checks status
             // and resumes this same cleanup transaction, never forced preparation.
             _progress?.Invoke("Очищаю проверенные данные агента, VPN и дополнительных страниц…");
-            if (await Call("clean", 180, pending.ArchiveSha).ConfigureAwait(false) != "CLEAN_COMPLETE")
-                throw new IOException("Очистка компонентов не подтверждена. Журнал сохранён; повторите подготовку для проверки состояния.");
+            try { await Call("clean", 180, pending.ArchiveSha).ConfigureAwait(false); }
+            catch (CleanupReplyException failure) when (failure.OutcomeUnknown)
+            {
+                // The command may have committed before SSH lost its reply. One
+                // identity-bound read-only check may confirm that same operation;
+                // never dispatch clean or prepare again in this invocation.
+                var reconciled = false;
+                try { reconciled = await Call("status", 300).ConfigureAwait(false) == "CLEAN_COMPLETE"; }
+                catch (CleanupReplyException) { }
+                if (!reconciled) throw;
+            }
         }
         if (pending.ArchiveSha is null || !await CleanupArchiveMatchesAsync(archive, pending.ArchiveSha, pending.ArchiveBytes, ct).ConfigureAwait(false))
             throw new InvalidDataException("Локальная резервная копия компонентов не подтверждена; журнал сохранён.");
@@ -381,21 +416,98 @@ public sealed partial class OnboardingEngine
         File.Delete(CleanupPendingPath);
     }
 
-    internal static string CleanupFailureMessage(RemoteResult reply)
+    internal static readonly IReadOnlySet<string> CleanupErrorCodes = new HashSet<string>(StringComparer.Ordinal)
     {
-        const string unknown = "Очистка компонентов не подтверждена. Журнал сохранён; повторите подготовку для проверки состояния.";
-        if (reply.ExitCode is < 1 or > 254 || reply.Stderr.Length > 4096) return unknown;
-        var lines = Encoding.UTF8.GetString(reply.Stderr).Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
-        var known = lines.Where(line => Regex.IsMatch(line, "^CLEAN_ERROR (BUSY|PENDING|VPN_CONFIGURATION|CHANGED|IDENTITY|RECOVERY_REQUIRED|STOP|VPN_RESTORE)$"))
-            .Select(line => line[12..]).Distinct(StringComparer.Ordinal).ToArray();
-        if (known.Length != 1) return unknown;
-        return known[0] switch
+        "ARCHIVE", "BACKUP_NOT_VERIFIED", "BUSY", "CHANGED", "IDENTITY", "LAYOUT", "MOUNT", "OWNER", "PATH", "PENDING",
+        "PLATFORM", "PROCESS", "RECOVERY_REQUIRED", "SERVICE", "SNAPSHOT", "STARTUP", "STOP", "SYMLINK", "TRANSACTION",
+        "VPN_BACKUP", "VPN_CONFIGURATION", "VPN_INTEGRITY", "VPN_NETWORK", "VPN_RESTORE",
+        "PENDING_AGENT", "PENDING_FOREIGN", "PENDING_LIVE", "PENDING_OWNER", "IKE_RESTORE", "VPN_PLAN", "WRITE",
+        "CLEAN", "LOCK", "MOVE", "PLAN", "PREPARE", "RESTORE"
+    };
+
+    private sealed class CleanupReplyException(string action, string code, bool outcomeUnknown = false)
+        : IOException(CleanupDiagnostic(action, code))
+    {
+        internal bool OutcomeUnknown { get; } = outcomeUnknown;
+    }
+
+    private static string CleanupDiagnostic(string action, string code)
+    {
+        var stage = action switch { "status" => "проверка состояния", "prepare" => "подготовка копии", "stream" => "сохранение копии", "rebind" => "подтверждение новой загрузки", _ => "очистка" };
+        var reason = code switch
         {
-            "BUSY" or "PENDING" => "Другая операция модема ещё не завершена. Чистая установка сохранена для продолжения.",
-            "VPN_CONFIGURATION" => "Сначала выключите Wi-Fi с VPN. Если он уже выключен, настройки VPN отличаются от установленных программой; очистка остановлена.",
-            "CHANGED" or "IDENTITY" => "Состав компонентов или модем изменился. Очистка остановлена; копия и журнал сохранены.",
-            _ => "Очистка прервана. Резервная копия и удалённые компоненты сохранены для восстановления; повторная подготовка не запускается."
+            "BUSY" or "PENDING" or "PENDING_FOREIGN" or "PENDING_LIVE" or "LOCK" => "Другая операция модема ещё не завершена.",
+            "SERVICE" or "VPN_INTEGRITY" or "STARTUP" => "Не подтверждена установленная версия компонентов или их запуска.",
+            "VPN_CONFIGURATION" or "VPN_NETWORK" or "VPN_PLAN" => "Настройки VPN не соответствуют подтверждённой установке.",
+            "VPN_BACKUP" or "ARCHIVE" or "BACKUP_NOT_VERIFIED" or "SNAPSHOT" => "Не подтверждена резервная копия компонентов.",
+            "CHANGED" or "IDENTITY" => "Состав компонентов или модем изменился.",
+            "LAYOUT" or "MOUNT" or "OWNER" or "PATH" or "SYMLINK" => "Не подтверждены расположение или принадлежность файлов компонентов.",
+            "PLATFORM" => "Не подтверждены необходимые возможности прошивки.",
+            "PROCESS" or "STOP" => "Не подтверждена остановка процессов компонентов.",
+            "RECOVERY_REQUIRED" or "TRANSACTION" or "VPN_RESTORE" or "IKE_RESTORE" or "PENDING_AGENT" or "PENDING_OWNER" => "Не завершено восстановление сохранённой операции.",
+            "CLEAN" or "MOVE" or "PLAN" or "PREPARE" or "RESTORE" or "WRITE" => "Инструмент очистки прервался на сохранённом этапе.",
+            "TRANSPORT" => "SSH не подтвердил результат команды. Проверьте подключение к модему.",
+            "TIMEOUT" => "Истекло время ожидания ответа модема.",
+            "PROTOCOL" => "Ответ инструмента очистки имеет неподтверждённый формат.",
+            _ => "Инструмент очистки завершился без подтверждённого кода причины."
         };
+        var retry = code is "BUSY" or "PENDING" or "PENDING_FOREIGN" or "PENDING_LIVE" or "LOCK" or "STOP" or "PROCESS" or "VPN_RESTORE" or "IKE_RESTORE" or "CLEAN" or "MOVE" or "PLAN" or "PREPARE" or "RESTORE" or "WRITE" or "TRANSPORT" or "TIMEOUT" or "PROTOCOL" or "REMOTE_FAILURE";
+        var next = retry ? "Журнал сохранён; продолжите чистую установку для проверки состояния." : "Журнал сохранён. Сохраните диагностический отчёт с этим кодом.";
+        return $"Чистая установка: {stage} [{code}]. {reason} {next}";
+    }
+
+    private static string CleanupFailureCode(RemoteResult reply)
+    {
+        if (reply.ExitCode is < 0 or > 254) return "TRANSPORT";
+        if (reply.ExitCode == 0) return "PROTOCOL";
+        if (reply.Stderr.Length > 4096) return "REMOTE_FAILURE";
+        string text;
+        try { text = StrictUtf8.GetString(reply.Stderr); }
+        catch (DecoderFallbackException) { return "REMOTE_FAILURE"; }
+        var codes = text.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n')
+            .Where(line => line.StartsWith("CLEAN_ERROR ", StringComparison.Ordinal)).ToArray();
+        return codes.Length == 1 && CleanupErrorCodes.Contains(codes[0][12..]) ? codes[0][12..] : "REMOTE_FAILURE";
+    }
+
+    internal static string CleanupFailureMessage(RemoteResult reply, string action = "clean") => CleanupDiagnostic(action, CleanupFailureCode(reply));
+
+    internal static string ParseCleanupReply(RemoteResult reply, string action)
+    {
+        if (!reply.Success)
+        {
+            var code = CleanupFailureCode(reply);
+            throw new CleanupReplyException(action, code, code == "TRANSPORT");
+        }
+        string text;
+        try { text = reply.Stdout.Length <= 512 ? StrictUtf8.GetString(reply.Stdout) : ""; }
+        catch (DecoderFallbackException) { text = ""; }
+        // Accept exactly one receipt, optionally terminated by LF or CRLF.
+        if (text.EndsWith("\r\n", StringComparison.Ordinal)) text = text[..^2];
+        else if (text.EndsWith('\n')) text = text[..^1];
+        var valid = action != "rebind" && text == "CLEAN_COMPLETE";
+        if (action == "rebind")
+        {
+            var match = Regex.Match(text, @"\ACLEAN_REBOUND ([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}) (none|[0-9a-f]{64}) (0|[1-9][0-9]*)\z");
+            valid = match.Success && long.TryParse(match.Groups[3].Value, out var bytes) && bytes <= CleanupArchiveLimit &&
+                (match.Groups[2].Value == "none" ? bytes == 0 : bytes > 0);
+        }
+        if (action == "status" && text is "CLEAN_ABSENT" or "CLEAN_INCOMPLETE") valid = true;
+        if (action is "status" or "prepare")
+        {
+            var match = Regex.Match(text, @"\ACLEAN_(PREPARED|PENDING) ([0-9a-f]{64}) ([1-9][0-9]*)\z");
+            valid |= match.Success && (action == "status" || match.Groups[1].Value == "PREPARED") &&
+                long.TryParse(match.Groups[3].Value, out var bytes) && bytes <= CleanupArchiveLimit;
+        }
+        if (!valid) throw new CleanupReplyException(action, "PROTOCOL", true);
+        return text;
+    }
+
+    private static async Task<RemoteResult> RunCleanupCommandAsync(IRemoteShell ssh, string command, string body, string action, int seconds, CancellationToken ct)
+    {
+        try { return await ssh.RunAsync(command, Encoding.UTF8.GetBytes(body), TimeSpan.FromSeconds(seconds), ct).ConfigureAwait(false); }
+        catch (TimeoutException) { throw new CleanupReplyException(action, "TIMEOUT", true); }
+        catch (Exception e) when (e is not SshTrustException && (e is IOException or System.Net.Sockets.SocketException or Renci.SshNet.Common.SshException))
+        { throw new CleanupReplyException(action, "TRANSPORT", true); }
     }
 
     private async Task<string> ReadCleanupHelperAsync(CancellationToken ct)

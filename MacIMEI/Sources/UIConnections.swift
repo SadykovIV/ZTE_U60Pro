@@ -6,7 +6,7 @@ extension ContentView {
             Text(L10n.text("Web → ADB → агент и SSH → подключение по SSH"))
                 .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary)
             HStack(alignment: .top, spacing: 10) {
-                Toggle(L10n.text("Чистая установка после заводского сброса"), isOn: $model.cleanPreparationComponents)
+                Toggle(L10n.text("Чистая переустановка"), isOn: $model.cleanPreparationComponents)
                     .toggleStyle(.checkbox)
                     .disabled(model.busy || model.terminalActive)
                 OperationInfoButton(topic: .componentCleanup)
@@ -17,7 +17,7 @@ extension ContentView {
                 .toggleStyle(.checkbox)
                 .disabled(model.busy || model.terminalActive)
             HStack(spacing: 10) {
-                Button(L10n.text(model.componentCleanupPending ? "Продолжить очистку компонентов" : "Выполнить предварительную подготовку модема"), action: model.preparePreferredSSH)
+                Button(L10n.text(model.componentCleanupPending ? "Продолжить чистую установку" : "Выполнить предварительную подготовку модема"), action: model.preparePreferredSSH)
                     .buttonStyle(StudioButtonStyle(prominent: true)).disabled(!model.canPrepareModem)
                     .fixedSize(horizontal: false, vertical: true)
                 OperationInfoButton(topic: .preparation)

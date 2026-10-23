@@ -714,7 +714,7 @@ final class OnboardingEngine: @unchecked Sendable {
                         let ssh = sshFactory?(plan.connection) ?? SSHTransport(plan.connection)
                         if let answer = try? ssh.run(AccessIdentity.command, input: nil, timeout: 20), answer.status == 0,
                            let same = try? AccessIdentity.parse(answer.stdout), same.identity == plan.identity,
-                           same.routerHash == plan.routerHash, same.bootID == plan.bootID { throw sshError }
+                           same.routerHash == plan.routerHash, same.bootID == plan.effectiveBootID { throw sshError }
                         do {
                             let (_, proof) = try cleanRecoveryUSBProof(webPassword: webPassword,
                                 expectedIdentity: plan.identity, expectedRouter: plan.routerHash)
@@ -726,10 +726,10 @@ final class OnboardingEngine: @unchecked Sendable {
                     }
                 } else { return try resumeComponentCleanup() }
             }
+            try reconcileUnstartedPreparation()
             if cleanComponents { try archivePreviousBootForClean(webPassword: webPassword) }
             if let cleanup = try resumeCommittedCleanup() { return cleanup }
             let requestedForce = forceReinstall || cleanComponents
-            try reconcileUnstartedPreparation()
             if requestedForce && cleanComponents { try finishReadyBeforeCleanReinstall() }
             try require(!fm.fileExists(atPath: diagnosticPending.path), "Сначала завершите включение ADB для диагностики")
             if !requestedForce && !fm.fileExists(atPath: pending.path), let reused = try reuseSSH(expectedIdentity: expectedIdentity, expectedIMEI: expectedIMEI) { return reused }

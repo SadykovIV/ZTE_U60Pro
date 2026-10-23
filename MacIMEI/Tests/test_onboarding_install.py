@@ -42,6 +42,11 @@ class InstallTests(unittest.TestCase):
         self.write('/sys/block/mmcblk0/device/cid', CID + '\n')
         self.write('/proc/net/tcp', '  0: 00000000:08AE 00000000:0000 0A 0 0 0 0 0 4242\n')
         self.write('/proc/net/tcp6', '')
+        self.write('/proc/1/cmdline', 'procd\0')
+        self.write('/proc/1234/cmdline', '/data/zte-agent\0')
+        self.write('/proc/5678/cmdline', '/data/zte-imei-studio/bin/dropbear\0')
+        self.write('/proc/sys/kernel/random/boot_id', BOOT+'\n')
+        self.write('/proc/sys/kernel/random/uuid', 'cccccccc-dddd-eeee-ffff-111111111111\n')
         fd=self.root/'proc/5678/fd';fd.mkdir(parents=True)
         (fd/'3').symlink_to('socket:[4242]')
         self.write('/proc/self/mountinfo', f'1 0 8:1 / / ro - ext4 /dev/root ro\n2 1 8:2 / {self.root}/data rw - ext4 /dev/userdata rw\n3 1 0:1 / {self.root}/etc rw - overlay overlay rw\n')
@@ -173,6 +178,20 @@ esac
         if boot is not None: args.append(boot)
         if clean or force:args.insert(4,'--clean-reinstall' if clean else '--reinstall')
         return subprocess.run(args,env=self.env,capture_output=True,text=True)
+
+    def recover(self, cid=CID, profile='b31', firmware=FIRMWARE, router=ROUTER, boot=None, token=TOKEN):
+        args=['/bin/sh','-c',self.script_text,'--','--clean-reinstall','--recover-owned',token,cid,profile,firmware,router]
+        if boot is not None: args.append(boot)
+        return subprocess.run(args,env=self.env,capture_output=True,text=True)
+
+    def partial_transaction(self, *, empty_lock=False, journal=True):
+        self.owner()
+        self.write('/data/zte-imei-studio/installations/lock/owner',TOKEN+'\n')
+        if empty_lock:(self.journal.parent/'lock/owner').unlink()
+        if journal:
+            self.journal.mkdir(mode=0o700)
+            (self.journal/'before').mkdir(mode=0o700)
+            self.write(str(self.journal.relative_to(self.root))+'/cid',CID+'\n')
 
     def forced_existing(self, running=True):
         self.owner()
@@ -427,14 +446,12 @@ esac
                 self.assertTrue((self.journal.parent/'active').exists());self.assertTrue((self.journal/'completed-lock/owner').exists())
                 self.assertFalse(list(self.stage.parent.glob('reset-recovery-*')))
 
-    def test_clean_reset_recovery_refuses_current_boot_busy_foreign_and_changed_identity(self):
-        for scenario in ['current-boot','busy','foreign','cid','firmware','force-only','corrupt-copy']:
+    def test_clean_reset_recovery_refuses_busy_foreign_and_changed_identity(self):
+        for scenario in ['busy','foreign','cid','firmware','force-only','corrupt-copy']:
             with self.subTest(scenario=scenario):
-                if scenario!='current-boot':self.tearDown();self.setUp()
+                if scenario!='busy':self.tearDown();self.setUp()
                 args=self.reset_transaction()
-                if scenario=='current-boot':
-                    args['boot']=BOOT;self.write('/proc/sys/kernel/random/boot_id',BOOT+'\n')
-                elif scenario=='busy':self.write('/proc/9999/cmdline',f'sh\0{self.stage}/setup-agent.sh\0')
+                if scenario=='busy':self.write('/proc/9999/cmdline',f'sh\0{self.stage}/setup-agent.sh\0')
                 elif scenario=='foreign':self.write(str(self.journal.relative_to(self.root))+'/unexpected','foreign')
                 elif scenario=='cid':(self.journal/'cid').write_text('b'*32+'\n')
                 elif scenario=='firmware':(self.journal/'profile.identity').write_text(f"linux-arm64-access {'a'*64} {args['router']} {BOOT}\n")
@@ -444,6 +461,94 @@ esac
                 self.assertTrue((self.journal.parent/'active').exists());self.assertTrue((self.journal.parent/'lock/owner').exists())
                 if scenario!='corrupt-copy':self.assertFalse(list(self.stage.parent.glob('reset-recovery-*')))
                 else:self.assertIn('CLEAN_RECOVERY_CHANGED',result.stderr)
+
+    def test_clean_same_boot_recovers_exact_native_and_generic_owned_installation(self):
+        for profile in ['b31','b02-experimental','linux-arm64-access']:
+            with self.subTest(profile=profile):
+                if profile!='b31':self.tearDown();self.setUp()
+                if profile=='linux-arm64-access':args=self.generic()
+                else:
+                    args=dict(profile=profile,firmware=B02_FIRMWARE if profile=='b02-experimental' else FIRMWARE)
+                    self.env['MOCK_FIRMWARE']=args['firmware'];self.owner(**args)
+                self.assert_success(self.run_setup(**args))
+                current={t:(self.root/t).read_bytes() for t in ['data/zte-agent','etc/rc.local','etc/dropbear/authorized_keys']}
+                old={str(p.relative_to(self.journal)):p.read_bytes() for p in self.journal.rglob('*') if p.is_file()}
+                result=self.recover(**args);self.assert_success(result)
+                self.assertEqual(result.stdout.strip(),'INSTALL_RECOVERY_ARCHIVED '+str(self.journal))
+                for t,v in current.items():self.assertEqual((self.root/t).read_bytes(),v)
+                for t,v in old.items():self.assertEqual((self.journal/t).read_bytes(),v)
+                # A lost final response must not require reboot or a second archive.
+                self.assert_success(self.recover(**args))
+                self.assertEqual(len(list(self.stage.parent.glob('reset-recovery-*'))),1)
+                self.assertFalse((self.root/'signals').exists())
+
+    def test_clean_partial_metadata_and_empty_lock_recovery_is_bound_and_idempotent(self):
+        for scenario in ['missing-state','lock-only','empty-lock','empty-lock-with-journal']:
+            with self.subTest(scenario=scenario):
+                if scenario!='missing-state':self.tearDown();self.setUp()
+                self.partial_transaction(empty_lock=scenario.startswith('empty-lock'),journal=scenario in ['missing-state','empty-lock-with-journal'])
+                before=(self.root/'etc/rc.local').read_bytes()
+                result=self.recover();self.assert_success(result)
+                archive=list(self.stage.parent.glob('reset-recovery-*'))[0]
+                self.assertEqual((archive/'stage.owner').read_bytes(),(self.stage/'.owner').read_bytes())
+                self.assertEqual((archive/'current/etc_rc.local').read_bytes(),before)
+                self.assertFalse((self.journal.parent/'lock').exists())
+                self.assert_success(self.recover())
+                self.assertEqual(len(list(self.stage.parent.glob('reset-recovery-*'))),1)
+                self.assertFalse((self.root/'running').exists())
+
+    def test_clean_partial_recovery_refuses_conflicts_and_does_not_clear_markers(self):
+        scenarios=['wrong-token','wrong-stage','wrong-stage-boot','extra-owner-line','extra-profile-line','bad-state','bad-targets','missing-stage','symlink-stage','nonempty-lock','unreadable-proc','busy-stage-arg','busy-shell-command','foreign-nv','foreign-fota','foreign-app','other-installer-empty-lock']
+        for scenario in scenarios:
+            with self.subTest(scenario=scenario):
+                if scenario!=scenarios[0]:self.tearDown();self.setUp()
+                self.partial_transaction(empty_lock=scenario in ['nonempty-lock','other-installer-empty-lock'])
+                if scenario=='wrong-stage':(self.stage/'.owner').write_text((self.stage/'.owner').read_text().replace(CID,'f'*32))
+                elif scenario=='wrong-stage-boot':(self.stage/'.owner').write_text((self.stage/'.owner').read_text().rstrip()+' '+BOOT+'\n')
+                elif scenario=='extra-owner-line':(self.stage/'.owner').write_text((self.stage/'.owner').read_text()+'foreign\n')
+                elif scenario=='extra-profile-line':self.write(str(self.journal.relative_to(self.root))+'/profile.identity',f'b31 {FIRMWARE} {ROUTER}\nforeign\n')
+                elif scenario=='bad-state':self.write(str(self.journal.relative_to(self.root))+'/state','corrupt\n')
+                elif scenario=='bad-targets':self.write(str(self.journal.relative_to(self.root))+'/targets','etc/passwd\n')
+                elif scenario=='missing-stage':(self.stage/'.owner').unlink()
+                elif scenario=='symlink-stage':
+                    owner=self.stage/'.owner';owner.rename(self.stage/'other');owner.symlink_to('other')
+                elif scenario=='nonempty-lock':self.write('/data/zte-imei-studio/installations/lock/foreign','must remain')
+                elif scenario=='unreadable-proc':(self.root/'proc/9999').mkdir() # existing PID without readable cmdline
+                elif scenario=='busy-stage-arg':self.write('/proc/9999/cmdline',f'sh\0{self.stage}\0')
+                elif scenario=='busy-shell-command':self.write('/proc/9999/cmdline',f'sh\0-c\0sh {self.stage}/setup-agent.sh\0')
+                elif scenario=='other-installer-empty-lock':self.write('/proc/9999/cmdline',str(self.stage.parent/'stage-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')+'/setup-agent.sh\0')
+                elif scenario.startswith('foreign-'):
+                    path={'foreign-nv':'/data/local/tmp/open-u60-transactions/active','foreign-fota':'/tmp/fota_install_processing','foreign-app':'/tmp/zte-imei-app.lock'}[scenario];self.write(path,'unrelated')
+                result=self.recover(token='dddddddd-eeee-ffff-1111-222222222222' if scenario=='wrong-token' else TOKEN)
+                self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
+                self.assertTrue((self.journal.parent/'lock').exists())
+                self.assertFalse(list(self.stage.parent.glob('reset-recovery-*')))
+
+    def test_clean_recovery_rechecks_changes_before_removing_owner(self):
+        for scenario in ['new-process','new-file','changed-target','changed-mode','new-foreign-lock']:
+            with self.subTest(scenario=scenario):
+                if scenario!='new-process':self.tearDown();self.setUp()
+                self.partial_transaction()
+                action={'new-process':f'mkdir -p "{self.root}/proc/9999"; printf "%s" "{self.stage}/setup-agent.sh" > "{self.root}/proc/9999/cmdline"',
+                        'new-file':f'touch "{self.journal}/unexpected"',
+                        'changed-target':f'printf changed >> "{self.root}/etc/rc.local"',
+                        'changed-mode':f'chmod 644 "{self.journal}/cid"',
+                        'new-foreign-lock':f'mkdir -p "{self.root}/tmp"; touch "{self.root}/tmp/fota_install_processing"'}[scenario]
+                self.command('sync','#!/bin/sh\n'+action+'\n')
+                result=self.recover();self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
+                self.assertTrue((self.journal.parent/'lock/owner').exists())
+
+    def test_clean_recovery_receipt_rejects_wrong_identity_tampered_archive_and_new_owner(self):
+        for scenario in ['wrong-token','tampered-archive','new-owner']:
+            with self.subTest(scenario=scenario):
+                if scenario!='wrong-token':self.tearDown();self.setUp()
+                self.partial_transaction();self.assert_success(self.recover())
+                archive=list(self.stage.parent.glob('reset-recovery-*'))[0]
+                if scenario=='tampered-archive':(archive/'current/etc_rc.local').write_text('changed')
+                elif scenario=='new-owner':self.write('/data/zte-imei-studio/installations/lock/owner','dddddddd-eeee-ffff-1111-222222222222\n')
+                result=self.recover(token='dddddddd-eeee-ffff-1111-222222222222' if scenario=='wrong-token' else TOKEN)
+                self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
+                self.assertTrue((archive/'lock/owner').exists())
 
     def test_generated_and_legacy_startup_grammars_are_accepted_without_execution(self):
         source=(RES/'setup-agent.sh').read_text()

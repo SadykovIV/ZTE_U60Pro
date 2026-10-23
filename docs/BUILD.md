@@ -29,13 +29,13 @@ python3 tools/build.py
 разрешённые обычные файлы. Манифест — `tools/dependencies.json`. Это ADB, OpenSSH, Dropbear, OpenDoas, uhttpd, официальный Mihomo,
 диагностические пакеты, изолированный opkg и публичные модемные помощники.
 SSClash в нём нет. Лицензии входят в комплект, соответствующие исходники
-опубликованы отдельно в `Third-party-sources-1.26.tar.gz`. Каталоги кэша и сборки
+опубликованы отдельно в `Third-party-sources-1.26.1.tar.gz`. Каталоги кэша и сборки
 исключены из Git.
 
 `build.py` последовательно собирает runtime eSIM (lpac/bridge), расширение экрана, VPN-контроллер, агент eSIM,
 веб-панель, C-помощники и `zte-timeout`, обновляет зависимые SHA-256 и собирает `.app`/ZIP.
 Пути домашнего каталога в Rust и Swift переназначаются перед компиляцией.
-Результат: `MacIMEI/dist/ZTE-U60Pro-Manager-1.26-arm64.zip` и `build-manifest.json`.
+Результат: `MacIMEI/dist/ZTE-U60Pro-Manager-1.26.1-arm64.zip` и `build-manifest.json`.
 Rust-рецепт использует offline-сборку после `cargo fetch --locked`; для первой сборки нужен доступ к закреплённым crates. Сборка подписывается ad-hoc; сертификат разработчика и нотарификация не требуются.
 
 Проверка ABI расширения на исходном UI необязательна для повторной сборки:
@@ -53,7 +53,7 @@ python tools/fetch_dependencies.py
 .\Windows_x64\build.cmd
 ```
 
-Результат — `Windows_x64/dist/ZTE-U60Pro-Manager-1.26-Windows-x64-portable.zip`.
+Результат — `Windows_x64/dist/ZTE-U60Pro-Manager-1.26.1-Windows-x64-portable.zip`.
 Готовому приложению SDK, Python и отдельно установленная .NET не нужны.
 Не удаляйте `Resources` рядом с EXE. Для USB ADB может понадобиться драйвер ZTE.
 EXE не подписан сертификатом. Версии NuGet закреплены lock-файлами.
@@ -78,7 +78,7 @@ npm ci
 npm run build
 ```
 
-Для пересборки всей модемной цепи без `.app` выполните из корня `python3 tools/build.py --modem-only --tests`. Отдельная сборка агента использует текущие закреплённые runtime eSIM и хэш VPN-контроллера.
+Для пересборки всей модемной цепи без `.app` выполните из корня `python3 tools/build.py --modem-only --tests`. Этот запуск также проверяет чистую переустановку и восстановление прерванной подготовки на изолированных файловых системах. Отдельная сборка агента использует текущие закреплённые runtime eSIM и хэш VPN-контроллера.
 Если меняете контроллер или его встроенные shell-ресурсы, выполняйте полную
 сборку из корня, чтобы обновить всю цепочку хэшей. Пересборка иной версией
 компилятора может изменить бинарные хэши; это не бит-в-бит воспроизводимый релиз.
@@ -88,6 +88,9 @@ npm run build
 ```sh
 python3 MacIMEI/tools/check_diagnostics.py
 python3 MacIMEI/tools/check_diagnostics.py AppTests BackupPatchTests
+python3 MacIMEI/Tests/test_component_cleanup.py
+python3 MacIMEI/Tests/test_onboarding_install.py
+python3 tools/check_cleanup_compatibility.py
 python3 MacIMEI/Tests/agent_installation_test.py
 python3 MacIMEI/Tests/test_vpn_controller_upgrade.py
 python3 MacIMEI/Tests/test_launcher_install.py
@@ -98,7 +101,7 @@ python3 tools/esim-app/verify_public_release.py
 python3 tools/audit_public.py
 ```
 
-Тесты используют синтетические IMEI, EFS, CID и VPN-ссылки example.com.
+Для shell-тестов очистки нужен Lua 5.3 или 5.4 в PATH; UCI, службы и файловая система модема заменены изолированными тестовыми реализациями. Тесты используют синтетические IMEI, EFS, CID и VPN-ссылки example.com.
 `ModemApplicationsTests` дополнительно требует `ZTE_SSCLASH_TEST_ASSET` с путём к
 самостоятельно загруженному официальному SSClash v6.4.1; этот файл нельзя включать
 в Git/релиз. Экранные испытания, которым нужны штатные ELF, не входят в обычный
@@ -117,10 +120,10 @@ macOS/Windows, агент текущей версии, архивы Build-depend
 Third-party-sources, манифесты и `SHA256SUMS`. Версии приложения и агента
 берутся из текущих исходников.
 
-Для готовых сборок 1.26:
+Для готовых сборок 1.26.1:
 
 ```sh
-python3 tools/package_release.py --output-dir release/1.26 --previous-release v1.25 --build-source-commit "$(git rev-parse HEAD)"
+python3 tools/package_release.py --output-dir release/1.26.1 --previous-release v1.26 --build-source-commit "$(git rev-parse HEAD)"
 ```
 
 `build-source-commit` — справочная точка Git, а не подтверждение совпадения
@@ -128,7 +131,7 @@ python3 tools/package_release.py --output-dir release/1.26 --previous-release v1
 по манифестам обеих сборок; отдельно записывает HEAD и наличие локальных
 изменений. Изменение исходников после сборки требует пересборки. Каталог вывода
 должен быть пустым; предыдущие артефакты не перезаписываются. При упаковке
-macOS ZIP получает имя `ZTE-U60Pro-Manager-1.26-macOS-arm64.zip`.
+macOS ZIP получает имя `ZTE-U60Pro-Manager-1.26.1-macOS-arm64.zip`.
 
 Исходные архивы `mihomo-v1.19.31-source.tar.gz` и `opendoas-6.8.2.tar.xz`
 должны находиться в `.cache`, eSIM-sources.tar.gz и его сведения относятся к eSIM; остальные соответствующие исходники и рецепты —
