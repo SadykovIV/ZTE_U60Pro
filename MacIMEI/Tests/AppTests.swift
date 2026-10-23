@@ -297,26 +297,29 @@ struct AppTests {
             let malicious = Data(#"{"host":"192.0.2.1","port":"2222","keyPath":"/a","knownHostsPath":"/b","skipFirmwareCheck":true}"#.utf8)
             try check(try !JSONDecoder().decode(Connection.self, from: malicious).skipFirmwareCheck, "JSON enabled bypass")
         }
-        tests.run("Firmware override: unknown valid hashes accepted and preserved in identity") {
+        tests.run("Measured identity preserves unknown valid hashes without a version override") {
             let fixture = try EngineFixture(config: config, skipFirmwareCheck: true)
             fixture.remote.firmwareHash = String(repeating: "a", count: 64)
             fixture.remote.routerHash = String(repeating: "b", count: 64)
             let state = try fixture.engine.identity()
             try check(state.0.firmwareHash == fixture.remote.firmwareHash, "Real firmware identity lost")
-            try check(try ActivityJournal(root: fixture.engine.root).recent().contains { $0.category == "firmware" && $0.result == "warning" }, "Bypass missing from audit")
+            try check(try ActivityJournal(root: fixture.engine.root).recent().contains { $0.category == "firmware" && $0.result == "completed" && $0.details["firmwareSHA256"] == fixture.remote.firmwareHash }, "Measured identity missing from audit")
             let strict = try ModemEngine(root: fixture.engine.root, resources: fixture.engine.resources, connection: Connection(host:"192.0.2.1",port:"2222",keyPath:"/a",knownHostsPath:"/b"), transport:fixture.remote)
-            try rejects("Прошивка отличается") { _ = try strict.identity() }
+            try check(try strict.identity().0 == state.0, "Measured identity incorrectly needs a version override")
             try fixture.remote.assertNoPersistentWrites()
         }
-        tests.run("B04: missing modem image permits NV reading without permitting writes") {
-            let fixture = try EngineFixture(config: config, skipFirmwareCheck: true)
-            fixture.remote.firmwareHash = "absent"
-            let state = try fixture.engine.locked { try fixture.engine.inspect() }
-            try check(state.identity.firmwareHash == "absent" && state.imeis.count == 2, "Missing image blocked independent NV read")
-            let reads = fixture.remote.snapshotCalls
-            try rejects("измеренный хэш") { _ = try fixture.engine.locked { try fixture.engine.begin(targets: ["353490068701230", "353490068701248"]) } }
-            try check(fixture.remote.snapshotCalls == reads, "Unsupported write reached helper")
-            try fixture.remote.assertNoPersistentWrites()
+        tests.run("B04: explicit image absence binds write backup and resume identity") {
+            let fixture = try EngineFixture(config: config)
+            fixture.remote.firmwareHash = "absent"; fixture.remote.allowWrites = true
+            let result = try fixture.engine.locked { try fixture.engine.begin(targets: ["353490068701230", "353490068701248"]) }
+            try check(result.identity.firmwareHash == "absent" && result.imeis.count == 2, "Explicit absence lost during transaction")
+            let backup = try FileManager.default.contentsOfDirectory(at: fixture.engine.backupsURL, includingPropertiesForKeys: nil).first!
+            let saved = try fixture.engine.loadBackup(backup).0
+            try check(saved.identity == result.identity && fixture.remote.config == config, "Backup binding or original config lost")
+            fixture.remote.firmwareHash = ModemEngine.firmwareHash
+            let writes = fixture.remote.nvApplyCalls
+            try rejects("другому модему или прошивке") { _ = try fixture.engine.locked { try fixture.engine.begin(targets: nil, restore: backup) } }
+            try check(fixture.remote.nvApplyCalls == writes, "Changed image was accepted for restore")
         }
         tests.run("B04 inactive NV1: read and snapshot primary; wrong target count rejected") {
             let fixture = try EngineFixture(config: config, skipFirmwareCheck: true)
@@ -656,7 +659,7 @@ struct AppTests {
             try fixture.remote.assertNoPersistentWrites()
         }
         tests.run("B28/B04: actual single and pair contracts grant writes without version override") {
-            for firmware in ["5a4489882538b5ab1d3e0049371f1b620d28d262a429923299b4f2626d40d478", "c57e063d390983229dfc53aa87380b3d4655ee8daa1c748e1a032ac90cd0df81"] {
+            for firmware in ["5a4489882538b5ab1d3e0049371f1b620d28d262a429923299b4f2626d40d478", "c57e063d390983229dfc53aa87380b3d4655ee8daa1c748e1a032ac90cd0df81", "absent"] {
                 for count in 1...2 {
                     let fixture = try EngineFixture(config: config)
                     fixture.remote.firmwareHash = firmware; fixture.remote.inactiveSecondary = count == 1; fixture.remote.allowWrites = true

@@ -65,6 +65,10 @@ internal static class UniversalDiscoveryTests
         multiple=false;remoteCode=1;
         Check(await onboarding.FindMatchingAdbAsync(null,CancellationToken.None) is null,"non-root USB cannot select installer target");
         Check(onboarding.InstallerProfile(null,measured)=="linux-arm64-access","missing Web selects generic profile only");
+        var b02Web = new WebIdentity("353490068701222", "STD_PL_MU5250V1.0.0B02", "BD_STDPLMU5250V1.0.0B02");
+        var b02 = new DeviceIdentity(cid, "7f1905a2844337640c08b66edffbde147adf20b3ab3e1e54fefe4939c40e633e", boot, ImeiEngine.RouterHash);
+        Check(onboarding.InstallerProfile(b02Web,b02)=="b02-experimental","exact B02 automatically selects measured setup profile without override");
+        Check(onboarding.InstallerProfile(b02Web,b02 with { RouterHash=new string('f',64) })=="linux-arm64-access","B02 name never bypasses exact router; generic preflight still required");
         Check(onboarding.InstallerProfile(null,new DeviceIdentity(cid,ImeiEngine.FirmwareHash,boot,ImeiEngine.RouterHash))=="linux-arm64-access","known B31 hashes without Web still select generic access and skip Web backup branch");
         var bootstrapStorage=Path.Combine(Path.GetTempPath(),"zte-access-bootstrap-"+Guid.NewGuid());
         Directory.CreateDirectory(bootstrapStorage);

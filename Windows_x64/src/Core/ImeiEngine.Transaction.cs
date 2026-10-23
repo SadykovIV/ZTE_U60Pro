@@ -271,8 +271,8 @@ public sealed partial class ImeiEngine
     private async Task<DeviceIdentity> IdentityForWriteAsync(CancellationToken ct)
     {
         var identity = await MeasuredIdentityAsync(ct);
-        if (identity.FirmwareHash == "absent")
-            throw new InvalidDataException("Для записи IMEI нужен измеренный хэш прошивки для привязки бэкапа и журнала.");
+        // Confirmed image absence is preserved in the CID-bound journal and
+        // compared on every resume; it cannot bypass the router/NV/config checks.
         if (identity.RouterHash != RouterHash)
             throw new InvalidDataException("Чтение NV требует совместимый diag-router. Соберите данные для адаптации прошивки.");
         // NV topology/encoding, EFS schema/CRC and native file modes are

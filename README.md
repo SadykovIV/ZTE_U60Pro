@@ -6,23 +6,28 @@ Manage the **ZTE U60 Pro / MU5250**: access preparation, backups, IMEI, TTL,
 Russian screen localization, VPN over a separate Wi-Fi network, removable
 physical eUICC cards, and diagnostics.
 
-Version **1.26.1** (macOS build **66**, Windows FileVersion **1.26.1.0**),
-agent **2.9.0-esim.13**, VPN controller **1.5.0**.
-[Download macOS ARM64](https://github.com/SadykovIV/ZTE_U60Pro/releases/download/v1.26.1/ZTE-U60Pro-Manager-1.26.1-macOS-arm64.zip) ·
-[Download Windows x64](https://github.com/SadykovIV/ZTE_U60Pro/releases/download/v1.26.1/ZTE-U60Pro-Manager-1.26.1-Windows-x64-portable.zip) ·
-[Release and checksums](https://github.com/SadykovIV/ZTE_U60Pro/releases/tag/v1.26.1).
+Version **1.27** (macOS build **67**, Windows FileVersion **1.27.0.0**),
+agent **2.9.0-esim.14**, VPN controller **1.5.0**.
+[Download macOS ARM64](https://github.com/SadykovIV/ZTE_U60Pro/releases/download/v1.27/ZTE-U60Pro-Manager-1.27-macOS-arm64.zip) ·
+[Download Windows x64](https://github.com/SadykovIV/ZTE_U60Pro/releases/download/v1.27/ZTE-U60Pro-Manager-1.27-Windows-x64-portable.zip) ·
+[Release and checksums](https://github.com/SadykovIV/ZTE_U60Pro/releases/tag/v1.27).
 
-## Changes since 1.26
+## Changes since 1.26.1
 
-- Clean reinstall accepts the bundled and supported earlier VPN components.
-  Release builds check this compatibility before packaging.
-- Cleanup stops its own VPN after a verified backup and resumes interrupted
-  configuration changes, including after a modem reboot.
-- Explicit clean reinstall can archive abandoned owned preparation transactions
-  without requiring a factory reset. Backups and unrelated services are preserved.
-- Cleanup errors show the failed stage and a fixed diagnostic code.
+- Preparation and bundled-agent installation share automatic replacement of the
+  agent, SSH and dashboard. There are no separate clean/forced-install checkboxes;
+  a configured SSH connection is reused without USB bootstrap.
+- Previous executables and interrupted journals are retained before replacement.
+  Unknown old scripts are never executed. VPN profiles, keys and optional-component
+  settings are preserved.
+- Retry checks the recorded stage. A dashboard failure does not reinstall an
+  already-confirmed core deployment.
+- Firmware requirements are detected per operation. Known B04 devices without
+  `modem.b16` gain measured IMEI and physical-eUICC switching paths. Unsupported
+  components can be captured with the existing firmware-adaptation export.
 
-[1.26.1 changes and verification scope](docs/RELEASE-1.26.1.md).
+[Changes and verification scope](docs/RELEASE-1.27.md) ·
+[Function/firmware compatibility](docs/FIRMWARE-COMPATIBILITY.md).
 
 ## Features introduced in 1.26
 
@@ -54,17 +59,14 @@ not general firmware incompatibility.
   other components are checked on demand.
 - Preparation uses observed device capabilities, with fixes for legacy ADB
   responses and long commands. Each operation checks the components it needs.
-- **Clean reinstall** beside the preparation button:
-  reinstall the agent and SSH with a new password, back up components, and verify
-  the downloaded archive before cleanup. The **ⓘ** button explains its scope.
 - Recovery of VPN and extra screen-page services after a reset, better VPN error
   handling on the modem screen, and specific screen-localization failures.
   Independent actions are not blocked by unrelated preparation or IMEI journals.
 - Ordinary SIM and physical eUICC classification uses a verified card read;
   an error alone does not identify an ordinary SIM. Card checks stay on the
   dedicated eSIM page. The built-in ZTE eSIM is not supported.
-- Diagnostics is grouped under Preparation. **Skip firmware version check** is
-  available; each operation retains its own checks.
+- Diagnostics is grouped under Preparation; firmware requirements are detected
+  automatically for each operation.
 
 ## Overview
 
@@ -285,20 +287,15 @@ adaptation before switching is allowed.
 5. For eSIM, insert a physical eUICC, select the physical SIM slot, and request profiles on the **eSIM** page. Profile downloads through the desktop app use the computer's internet connection; downloads through the web dashboard use the modem's connection. [Details and limitations](docs/ESIM-DESKTOP.md).
 6. Open the agent with the application's button or at `http://192.168.0.1:8080`. The API uses port **9090**. Set the agent password during preparation; the build has no shared agent password.
 
-After a factory reset, select **Clean reinstall** beside
-the preparation button and enter a new agent password in the initial SSH
-preparation settings. This reinstalls the agent and SSH and cleans only
-application components after archiving them. To reinstall without component
-cleanup, use the separate **Forced preparation: reinstall the agent and SSH**
-checkbox. Components are backed up before replacement. SSH uses port 2222 and the
-private `/data/zte-imei-studio` directory; verified keys are preserved. Once
-completion is confirmed, known temporary files from completed installations are
-removed. Unverified uploads, foreign files, backups, and journals are retained.
-During explicit clean installation, an earlier ready installation can be
-finalized after its device, files, process, and backup are verified; its journal
-is preserved. Unfinished changes are not replayed automatically, and an
-unconfirmed rollback does not authorize another write. Stock modem data, IMEI,
-and SIM/eSIM profiles are not cleared.
+After a failed setup or factory reset, use the ordinary preparation button and
+enter the agent password in the existing preparation fields. The app archives
+previous files, replaces the agent and SSH, and installs the current dashboard.
+Bundled-agent updates retain validated access settings on the modem; the password
+is not downloaded to the computer. If those settings cannot be recovered as data,
+enter a new password in preparation. VPN profiles, stock settings, IMEI and SIM/eSIM
+data are preserved. Retry the same action after interruption: the recorded result
+is checked before the remaining stage is run. Active NV/FOTA writes or another
+running installer must finish before replacement.
 
 The Mac application is **ad-hoc signed** and is not notarized by Apple. If macOS
 blocks it, use Open or **Privacy & Security → Open Anyway** for the verified file

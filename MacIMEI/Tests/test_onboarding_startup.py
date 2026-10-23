@@ -31,6 +31,7 @@ case "$1" in
  *) exit 1;;
 esac
 ''')
+        self.command('stat', '#!/bin/sh\necho 0\n')
         self.command('sleep', '''#!/bin/sh
 printf x >> "$MOCK_ROOT/polls"
 ''')

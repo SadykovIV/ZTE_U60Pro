@@ -1,14 +1,14 @@
 """Exercise the actual installer with process controls replaced by its filesystem test hook."""
 from pathlib import Path
-import tempfile, os, subprocess, hashlib, unittest
+import tempfile, os, subprocess, hashlib, unittest, sys
 SCRIPT = Path(__file__).resolve().parents[1] / 'Resources/AgentInstallation/manager.sh'
 class Installation(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory()
         self.root=Path(self.tmp.name)
         self.bin=self.root/'bin';self.bin.mkdir()
-        # Translate GNU stat flags on macOS; ownership is simulated as root.
-        (self.bin/'stat').write_text('#!/bin/sh\ncase "$2" in %u) echo 0;; %u:%a) printf "0:"; /usr/bin/stat -f %OLp "$3";; *) exit 1;; esac\n')
+        # Portable GNU-stat fixture; ownership is simulated as root.
+        (self.bin/'stat').write_text(f'#!{sys.executable}\nimport os,sys\ns=os.stat(sys.argv[-1]); mode=format(s.st_mode & 0o7777,"o")\nprint({{"%u":"0","%u:%a":"0:"+mode}}[sys.argv[2]])\n')
         (self.bin/'stat').chmod(0o700)
         self.env={**os.environ,'PATH':str(self.bin)+':'+os.environ['PATH'],'ZTE_AGENT_TEST_ROOT':str(self.root)}
         self.agent=self.root/'data/zte-agent';self.agent.parent.mkdir()

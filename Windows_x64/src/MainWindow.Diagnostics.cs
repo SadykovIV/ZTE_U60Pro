@@ -64,7 +64,7 @@ public sealed partial class MainWindow
             {
                 // An unknown state is an ON request only, never authority to send OFF.
                 if (requested != true || !CanBootstrapAdb()) { UpdateDiagnosticAvailability(); return; }
-                await ExecuteAsync(ModemOperation.EnableDiagnosticAdb, ["host", "web_password", "backup_key_suffix", "skip_firmware_check"]);
+                await ExecuteAsync(ModemOperation.EnableDiagnosticAdb, ["host", "web_password", "backup_key_suffix"]);
                 return;
             }
             if (_snapshot?.AdbControlSupported != true || _snapshot.AdbEnabled is null || _snapshot.AdbActivationPending || requested is null || requested == _snapshot.AdbEnabled)
@@ -120,6 +120,7 @@ public sealed partial class MainWindow
         });
         AddCard("Данные для адаптации прошивки", "Сведения об устройстве, файлы прошивки и результаты чтения DIAG/QMI для исследования IMEI и SIM/eSIM — в одном ZIP. Подробные проверки остаются в архиве.", panel =>
         {
+            panel.Children.Add(Muted("Для неизвестной прошивки или неподдерживаемого компонента сохраните этот архив и передайте его разработчику. Проверки выполняются автоматически; архив не включает пароли и не отправляется без вашего действия."));
             var row = new WrapPanel();
             _firmwareAdaptationButton = ActionButton("Собрать данные для адаптации прошивки", CollectFirmwareAdaptationAsync, false);
             _firmwareAdaptationButton.Name = "CollectFirmwareAdaptation";

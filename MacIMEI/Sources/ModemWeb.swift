@@ -30,7 +30,7 @@ struct WebIdentity: Codable, Equatable, Sendable {
         }
         try require(IMEI.valid(imei), "Веб-интерфейс вернул некорректный IMEI")
         try require(!firmware.isEmpty && !inner.isEmpty && firmware.utf8.count <= 256 && inner.utf8.count <= 256 && !firmware.contains("\0") && !inner.contains("\0"), "Некорректные сведения о прошивке")
-        try require(skipFirmwareCheck || (firmware == "CN_ZTE_MU5250V1.0.0B31" && inner == "BD_CNMU5250V1.0.0B31"), "Автоматическая настройка поддерживает только проверенную MU5250 B31")
+        // A reported version is identity data, never permission to modify a component.
         self.imei = imei; self.firmware = firmware; self.inner = inner
     }
 }

@@ -113,14 +113,6 @@ struct ContentView: View {
             VStack(spacing: 0) {
                 header
                 Rectangle().fill(StudioStyle.line).frame(height: 1)
-                if model.skipFirmwareCheck {
-                    Label(L10n.text(FirmwareCheck.warning), systemImage: "exclamationmark.triangle.fill")
-                        .font(.system(size: 12, weight: .medium)).foregroundStyle(StudioStyle.warning)
-                        .fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(14).background(StudioStyle.warning.opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
-                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(StudioStyle.warning.opacity(0.35)))
-                        .padding(.horizontal, 30).padding(.top, 16)
-                }
                 ScrollView {
                     VStack(alignment: .leading, spacing: 22) {
                         if model.pendingOperation {
@@ -225,7 +217,7 @@ struct ContentView: View {
                 Text(L10n.text("U60 Pro / MU5250"))
                     .font(.system(size: 11, weight: .medium))
                 HStack {
-                    Text(L10n.text(model.skipFirmwareCheck ? "Проверка отключена" : (model.connected && model.connectedIdentity?.firmwareHash == ModemEngine.firmwareHash ? "Профиль B31" : "Профиль не определён")))
+                    Text(L10n.text("Проверки компонентов"))
                     Spacer()
                     Text(L10n.text("v\(model.appVersion)"))
                 }
@@ -404,10 +396,7 @@ struct ContentView: View {
                 StudioField(label: "SSH-ПОРТ", placeholder: "2222", text: Binding(get: { model.port }, set: { model.editConnectionPort($0) }))
                     .frame(width: 100)
             }.disabled(model.busy)
-            Toggle(L10n.text("Не проверять версию прошивки", "Skip firmware version check"), isOn: Binding(get: { model.skipFirmwareCheck }, set: { model.setFirmwareCheckSkipped($0) }))
-                .toggleStyle(.checkbox).font(.system(size: 12, weight: .medium))
-                .disabled(model.busy || model.terminalActive)
-            Text(L10n.text("Отключает сравнение версии прошивки с известным профилем для подготовки и операций по SSH. Проверки устройства, подключения, архитектуры и файлов сохраняются. После изменения подключитесь заново.", "Skips firmware version comparison with the known profile for preparation and SSH operations. Device, connection, architecture and file checks remain active. Reconnect after changing this setting."))
+            Text(L10n.text("Совместимость определяется автоматически для каждого компонента. Если проверка не пройдена, откройте «Диагностика» и соберите данные для адаптации прошивки.", "Compatibility is checked automatically for each component. If a check fails, open Diagnostics and collect firmware adaptation data."))
                 .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
             DisclosureGroup(L10n.text("Первоначальная подготовка SSH"), isExpanded: $preparationCredentialsExpanded) {
                 VStack(alignment: .leading, spacing: 12) {

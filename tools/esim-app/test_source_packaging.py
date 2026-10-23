@@ -65,9 +65,24 @@ class BootstrapSnapshotTests(unittest.TestCase):
         project = Path(__file__).resolve().parents[2]
         self.path.write_bytes(self.baseline)
         inputs = ['tools/build.py', 'tools/test_build_pins.py', 'tools/check_cleanup_compatibility.py',
+                  'MacIMEI/Tests/test_agent_absence_proof.py','MacIMEI/Sources/AccessAgentReuse.swift','Windows_x64/src/Core/AccessAgentReusePolicy.cs',
                   'MacIMEI/Tests/test_component_cleanup.py', 'MacIMEI/Tests/test_onboarding_install.py',
-                  'MacIMEI/Resources/Onboarding/clean-components.sh', 'ModemAgent/agent/src/vpn.rs']
-        inputs += ['MacIMEI/Resources/VPN/'+name for name in ['service.sh','manager.sh','firewall.sh','configure.lua','ikev2.sh','launcher-service.sh']]
+                  'MacIMEI/Tests/test_onboarding_startup.py', 'MacIMEI/Tests/agent_installation_test.py',
+                  'tools/esim-app/test_dashboard_installer.py', 'tools/esim-app/test_dashboard_migration_contract.py',
+                  'MacIMEI/Resources/Onboarding/clean-components.sh',
+                  'MacIMEI/Resources/Onboarding/setup-agent.sh',
+                  'MacIMEI/Resources/Onboarding/start_zte_imei_studio.sh',
+                  'MacIMEI/Resources/AgentInstallation/manager.sh',
+                  'MacIMEI/Resources/AgentInstallation/dashboard.sh', 'ModemAgent/agent/src/vpn.rs']
+        inputs += ['MacIMEI/Resources/VPN/'+name for name in [
+            'service.sh','manager.sh','firewall.sh','configure.lua','ikev2.sh','launcher-service.sh',
+            'update-agent.sh','stop-owned-listener.sh','update-rc-local.sh',
+            'start-dashboard.sh','dashboard-html.sh','preserve-dashboard-assets.sh']]
+        # Every pre-build Python check must be present in this fixture, so adding
+        # another --tests entry cannot silently escape archive membership checks.
+        build_checks = re.findall(r"run\(\[sys\.executable,ROOT/'([^']+\.py)'", (project/'tools/build.py').read_text())
+        self.assertTrue(build_checks)
+        self.assertLessEqual(set(build_checks), set(inputs))
         for name in inputs:
             target = self.root / name
             target.parent.mkdir(parents=True, exist_ok=True)

@@ -31,7 +31,7 @@ extension ContentView {
                     } else if state.recoveryPending { StudioNote(symbol: "arrow.uturn.backward", text: "Есть незавершённая замена. Сначала восстановите предыдущий агент.") }
                 }
                 Button(L10n.text("Установить / обновить агент и веб-панель")) { model.installAgent(custom: false) }
-                    .buttonStyle(StudioButtonStyle(prominent: true)).disabled(!model.canManage || model.agentInstallationStatus?.recoveryPending == true)
+                    .buttonStyle(StudioButtonStyle(prominent: true)).disabled(!model.canReplaceCore)
                 Text(L10n.text("Устанавливается агент с eSIM и его веб-панель. Пароль и настройки запуска сохраняются. VPN устанавливать не требуется. При первой автоматической подготовке ставится агент; эта кнопка также добавляет панель. Для загрузки профиля из браузера нужен интернет модема; раздел eSIM приложения использует интернет Mac."))
                     .font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
             }

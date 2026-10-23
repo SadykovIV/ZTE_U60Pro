@@ -20,10 +20,11 @@ public sealed partial class WindowsModemService
         var onboarding = new OnboardingEngine(host,_storage,_resources,_adb,skipFirmware,
             progress: message => Log("info","Подготовка: " + message)) {
                 ExistingKeyPath = key, ExistingKnownHostsPath = knownHosts, ExistingPort = _port,
+                ExpectedReplacementCid = System.Text.RegularExpressions.Regex.IsMatch(_snapshot.Serial ?? "", "^[0-9a-f]{32}$") ? _snapshot.Serial : null,
                 ExistingSshFactory = _ssh is not null && host == _host && key == KeyPath && knownHosts == KnownHostsPath
                     ? () => _sshRead ?? _ssh : null,
             };
-        var setup = await onboarding.PrepareAsync(webPassword,agentPassword,backupKeySuffix,ct,forceReinstall: Param(parameters,"force_reinstall") == "true", cleanComponents: Param(parameters,"clean_components") == "true");
+        var setup = await onboarding.ReplaceCoreAsync(webPassword,agentPassword,backupKeySuffix,ct);
         if (setup.CleanupCancelled)
         {
             AdoptCancelledCleanupConnection(host, setup);
@@ -44,6 +45,12 @@ public sealed partial class WindowsModemService
             await onboarding.AcknowledgeComponentCleanupAsync(setup.CleanupId ?? "", ct);
         if (setup.AlreadyConfigured)
             return "Доступ SSH подтверждён; установка не выполнялась. Агент устанавливается отдельно. " + message;
+        _features!.CompletedCoreReplacementId = await onboarding.CompletedCoreReplacementIdAsync(ct);
+        try {
+            if (!await _features.InstallDashboardForCurrentAgentAsync(ct)) throw new InvalidOperationException("Текущий агент не подтверждён; замена не повторялась.");
+        }
+        finally { _features.CompletedCoreReplacementId = null; }
+        await onboarding.AcknowledgeCoreReplacementAsync(ct);
         // Preparation has committed and SSH has authenticated with the saved
         // host key. A USB failure must not turn it into another installation.
         try
@@ -60,24 +67,7 @@ public sealed partial class WindowsModemService
             if (File.Exists(Path.Combine(_storage, AdbToggleTransaction.PendingName)))
                 return message + " Откройте параметры подключения и нажмите «Проверить состояние ADB». Установка веб-панели доступна отдельно в разделе агента.";
         }
-        if (setup.ComponentsCleaned)
-        {
-            return "Чистая установка завершена. Агент и SSH готовы; резервная копия компонентов сохранена на компьютере. VPN и страницы устанавливаются отдельно. " + message;
-        }
-        if (setup.Profile != "linux-arm64-access" && setup.FirmwareHash == DeviceFeatureService.FirmwareHash)
-        {
-            try
-            {
-                if (await _features!.InstallDashboardForCurrentAgentAsync(ct))
-                    return "Предварительная подготовка завершена. Постоянный агент eSIM и веб-панель готовы. " + message;
-                return "Подключение готово. Существующий агент сохранён; обновите агент и веб-панель в разделе «Установка агента». " + message;
-            }
-            catch (Exception) when (!ct.IsCancellationRequested)
-            {
-                throw new InvalidOperationException("SSH готов, но установка веб-панели не подтверждена. Проверьте состояние и выполните «Установить / обновить» в разделе агента.");
-            }
-        }
-        return "Предварительная подготовка завершена. " + message;
+        return "Подготовка завершена. Агент, SSH и веб-панель обновлены; пользовательские настройки сохранены. " + message;
     }
 
     private void AdoptCancelledCleanupConnection(string host, OnboardingResult setup)
@@ -133,7 +123,26 @@ public sealed partial class WindowsModemService
             }
             case ModemOperation.InstallAgent:
             {
-                var status = await _features!.InstallAgentAsync(ct);
+                var installer = new OnboardingEngine(_host,_storage,_resources,_adb,_skipFirmwareCheck,
+                    progress: message => Log("info","Подготовка: " + message)) {
+                    ExistingKeyPath = KeyPath, ExistingKnownHostsPath = KnownHostsPath, ExistingPort = _port,
+                    ExpectedReplacementCid = System.Text.RegularExpressions.Regex.IsMatch(_snapshot.Serial ?? "", "^[0-9a-f]{32}$") ? _snapshot.Serial : null,
+                    ExistingSshFactory = () => _sshRead ?? _ssh!,
+                };
+                var replacement = await installer.ReplaceCoreAsync("","","",ct,preserveSettings:true);
+                if (_port!=replacement.Port || KeyPath!=replacement.KeyPath || KnownHostsPath!=replacement.KnownHostsPath)
+                {
+                    _port=replacement.Port;_keyPath=replacement.KeyPath;_knownHostsPath=replacement.KnownHostsPath;
+                    await ConnectAsync(new Dictionary<string,string>{{"host",_host},{"key_path",_keyPath},{"known_hosts_path",_knownHostsPath},{"access_only","true"}},ct);
+                }
+                _features!.CompletedCoreReplacementId = await installer.CompletedCoreReplacementIdAsync(ct);
+                AgentInstallationStatus status;
+                try {
+                    if (!await _features.InstallDashboardForCurrentAgentAsync(ct)) throw new InvalidOperationException("Текущий агент не подтверждён; замена не повторялась.");
+                    status = await _features.GetAgentStatusAsync(ct);
+                }
+                finally { _features.CompletedCoreReplacementId = null; }
+                await installer.AcknowledgeCoreReplacementAsync(ct);
                 _snapshot = _snapshot with { Agent = await DescribeAgentWithWebAsync(status, ct) };
                 return "Постоянный агент eSIM и веб-панель установлены. " + _snapshot.Agent!;
             }

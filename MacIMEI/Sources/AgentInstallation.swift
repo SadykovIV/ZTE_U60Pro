@@ -126,7 +126,7 @@ final class AgentInstallationManager {
             "BINARY": "Существующий файл агента имеет неподходящий тип, владельца или права.",
             "OTHER_DEPLOYMENT": "На модеме ещё выполняется другая установка компонентов.",
             "VPN_UPGRADE": "На модеме ещё выполняется обновление контроллера VPN.",
-            "AGENT_SETUP_PENDING": "Незавершённая установка агента и SSH меняет те же файлы. Завершите её или выберите чистую установку после заводского сброса."
+            "AGENT_SETUP_PENDING": "Подготовка агента и SSH не завершена. В разделе «Подготовка модема» повторно нажмите «Выполнить предварительную подготовку модема». Журнал и резервные копии будут сохранены."
         ]
         let lines = CommandText.decode(result.stderr).split(separator: "\n")
         let code = lines.first(where: { $0.hasPrefix("AGENT_ERROR ") }).map { String($0.dropFirst("AGENT_ERROR ".count)) }
@@ -168,6 +168,19 @@ final class AgentInstallationManager {
         let payload = try AgentDashboardPayload.load(engine.resources)
         // VPN and launcher components are managed by their own operations.
         return try installDashboard(payload) { try install(candidate) }
+    }
+    /// Core replacement already committed. A panel retry must never dispatch
+    /// the binary installer, including when its old recovery state is present.
+    func installDashboardForCurrentAgent() throws -> AgentInstallationStatus {
+        let payload = try AgentDashboardPayload.load(engine.resources)
+        return try installDashboard(payload) {
+            let reply = try self.engine.transport.run(AccessAgentProcessProof.command(), input: nil, timeout: 20)
+            try require(reply.status == 0, "Не подтверждён процесс текущего агента")
+            _ = try AccessAgentProcessProof.parse(reply.stdout, allowedHashes: [BundledAgent.sha256])
+            var status = AgentInstallationStatus(); status.hash = BundledAgent.sha256
+            status.running = true; status.startupReady = true
+            return status
+        }
     }
     private func installDashboard(_ payload: AgentDashboardPayload, installAgent: () throws -> AgentInstallationStatus) throws -> AgentInstallationStatus {
         try require(engine.lockFD >= 0, "Установка панели требует блокировки приложения")

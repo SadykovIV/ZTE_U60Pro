@@ -63,11 +63,12 @@ public sealed partial class ImeiEngine(IRemoteShell shell, string storageRoot, s
 
     public async Task<DeviceIdentity> IdentityAsync(CancellationToken ct = default)
     {
+        _ = skipFirmwareCheck; // Legacy call compatibility; never a write override.
         var identity = await MeasuredIdentityAsync(ct);
-        if (identity.FirmwareHash == "absent" || identity.RouterHash == "absent")
-            throw new InvalidDataException("Для записи NV и системных копий этой прошивки ещё нужен отдельный адаптер. Чтение IMEI и независимые компоненты доступны отдельно.");
-        if (!skipFirmwareCheck && (identity.FirmwareHash != FirmwareHash || identity.RouterHash != RouterHash))
-            throw new InvalidDataException("Прошивка отличается от проверенной MU5250 B31. Запись остановлена.");
+        if (identity.RouterHash != RouterHash)
+            throw new InvalidDataException("Чтение NV требует совместимый diag-router. Соберите данные для адаптации прошивки.");
+        // Identity is not a write grant. Fresh NV/config contracts are checked
+        // by the transaction; explicit image absence remains bound to its CID.
         return identity;
     }
 

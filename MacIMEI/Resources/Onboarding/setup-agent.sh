@@ -6,10 +6,14 @@ set -eu
 umask 077
 reinstall=0
 clean_reinstall=0
-case "${1:-}" in
-  --reinstall) reinstall=1; shift;;
-  --clean-reinstall) reinstall=1; clean_reinstall=1; shift;;
-esac
+preserve_agent_settings=0
+while :; do
+ case "${1:-}" in
+  --reinstall|--clean-reinstall) reinstall=1; clean_reinstall=1; shift;;
+  --preserve-agent-settings) preserve_agent_settings=1; shift;;
+  *) break;;
+ esac
+done
 anchor=/data/zte-imei-studio
 base=$anchor/installations
 expected_targets='data/zte-agent
@@ -27,7 +31,7 @@ router_sha=55c54f74aaa427940254a2f16c36771e675a80a002363e4f10b0dfcb604d9c6f
 profile=b31
 boot_id=
 fail() { printf 'INSTALL_ERROR %s\n' "$1" >&2; exit 1; }
-hash() { sha256sum "$1" | awk '{print $1}'; }
+hash() { hash_result=$(sha256sum "$1") || return 1; printf '%s\n' "${hash_result%% *}"; }
 hex() { case "$1" in ''|*[!0-9a-f]*) return 1;; esac; }
 identity() {
     test "$(id -u)" = 0 || fail ROOT_REQUIRED
@@ -137,7 +141,7 @@ copy_agent_startup() {
 }
 startup_source_unchanged() {
     test -n "$startup_origin" || return 0
-    startup_file_check "$startup_origin"
+    plain_file "$startup_origin" && test "$(stat -c %u "$startup_origin")" = 0 || fail LEGACY_STARTUP_CHANGED
     test "$(stat -c %d:%i:%u:%a:%h "$startup_origin")" = "$startup_metadata" &&
     test "$(hash "$startup_origin")" = "$startup_digest" || fail LEGACY_STARTUP_CHANGED
 }
@@ -184,6 +188,30 @@ agent_launcher_valid() {
         if(lines[next_line+2]!="nohup sh -c " q "/data/zte-agent 2>&1 | logger -t zte-agent" q " >/dev/null 2>&1 </dev/null &")exit 1
       }' "$1"
 }
+# Extract only shell-quoted literal values; never source or run an old launcher.
+# Other historical commands are deliberately omitted from the regenerated file.
+agent_settings() {
+ settings_source=$anchor/start_zte_agent.sh
+ if test ! -e "$settings_source" && test ! -L "$settings_source"; then settings_source=/data/local/tmp/start_zte_agent.sh; fi
+ plain_file "$settings_source" && test "$(stat -c %u "$settings_source")" = 0 || return 1
+ test "$(stat -c %s "$settings_source")" -le 65536 || return 1
+ exec 9< "$settings_source" || return 1
+ settings_metadata=$(stat -L -c %d:%i:%u:%a:%h /proc/self/fd/9) || return 1
+ settings_digest=$(hash /proc/self/fd/9) || return 1
+ settings_values=$(LC_ALL=C awk '
+ function literal(v,i,q,bs){q=sprintf("%c",39);bs=sprintf("%c",92);if(length(v)<2||substr(v,1,1)!=q||substr(v,length(v),1)!=q)return 0;for(i=2;i<length(v);i++)if(substr(v,i,1)==q){if(substr(v,i,4)!=q bs q q||i+3>=length(v))return 0;i+=3}return 1}
+ /[[:cntrl:]]/ {bad=1}
+ /^export ZTE_AGENT_PASSWORD=/ {if(p++||!literal(substr($0,27)))bad=1;password=$0}
+ /^export ZTE_AGENT_MODE=/ {if(m++||$0!="export ZTE_AGENT_MODE=" sprintf("%c",39) "discovery" sprintf("%c",39))bad=1;mode=$0}
+ /^export ZTE_AGENT_BIND=/ {v=substr($0,23);if(b++||!literal(v))bad=1;ip=substr(v,2,length(v)-2);if(ip!~/:9090$/)bad=1;sub(/:9090$/,"",ip);if(split(ip,a,".")!=4)bad=1;for(i=1;i<=4;i++)if(a[i]!~/^[0-9]+$/||a[i]+0>255)bad=1;bind=$0}
+ END {if(bad||p!=1)exit 1;print password;print "unset ZTE_AGENT_MODE";print "unset ZTE_AGENT_BIND";if(m)print mode;if(b)print bind}
+ ' <&9) || { exec 9<&-; return 1; }
+ test "$(stat -L -c %d:%i:%u:%a:%h /proc/self/fd/9)" = "$settings_metadata" &&
+ test "$(stat -c %d:%i:%u:%a:%h "$settings_source")" = "$settings_metadata" &&
+ test "$(hash "$settings_source")" = "$settings_digest" || { exec 9<&-; return 1; }
+ exec 9<&-
+ printf '%s\n' '#!/bin/sh' "$settings_values" 'unset ZTE_AGENT_PIN' "trap '' HUP" "nohup sh -c '/data/zte-agent 2>&1 | logger -t zte-agent' >/dev/null 2>&1 </dev/null &"
+}
 mount_access() {
     # Find the effective mount for a path, including an existing bind mount on
     # any ancestor. Duplicate equally-specific mounts are treated as unknown.
@@ -211,6 +239,129 @@ check_recovery_markers() {
             esac
         fi
     done
+}
+# Older product directories can be readable, but never writable by another
+# user. Record their original metadata before narrowing access to private mode.
+normalize_core_directories() {
+    safe_directory /data
+    mount_access "$anchor" 1
+    changed=0
+    for directory in "$anchor" "$anchor/bin" "$base"; do
+        safe_directory "$directory"
+        if test -d "$directory" && test "$(stat -c %a "$directory")" != 700; then changed=1; fi
+    done
+    test "$changed" = 1 || return 0
+    normalization_id=$(cat /proc/sys/kernel/random/uuid) || fail CORE_DIRECTORY_ARCHIVE
+    safe_id "$normalization_id" || fail CORE_DIRECTORY_ARCHIVE
+    normalization=$anchor/directory-recovery-$normalization_id
+    test ! -e "$normalization" && test ! -L "$normalization" || fail CORE_DIRECTORY_ARCHIVE
+    mkdir -m 700 "$normalization" || fail CORE_DIRECTORY_ARCHIVE
+    for directory in "$anchor" "$anchor/bin" "$base"; do
+        if test -d "$directory"; then printf '%s %s\n' "$(stat -c %d:%i:%u:%a:%h "$directory")" "$directory" >> "$normalization/modes"; fi
+    done
+    sync
+    for directory in "$anchor" "$anchor/bin" "$base"; do
+        if test -d "$directory"; then safe_directory "$directory"; chmod 700 "$directory"; fi
+    done
+    sync
+}
+# Retire old product installation history as opaque data. No old recovery
+# script or manifest is evaluated; OEM/NV/FOTA and the shared operation lock
+# remain outside this replacement. The current installer is never superseded.
+core_reconcile() {
+    for marker in /data/local/tmp/open-u60-transactions/active /tmp/fota_install_processing /tmp/zte-imei-app.lock; do
+        if test -e "$marker" || test -L "$marker"; then
+            case "$marker" in /data/local/tmp/open-u60-transactions/active) fail RECOVERY_PENDING_NV;; /tmp/fota_install_processing) fail RECOVERY_PENDING_FOTA;; *) fail RECOVERY_PENDING_APP_LOCK;; esac
+        fi
+    done
+    needed=0
+    for history in "$base" /data/local/tmp/zte-imei-installations; do
+        for marker in "$history/active" "$history/lock"; do
+            if test -e "$marker" || test -L "$marker"; then needed=1; fi
+        done
+    done
+    if test -e /data/zte-agent-installer || test -L /data/zte-agent-installer; then needed=1; fi
+    test "$needed" = 1 || return 0
+    # Compare actual PID ancestry, not command text, when excluding this call.
+    ancestors=" $$ "
+    parent=$$
+    count=0
+    while test "$count" -lt 16 && test -r "/proc/$parent/stat"; do
+        parent=$(sed 's/^[0-9][0-9]* (.*) //' "/proc/$parent/stat" | awk '{print $2}') || fail CORE_RECOVERY_PROCESS
+        case "$parent" in ''|0|*[!0-9]*) break;; esac
+        case "$ancestors" in *" $parent "*) break;; esac
+        ancestors="$ancestors$parent "; count=$((count+1))
+    done
+    core_installers_absent() {
+        for directory in /proc/[0-9]*; do
+            test -d "$directory" || continue
+            case "$ancestors" in *" ${directory##*/} "*) continue;; esac
+            test -r "$directory/cmdline" || { test ! -d "$directory" || fail CORE_RECOVERY_PROCESS; continue; }
+            command_line=$(tr '\000' '\n' < "$directory/cmdline" 2>/dev/null) || { test ! -d "$directory" || fail CORE_RECOVERY_PROCESS; continue; }
+            case "$command_line" in *'/setup-agent.sh'*|*'/agent-manager.sh'*|*'/update-agent.sh'*|*'/upgrade-controller.sh'*|*'/zte-vpn-agent'*|*'/zte-agent-stage-'*'/manager.sh'*|*"$anchor/stage-"*|*'/data/local/tmp/zte-imei-setup-'*) fail CORE_RECOVERY_BUSY;; esac
+        done
+    }
+    core_installers_absent
+    private_directory "$anchor"
+    archive_id=$(cat /proc/sys/kernel/random/uuid) || fail CORE_RECOVERY_ARCHIVE
+    safe_id "$archive_id" || fail CORE_RECOVERY_ARCHIVE
+    archive=$anchor/core-recovery-$archive_id
+    test ! -e "$archive" && test ! -L "$archive" || fail CORE_RECOVERY_ARCHIVE
+    mkdir -m 700 "$archive" || fail CORE_RECOVERY_ARCHIVE
+    printf '%s\n%s\n' "$cid" "$profile $firmware_sha $router_sha" > "$archive/identity"
+    # Whole-directory rename retains unknown old schemas, backups and secrets.
+    # It does not traverse links or execute anything inside the old directory.
+    for history in "$base" /data/local/tmp/zte-imei-installations /data/zte-agent-installer; do
+        present=0
+        if test "$history" = /data/zte-agent-installer && { test -e "$history" || test -L "$history"; }; then present=1; fi
+        for marker in "$history/active" "$history/lock"; do
+            if test -e "$marker" || test -L "$marker"; then present=1; fi
+        done
+        test "$present" = 1 || continue
+        if test "$history" = /data/local/tmp/zte-imei-installations; then
+            for parent in /data/local /data/local/tmp; do
+                test -d "$parent" && test ! -L "$parent" && test "$(stat -c %u "$parent")" = 0 || fail CORE_RECOVERY_PATH
+            done
+        fi
+        if test "$history" != /data/zte-agent-installer; then safe_directory "$history"; fi
+        awk -v path="$history" '$5==path || index($5,path"/")==1 {bad=1} END{exit bad}' /proc/self/mountinfo || fail CORE_OBJECT_MOUNT
+        case "$history" in "$base") name=installations;; /data/zte-agent-installer) name=agent-installer;; *) name=legacy-installations;; esac
+        before=$(stat -c %d:%i:%u:%a:%h "$history") || fail CORE_RECOVERY_CHANGED
+        core_installers_absent
+        test "$(stat -c %d:%i:%u:%a:%h "$history")" = "$before" || fail CORE_RECOVERY_CHANGED
+        mv "$history" "$archive/$name" || fail CORE_RECOVERY_ARCHIVE
+        sync
+    done
+    printf '1\n' > "$archive/complete"
+    sync
+    printf 'INSTALL_CORE_RECOVERY_ARCHIVED\n' >&2
+}
+
+# These are product program file names, never shared SSH keys or OEM files.
+# Preserve unexpected directories/links as opaque objects by rename; do not
+# follow a link or execute an old object to decide how it should be removed.
+core_quarantine_objects() {
+    object_archive=
+    for object in /data/zte-agent "$anchor/bin/dropbear" "$anchor/bin/dropbearkey" "$anchor/start_zte_agent.sh" "$anchor/start_zte_imei_studio.sh"; do
+        test -e "$object" || test -L "$object" || continue
+        if plain_file "$object" && test "$(stat -c %u "$object")" = 0; then continue; fi
+        # Moving a mount or its ancestor must never relocate unrelated storage.
+        awk -v path="$object" '$5==path || index($5,path"/")==1 {bad=1} END{exit bad}' /proc/self/mountinfo || fail CORE_OBJECT_MOUNT
+        if test -z "$object_archive"; then
+            object_id=$(cat /proc/sys/kernel/random/uuid) || fail CORE_OBJECT_ARCHIVE
+            safe_id "$object_id" || fail CORE_OBJECT_ARCHIVE
+            object_archive=$anchor/core-objects-$object_id
+            test ! -e "$object_archive" && test ! -L "$object_archive" || fail CORE_OBJECT_ARCHIVE
+            mkdir -m 700 "$object_archive" || fail CORE_OBJECT_ARCHIVE
+            printf '%s\n%s\n' "$cid" "$profile $firmware_sha $router_sha" > "$object_archive/identity"
+        fi
+        object_name=$(printf '%s' "$object" | tr / _)
+        printf '%s\n' "$object" >> "$object_archive/paths"
+        sync
+        mv "$object" "$object_archive/$object_name" || fail CORE_OBJECT_ARCHIVE
+        sync
+    done
+    if test -n "$object_archive"; then printf '1\n' > "$object_archive/complete"; sync; printf 'INSTALL_CORE_RECOVERY_ARCHIVED\n' >&2; fi
 }
 structural_preflight() {
     for command in sh sha256sum awk grep tr sed cut stat df chmod mkdir cp mv rm rmdir cat sync pidof readlink nohup logger wc sleep id uname; do
@@ -280,6 +431,42 @@ stop_owned_agent() {
         sleep 1
     done
 }
+# Replacement may encounter multiple older/deleted images at the fixed product
+# path. Record each mapped image and start time; never signal by process name.
+core_agent_processes() {
+    for process in $(pidof zte-agent 2>/dev/null || true); do
+        case "$process" in ''|0|*[!0-9]*) return 1;; esac
+        case "$(readlink "/proc/$process/exe" 2>/dev/null)" in /data/zte-agent|"/data/zte-agent (deleted)") ;; *) return 1;; esac
+        test "$(stat -L -c %u "/proc/$process/exe")" = 0 || return 1
+        started=$(sed 's/^[0-9][0-9]* (.*) //' "/proc/$process/stat" | awk '{print $20}') || return 1
+        case "$started" in ''|*[!0-9]*) return 1;; esac
+        mapped=$(hash "/proc/$process/exe") || return 1
+        printf '%s:%s:%s\n' "$process" "$started" "$mapped"
+    done
+}
+core_stop_agents() {
+    test "$(core_agent_processes)" = "$agent_process" || return 1
+    printf '%s\n' "$agent_process" | while IFS=: read -r process started mapped; do
+        test -n "$process" || continue
+        # Earlier PIDs may take seconds to stop; re-prove this PID immediately
+        # before its first signal, not just when the whole list was recorded.
+        if ! pidof zte-agent 2>/dev/null | tr ' ' '\n' | grep -qx "$process"; then continue; fi
+        case "$(readlink "/proc/$process/exe" 2>/dev/null)" in /data/zte-agent|"/data/zte-agent (deleted)") ;; *) exit 1;; esac
+        test "$(sed 's/^[0-9][0-9]* (.*) //' "/proc/$process/stat" | awk '{print $20}')" = "$started" &&
+        test "$(hash "/proc/$process/exe")" = "$mapped" || exit 1
+        kill -TERM "$process" || exit 1
+        attempt=0
+        while pidof zte-agent 2>/dev/null | tr ' ' '\n' | grep -qx "$process"; do
+            case "$(readlink "/proc/$process/exe" 2>/dev/null)" in /data/zte-agent|"/data/zte-agent (deleted)") ;; *) exit 1;; esac
+            test "$(sed 's/^[0-9][0-9]* (.*) //' "/proc/$process/stat" | awk '{print $20}')" = "$started" &&
+            test "$(hash "/proc/$process/exe")" = "$mapped" || exit 1
+            attempt=$((attempt+1)); test "$attempt" -lt 8 || exit 1
+            if test "$attempt" = 5; then kill -KILL "$process" || exit 1; fi
+            sleep 1
+        done
+    done || return 1
+    ! pidof zte-agent >/dev/null 2>&1
+}
 # A running pinned SSH listener is reused in place: never replace its inode or
 # stop Dropbear. Stock port 22 and unrelated listeners are outside this action.
 force_ssh_listener() {
@@ -290,9 +477,8 @@ force_ssh_listener() {
         found=0
         for process in $(pidof dropbear 2>/dev/null || true); do
             case "$process" in ''|*[!0-9]*) continue;; esac
-            test "$(readlink "/proc/$process/exe" 2>/dev/null || true)" = "$anchor/bin/dropbear" || continue
-            private_file "$anchor/bin/dropbear" && test "$(hash "$anchor/bin/dropbear")" = "$dropbear_sha" &&
-            test "$(stat -L -c %u "/proc/$process/exe")" = 0 && test "$(hash "/proc/$process/exe")" = "$dropbear_sha" || return 1
+            case "$(readlink "/proc/$process/exe" 2>/dev/null || true)" in "$anchor/bin/dropbear"|"$anchor/bin/dropbear (deleted)"|/data/bin/dropbear|"/data/bin/dropbear (deleted)") ;; *) continue;; esac
+            test "$(stat -L -c %u "/proc/$process/exe")" = 0 || return 1
             for descriptor in /proc/"$process"/fd/*; do
                 if test "$(readlink "$descriptor" 2>/dev/null || true)" = "socket:[$inode]"; then found=1; break; fi
             done
@@ -318,11 +504,13 @@ rollback_verified() {
     test ! -e "$base/active" && test ! -L "$base/active" && test ! -e "$base/lock" && test ! -L "$base/lock" || return 1
     saved_running=$(cat "$journal/agent-was-running") || return 1
     case "$saved_running" in yes|no) ;; *) return 1;; esac
-    if test "$saved_running" = yes; then
-        owned_agent_process "$(hash "$journal/before/data_zte-agent")" >/dev/null || return 1
-    else
+    # Core replacement rollback restores files without executing old programs.
+    if private_file "$journal/core-replacement"; then
+        test "$(cat "$journal/core-replacement")" = 1 || return 1
         ! pidof zte-agent >/dev/null 2>&1 || return 1
-    fi
+    elif test "$saved_running" = yes; then
+        owned_agent_process "$(hash "$journal/before/data_zte-agent")" >/dev/null || return 1
+    else ! pidof zte-agent >/dev/null 2>&1 || return 1; fi
 }
 deployment_manifest_valid() {
     private_file "$journal/after.sha256" || return 1
@@ -545,7 +733,7 @@ archive_previous_boot_owner() (
                 for target in $expected_targets; do test "${file##*/}" != "$(printf '%s' "$target" | tr / _)" || valid=1; done
                 test "$valid" = 1 && plain_file "$file" && test "$(stat -c %u:%h "$file")" = 0:1 || fail CLEAN_RECOVERY_FOREIGN_FILE
             done;;
-          cid|state|profile.identity|targets|before.sha256|after.sha256|mode|agent-was-running|startup.before.sh|authorized_keys.new|dropbear_ed25519_host_key.new|dropbear_rsa_host_key.new|rc.local.new)
+          cid|state|profile.identity|targets|before.sha256|after.sha256|mode|agent-was-running|core-replacement|startup.before.sh|authorized_keys.new|dropbear_ed25519_host_key.new|dropbear_rsa_host_key.new|rc.local.new)
             plain_file "$item" && test "$(stat -c %u:%h "$item")" = 0:1 || fail CLEAN_RECOVERY_FOREIGN_FILE;;
           *) fail CLEAN_RECOVERY_FOREIGN_FILE;;
         esac
@@ -731,6 +919,23 @@ cleanup_old_stage() (
     done
     rmdir "$candidate"
 )
+cleanup_committed_secret() (
+    # This stage is kept for retry verification, but its copied password is no
+    # longer required once the installed deployment has been committed. An old
+    # caller without a bound owner is left to its own stage cleanup.
+    committed_stage="$anchor/stage-$token"
+    test ! -e "$committed_stage" && test ! -L "$committed_stage" && exit 0
+    private_directory "$committed_stage" || exit 0
+    private_file "$committed_stage/.owner" || exit 0
+    committed_owner="$token $cid $profile $firmware_sha $router_sha"
+    if test "$profile" = linux-arm64-access; then committed_owner="$committed_owner $boot_id"; fi
+    test "$(cat "$committed_stage/.owner")" = "$committed_owner" || exit 0
+    committed_secret="$committed_stage/start-agent.sh"
+    test ! -e "$committed_secret" && test ! -L "$committed_secret" && exit 0
+    private_file "$committed_secret" || exit 0
+    rm "$committed_secret" || exit 1
+    sync
+)
 cleanup_old_stages() {
     removed=0; retained=0
     for candidate in "$anchor"/stage-* /data/local/tmp/zte-imei-setup-*; do
@@ -818,16 +1023,16 @@ if test "${1:-}" = --recover-owned; then
 fi
 
 if test "${1:-}" = --preflight; then
+    reinstall=1; clean_reinstall=1
     test "$#" = 5 || test "$#" = 6 || fail ARGUMENTS
     select_profile "$3" "$4" "$5" "${6:-}"
     identity "$2"
-    if test "$reinstall" = 1; then
-        cid=$2
-        if ! reconcile_completed_owner; then
-            archive_previous_boot_owner || { check_recovery_markers; fail RECOVERY_PENDING; }
-        fi
-    fi
+    cid=$2
+    if test "$preserve_agent_settings" = 1; then agent_settings >/dev/null || fail AGENT_SETTINGS_REQUIRED; fi
+    normalize_core_directories
+    core_reconcile
     structural_preflight
+    if test "$preserve_agent_settings" = 1; then agent_settings >/dev/null || fail AGENT_SETTINGS_REQUIRED; fi
     # /config is a DIAG/EFS object, not the Linux /config path. Firmware/router
     # matches do not establish NV/EFS compatibility; strict runtime reads do.
     printf 'INSTALL_PREFLIGHT %s imei_config=unknown\n' "$profile"
@@ -865,6 +1070,7 @@ if test "${1:-}" = --commit; then
     if test "$state" = complete; then
         deployment_manifest_valid && release_completed_owner || fail JOURNAL_OWNER
         if private_file "$journal/mode" && test "$(cat "$journal/mode")" = reinstall; then cleanup_old_stages; fi
+        cleanup_committed_secret || fail CLEANUP_FAILED
         printf 'INSTALL_COMMITTED %s\n' "$journal"
         exit 0
     fi
@@ -873,10 +1079,12 @@ if test "${1:-}" = --commit; then
     sync
     release_completed_owner || fail JOURNAL_OWNER
     if private_file "$journal/mode" && test "$(cat "$journal/mode")" = reinstall; then cleanup_old_stages; fi
+    cleanup_committed_secret || fail CLEANUP_FAILED
     printf 'INSTALL_COMMITTED %s\n' "$journal"
     exit 0
 fi
 
+reinstall=1; clean_reinstall=1
 test "$#" = 5 || test "$#" = 8 || test "$#" = 9 || fail ARGUMENTS
 stage=$1; cid=$2; agent_sha=$3; dropbear_sha=$4; public_sha=$5
 explicit_profile=0
@@ -887,6 +1095,8 @@ for value in "$agent_sha" "$dropbear_sha" "$public_sha"; do
     hex "$value" && test "${#value}" = 64 || fail HASH_FORMAT
 done
 identity "$cid"
+normalize_core_directories
+core_reconcile
 structural_preflight
 test -d "$stage" || fail STAGE_MISSING
 private_directory "$stage"
@@ -930,6 +1140,8 @@ plain_file /etc/rc.local || fail RC_LOCAL_TYPE
 sh -n /etc/rc.local || fail RC_LOCAL_SYNTAX
 check_recovery_markers
 test ! -e "$base/$token" || fail JOURNAL_ALREADY_EXISTS
+if test "$preserve_agent_settings" = 1; then agent_settings >/dev/null || fail AGENT_SETTINGS_REQUIRED; fi
+core_quarantine_objects
 
 targets=$expected_targets
 for target in $targets; do
@@ -937,83 +1149,35 @@ for target in $targets; do
         plain_file "/$target" || fail EXISTING_FILE_TYPE
     fi
 done
-for executable in /data/zte-agent /data/zte-imei-studio/bin/dropbear /data/zte-imei-studio/bin/dropbearkey; do
-    if test -e "$executable"; then test -x "$executable" || fail EXISTING_NOT_EXECUTABLE; fi
-done
-# A preserved helper must be the same pinned multi-call Dropbear we inspected.
-# Do not execute unknown pre-existing helpers during a generic transaction.
-if test "$profile" = linux-arm64-access || test "$reinstall" = 1; then
-    for executable in /data/zte-imei-studio/bin/dropbear /data/zte-imei-studio/bin/dropbearkey; do
-        if test -e "$executable"; then
-            test "$(hash "$executable")" = "$dropbear_sha" || fail EXISTING_DROPBEAR_REVIEW_REQUIRED
-        fi
-    done
-fi
-# Preserve an existing private launcher. Legacy launchers are read through a
-# pinned descriptor, validated as data, and copied to the protected stage before
-# execution. Shared legacy directories are never chmodded or used for writes.
+# Existing fixed product files are archived as data. Their version, permissions
+# and old startup grammar cannot determine whether the current payload replaces
+# them. Never execute the old startup, binary or SSH helper.
 startup_source=
 startup_origin=
 replace_orphan_agent=0
-replace_existing_agent=0
+replace_existing_agent=1
 agent_was_running=no
 agent_process=
 original_agent_sha=
 if test -e /data/zte-agent || test -L /data/zte-agent; then
-    plain_file /data/zte-agent && test "$(stat -c %u:%h /data/zte-agent)" = 0:1 && test -x /data/zte-agent || fail EXISTING_AGENT_TYPE
-    agent_mode=$(stat -c %a /data/zte-agent)
-    case "$agent_mode" in ''|*[!0-7]*) fail EXISTING_AGENT_TYPE;; esac
-    # Forced replacement snapshots this file and never executes it. Older
-    # installers used mode 0777; that must not prevent repairing our own agent.
-    if test "$reinstall" = 0; then test "$((0$agent_mode & 022))" = 0 || fail EXISTING_AGENT_TYPE; fi
+    plain_file /data/zte-agent && test "$(stat -c %u /data/zte-agent)" = 0 || fail EXISTING_AGENT_TYPE
     original_agent_sha=$(hash /data/zte-agent)
-    if pidof zte-agent >/dev/null 2>&1; then
-        agent_was_running=yes
-        if test "$reinstall" = 1; then
-            agent_process=$(owned_agent_process "$original_agent_sha") || fail EXISTING_AGENT_PROCESS
-        fi
-    fi
-    if test -e "$anchor/start_zte_agent.sh" || test -L "$anchor/start_zte_agent.sh"; then
-        startup_file_check "$anchor/start_zte_agent.sh"
-        if test "$startup_normalize" = 1; then
-            copy_agent_startup "$anchor/start_zte_agent.sh"
-        else
-            startup_source=$anchor/start_zte_agent.sh
-            sh -n "$startup_source" || fail EXISTING_AGENT_STARTUP_SYNTAX
-        fi
-    elif test -e /data/local/tmp/start_zte_agent.sh || test -L /data/local/tmp/start_zte_agent.sh; then
-        legacy=/data/local/tmp/start_zte_agent.sh
-        for directory in /data/local /data/local/tmp; do
-            test -d "$directory" && test ! -L "$directory" && test "$(stat -c %u "$directory")" = 0 || fail LEGACY_STARTUP_PARENT
-        done
-        copy_agent_startup "$legacy"
-    else
-        # A reset may leave only an inactive binary. Snapshot it before replacing
-        # it with the verified payload and a newly supplied launcher. Never run
-        # an unknown orphan binary or replace credentials of a running process.
-        ! pidof zte-agent >/dev/null 2>&1 || fail EXISTING_AGENT_STARTUP_MISSING
-        startup_source=$stage/start-agent.sh
-        replace_orphan_agent=1
-    fi
-    # Host verification requires the staged release after preparation. Preserve
-    # existing credentials, but never start an older inactive binary merely
-    # because its launcher survived a reset. A running older agent must use the
-    # separately verified update/reuse flow; preparation does not stop it.
-    if test "$(hash /data/zte-agent)" != "$agent_sha"; then
-        if test "$reinstall" = 0; then ! pidof zte-agent >/dev/null 2>&1 || fail EXISTING_AGENT_RUNNING_REQUIRES_UPDATE; fi
-        replace_existing_agent=1
-    fi
-    if test "$profile" = linux-arm64-access && test "$reinstall" = 0; then
-        if test "$replace_orphan_agent" = 0 && test "$replace_existing_agent" = 0; then
-            test "$(hash /data/zte-agent)" = "$agent_sha" || fail EXISTING_AGENT_REVIEW_REQUIRED
-        fi
-        if pidof zte-agent >/dev/null 2>&1; then live_agent || fail EXISTING_AGENT_REVIEW_REQUIRED; fi
-    fi
-elif test -e "$anchor/start_zte_agent.sh" || test -L "$anchor/start_zte_agent.sh" ||
-     test -e /data/local/tmp/start_zte_agent.sh || test -L /data/local/tmp/start_zte_agent.sh; then
-    fail ORPHAN_AGENT_STARTUP
 fi
-if test "$reinstall" = 1; then force_ssh_listener || fail EXISTING_SSH_2222_UNVERIFIED; fi
+if pidof zte-agent >/dev/null 2>&1; then
+    agent_process=$(core_agent_processes) || fail EXISTING_AGENT_PROCESS
+    agent_was_running=yes
+fi
+if test "$preserve_agent_settings" = 1; then
+    (set -C; : > "$stage/settings.private.new") || fail STAGING_COLLISION
+    if ! agent_settings > "$stage/settings.private.new"; then rm "$stage/settings.private.new"; fail AGENT_SETTINGS_REQUIRED; fi
+    chmod 600 "$stage/settings.private.new"
+    mv "$stage/settings.private.new" "$stage/start-agent.sh"
+    startup_source=$settings_source
+    startup_origin=$settings_source
+    startup_metadata=$settings_metadata
+    startup_digest=$settings_digest
+fi
+force_ssh_listener || fail EXISTING_SSH_2222_UNVERIFIED
 data_free=$(df -Pk /data | awk 'END {print $4}')
 etc_free=$(df -Pk /etc | awk 'END {print $4}')
 test "$data_free" -ge 16384 && test "$etc_free" -ge 2048 || fail INSUFFICIENT_SPACE
@@ -1038,6 +1202,7 @@ if test "$profile" = linux-arm64-access; then
 else
     printf '%s %s %s\n' "$profile" "$firmware_sha" "$router_sha" > "$journal/profile.identity"
 fi
+printf '1\n' > "$journal/core-replacement"
 printf '%s\n' preparing > "$journal/state"
 trap 'code=$?; if test "$code" != 0; then printf "INSTALL_INCOMPLETE %s\n" "$journal" >&2; fi' EXIT
 trap 'exit 130' HUP INT TERM
@@ -1068,6 +1233,14 @@ printf 'INSTALL_SNAPSHOT %s\n' "$journal"
 
 atomic_copy() {
     source=$1; destination=$2; mode=$3
+    target_name=
+    for target in $targets; do
+        if test "$destination" = "/$target"; then target_name=$(printf '%s' "$target" | tr / _); break; fi
+    done
+    test -n "$target_name" || fail STAGING_TARGET
+    if test -f "$journal/present/$target_name"; then
+        plain_file "$destination" && test "$(hash "$destination")" = "$(hash "$journal/before/$target_name")" || fail EXISTING_TARGET_CHANGED
+    else test ! -e "$destination" && test ! -L "$destination" || fail EXISTING_TARGET_CHANGED; fi
     temporary=$destination.zte-imei-$token
     (set -C; : > "$temporary") || fail STAGING_COLLISION
     cp -p "$source" "$temporary"
@@ -1099,14 +1272,8 @@ force_restore() {
             if test -f "$journal/present/$name"; then before=$(hash "$journal/before/$name") || return 1; fi
             if test -f "$journal/planned/$name"; then planned=$(cat "$journal/planned/$name"); fi
             test "$current" = "$before" || test "$current" = "$planned" || return 1
-            # Do not remove or replace a live SSH executable on rollback. If a
-            # fresh listener was created during this failed transaction, retain
-            # the journal for recovery rather than cutting the control channel.
-            if test "$target" = data/zte-imei-studio/bin/dropbear && test "$current" != "$before"; then
-                for process in $(pidof dropbear 2>/dev/null || true); do
-                    test "$(readlink "/proc/$process/exe" 2>/dev/null || true)" != "$anchor/bin/dropbear" || return 1
-                done
-            fi
+            # Atomic restoration changes the path only. Running SSH keeps its
+            # mapped inode and established connections throughout rollback.
         elif test -f "$journal/present/$name"; then return 1
         fi
     done
@@ -1130,13 +1297,7 @@ force_restore() {
         elif test -e "/$target"; then rm "/$target" || return 1
         fi
     done
-    if test "$agent_was_running" = yes; then
-        sh "$journal/startup.before.sh" >/dev/null 2>&1 || return 1
-        attempt=0
-        while ! owned_agent_process "$original_agent_sha" >/dev/null; do
-            attempt=$((attempt+1)); test "$attempt" -lt 10 || return 1; sleep 1
-        done
-    fi
+    # Never restart the archived binary or its unknown startup. SSH stays live.
     printf '%s\n' rolled-back > "$journal/state.new" && mv "$journal/state.new" "$journal/state" || return 1
     rm "$base/active" "$base/lock/owner" && rmdir "$base/lock" || return 1
     sync
@@ -1162,39 +1323,21 @@ if test "$reinstall" = 1; then
         test "$(hash /data/zte-agent)" = "$original_agent_sha" || fail EXISTING_AGENT_CHANGED
     fi
     if test "$agent_was_running" = yes; then
-        test "$(owned_agent_process "$original_agent_sha")" = "$agent_process" || fail EXISTING_AGENT_PROCESS
+        test "$(core_agent_processes)" = "$agent_process" || fail EXISTING_AGENT_PROCESS
     else ! pidof zte-agent >/dev/null 2>&1 || fail EXISTING_AGENT_STARTED
     fi
     force_started=1
-    if test "$agent_was_running" = yes; then stop_owned_agent "$original_agent_sha" "$agent_process" || fail EXISTING_AGENT_STOP; fi
+    if test "$agent_was_running" = yes; then core_stop_agents || fail EXISTING_AGENT_STOP; fi
 fi
 for directory in "$anchor/bin" /etc/dropbear; do
     if test ! -d "$directory"; then mkdir -m 700 "$directory"; fi
 done
-if test ! -e /data/zte-agent || test "$replace_orphan_agent" = 1 || test "$replace_existing_agent" = 1 || test "$reinstall" = 1; then
-    # Every replaced inactive binary is already in before/ and hashed.
-    if test "$replace_orphan_agent" = 1 || test "$replace_existing_agent" = 1; then
-        ! pidof zte-agent >/dev/null 2>&1 || fail EXISTING_AGENT_STARTED
-        test "$(hash /data/zte-agent)" = "$(hash "$journal/before/data_zte-agent")" || fail EXISTING_AGENT_CHANGED
-    fi
-    atomic_copy "$stage/zte-agent" /data/zte-agent 700
-    if test "$replace_existing_agent" = 1 && test "$replace_orphan_agent" = 0 && test "$reinstall" = 0; then
-        if test "$startup_source" != "$anchor/start_zte_agent.sh"; then
-            atomic_copy "$startup_source" "$anchor/start_zte_agent.sh" 700
-        fi
-        printf '%s\n' 'INSTALL_AGENT preserved'
-    else
-        atomic_copy "$stage/start-agent.sh" /data/zte-imei-studio/start_zte_agent.sh 700
-        printf '%s\n' 'INSTALL_AGENT new'
-    fi
-else
-    if test "$startup_source" != "$anchor/start_zte_agent.sh"; then
-        atomic_copy "$startup_source" "$anchor/start_zte_agent.sh" 700
-    fi
-    printf '%s\n' 'INSTALL_AGENT preserved'
-fi
-if test ! -e /data/zte-imei-studio/bin/dropbear; then atomic_copy "$stage/dropbear" /data/zte-imei-studio/bin/dropbear 700; fi
-if test ! -e /data/zte-imei-studio/bin/dropbearkey; then atomic_copy "$stage/dropbear" /data/zte-imei-studio/bin/dropbearkey 700; fi
+atomic_copy "$stage/zte-agent" /data/zte-agent 700
+atomic_copy "$stage/start-agent.sh" /data/zte-imei-studio/start_zte_agent.sh 700
+if test "$preserve_agent_settings" = 1; then printf 'INSTALL_AGENT preserved\n'
+else printf 'INSTALL_AGENT new\n'; fi
+atomic_copy "$stage/dropbear" /data/zte-imei-studio/bin/dropbear 700
+atomic_copy "$stage/dropbear" /data/zte-imei-studio/bin/dropbearkey 700
 
 authorized=$journal/authorized_keys.new
 if test -e /etc/dropbear/authorized_keys; then cat /etc/dropbear/authorized_keys > "$authorized"; else : > "$authorized"; fi
@@ -1214,13 +1357,18 @@ for kind in ed25519 rsa; do
 done
 atomic_copy "$stage/start_zte_imei_studio.sh" /data/zte-imei-studio/start_zte_imei_studio.sh 700
 entry='sh /data/zte-imei-studio/start_zte_imei_studio.sh'
-if ! grep -qFx "$entry" /etc/rc.local; then
-    # Add before the first stock exit only. Preserve every existing line,
-    # including the boot-time ADB switch, and never alter USB composition live.
-    cp -p /etc/rc.local "$journal/rc.local.new"
-    awk -v line="$entry" 'BEGIN {inserted=0} $0=="sh /data/local/tmp/start_zte_imei_studio.sh" {next} /^exit 0([ \t]|$)/ && !inserted {print line; inserted=1} {print} END {if (!inserted) print line}' /etc/rc.local > "$journal/rc.local.new"
-    atomic_copy "$journal/rc.local.new" /etc/rc.local preserve
-fi
+# Replace exact product boot entries even when the current entry already exists;
+# otherwise an older direct launcher could restart an obsolete program at boot.
+cp -p /etc/rc.local "$journal/rc.local.new"
+awk -v line="$entry" '
+ BEGIN {inserted=0}
+ $0==line || $0=="sh /data/local/tmp/start_zte_imei_studio.sh" || $0=="sh /data/local/tmp/start_zte_agent.sh" || $0=="sh /data/zte-imei-studio/start_zte_agent.sh" {next}
+ /^exit 0([ \t]|$)/ && !inserted {print line; inserted=1}
+ {print}
+ END {if (!inserted) print line}
+' /etc/rc.local > "$journal/rc.local.new"
+atomic_copy "$journal/rc.local.new" /etc/rc.local preserve
+
 sync
 sh /data/zte-imei-studio/start_zte_imei_studio.sh
 tries=0

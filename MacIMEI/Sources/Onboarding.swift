@@ -215,7 +215,8 @@ final class ADBClient {
     func identityDetails(_ serial: String, expected: WebIdentity, skipFirmwareCheck: Bool = false) throws -> (identity: Identity, routerHash: String) {
         let output = try shell(serial, AccessIdentity.command + "; ubus call zwrt_web device_info '{}' ")
         let proof = try AccessIdentity.parse(Data(output.utf8), requireWeb: true)
-        try require(skipFirmwareCheck || (proof.identity.firmwareHash == ModemEngine.firmwareHash && proof.routerHash == ModemEngine.routerHash), "ADB-устройство не соответствует проверенной прошивке B31")
+        // Identity is measured independently of installation eligibility. The
+        // selected installer checks its exact files and platform prerequisites.
         try require(proof.webIdentity == expected, "USB-модем и устройство веб-интерфейса различаются")
         return (proof.identity, proof.routerHash)
     }
@@ -232,7 +233,7 @@ final class OnboardingEngine: @unchecked Sendable {
     static let b02FirmwareHash = "7f1905a2844337640c08b66edffbde147adf20b3ab3e1e54fefe4939c40e633e"
     static func installerProfile(web: WebIdentity, device: Identity, experimental: Bool) throws -> String {
         if web.firmware == "CN_ZTE_MU5250V1.0.0B31" && web.inner == "BD_CNMU5250V1.0.0B31" && device.firmwareHash == ModemEngine.firmwareHash { return "b31" }
-        if experimental && web.firmware == "STD_PL_MU5250V1.0.0B02" && web.inner == "BD_STDPLMU5250V1.0.0B02" && device.firmwareHash == b02FirmwareHash { return "b02-experimental" }
+        if web.firmware == "STD_PL_MU5250V1.0.0B02" && web.inner == "BD_STDPLMU5250V1.0.0B02" && device.firmwareHash == b02FirmwareHash { return "b02-experimental" }
         throw IMEIError.message("Установщик поддерживает B31 и отдельный экспериментальный профиль B02 с проверкой точных хэшей. Эта прошивка не разрешена для установки.")
     }
     static func isB31(_ identity: WebIdentity) -> Bool { identity.firmware == "CN_ZTE_MU5250V1.0.0B31" && identity.inner == "BD_CNMU5250V1.0.0B31" }
@@ -245,7 +246,8 @@ final class OnboardingEngine: @unchecked Sendable {
     }
     let backupSuffix: String
     let root: URL, resources: URL, host: String
-    let currentConnection: Connection
+    var replacementRequiresPhysicalUSB = false
+    var currentConnection: Connection
     let web: ModemWebClient
     let runner: HostCommandRunner
     let sshFactory: ((Connection) -> RemoteTransport)?
@@ -254,6 +256,7 @@ final class OnboardingEngine: @unchecked Sendable {
     let adbWaitAttempts: Int, directADBWaitAttempts: Int, adbPollDelay: TimeInterval
     private var lastADBFailure = ""
     var unstartedDiagnostic: String?
+    var replacementDashboard: ((Connection) throws -> Void)?
     let fm = FileManager.default
     var assets: URL { resources.appendingPathComponent("Onboarding") }
     var pending: URL { root.appendingPathComponent("setup-pending.json") }
@@ -419,7 +422,7 @@ final class OnboardingEngine: @unchecked Sendable {
             // activation attempt just because installation policy rejects it.
             if enforceInstallerPolicy {
                 try require(proof.routerHash == ModemEngine.routerHash, "ADB уже работает и модем подтверждён, но версия diag-router не поддерживается установщиком. Повторное включение ADB и восстановление не запускались.")
-                try require(currentConnection.skipFirmwareCheck || proof.identity.firmwareHash == ModemEngine.firmwareHash, "ADB уже работает и модем подтверждён, но хэш прошивки отличается от проверенной B31. Повторное включение ADB и восстановление не запускались.")
+                _ = try Self.installerProfile(web: expected, device: proof.identity, experimental: false)
             }
             matches.append((serial, proof.identity))
         }

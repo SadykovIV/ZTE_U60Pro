@@ -86,7 +86,7 @@ public sealed partial class WindowsModemService : IModemService
             "operation", operation.ToString(), outcome, duration));
     }
     public ConnectionSettingsSnapshot GetConnectionSettings() => new(_host, _port, "root", _keyPath, _knownHostsPath);
-    public Task<DeviceSnapshot> GetDeviceSnapshotAsync(CancellationToken cancellationToken = default) => Task.FromResult(_snapshot with { AdbActivationPending = File.Exists(Path.Combine(_storage, "adb-access-pending.json")) || File.Exists(Path.Combine(_storage, AdbToggleTransaction.PendingName)), PreparationPending = File.Exists(Path.Combine(_storage, "setup-pending.json")) || File.Exists(Path.Combine(_storage, OnboardingEngine.CleanupPendingName)), ComponentCleanupPending = OnboardingEngine.HasComponentCleanupPending(_storage) });
+    public Task<DeviceSnapshot> GetDeviceSnapshotAsync(CancellationToken cancellationToken = default) => Task.FromResult(_snapshot with { AdbActivationPending = File.Exists(Path.Combine(_storage, "adb-access-pending.json")) || File.Exists(Path.Combine(_storage, AdbToggleTransaction.PendingName)), PreparationPending = File.Exists(Path.Combine(_storage, "setup-pending.json")) || File.Exists(Path.Combine(_storage, OnboardingEngine.ReplacementPendingName)) || File.Exists(Path.Combine(_storage, OnboardingEngine.CleanupPendingName)), ComponentCleanupPending = OnboardingEngine.HasComponentCleanupPending(_storage) });
     public Task<IReadOnlyList<LogEntry>> GetLogsAsync(CancellationToken cancellationToken = default)
     {
         lock (_logs) return Task.FromResult<IReadOnlyList<LogEntry>>(_logs.ToArray());
@@ -144,6 +144,14 @@ public sealed partial class WindowsModemService : IModemService
             _operationValues = null;
             var p = request.Parameters;
             UpdateFirmwarePolicy(p);
+            if ((File.Exists(Path.Combine(_storage,OnboardingEngine.ReplacementPendingName)) || Directory.Exists(Path.Combine(_storage,OnboardingEngine.ReplacementPendingName))) &&
+                request.Operation is not (ModemOperation.PrepareSsh or ModemOperation.InstallAgent or ModemOperation.Connect or ModemOperation.DiscoverConnections or
+                    ModemOperation.RefreshDevice or ModemOperation.RefreshAgent or ModemOperation.RefreshLocalization or ModemOperation.RefreshLauncher or
+                    ModemOperation.ReadImei or ModemOperation.RefreshTtl or ModemOperation.RefreshVpn or ModemOperation.RefreshVpnWifi or ModemOperation.LoadVpnIkev2 or
+                    ModemOperation.RefreshApplications or ModemOperation.RefreshOpkg or ModemOperation.LoadOpkgFeeds or ModemOperation.RefreshAccess or
+                    ModemOperation.VerifyDeviceBackup or ModemOperation.VerifySystemBackup or ModemOperation.ExportDiagnostics or ModemOperation.CollectFirmwareAdaptation or
+                    ModemOperation.RefreshDiagnostics or ModemOperation.VerifyBackupKey or ModemOperation.RefreshAdbState))
+                throw new InvalidOperationException("Сначала продолжите подготовку модема или установку агента.");
             if (File.Exists(Path.Combine(_storage, AdbToggleTransaction.PendingName)) && request.Operation is not
                 (ModemOperation.RefreshAdbState or ModemOperation.Connect or ModemOperation.DiscoverConnections or ModemOperation.ExportDiagnostics or ModemOperation.CollectFirmwareAdaptation or ModemOperation.VerifyBackupKey))
                 throw new InvalidOperationException(AdbToggleTransaction.Unknown);
@@ -384,17 +392,8 @@ public sealed partial class WindowsModemService : IModemService
 
     private void UpdateFirmwarePolicy(IReadOnlyDictionary<string,string>? values)
     {
-        if (values?.TryGetValue("skip_firmware_check", out var requested) != true) return;
-        var skip = requested == "true";
-        if (_skipFirmwareCheck == skip) return;
-        _skipFirmwareCheck = skip;
-        // Apply only the explicit version policy to the existing selected SSH
-        // session. Identity, payload and component-specific checks stay in place.
-        if ((_sshRead ?? _ssh) is { } shell)
-        {
-            _imei = new ImeiEngine(shell, _storage, _resources, skip);
-            _features = new DeviceFeatureService(shell, _resources, _storage, skip);
-        }
+        // Ignore legacy override requests. Component contracts decide eligibility.
+        _skipFirmwareCheck = false;
     }
 
     private async Task<string> ConnectAsync(IReadOnlyDictionary<string,string>? values,CancellationToken ct)

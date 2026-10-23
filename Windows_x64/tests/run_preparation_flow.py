@@ -38,20 +38,28 @@ sealed class Scenario(string name, string directory)
     public Result Setup = new();
     public List<string> Events = [];
     public CancellationTokenSource Cancellation = new();
-    public bool FailConnect, FailAck, FailAdb, AdbPending, CancelAdb, FailDashboard;
+    public bool FailConnect, FailAck, FailAdb, AdbPending, CancelAdb, FailDashboard, FailCoreAck;
 }
 static class AdbToggleTransaction { public const string PendingName = "adb-toggle-pending.json"; }
 sealed class OnboardingEngine
 {
     public OnboardingEngine(string host, string storage, string resources, object adb, bool skip, Action<string> progress) { }
     public string ExistingKeyPath = "", ExistingKnownHostsPath = "";
+    public string? ExpectedReplacementCid;
     public int ExistingPort;
     public Func<object>? ExistingSshFactory;
-    public Task<Result> PrepareAsync(string web, string agent, string suffix, CancellationToken ct, bool forceReinstall, bool cleanComponents)
+    public Task<Result> ReplaceCoreAsync(string web, string agent, string suffix, CancellationToken ct)
     {
         var s = Scenario.Current; s.Events.Add("prepare");
+        File.WriteAllText(Path.Combine(s.Directory,"core-replacement-pending.json"),"complete");
         if (s.Setup.ComponentsCleaned) File.WriteAllText(Path.Combine(s.Directory, "component-cleanup-pending.json"), "verified receipt");
         return Task.FromResult(s.Setup);
+    }
+    public Task<string?> CompletedCoreReplacementIdAsync(CancellationToken ct) => Task.FromResult<string?>("synthetic-complete");
+    public Task AcknowledgeCoreReplacementAsync(CancellationToken ct) {
+        var s=Scenario.Current;s.Events.Add("core-ack");
+        if(s.FailCoreAck)throw new IOException("core receipt not saved");
+        File.Delete(Path.Combine(s.Directory,"core-replacement-pending.json"));return Task.CompletedTask;
     }
     public Task AcknowledgeComponentCleanupAsync(string id, CancellationToken ct)
     {
@@ -63,6 +71,7 @@ sealed class OnboardingEngine
 sealed class DeviceFeatureService
 {
     public const string FirmwareHash = "firmware";
+    public string? CompletedCoreReplacementId;
     public Task<bool> InstallDashboardForCurrentAgentAsync(CancellationToken ct)
     {
         var s = Scenario.Current; s.Events.Add("dashboard");
@@ -79,6 +88,8 @@ sealed class WindowsModemService
     private bool _skipFirmwareCheck = false;
     private object _adb = new(), _ssh = null!, _sshRead = null!;
     private DeviceFeatureService _features = new();
+    private sealed class Snapshot { public string? Serial = null; }
+    private Snapshot _snapshot = new();
     private string KeyPath => _keyPath;
     private string KnownHostsPath => _knownHostsPath;
     public WindowsModemService(string storage) => _storage = storage;
@@ -107,7 +118,7 @@ static class Program
 {
     static async Task Main(string[] args)
     {
-        foreach (var name in new[] { "fresh", "generic", "already-ready", "clean", "cancelled", "connect-failed", "ack-failed", "adb-warning", "adb-pending", "clean-adb-pending", "adb-cancelled", "dashboard-failed" })
+        foreach (var name in new[] { "fresh", "generic", "already-ready", "clean", "cancelled", "connect-failed", "ack-failed", "adb-warning", "adb-pending", "clean-adb-pending", "adb-cancelled", "dashboard-failed", "core-ack-failed" })
         {
             var folder = Path.Combine(args[0], name); Directory.CreateDirectory(folder);
             var s = Scenario.Current = new Scenario(name, folder);
@@ -118,7 +129,7 @@ static class Program
             s.FailConnect = name == "connect-failed"; s.FailAck = name == "ack-failed";
             s.FailAdb = name is "adb-warning" or "adb-pending" or "clean-adb-pending";
             s.AdbPending = name is "adb-pending" or "clean-adb-pending";
-            s.CancelAdb = name == "adb-cancelled"; s.FailDashboard = name == "dashboard-failed";
+            s.FailCoreAck=name=="core-ack-failed";s.CancelAdb = name == "adb-cancelled"; s.FailDashboard = name == "dashboard-failed";
             string? result = null; Exception? failure = null;
             try { result = await new WindowsModemService(folder).PrepareSshAsync(null, s.Cancellation.Token); }
             catch (Exception error) { failure = error; }
@@ -126,14 +137,16 @@ static class Program
                 "cancelled" => "prepare,adopt-cancelled",
                 "connect-failed" => "prepare,connect",
                 "ack-failed" => "prepare,connect,ack",
-                "clean" or "clean-adb-pending" => "prepare,connect,ack,adb",
+                "clean" or "clean-adb-pending" => "prepare,connect,ack,dashboard,core-ack,adb",
                 "already-ready" => "prepare,connect",
-                "generic" or "adb-pending" or "adb-cancelled" => "prepare,connect,adb",
-                _ => "prepare,connect,adb,dashboard",
+                "dashboard-failed" => "prepare,connect,dashboard",
+                "core-ack-failed" => "prepare,connect,dashboard,core-ack",
+                _ => "prepare,connect,dashboard,core-ack,adb",
             };
             if (string.Join(',', s.Events) != expected) throw new Exception(name + ": unexpected service order " + string.Join(',', s.Events));
-            var shouldFail = name is "connect-failed" or "ack-failed" or "adb-cancelled" or "dashboard-failed";
+            var shouldFail = name is "connect-failed" or "ack-failed" or "adb-cancelled" or "dashboard-failed" or "core-ack-failed";
             if ((failure is not null) != shouldFail) throw new Exception(name + ": wrong completion outcome");
+            if ((s.FailDashboard || s.FailCoreAck) && !File.Exists(Path.Combine(folder,"core-replacement-pending.json"))) throw new Exception(name+": core receipt lost before dashboard acknowledgement");
             if (s.FailAdb && result?.Contains("Отключение ADB не подтверждено") != true) throw new Exception(name + ": lost ADB warning");
             if (s.AdbPending && (!File.Exists(Path.Combine(folder, AdbToggleTransaction.PendingName)) || result?.Contains("Проверить состояние ADB") != true)) throw new Exception(name + ": unknown dispatch lost recovery instructions");
             Console.WriteLine("PASS actual preparation service flow: " + name);

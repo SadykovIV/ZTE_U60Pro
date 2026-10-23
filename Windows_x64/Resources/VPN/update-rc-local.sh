@@ -2,8 +2,9 @@
 # Fixed application-owned boot entries only; preserve the stock script.
 set -eu
 file=/etc/rc.local
-staged=/etc/rc.local.open-u60-new
-[ ! -e "$staged" ] && [ ! -L "$staged" ] || exit 1
+staged=$(mktemp /etc/rc.local.open-u60-new.XXXXXX)
+trap 'rm -f "$staged"' EXIT
+trap 'exit 1' HUP INT TERM
 cp -p "$file" "$staged"
 for line in "$@"; do
     case "$line" in
@@ -20,4 +21,5 @@ for line in "$@"; do
 done
 sh -n "$staged"
 mv "$staged" "$file"
+trap - EXIT HUP INT TERM
 sync

@@ -240,10 +240,8 @@ public sealed class ModemWebClient : IDisposable
                 Encoding.UTF8.GetByteCount(firmware) > 256 || Encoding.UTF8.GetByteCount(inner) > 256 ||
                 firmware.Contains('\0') || inner.Contains('\0'))
                 throw Malformed("некорректные сведения о прошивке");
-            if (!skipFirmwareCheck &&
-                (firmware != "CN_ZTE_MU5250V1.0.0B31" || inner != "BD_CNMU5250V1.0.0B31"))
-                throw new ModemWebException(WebFailureKind.AuthenticationRejected,
-                    "Автоматическая настройка поддерживает только проверенную MU5250 B31.");
+            // Identity reads preserve the reported version. Every modifying
+            // operation validates its own measured compatibility contract.
             return new WebIdentity(imei, firmware, inner);
         }
         finally { _gate.Release(); }

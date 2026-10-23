@@ -99,13 +99,28 @@ static async Task InterruptedConfig(string root)
 
 static async Task B04Read(string root)
 {
-    var (engine, modem, _) = Make(root, skipFirmwareCheck: true);
-    modem.MissingFirmware = true;
-    var read = await engine.InspectAsync();
-    Assert(read.Identity.FirmwareHash == "absent" && read.Imeis.SequenceEqual(modem.Imeis()), "B04 independent NV read");
-    await Throws<InvalidDataException>(() => engine.ApplyAsync(Imei(200), Imei(201)));
-    Assert(modem.EnableCalls == 0 && modem.WriteCalls == 0 && !engine.HasPendingTransaction, "Missing firmware never grants write");
-    Console.WriteLine("PASS B04 NV read without modem image, write remains separate");
+    foreach (var count in new[] { 1, 2 })
+    {
+        var (engine, modem, storage) = Make(root + count);
+        modem.MissingFirmware = true;
+        if (count == 1) modem.Nv = [modem.Nv[0]];
+        var read = await engine.InspectAsync();
+        Assert(read.Identity.FirmwareHash == "absent" && read.Imeis.SequenceEqual(modem.Imeis()), "B04 independent NV read");
+        var result = count == 1 ? await engine.ApplyAsync(Imei(200), null) : await engine.ApplyAsync(Imei(200), Imei(201));
+        Assert(result.Identity.FirmwareHash == "absent" && result.Imeis.Length == count && modem.Config.SequenceEqual(modem.OriginalConfig), "Absent image keeps actual contracts and config restore");
+        var backup = Directory.GetDirectories(Path.Combine(storage, "Backups", "IMEI")).Single();
+        var saved = JsonSerializer.Deserialize<ImeiBackupManifest>(File.ReadAllBytes(Path.Combine(backup, "manifest.json")))!;
+        Assert(saved.Identity.FirmwareHash == "absent", "Explicit absence remains in backup identity");
+        modem.MissingFirmware = false;
+        var writes = modem.WriteCalls;
+        await Throws<InvalidDataException>(() => engine.RestoreAsync(Path.GetFileName(backup)));
+        Assert(modem.WriteCalls == writes, "Image appearing after backup refuses restore before mutation");
+    }
+    var (invalid, unsafeModem, _) = Make(root + "invalid");
+    unsafeModem.MissingFirmware = true; unsafeModem.Config[499] ^= 1;
+    await Throws<InvalidDataException>(() => invalid.ApplyAsync(Imei(200), Imei(201)));
+    Assert(unsafeModem.WriteCalls == 0 && unsafeModem.EnableCalls == 0, "Absent image cannot bypass malformed EFS");
+    Console.WriteLine("PASS B04 absent-image single/pair transactions, unchanged config, bound restore and EFS refusal");
 }
 
 static async Task FirmwareGate(string root)

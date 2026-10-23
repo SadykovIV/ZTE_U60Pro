@@ -28,8 +28,7 @@ import AppKit
         !host.isEmpty && !webPassword.isEmpty && !channelStatuses.contains { $0.mode == .web && [.invalidPassword, .rateLimited, .identityMismatch, .trustRejected].contains($0.state) }
     }
     var canPrepareModem: Bool {
-        !busy && !terminalActive && !pendingOperation && !systemRestorePending && !diagnosticADBPending && !adbTogglePending && (webBootstrapRequested || isStockWebAvailable || setupPending || (forcePreparation && hasSSHForPreparation) || channelStatuses.contains { $0.mode == .adb && $0.state == .available } || firmwareResearchReport?.transport == "adb")
-            && (setupPending || forcePreparation || !hasSSHForPreparation)
+        !busy && !terminalActive && !pendingOperation && !systemRestorePending && !diagnosticADBPending && !adbTogglePending && (webBootstrapRequested || isStockWebAvailable || setupPending || hasSSHForPreparation || channelStatuses.contains { $0.mode == .adb && $0.state == .available } || firmwareResearchReport?.transport == "adb")
     }
     var canCancelComponentCleanup: Bool {
         componentCleanupPending && componentCleanupCanCancel && !busy && !terminalActive && !pendingOperation && !systemRestorePending && !diagnosticADBPending && !adbTogglePending
@@ -38,7 +37,6 @@ import AppKit
         !busy && !terminalActive && !pendingOperation && !systemRestorePending && !setupPending && !adbTogglePending && !hasSSHForPreparation && (isStockWebAvailable || diagnosticADBPending || (!host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !webPassword.isEmpty))
     }
     var preparationUnavailableReason: String? {
-        if hasSSHForPreparation && !setupPending && !forcePreparation { return "SSH уже доступен: предварительная подготовка не требуется." }
         if canPrepareModem { return nil }
         if channelStatuses.first(where: { $0.mode == .web })?.state == .invalidPassword { return "Неверный пароль штатного Web. Исправьте параметры первоначальной подготовки." }
         if channelStatuses.first(where: { $0.mode == .web })?.state == .rateLimited { return "Штатный Web временно заблокировал вход. Дождитесь окончания блокировки." }
@@ -110,7 +108,7 @@ import AppKit
     }
 
     func clearPreparationCredentials() {
-        webPassword = ""; agentPassword = ""; backupSuffix = ""; forcePreparation = false
+        webPassword = ""; agentPassword = ""; backupSuffix = ""
     }
     func editConnectionHost(_ value: String) {
         guard !busy, value != host else { return }
@@ -534,9 +532,14 @@ import AppKit
                 try saveJSON(result.connection, storage.appendingPathComponent("connection.json"))
                 connectionMode = .ssh; try saveJSON(connectionMode, storage.appendingPathComponent("connection-mode.json"))
                 connectedIdentity = result.identity; connectedWebIdentity = nil
-                forcePreparation = false; completed = true
+                completed = true
                 append("Очистка отменена до удаления компонентов. Агент и SSH сохранены.", progress: 1)
-            } catch { preparationError = error.localizedDescription; append("Подготовка: " + error.localizedDescription) }
+            } catch {
+                if let saved = try? readJSON(Connection.self, root.appendingPathComponent("connection.json")), saved.host == config.host {
+                    keyPath = saved.keyPath; knownHostsPath = saved.knownHostsPath; port = saved.port
+                }
+                preparationError = error.localizedDescription; append("Подготовка: " + error.localizedDescription)
+            }
             busy = false; refreshBackups(); refreshActivity(); operationTask = nil
             if completed { connectPreferredChannel() }
         }
@@ -547,7 +550,6 @@ import AppKit
         preparationError = ""
         let config = connection, root = storage, assets = resources
         let webSecret = webPassword, agentSecret = agentPassword, suffix = backupSuffix, expected = connectedIdentity
-        let reinstall = forcePreparation, cleanComponents = cleanPreparationComponents
         let expectedIMEI = connectedIMEI ?? channelSummary?.primaryIMEI
         markConnectionUnavailable("")
         busy = true; progress = 0
@@ -560,7 +562,7 @@ import AppKit
                     let installer = try OnboardingEngine(root: root, resources: assets, connection: config, backupSuffix: suffix, update: { [weak self] message, value in
                         Task { @MainActor [weak self] in self?.append(message, progress: value) }
                     })
-                    return try installer.run(webPassword: webSecret, agentPassword: agentSecret, expectedIdentity: expected, expectedIMEI: expectedIMEI, forceReinstall: reinstall, cleanComponents: cleanComponents)
+                    return try installer.replaceCore(webPassword: webSecret, agentPassword: agentSecret, expectedIdentity: expected, expectedIMEI: expectedIMEI)
                 }.value
                 keyPath = result.connection.keyPath; knownHostsPath = result.connection.knownHostsPath; port = result.connection.port
                 try saveJSON(result.connection, storage.appendingPathComponent("connection.json"))
@@ -568,10 +570,14 @@ import AppKit
                 connectedIdentity = result.identity; connectedWebIdentity = nil
                 if let state = result.state { connectedIMEI = state.imeis[0] }
                 prepared = true
-                forcePreparation = false
                 append("Подготовка завершена. Подключаюсь по SSH и обновляю все разделы…", progress: 1)
                 if let warning = result.adbWarning { preparationError = warning; append(warning) }
-            } catch { preparationError = error.localizedDescription; append("Подготовка: " + error.localizedDescription) }
+            } catch {
+                if let saved = try? readJSON(Connection.self, storage.appendingPathComponent("connection.json")), saved.host == config.host {
+                    keyPath = saved.keyPath; knownHostsPath = saved.knownHostsPath; port = saved.port
+                }
+                preparationError = error.localizedDescription; append("Подготовка: " + error.localizedDescription)
+            }
             firmwareResearchReport = try? FirmwareResearchArchive.latest(root: storage)
             busy = false; refreshBackups(); refreshActivity(); operationTask = nil
             if prepared { connectPreferredChannel() }

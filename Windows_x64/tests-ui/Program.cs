@@ -68,7 +68,7 @@ try
 }
 finally{if(Directory.Exists(serviceRoot))Directory.Delete(serviceRoot,true);}
 // A confirmed cancellation must retain the already prepared SSH endpoint.
-foreach(var operation in new[]{ModemOperation.CancelComponentCleanup,ModemOperation.PrepareSsh})
+foreach(var operation in new[]{ModemOperation.CancelComponentCleanup})
 {
  var storage=Path.Combine(Path.GetTempPath(),"zte-cancel-connection-"+Guid.NewGuid());Directory.CreateDirectory(storage);
  try
@@ -101,13 +101,11 @@ await session.Dispatch(()=> {
   Localization.SetLanguage(language,persist:false);
   var policyModem=new FakeModem{AllowPreparation=true,AllowRefresh=true,AllowFirmwarePolicy=true,ConnectSuccess=true};
   var policyWindow=new MainWindow(policyModem,persistPreferences:false);policyWindow.Show();Pump();
-  var policy=policyWindow.GetLogicalDescendants().OfType<CheckBox>().Single(c=>c.Name=="SkipFirmwareCheck");
-  var beforePolicy=policyModem.Requests.Count;policy.IsChecked=true;Pump();
-  Check(policyModem.Requests.Count==beforePolicy,language+" changing firmware policy performs no operation");
+  Check(!policyWindow.GetLogicalDescendants().OfType<CheckBox>().Any(c=>c.Name=="SkipFirmwareCheck"),language+" compatibility is automatic; no global firmware override");
   FindButton(policyWindow,"Выполнить предварительную подготовку модема").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();
-  Check(policyModem.Requests.Last().Operation==ModemOperation.PrepareSsh&&policyModem.Requests.Last().Parameters!["skip_firmware_check"]=="true",language+" preparation receives explicit firmware override");
+  Check(policyModem.Requests.Last().Operation==ModemOperation.PrepareSsh&&!policyModem.Requests.Last().Parameters!.ContainsKey("skip_firmware_check"),language+" preparation uses component eligibility without firmware override");
   FindButton(policyWindow,"Подключиться").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();
-  Check(policyModem.Requests.Last().Operation==ModemOperation.Connect&&policyModem.Requests.Last().Parameters!["skip_firmware_check"]=="true",language+" SSH connection receives the same firmware policy");
+  Check(policyModem.Requests.Last().Operation==ModemOperation.Connect&&!policyModem.Requests.Last().Parameters!.ContainsKey("skip_firmware_check"),language+" SSH connection sends no firmware bypass");
   var selectionForm=(Dictionary<string,string>)Get(policyWindow,"_form")!;
   var dispatch=typeof(MainWindow).GetMethod("ExecuteAsync",BindingFlags.NonPublic|BindingFlags.Instance,null,[typeof(ModemOperation),typeof(IReadOnlyDictionary<string,string>)],null)!;
   foreach(var key in new[]{"host","key_path","known_hosts_path","port","username"})
@@ -152,7 +150,7 @@ await session.Dispatch(()=> {
   customForm["host"]=host;policyWindow.SelectCustomAgent(customPath);Pump();NamedClick(policyWindow,"InstallCustomAgent");
   var customRequest=policyModem.Requests.Last();
   Check(customRequest.Operation==ModemOperation.InstallCustomAgent&&customRequest.Parameters!["agent_sha256"]==selected.Sha256&&customRequest.Parameters["agent_bytes"]==selected.Bytes.ToString()&&customRequest.Parameters["host"]==host&&customRequest.Parameters["port"]==policyModem.Settings.Port.ToString(),language+" custom dispatch captures SHA, size and established SSH endpoint");
-  Check(customRequest.Parameters!["skip_firmware_check"]=="true",language+" custom operation retains explicitly selected policy");
+  Check(!customRequest.Parameters!.ContainsKey("skip_firmware_check"),language+" custom operation sends no firmware bypass");
   using(var append=new FileStream(customPath,FileMode.Append))append.WriteByte(0);
   priorCustom=policyModem.Requests.Count;NamedClick(policyWindow,"InstallCustomAgent");
   Check(policyModem.Requests.Count==priorCustom&&!FindButton(policyWindow,"Установить выбранный агент").IsEnabled,language+" changed candidate clears selection and refuses dispatch");
@@ -162,21 +160,9 @@ await session.Dispatch(()=> {
   NamedClick(policyWindow,"Section0-3");FindButton(policyWindow,"↻").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();
   Check(policyModem.Requests.Last().Operation==ModemOperation.RefreshLocalization,language+" header refresh requests only the selected localization section");
   NamedClick(policyWindow,"Section0-2");FindButton(policyWindow,"Установить / обновить").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();
-  Check(policyModem.Requests.Last().Operation==ModemOperation.InstallAgent&&policyModem.Requests.Last().Parameters!["skip_firmware_check"]=="true",language+" later agent installation receives common policy across tabs");
-  NamedClick(policyWindow,"Section0-0");policy=policyWindow.GetLogicalDescendants().OfType<CheckBox>().Single(c=>c.Name=="SkipFirmwareCheck");
-  Check(policy.IsChecked==true,language+" rerender preserves the current firmware policy");
-  typeof(MainWindow).GetMethod("SetBusy",BindingFlags.NonPublic|BindingFlags.Instance)!.Invoke(policyWindow,[true]);Check(!policy.IsEnabled,language+" firmware policy cannot change during an operation");
-  typeof(MainWindow).GetMethod("SetBusy",BindingFlags.NonPublic|BindingFlags.Instance)!.Invoke(policyWindow,[false]);
-  policy.IsChecked=false;FindButton(policyWindow,"↻").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();
-  Check(policyModem.Requests.Last().Parameters!["skip_firmware_check"]=="false",language+" explicit refresh carries the restored strict policy");
-  foreach(var terminalOpening in new[]{false,true})
-  {
-   Set(policyWindow,"_terminalOpening",terminalOpening);Set(policyWindow,"_terminal",terminalOpening?null:new FakeTerminal());Render(policyWindow);
-   var blocked=policyWindow.GetLogicalDescendants().OfType<CheckBox>().Single(c=>c.Name=="SkipFirmwareCheck");
-   blocked.IsChecked=true;Pump();
-   Check(!blocked.IsEnabled&&((Dictionary<string,string>)Get(policyWindow,"_form")!)["skip_firmware_check"]=="false",language+" terminal ownership rejects even a direct firmware checkbox callback, opening="+terminalOpening);
-  }
-  Set(policyWindow,"_terminalOpening",false);Set(policyWindow,"_terminal",null);
+  Check(policyModem.Requests.Last().Operation==ModemOperation.InstallAgent&&!policyModem.Requests.Last().Parameters!.ContainsKey("skip_firmware_check"),language+" later agent installation sends no firmware bypass across tabs");
+  NamedClick(policyWindow,"Section0-0");
+  Check(!policyWindow.GetLogicalDescendants().OfType<CheckBox>().Any(c=>c.Name=="SkipFirmwareCheck"),language+" rerender keeps firmware override absent");
   policyWindow.Close();Pump();
  }
  // Firmware adaptation is an explicit, read-only Diagnostics action. Keep
@@ -255,10 +241,9 @@ await session.Dispatch(()=> {
   Check(window.GetLogicalDescendants().OfType<Expander>().Any(e=>e.Name=="ConnectionMethods"),language+" connection contains compact methods disclosure");
   Check(window.GetLogicalDescendants().OfType<Button>().Any(b=>b.Name=="OpenModemWeb")&&window.GetLogicalDescendants().OfType<Button>().Any(b=>b.Name=="OpenAgentWeb"),language+" web interfaces are browser actions");
   Check(!window.GetLogicalDescendants().OfType<ComboBox>().Any(b=>b.Name=="ConnectionMode"),language+" normal connection exposes no ADB or Web management mode");
-  Check(!FindButton(window,"Выполнить предварительную подготовку модема").IsEnabled,language+" new preparation disabled on working SSH");
+  Check(FindButton(window,"Выполнить предварительную подготовку модема").IsEnabled,language+" automatic replacement is available on working SSH");
   Check(!window.GetLogicalDescendants().OfType<Button>().Any(b=>b.Name=="EnableDiagnosticAdb"),language+" ADB has one checkbox and no legacy force button");
-  var firmwareCheck=window.GetLogicalDescendants().OfType<CheckBox>().SingleOrDefault(c=>c.Name=="SkipFirmwareCheck");
-  Check(firmwareCheck is not null&&firmwareCheck.IsChecked==false&&firmwareCheck.Content?.ToString()==Localization.Translate("Не проверять версию прошивки"),language+" common firmware version checkbox is visible and defaults off");
+  Check(!window.GetLogicalDescendants().OfType<CheckBox>().Any(c=>c.Name=="SkipFirmwareCheck"),language+" automatic component compatibility needs no checkbox");
   using(var frame=window.CaptureRenderedFrame()??throw new Exception("Missing diagnostic frame"))frame.Save(Path.Combine(screenshots,language+"-diagnostic-connection.png"));
   var methods=window.GetLogicalDescendants().OfType<Expander>().Single(e=>e.Name=="ConnectionMethods");methods.IsExpanded=true;Pump();
   using(var frame=window.CaptureRenderedFrame()??throw new Exception("Missing methods frame"))frame.Save(Path.Combine(screenshots,language+"-connection-methods-expanded.png"));
@@ -353,7 +338,7 @@ await session.Dispatch(()=> {
   Set(checkWindow,"_snapshot",new DeviceSnapshot(false,"Нет подключения"));
   NamedClick(checkWindow,"VerifyBackupKey");
   var request=checkModem.Requests.Single();
-  Check(request.Operation==ModemOperation.VerifyBackupKey&&request.Parameters!.Keys.Order().SequenceEqual(new[]{"backup_key_suffix","host","skip_firmware_check","web_password"}),language+" key check dispatches only its dedicated read-only request");
+  Check(request.Operation==ModemOperation.VerifyBackupKey&&request.Parameters!.Keys.Order().SequenceEqual(new[]{"backup_key_suffix","host","web_password"}),language+" key check dispatches only its dedicated read-only request");
   Check(checkModem.Events.Count==0&&!((DeviceSnapshot)Get(checkWindow,"_snapshot")!).IsConnected,language+" key success creates no research/preparation/connection readiness");
   var checkStatus=checkWindow.GetLogicalDescendants().OfType<TextBlock>().Single(t=>t.Name=="BackupKeyCheckStatus").Text!;
   Check(checkStatus.Contains("FLY_CN_MU5250V1.0.0B13")&&checkStatus.Contains("BD_FLYMODEMMU5250V1.0.0B28")&&checkStatus.Contains(language=="en"?"does not authorize":"не разрешает"),language+" separate result shows observed versions and write boundary");
@@ -419,61 +404,27 @@ await session.Dispatch(()=> {
   if(!editDuringPrepare){FindButton(preparedWindow,"↻").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();Check(preparedModem.Requests.Last().Operation==ModemOperation.RefreshDevice,"refresh after preparation uses the confirmed SSH connection rather than obsolete form keys");}
   preparedWindow.Close();Pump();
  }
- foreach(var editDuringCancel in new[]{false,true})
- {
-  var generated=new ConnectionSettingsSnapshot("192.168.0.1",2222,"root","synthetic-generated-key","synthetic-generated-hosts");
-  var cancelModem=new FakeModem{AllowPreparation=true,AllowRefresh=true,PreparedSettings=generated,Settings=new("192.168.0.1",22,"root","synthetic-legacy-key","synthetic-legacy-hosts"),Snapshot=new(false,"Synthetic cleanup pending",PreparationPending:true,ComponentCleanupPending:true)};
-  var cancelWindow=new MainWindow(cancelModem,persistPreferences:false);cancelWindow.Show();Pump();
-  var cancelForm=(Dictionary<string,string>)Get(cancelWindow,"_form")!;
-  if(editDuringCancel)cancelModem.OnPrepare=()=>cancelForm["key_path"]="synthetic-user-changed-key";
-  FindButton(cancelWindow,"Отменить очистку").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();
-  Check(editDuringCancel?cancelForm["key_path"]=="synthetic-user-changed-key":cancelForm["port"]=="2222"&&cancelForm["key_path"]==generated.KeyPath&&cancelForm["known_hosts_path"]==generated.KnownHostsPath,editDuringCancel?"cancellation preserves concurrent connection edits":"cancellation updates the active form to prepared SSH metadata");
-  Check(cancelModem.Requests.Count==1&&cancelModem.Requests[0].Operation==ModemOperation.CancelComponentCleanup&&!((DeviceSnapshot)Get(cancelWindow,"_snapshot")!).IsConnected,"cancellation does not auto-connect or replay preparation");
-  cancelWindow.Close();Pump();
- }
  foreach(var language in new[]{"ru","en"})
  {
   Localization.SetLanguage(language,persist:false);
-  var forced=new FakeModem{AllowPreparation=true,Snapshot=new(true,"Synthetic SSH",ConnectionMode:"SSH",IpAddress:"192.168.0.1")};
-  var forcedWindow=new MainWindow(forced,persistPreferences:false);forcedWindow.Show();Pump();
-  var cleanBox=forcedWindow.GetLogicalDescendants().OfType<CheckBox>().SingleOrDefault(b=>b.Name=="CleanPreparation");
-  Check(cleanBox is not null&&cleanBox.IsChecked==false&&cleanBox.IsEnabled,language+" explicit clean preparation defaults off on connected SSH");
-  Check(cleanBox!.Content?.ToString()==Localization.Translate("Чистая переустановка"),language+" clean preparation has the explicit clean-reinstall label");
-  Check(ReferenceEquals(cleanBox.Parent?.Parent,FindButton(forcedWindow,"Выполнить предварительную подготовку модема").Parent),language+" clean preparation is beside the preparation action");
-  var forceBox=forcedWindow.GetLogicalDescendants().OfType<CheckBox>().SingleOrDefault(b=>b.Name=="ForcePreparation");
-  Check(forceBox is not null&&forceBox.IsChecked==false&&forceBox.IsEnabled&&forceBox.Content?.ToString()==Localization.Translate("Принудительная подготовка: переустановить агент и SSH"),language+" explicit force option is available but defaults off on connected SSH");
-  Check(!FindButton(forcedWindow,"Выполнить предварительную подготовку модема").IsEnabled,language+" normal preparation does not reinstall an existing SSH connection");
-  var cleanInfo=forcedWindow.GetLogicalDescendants().OfType<Button>().Single(b=>b.Name=="CleanPreparationInfo");
-  var beforeHelp=forced.Requests.Count;cleanInfo.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();var cleanDialog=forcedWindow.OwnedWindows.Single();
-  Check(cleanDialog.GetLogicalDescendants().OfType<TextBlock>().Any(t=>t.Text==Localization.Translate(OperationHelpContent.CleanPreparation.Introduction))&&forced.Requests.Count==beforeHelp,language+" clean information explains staged backup and cleanup without launching an operation");
-  if(language=="en")Check(!string.Join(" ",cleanDialog.GetLogicalDescendants().OfType<TextBlock>().Select(t=>t.Text)).Any(c=>c>='\u0400'&&c<='\u04ff'),"clean installation help is fully English");
-  cleanDialog.Close();Pump();
-  Toggle(forceBox!);
-  Check(FindButton(forcedWindow,"Выполнить предварительную подготовку модема").IsEnabled,language+" explicit force enables preparation despite existing SSH");
-  Toggle(forceBox!);Toggle(cleanBox!);
-  Check(forceBox!.IsChecked==true&&cleanBox!.IsChecked==true,language+" clean selection implies forced preparation");
-  Toggle(forceBox!);Check(cleanBox!.IsChecked==false,language+" disabling force also clears the dependent clean intent");Toggle(cleanBox!);
-  ((Dictionary<string,TextBox>)Get(forcedWindow,"_secretFields")!)["agent_password"].Text="synthetic-new-agent-password";Pump();
-  FindButton(forcedWindow,"Выполнить предварительную подготовку модема").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();
-  Check(forced.Requests.Last().Operation==ModemOperation.PrepareSsh&&forced.Requests.Last().Parameters!["force_reinstall"]=="true"&&forced.Requests.Last().Parameters!["clean_components"]=="true"&&forced.Requests.Last().Parameters!["agent_password"]=="synthetic-new-agent-password",language+" force handler passes deliberate intent with the current RAM password");
-  Check(forcedWindow.GetLogicalDescendants().OfType<CheckBox>().Single(b=>b.Name=="CleanPreparation").IsEnabled&&forcedWindow.GetLogicalDescendants().OfType<CheckBox>().Single(b=>b.Name=="CleanPreparation").IsChecked==true,language+" pending setup keeps explicit clean choice available while the backend owns its saved intent");
-  Check(forcedWindow.GetLogicalDescendants().OfType<CheckBox>().Single(b=>b.Name=="ForcePreparation").IsEnabled,language+" pending setup permits selecting a new explicit mode subject to backend reconciliation");
-  Check(forcedWindow.GetLogicalDescendants().OfType<CheckBox>().Single(b=>b.Name=="ForcePreparation").IsChecked==true&&((Dictionary<string,TextBox>)Get(forcedWindow,"_secretFields")!)["agent_password"].Text=="synthetic-new-agent-password",language+" failed force keeps the selected intent and password in RAM");
-  forced.PrepareSuccess=true;
-  FindButton(forcedWindow,"Выполнить предварительную подготовку модема").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();
-  Check(forcedWindow.GetLogicalDescendants().OfType<CheckBox>().Single(b=>b.Name=="CleanPreparation").IsChecked==false,language+" successful completion clears clean intent");
-  Check(forcedWindow.GetLogicalDescendants().OfType<CheckBox>().Single(b=>b.Name=="ForcePreparation").IsChecked==false&&!FindButton(forcedWindow,"Выполнить предварительную подготовку модема").IsEnabled,language+" completed force clears deliberate mode and cannot silently repeat on existing SSH");
-  forcedWindow.Close();Pump();
-  var cleanupOnly=new FakeModem{AllowPreparation=true,PrepareSuccess=true,Snapshot=new(true,"Synthetic SSH",ConnectionMode:"SSH",PreparationPending:true,ComponentCleanupPending:true)};
-  var cleanupWindow=new MainWindow(cleanupOnly,persistPreferences:false);cleanupWindow.Show();Pump();
-  var resumeCleanup=FindButton(cleanupWindow,"Продолжить чистую установку");
-  Check(resumeCleanup.IsEnabled&&cleanupOnly.Requests.Count==0,language+" saved cleanup is explicit and available without a password or navigation action");
-  resumeCleanup.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();
-  Check(cleanupOnly.Events.All(x=>x!="bootstrap-research")&&cleanupOnly.Requests.Count==1&&cleanupOnly.Requests[0].Operation==ModemOperation.PrepareSsh&&cleanupOnly.Requests[0].Parameters!["agent_password"]=="",language+" cleanup resume sends one explicit request without demanding or manufacturing credentials");
-  Check(FindButton(cleanupWindow,"Отменить очистку") is not null,language+" cleanup has a separate explicit cancellation control");
-  FindButton(cleanupWindow,"Отменить очистку").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();
-  Check(cleanupOnly.Requests.Last().Operation==ModemOperation.CancelComponentCleanup&&cleanupOnly.Requests.Count==2,language+" cancellation dispatches only its read-only proof operation");
-  cleanupWindow.Close();Pump();
+  foreach(var pending in new[]{false,true})
+  {
+   var replacement=new FakeModem{AllowPreparation=true,Snapshot=new(true,"Synthetic SSH",ConnectionMode:"SSH",IpAddress:"192.168.0.1",PreparationPending:pending,ComponentCleanupPending:pending)};
+   var replacementWindow=new MainWindow(replacement,persistPreferences:false);replacementWindow.Show();Pump();
+   Check(!replacementWindow.GetLogicalDescendants().OfType<CheckBox>().Any(c=>c.Name is "CleanPreparation" or "ForcePreparation"),language+" replacement has no opt-in modes, pending="+pending);
+   Check(!replacementWindow.GetLogicalDescendants().OfType<Button>().Any(b=>b.Name=="CleanPreparationInfo"||b.Content?.ToString()==Localization.Translate("Отменить очистку")),language+" replacement exposes one preparation action");
+   var prepare=FindButton(replacementWindow,"Выполнить предварительную подготовку модема");
+   Check(prepare.IsEnabled&&replacement.Requests.Count==0,language+" preparation stays available on established SSH and never starts from rendering");
+   ((Dictionary<string,TextBox>)Get(replacementWindow,"_secretFields")!)["agent_password"].Text="synthetic-new-agent-password";Pump();
+   prepare.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();
+   var request=replacement.Requests.Single();
+   Check(request.Operation==ModemOperation.PrepareSsh&&!request.Parameters!.ContainsKey("force_reinstall")&&!request.Parameters.ContainsKey("clean_components")&&request.Parameters["agent_password"]=="synthetic-new-agent-password",language+" one explicit preparation carries password but no destructive mode");
+   Check(replacement.Events.All(x=>x!="bootstrap-research"),language+" established SSH replacement avoids USB bootstrap survey");
+   Check(((Dictionary<string,TextBox>)Get(replacementWindow,"_secretFields")!)["agent_password"].Text=="synthetic-new-agent-password",language+" failed replacement retains entered password in RAM");
+   replacement.PrepareSuccess=true;FindButton(replacementWindow,"Выполнить предварительную подготовку модема").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();
+   Check(replacement.Requests.Count==2&&FindButton(replacementWindow,"Выполнить предварительную подготовку модема").IsEnabled,language+" explicit retry stays available after success without automatic replay");
+   replacementWindow.Close();Pump();
+  }
  }
  Localization.SetLanguage("ru",persist:false);
  var discovery=new FakeModem {AllowPreparation=true};var first=new MainWindow(discovery,persistPreferences:false);first.Show();Pump();

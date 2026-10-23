@@ -16,7 +16,8 @@ internal static class DiagnosticAdbTests
         var resources=Path.GetFullPath("Windows_x64/Resources");
         var root=Path.Combine(Path.GetTempPath(),"zte-diagnostic-adb-tests-"+Guid.NewGuid()); Directory.CreateDirectory(root);
         int index=0;
-        (OnboardingEngine Engine,string Storage,Wire Web) Setup(bool ready=true,WebIdentity? identity=null,bool skip=false)
+        (OnboardingEngine Engine,string Storage,Wire Web,Func<OnboardingEngine> Restart) Setup(bool ready=true,WebIdentity? identity=null,bool skip=false,
+            IRemoteShell? replacementSsh=null,string? expectedReplacementCid=null)
         {
             var storage=Path.Combine(root,(index++).ToString());Directory.CreateDirectory(storage);
             var wire=new Wire(identity??B31,original) { Ready=ready };
@@ -30,12 +31,19 @@ internal static class DiagnosticAdbTests
                 }
                 if(args.SequenceEqual(new[]{"-d","get-serialno"}))return Task.FromResult(Reply("ZTE\n"));
                 var command=stream?.OriginalCommand??args[^1];
+                if(wire.CleanRecovery && command.Contains(" -- '--clean-reinstall' '--recover-owned' ",StringComparison.Ordinal))
+                {
+                    var arguments=Regex.Match(command,@" -- '--clean-reinstall' '--recover-owned' '([0-9a-f-]{36})' '([0-9a-f]{32})' 'linux-arm64-access' ");
+                    if(!arguments.Success || !Guid.TryParseExact(arguments.Groups[1].Value,"D",out _) || arguments.Groups[2].Value!=wire.DeviceCid)
+                        throw new Exception("Unexpected owned recovery arguments");
+                    wire.RecoveryArchives++;
+                    var marker=stream?.Result??Regex.Match(command,"__ZTE_RESULT_[A-F0-9]{32}__").Value;
+                    return Task.FromResult(Reply((stream is null?"":"\n"+stream.Ready+"\n\n"+stream.Begin+"\n")+"INSTALL_RECOVERY_ARCHIVED /data/zte-imei-studio/installations/"+arguments.Groups[1].Value+"\n"+marker+"0\n"));
+                }
                 if(wire.CleanRecovery && command.Contains("'--preflight'",StringComparison.Ordinal))
                 {
                     wire.RecoveryPreflights++;
-                    if(wire.RecoveryPreflights>1)throw new ReachedInstallerBoundary();
-                    var marker=stream?.Result??Regex.Match(command,"__ZTE_RESULT_[A-F0-9]{32}__").Value;
-                    return Task.FromResult(Reply((stream is null?"":"\n"+stream.Ready+"\n\n"+stream.Begin+"\n")+"INSTALL_PREFLIGHT linux-arm64-access imei_config=unknown\n"+marker+"0\n"));
+                    throw new ReachedInstallerBoundary();
                 }
                 if(wire.StopAtPreflight && args.Count==4 && args[0]=="-s" && args[2]=="shell" && command.Contains("--preflight"))throw new ReachedInstallerBoundary();
                 if(args.Count==4 && args[0]=="-s" && args[2]=="shell" && command.Contains("test \"$(id -u)\" = 0"))
@@ -48,7 +56,13 @@ internal static class DiagnosticAdbTests
                 }
                 throw new Exception("Diagnostic path attempted a non-identity ADB command: "+string.Join(' ',args));
             },Path.GetFullPath("Windows_x64/Resources/Onboarding/adb-stream.sh"));
-            return (new OnboardingEngine("192.168.0.1",storage,resources,adb,skip,progress: message => { if(wire.StopAfterAdb && !wire.StopAtPreflight && message.StartsWith("USB ADB подтверждён:",StringComparison.Ordinal)) throw new ReachedInstallerBoundary(); }) {WebFactory=()=>new ModemWebClient("192.168.0.1",wire)},storage,wire);
+            OnboardingEngine CreateEngine()=>new OnboardingEngine("192.168.0.1",storage,resources,adb,skip,progress: message => { if(wire.StopAfterAdb && !wire.StopAtPreflight && message.StartsWith("USB ADB подтверждён:",StringComparison.Ordinal)) throw new ReachedInstallerBoundary(); }) {
+                WebFactory=()=>new ModemWebClient("192.168.0.1",wire),
+                ExistingSshFactory=replacementSsh is null?null:()=>replacementSsh,
+                CleanupSshFactory=replacementSsh is null?null:()=>replacementSsh,
+                ExpectedReplacementCid=expectedReplacementCid,
+            };
+            return (CreateEngine(),storage,wire,CreateEngine);
         }
         async Task Pending(string storage,bool reboot=false,string? firmware=null)
         {
@@ -162,14 +176,120 @@ internal static class DiagnosticAdbTests
                     catch(ReachedInstallerBoundary){}
                 }
                 Check(intact,"Old dispatched intent remains exact during Web ADB recovery: "+scenario);
-                if(scenario=="wrong-cid")Check(File.ReadAllText(path)==old&&recovery.Web.RecoveryPreflights==0,"Wrong recovered USB CID never archives old installation");
+                if(scenario=="wrong-cid")Check(File.ReadAllText(path)==old&&recovery.Web.RecoveryPreflights==0&&recovery.Web.RecoveryArchives==0,"Wrong recovered USB CID never archives old installation");
                 else
                 {
                     var next=JsonSerializer.Deserialize<OnboardingPending>(File.ReadAllBytes(path))!;
-                    Check(next.Id!=id&&!next.InstallRequested&&next.CleanComponents&&recovery.Web.RecoveryPreflights==2,"Disabled ADB recovery reaches a fresh clean installer preflight: "+scenario);
+                    Check(next.Id!=id&&!next.InstallRequested&&next.CleanComponents&&recovery.Web.RecoveryPreflights==1&&recovery.Web.RecoveryArchives==1,"Disabled ADB recovery reaches a fresh clean installer preflight after exact archive receipt: "+scenario);
                     Check(!File.Exists(Path.Combine(recovery.Storage,"adb-access-pending.json")),"Verified ADB activation closes its separate journal: "+scenario);
                 }
                 Check(recovery.Web.DebugRequests==(scenario=="backup"?0:1)&&recovery.Web.Restores==(scenario=="backup"?1:0),"Clean recovery sends each activation only once: "+scenario);
+            }
+            foreach(var scenario in new[]{"same-cid","wrong-cid","wrong-cid-web","no-usb-web","unknown-cid"})
+            {
+                var pinShell=new PinMismatchShell();
+                var recovery=Setup(ready:scenario!="no-usb-web",replacementSsh:pinShell,expectedReplacementCid:scenario=="unknown-cid"?null:Cid);
+                Directory.CreateDirectory(Path.Combine(recovery.Storage,"SSH"));
+                await File.WriteAllTextAsync(Path.Combine(recovery.Storage,"SSH/id_ed25519"),"synthetic key");
+                await File.WriteAllTextAsync(Path.Combine(recovery.Storage,"SSH/known_hosts"),"[192.168.0.1]:2222 ssh-ed25519 synthetic\n");
+                recovery.Web.StopAtPreflight=true;
+                if(scenario.StartsWith("wrong-cid",StringComparison.Ordinal))recovery.Web.DeviceCid=new string('b',32);
+                var reached=false;
+                try { await recovery.Engine.ReplaceCoreAsync(scenario.EndsWith("-web",StringComparison.Ordinal)?"web-password":"","synthetic-agent-password",testSuffix);throw new Exception("Expected fixture boundary/refusal"); }
+                catch(ReachedInstallerBoundary) { reached=true; }
+                catch(SshTrustException) when(scenario=="unknown-cid") { }
+                catch(InvalidOperationException error) when(scenario.StartsWith("wrong-cid",StringComparison.Ordinal)&&error.Message.Contains("другому модему",StringComparison.Ordinal)) { }
+                catch(InvalidOperationException error) when(scenario=="no-usb-web"&&error.Message.Contains("USB",StringComparison.Ordinal)) { }
+                Check(reached==(scenario=="same-cid"),"Changed SSH pin requires matching measured USB CID before preflight: "+scenario);
+                Check(pinShell.Calls==1&&recovery.Web.Mutations==0,"Changed SSH pin did not trigger Web writes: "+scenario);
+                Check(scenario=="unknown-cid"?recovery.Web.InventoryCount==0:scenario=="no-usb-web"?recovery.Web.InventoryCount>0&&recovery.Web.ShellCount==0:recovery.Web.ShellCount>0,"Known hardware identity is required before changed-pin USB fallback: "+scenario);
+            }
+            foreach(var pin in new[]{"missing","empty","other-host"})
+            {
+                var missingPinShell=new NeverShell();var recovery=Setup(replacementSsh:missingPinShell);recovery.Web.StopAtPreflight=true;
+                Directory.CreateDirectory(Path.Combine(recovery.Storage,"SSH"));
+                await File.WriteAllTextAsync(Path.Combine(recovery.Storage,"SSH/id_ed25519"),"synthetic key");
+                if(pin!="missing")await File.WriteAllTextAsync(Path.Combine(recovery.Storage,"SSH/known_hosts"),pin=="empty"?"":"[192.0.2.2]:2222 ssh-ed25519 synthetic\n");
+                try { await recovery.Engine.ReplaceCoreAsync("","synthetic-agent-password",testSuffix);throw new Exception("Expected installer boundary"); }
+                catch(ReachedInstallerBoundary) { }
+                Check(missingPinShell.Calls==0&&recovery.Web.ShellCount>0&&recovery.Web.Mutations==0,"Missing selected host pin uses measured USB bootstrap: "+pin);
+            }
+            foreach(var scenario in new[]{"new-boot","same-boot","wrong-cid","foreign-setup","foreign-plan","dispatched"})
+            {
+                var offlineShell=new UnavailableReadShell();var recovery=Setup(replacementSsh:offlineShell,expectedReplacementCid:Cid);
+                recovery.Web.StopAtPreflight=true;
+                if(scenario=="wrong-cid"||scenario=="foreign-plan")recovery.Web.DeviceCid=new string('b',32);
+                var id=Guid.NewGuid().ToString("D");var oldBoot=scenario=="same-boot"?Boot:"11111111-1111-1111-1111-111111111111";
+                var backup=Path.Combine(recovery.Storage,"SetupBackups",id);Directory.CreateDirectory(backup);Directory.CreateDirectory(Path.Combine(recovery.Storage,"SSH"));
+                var key=Path.Combine(recovery.Storage,"SSH/id_ed25519");var hosts=Path.Combine(recovery.Storage,"SSH/known_hosts");
+                await File.WriteAllTextAsync(key,"synthetic key");await File.WriteAllTextAsync(hosts,"[192.168.0.1]:2222 ssh-ed25519 synthetic\n");
+                var setup=new OnboardingPending{Id=id,BackupDirectory=backup,IdentitySource="single-usb",Intent="linux-arm64-access",Cid=Cid,BootId=oldBoot,
+                    FirmwareHash=ImeiEngine.FirmwareHash,RouterHash=new string('e',64),Profile="linux-arm64-access",ForceReinstall=true,CleanComponents=true,
+                    InstallRequested=true,Phase="complete",RemoteStage="/data/zte-imei-studio/stage-"+id,RemoteJournal="/data/zte-imei-studio/installations/"+id};
+                if(scenario=="foreign-setup")setup.Cid=new string('c',32);
+                if(scenario=="foreign-plan")setup.Cid=new string('b',32);
+                var setupPath=Path.Combine(recovery.Storage,"setup-pending.json");var receipt=Path.Combine(backup,"setup-result.json");
+                var setupBytes=JsonSerializer.SerializeToUtf8Bytes(setup);await File.WriteAllBytesAsync(setupPath,setupBytes);await File.WriteAllBytesAsync(receipt,setupBytes);
+                var plan=new ComponentCleanupPending{Id=id,Cid=Cid,BootId=oldBoot,FirmwareHash=ImeiEngine.FirmwareHash,RouterHash=new string('e',64),Host="192.168.0.1",
+                    KeyPath=key,KnownHostsPath=hosts,BackupDirectory=backup,SetupReceipt=receipt,Profile="linux-arm64-access",Token=Guid.NewGuid().ToString("D")};
+                if(scenario=="foreign-plan")plan.Cid=new string('b',32);
+                if(scenario=="dispatched")
+                {
+                    var archive=Encoding.UTF8.GetBytes("synthetic preserved components");await File.WriteAllBytesAsync(Path.Combine(backup,"components.tar"),archive);
+                    plan.Phase="clean-requested";plan.ArchiveSha=VerifiedHash.Sha256(archive);plan.ArchiveBytes=archive.Length;
+                }
+                var pending=Path.Combine(recovery.Storage,OnboardingEngine.CleanupPendingName);var originalIntent=JsonSerializer.SerializeToUtf8Bytes(plan);
+                await File.WriteAllBytesAsync(pending,originalIntent);
+                var reached=false;
+                try{await recovery.Engine.ReplaceCoreAsync("web-password","synthetic-agent-password",testSuffix);throw new Exception("Expected preflight/refusal boundary");}
+                catch(ReachedInstallerBoundary){reached=true;}
+                catch(Exception error) when(scenario!="new-boot"&&(error is IOException or InvalidDataException or InvalidOperationException)){}
+                Check(reached==(scenario=="new-boot"),"Only undispatched same-device new USB boot can replace stale cleanup: "+scenario);
+                Check(recovery.Web.Mutations==0&&offlineShell.Commands.All(command=>!command.Contains(" -- 'clean' ",StringComparison.Ordinal)),"Old cleanup recovery dispatches no cleanup/Web writes: "+scenario);
+                if(scenario=="new-boot")
+                {
+                    var histories=Directory.GetFiles(backup,"cleanup-before-reset-*.json");
+                    Check(!File.Exists(pending)&&histories.Length==1&&File.ReadAllBytes(histories[0]).SequenceEqual(originalIntent),"Retired cleanup retains exact old intent");
+                    Check(File.ReadAllBytes(receipt).SequenceEqual(setupBytes),"Retiring stale cleanup preserves completed setup receipt");
+                }
+                else Check(File.ReadAllBytes(pending).SequenceEqual(originalIntent)&&File.ReadAllBytes(setupPath).SequenceEqual(setupBytes),"Rejected stale cleanup recovery preserves durable intents: "+scenario);
+            }
+            foreach(var scenario in new[]{"same-cid","completed-clean-setup","wrong-cid","changed-proof","stale-firmware","foreign-journal"})
+            {
+                var expectedPreflight=scenario is "same-cid" or "completed-clean-setup";
+                var oldSetupShell=new UnavailableReadShell();var recovery=Setup(replacementSsh:oldSetupShell,expectedReplacementCid:Cid);
+                recovery.Web.StopAtPreflight=true;
+                if(scenario=="wrong-cid"||scenario=="foreign-journal")recovery.Web.DeviceCid=new string('b',32);
+                if(scenario=="changed-proof")recovery.Web.ChangeBoot=true;
+                var id=Guid.NewGuid().ToString("D");var backup=Path.Combine(recovery.Storage,"SetupBackups",id);Directory.CreateDirectory(backup);
+                Directory.CreateDirectory(Path.Combine(recovery.Storage,"SSH"));
+                await File.WriteAllTextAsync(Path.Combine(recovery.Storage,"SSH/id_ed25519"),"synthetic key");
+                await File.WriteAllTextAsync(Path.Combine(recovery.Storage,"SSH/known_hosts"),"[192.168.0.1]:2222 ssh-ed25519 synthetic\n");
+                var previous=new OnboardingPending{Id=id,BackupDirectory=backup,IdentitySource="single-usb",Intent="linux-arm64-access",Cid=Cid,
+                    BootId="11111111-1111-1111-1111-111111111111",FirmwareHash=scenario=="stale-firmware"?new string('f',64):ImeiEngine.FirmwareHash,RouterHash=new string('e',64),Profile="linux-arm64-access",
+                    InstallRequested=true,Phase="install-requested",AdbSerial="ZTE",RemoteStage="/data/zte-imei-studio/stage-"+id,RemoteJournal="/data/zte-imei-studio/installations/"+id};
+                if(scenario=="completed-clean-setup"){previous.Phase="complete";previous.CleanComponents=true;previous.ForceReinstall=true;}
+                var pendingPath=Path.Combine(recovery.Storage,"setup-pending.json");var originalSetup=JsonSerializer.SerializeToUtf8Bytes(previous);
+                if(scenario=="foreign-journal"){previous.Cid=new string('b',32);originalSetup=JsonSerializer.SerializeToUtf8Bytes(previous);}
+                await File.WriteAllBytesAsync(pendingPath,originalSetup);
+                var reached=false;
+                try{await recovery.Engine.ReplaceCoreAsync("web-password","synthetic-agent-password",testSuffix);throw new Exception("Expected preflight/refusal boundary");}
+                catch(ReachedInstallerBoundary){reached=true;}
+                catch(Exception error) when(!expectedPreflight&&(error is IOException or InvalidDataException or InvalidOperationException)){}
+                Check(reached==expectedPreflight,"Dispatched setup replacement requires two bound USB proofs: "+scenario);
+                Check(recovery.Web.Mutations==0&&recovery.Web.RecoveryArchives==0&&oldSetupShell.Commands.All(command=>command==AccessIdentity.Command),"Fresh replacement never executes previous helper or Web activation: "+scenario);
+                if(expectedPreflight)
+                {
+                    var next=JsonSerializer.Deserialize<OnboardingPending>(File.ReadAllBytes(pendingPath))!;
+                    Check(next.Id!=id&&!next.InstallRequested&&next.Cid==Cid&&next.FirmwareHash==ImeiEngine.FirmwareHash&&next.RouterHash==new string('e',64)&&next.BootId==Boot,
+                        "New undispatched setup uses current measured USB identity");
+                    Check(Directory.EnumerateFiles(recovery.Storage,"*.json",SearchOption.AllDirectories).Where(path=>path!=pendingPath).Any(path=>File.ReadAllBytes(path).SequenceEqual(originalSetup)),"Superseded dispatched setup retains exact original JSON");
+                    try{await recovery.Restart().ReplaceCoreAsync("web-password","synthetic-agent-password",testSuffix);throw new Exception("Expected resumed preflight boundary");}
+                    catch(ReachedInstallerBoundary){}
+                    var resumed=JsonSerializer.Deserialize<OnboardingPending>(File.ReadAllBytes(pendingPath))!;
+                    Check(resumed.Id==next.Id&&!resumed.InstallRequested&&recovery.Web.Mutations==0,"Fresh USB-only replacement intent resumes after host restart with entered Web password");
+                }
+                else Check(File.ReadAllBytes(pendingPath).SequenceEqual(originalSetup),"Rejected old setup replacement preserves original intent: "+scenario);
             }
             if(knownFormatOnly)return;
             var current=Setup(identity:new(B31.Imei,"CN_ZTE_MU5250V1.0.0B27","BD_CNMU5250V1.0.0B27"));
@@ -250,12 +370,32 @@ internal static class DiagnosticAdbTests
         public Task<byte[]> DownloadAsync(string path,TimeSpan? timeout=null,CancellationToken ct=default) => throw new Exception("Unexpected download");
         public Task<RemoteResult> RunAsync(string command,byte[]? stdin=null,TimeSpan? timeout=null,CancellationToken ct=default) {Calls++;throw new Exception("Unexpected remote command");}
     }
+    private sealed class PinMismatchShell:IRemoteShell
+    {
+        public int Calls;
+        public Task UploadAsync(string path,byte[] bytes,TimeSpan? timeout=null,CancellationToken ct=default)=>throw new Exception("Unexpected upload");
+        public Task<byte[]> DownloadAsync(string path,TimeSpan? timeout=null,CancellationToken ct=default)=>throw new Exception("Unexpected download");
+        public Task<RemoteResult> RunAsync(string command,byte[]? stdin=null,TimeSpan? timeout=null,CancellationToken ct=default)
+        {
+            Calls++;
+            if(command!=AccessIdentity.Command)throw new Exception("Unexpected command after SSH pin rejection");
+            throw new SshTrustException("Synthetic changed pinned SSH key",new IOException("synthetic"));
+        }
+    }
+    private sealed class UnavailableReadShell:IRemoteShell
+    {
+        public List<string> Commands=[];
+        public Task UploadAsync(string path,byte[] bytes,TimeSpan? timeout=null,CancellationToken ct=default)=>throw new Exception("Unexpected upload");
+        public Task<byte[]> DownloadAsync(string path,TimeSpan? timeout=null,CancellationToken ct=default)=>throw new Exception("Unexpected download");
+        public Task<RemoteResult> RunAsync(string command,byte[]? stdin=null,TimeSpan? timeout=null,CancellationToken ct=default)
+        {Commands.Add(command);return Task.FromResult(new RemoteResult(255,[],Encoding.UTF8.GetBytes("Connection refused")));}
+    }
     private sealed class ReachedInstallerBoundary:Exception { }
     private sealed class Wire(WebIdentity identity,byte[] original):IWebTransport
     {
         public WebIdentity Identity=identity;
         public string DeviceCid=Cid,ObservedFirmware=ImeiEngine.FirmwareHash;
-        public bool CleanRecovery;public int RecoveryPreflights;public Action? OnActivation;
+        public bool CleanRecovery;public int RecoveryPreflights,RecoveryArchives;public Action? OnActivation;
         public byte[] Backup=original;
         public bool Ready,ChangeBoot,InventoryFailure,FailEveryRequest,Advertise,LoseRebootAcknowledgement,CancelReboot,StopAfterAdb,StopAtPreflight,UnknownIntrospection;
         public Action<byte[]>? VerifyUpload;

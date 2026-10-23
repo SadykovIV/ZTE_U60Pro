@@ -86,7 +86,7 @@ enum ConfigFile {
 }
 struct Connection: Codable, Sendable {
     var host: String; var port: String; var keyPath: String; var knownHostsPath: String
-    // Explicit session-only consent: never restored from settings or transaction JSON.
+    // Legacy call compatibility; never restored and no longer an eligibility override.
     var skipFirmwareCheck = false
     enum CodingKeys: String, CodingKey { case host, port, keyPath, knownHostsPath }
     /// Preserve a user's still-readable legacy trust file. Never populate a new

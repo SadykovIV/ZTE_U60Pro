@@ -118,11 +118,11 @@ public sealed partial class OnboardingEngine
     private bool _diagnosticAccess;
     private bool _genericAccess;
     internal Func<ModemWebClient>? WebFactory { get; init; }
-    internal Func<IRemoteShell>? ExistingSshFactory { get; init; }
+    internal Func<IRemoteShell>? ExistingSshFactory { get; set; }
     internal Func<IRemoteShell>? InstalledSshFactory { get; init; }
-    internal string? ExistingKeyPath { get; init; }
-    internal string? ExistingKnownHostsPath { get; init; }
-    internal int ExistingPort { get; init; } = 2222;
+    internal string? ExistingKeyPath { get; set; }
+    internal string? ExistingKnownHostsPath { get; set; }
+    internal int ExistingPort { get; set; } = 2222;
     private string ReuseKeyPath => ExistingKeyPath ?? KeyPath;
     private string ReuseKnownHostsPath => ExistingKnownHostsPath ?? KnownHostsPath;
     private string BackupFolder => _diagnosticAccess ? "ADBAccessBackups" : "SetupBackups";
@@ -271,8 +271,11 @@ public sealed partial class OnboardingEngine
         }
         if (restoredUsbResume)
             webIdentity = savedPending!.WebIdentity;
-        else if (string.IsNullOrEmpty(webPassword))
+        else if (string.IsNullOrEmpty(webPassword) || _replacementRequiresPhysicalUsb || savedPending?.IdentitySource == "single-usb")
         {
+            // A changed SSH pin can only be rebound through fresh physical USB.
+            // A durable USB-only intent must retain that binding on later retries,
+            // even when the preparation form also contains a Web password.
             // Explicit root-USB preparation does not contact Web or manufacture
             // absent vendor identity fields. Each later read repeats USB proof.
             match = await FindMatchingAdbAsync(null, ct).ConfigureAwait(false);
@@ -722,7 +725,7 @@ public sealed partial class OnboardingEngine
     internal string InstallerProfile(WebIdentity? web, DeviceIdentity device)
     {
         if (web is not null && IsB31(web) && device.FirmwareHash == ImeiEngine.FirmwareHash && device.RouterHash == ImeiEngine.RouterHash) return "b31";
-        if (web is not null && _skipFirmwareCheck && web.Firmware == "STD_PL_MU5250V1.0.0B02" &&
+        if (web is not null && web.Firmware == "STD_PL_MU5250V1.0.0B02" &&
             web.Inner == "BD_STDPLMU5250V1.0.0B02" && device.FirmwareHash == B02FirmwareHash && device.RouterHash == ImeiEngine.RouterHash)
             return "b02-experimental";
         return "linux-arm64-access";
@@ -843,6 +846,8 @@ public sealed partial class OnboardingEngine
             try
             {
                 var identity = await ReadAdbIdentityAsync(device.Serial, web, ct).ConfigureAwait(false);
+                if (ExpectedReplacementCid is not null && identity.Cid != ExpectedReplacementCid)
+                    throw new InvalidOperationException("USB относится к другому модему; замена остановлена.");
                 matches.Add((device.Serial, identity));
             }
             catch (Exception error) when (error is IOException or InvalidDataException or TimeoutException or JsonException)

@@ -1,6 +1,6 @@
 # Release numbering
 
-The current development release is **1.26.1**.
+The current development release is **1.27**.
 
 - Substantial feature or architecture changes advance the second number:
   `1.25`, `1.26`, `1.27`.

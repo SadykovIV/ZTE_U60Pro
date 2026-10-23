@@ -1,6 +1,6 @@
 {
-  "agent_version": "2.9.0-esim.13",
-  "agent_sha256": "2dd19f6e482e269a22c515e6dc0baa507ace98d78067a6a56c0af8c515f021e4",
+  "agent_version": "2.9.0-esim.14",
+  "agent_sha256": "26a685235b521910056fc2a3b6b9a678e000c1f8944a775158af95e03bb4e739",
   "lpac_version": "2.3.0 + pinned stdio backports",
   "lpac_commit": "c2fcf5e4b21c712d54e35a11da2ad9ad134fb821",
   "lpac_linux_sha256": "92aaeb96bd02e8f3e7ab9847b15e3fae31795b244fcab92f70b595719b18718d",
@@ -62,8 +62,8 @@
     "source_ref": "da091fb7e6af804b81d51b913c20eb848303982e",
     "sha256": "29c00a9cc4bd76f5190141be668230acf00ad008871fad72a200e17f40d4883b"
   },
-  "source_archive_files": 505,
-  "source_archive_sha256": "7f1f7f151925a41b114d5eae4c518e6d13cb4af343ddae96f9ba64c98ad49e75",
+  "source_archive_files": 512,
+  "source_archive_sha256": "4ab3298841dd33a8de914a6e3c358d67c717076febaead37ab9c100ef47479c1",
   "gsma_pem_sha256": "7364a2ac4d2b5f77c1b83ee7e1c535e8fc806c67ee42e73ad97c35464d203477",
   "gsma_roots": [
     {

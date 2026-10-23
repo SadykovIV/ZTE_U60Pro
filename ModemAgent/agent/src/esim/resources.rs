@@ -18,12 +18,47 @@ const B04_IMAGE: &str = "c57e063d390983229dfc53aa87380b3d4655ee8daa1c748e1a032ac
 const B04_MDM: &str = "93a346e7d69024503caf9ad42f14c97e1514dd7d04c7b5ebef4e30473b5d5c64";
 const B04_ROUTER: &str = "55c54f74aaa427940254a2f16c36771e675a80a002363e4f10b0dfcb604d9c6f";
 
-fn radio_profile_matches(image: &str, mdm: Option<&str>, router: Option<&str>) -> bool {
-    image == B31 || (router == Some(B04_ROUTER)
-        && ((image == B04_IMAGE && mdm == Some(B04_MDM))
-            || (image == B28_IMAGE && mdm == Some(B28_MDM))))
+fn radio_profile_matches(image: Option<&str>, mdm: Option<&str>, router: Option<&str>, b04_versions: bool) -> bool {
+    image == Some(B31) || (router == Some(B04_ROUTER)
+        && ((image == Some(B04_IMAGE) && mdm == Some(B04_MDM))
+            || (image.is_none() && mdm == Some(B04_MDM) && b04_versions)
+            || (image == Some(B28_IMAGE) && mdm == Some(B28_MDM))))
 }
 
+fn b04_versions_match() -> Result<bool> {
+    // Shared ubus runner bounds time/output; no identifiers or raw errors escape.
+    let versions = crate::system::read_firmware_info()
+        .map_err(|_| Error::new("firmware_check_failed"))?;
+    Ok(versions.integrate_version.as_deref() == Some("XCBZ_HK_MU5250V1.0.0B04")
+        && versions.wa_inner_version.as_deref() == Some("BD_XCBZHKMU5250V1.0.0B04"))
+}
+
+fn measured_component(path: &Path, allow_absent: bool) -> Result<Option<String>> {
+    let failure = || Error::new("firmware_check_failed");
+    let before = match fs::symlink_metadata(path) {
+        Ok(value) => value,
+        Err(e) if allow_absent && e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(failure()),
+    };
+    if !before.is_file() || before.len() > 256 * 1024 * 1024 { return Err(failure()); }
+    let mut file = OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path).map_err(|_| failure())?;
+    let key = |m: &fs::Metadata| (m.dev(), m.ino(), m.len(), m.mtime(), m.mtime_nsec(), m.ctime(), m.ctime_nsec());
+    if key(&file.metadata().map_err(|_| failure())?) != key(&before) { return Err(failure()); }
+    let mut digest = Sha256::new();
+    let mut buffer = [0u8; 65536];
+    let mut read = 0u64;
+    loop {
+        let count = file.read(&mut buffer).map_err(|_| failure())?;
+        if count == 0 { break; }
+        read += count as u64;
+        if read > before.len() { return Err(failure()); }
+        digest.update(&buffer[..count]);
+    }
+    if read != before.len() || key(&file.metadata().map_err(|_| failure())?) != key(&before)
+        || key(&fs::symlink_metadata(path).map_err(|_| failure())?) != key(&before) { return Err(failure()); }
+    Ok(Some(format!("{:x}", digest.finalize())))
+}
 
 fn hash(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
@@ -47,26 +82,20 @@ pub fn check_device() -> Result<()> {
 /// APDU inventory and card operations use actual card/route checks.
 pub fn check_radio_device() -> Result<()> {
     check_device()?;
-    let mut f = fs::File::open("/firmware/image/modem.b16")
-        .map_err(|_| Error::new("firmware_check_failed"))?;
-    let mut digest = Sha256::new();
-    let mut buffer = [0u8; 65536];
-    loop {
-        let n = f
-            .read(&mut buffer)
-            .map_err(|_| Error::new("firmware_check_failed"))?;
-        if n == 0 {
-            break;
-        }
-        digest.update(&buffer[..n]);
-    }
-    let image = format!("{:x}", digest.finalize());
-    if image == B31 { return Ok(()); }
-    if image != B04_IMAGE && image != B28_IMAGE { return Err(Error::new("unsupported_firmware")); }
-    let mdm = fs::read("/usr/bin/zte_topsw_mdm").map_err(|_| Error::new("firmware_check_failed"))?;
-    let router = fs::read("/usr/bin/diag-router").map_err(|_| Error::new("firmware_check_failed"))?;
-    if !radio_profile_matches(&image, Some(&hash(&mdm)), Some(&hash(&router))) {
+    let image_path = Path::new("/firmware/image/modem.b16");
+    let image = measured_component(image_path, true)?;
+    if image.as_deref() == Some(B31) { return Ok(()); }
+    if image.as_deref().is_some_and(|value| value != B04_IMAGE && value != B28_IMAGE) {
         return Err(Error::new("unsupported_firmware"));
+    }
+    let mdm = measured_component(Path::new("/usr/bin/zte_topsw_mdm"), false)?;
+    let router = measured_component(Path::new("/usr/bin/diag-router"), false)?;
+    let versions_match = image.is_none() && b04_versions_match()?;
+    if !radio_profile_matches(image.as_deref(), mdm.as_deref(), router.as_deref(), versions_match) {
+        return Err(Error::new("unsupported_firmware"));
+    }
+    if image.is_none() && measured_component(image_path, true)?.is_some() {
+        return Err(Error::new("firmware_check_failed"));
     }
     Ok(())
 }
@@ -75,21 +104,60 @@ pub fn check_radio_device() -> Result<()> {
 mod radio_profile_tests {
     use super::*;
     #[test]
-    fn b31_is_unchanged_and_b28_b04_require_their_captured_components() {
-        assert!(radio_profile_matches(B31, None, None));
-        assert!(radio_profile_matches(B04_IMAGE, Some(B04_MDM), Some(B04_ROUTER)));
-        assert!(radio_profile_matches(B28_IMAGE, Some(B28_MDM), Some(B04_ROUTER)));
-        assert!(!radio_profile_matches(B28_IMAGE, Some(B04_MDM), Some(B04_ROUTER)));
-        assert!(!radio_profile_matches(B04_IMAGE, Some(B28_MDM), Some(B04_ROUTER)));
-        assert!(!radio_profile_matches(B28_IMAGE, None, Some(B04_ROUTER)));
-        assert!(!radio_profile_matches(B28_IMAGE, Some(B28_MDM), None));
-        for image in ["absent", "BD_XCBZHKMU5250V1.0.0B04", "", "unknown"] {
-            assert!(!radio_profile_matches(image, Some(B04_MDM), Some(B04_ROUTER)));
+    fn exact_profiles_do_not_infer_compatibility_from_version_names() {
+        assert!(radio_profile_matches(Some(B31), None, None, false));
+        assert!(radio_profile_matches(Some(B04_IMAGE), Some(B04_MDM), Some(B04_ROUTER), false));
+        assert!(radio_profile_matches(Some(B28_IMAGE), Some(B28_MDM), Some(B04_ROUTER), false));
+        assert!(radio_profile_matches(None, Some(B04_MDM), Some(B04_ROUTER), true));
+        for image in [None, Some(B04_IMAGE), Some(B28_IMAGE)] {
+            for (mdm, router) in [(None, Some(B04_ROUTER)), (Some("unknown"), Some(B04_ROUTER)), (Some(B04_MDM), None), (Some(B04_MDM), Some("unknown"))] {
+                assert!(!radio_profile_matches(image, mdm, router, true));
+            }
         }
-        assert!(!radio_profile_matches(B04_IMAGE, None, Some(B04_ROUTER)));
-        assert!(!radio_profile_matches(B04_IMAGE, Some("unknown"), Some(B04_ROUTER)));
-        assert!(!radio_profile_matches(B04_IMAGE, Some(B04_MDM), None));
-        assert!(!radio_profile_matches(B04_IMAGE, Some(B04_MDM), Some("unknown")));
+        assert!(!radio_profile_matches(None, Some(B04_MDM), Some(B04_ROUTER), false));
+        assert!(!radio_profile_matches(None, Some(B28_MDM), Some(B04_ROUTER), true));
+        assert!(!radio_profile_matches(Some(B28_IMAGE), Some(B04_MDM), Some(B04_ROUTER), true));
+        assert!(!radio_profile_matches(Some(B04_IMAGE), Some(B28_MDM), Some(B04_ROUTER), true));
+        for image in ["absent", "BD_XCBZHKMU5250V1.0.0B04", "", "unknown"] {
+            assert!(!radio_profile_matches(Some(image), Some(B04_MDM), Some(B04_ROUTER), true));
+        }
+    }
+    #[test]
+    fn absent_fallback_requires_both_fresh_public_versions_and_bounds_rpc() {
+        use std::os::unix::process::ExitStatusExt;
+        for (firmware, inner, expected) in [
+            ("XCBZ_HK_MU5250V1.0.0B04", "BD_XCBZHKMU5250V1.0.0B04", true),
+            ("XCBZ_HK_MU5250V1.0.0B04", "BD_CNMU5250V1.0.0B31", false),
+            ("CN_ZTE_MU5250V1.0.0B31", "BD_XCBZHKMU5250V1.0.0B04", false),
+            ("", "", false),
+        ] {
+            crate::process::with_commands(move |command| {
+                assert_eq!(command.get_program(), "ubus");
+                assert_eq!(command.get_args().map(|v| v.to_str().unwrap()).collect::<Vec<_>>(), ["call", "zwrt_web", "device_info", "{}"]);
+                Ok(std::process::Output { status: std::process::ExitStatus::from_raw(0), stdout: serde_json::to_vec(&serde_json::json!({"integrate_version":firmware,"wa_inner_version":inner,"imei":"private-canary"})).unwrap(), stderr: vec![] })
+            }, || assert_eq!(b04_versions_match().unwrap_or(false), expected));
+        }
+        crate::process::with_commands(|_| Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "private-canary")), || {
+            assert_eq!(b04_versions_match().unwrap_err().code, "firmware_check_failed");
+        });
+    }
+    #[test]
+    fn only_missing_regular_image_can_select_absent_fallback() {
+        use std::os::unix::fs::symlink;
+        let root = std::env::temp_dir().join(format!("esim-radio-profile-{}", std::process::id()));
+        fs::create_dir(&root).unwrap();
+        let image = root.join("image");
+        assert_eq!(measured_component(&image, true).unwrap(), None);
+        assert!(measured_component(&image, false).is_err());
+        symlink(root.join("missing-target"), &image).unwrap();
+        assert!(measured_component(&image, true).is_err());
+        fs::remove_file(&image).unwrap();
+        fs::create_dir(&image).unwrap();
+        assert!(measured_component(&image, true).is_err());
+        fs::remove_dir(&image).unwrap();
+        fs::write(&image, b"synthetic firmware").unwrap();
+        assert_eq!(measured_component(&image, true).unwrap(), Some(hash(b"synthetic firmware")));
+        fs::remove_dir_all(root).unwrap();
     }
 }
 

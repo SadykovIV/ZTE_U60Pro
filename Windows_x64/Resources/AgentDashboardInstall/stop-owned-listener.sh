@@ -11,12 +11,12 @@ case "$1" in
     dropbear) private_executable=/data/zte-imei-studio/bin/dropbear;;
     dashboard-uhttpd) private_executable=/data/zte-dashboard-runtime/dashboard-uhttpd;;
 esac
-dashboard_sha=76f021c43a02eab5bb634b01461370fcb8bfb270b1f14e348e5b57acb43b1d12
 port=$2
 proc_root=${U60_TEST_PROC_ROOT:-/proc}
 case "${3:-}" in ''|--list) ;; *) exit 64 ;; esac
 inodes=$(awk -v port=":$port" '$2 ~ port"$" && $4 == "0A" {print $10}' "$proc_root/net/tcp" "$proc_root/net/tcp6" 2>/dev/null || true)
 for process in "$proc_root"/[0-9]*; do
+    started=$(awk '{sub(/^.*\) /, ""); print $20}' "$process/stat" 2>/dev/null || true)
     actual=$(readlink "$process/exe" 2>/dev/null || true)
     case "$actual" in "$executable"|"$executable (deleted)") ;;
         "$private_executable"|"$private_executable (deleted)") ;;
@@ -30,12 +30,12 @@ for process in "$proc_root"/[0-9]*; do
         if [ "$listening" = true ]; then break; fi
     done
     if [ "$listening" = true ]; then
-        if [ "$1" = dashboard-uhttpd ]; then
-            # Read the actual mapped executable, never run a legacy helper
-            # from potentially writable /data/bin or /data/local/tmp.
-            actual_sha=$(sha256sum "$process/exe" | awk '{print $1}')
-            [ "$actual_sha" = "$dashboard_sha" ] || exit 1
-        fi
+        # A different installed version is still replaceable. Prove the mapped
+        # product path, the listening socket and the same process incarnation;
+        # never execute the old binary or require its release hash.
+        case "$started" in ''|*[!0-9]*) exit 1;; esac
+        [ "$(readlink "$process/exe")" = "$actual" ] || exit 1
+        [ "$(awk '{sub(/^.*\) /, ""); print $20}' "$process/stat")" = "$started" ] || exit 1
         if [ "${3:-}" = --list ]; then printf '%s\n' "${process##*/}"
         else kill "${process##*/}" 2>/dev/null || true; fi
     fi

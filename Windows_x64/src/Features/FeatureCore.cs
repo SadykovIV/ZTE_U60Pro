@@ -25,18 +25,27 @@ public sealed partial class DeviceFeatureService
     private readonly IRemoteShell _shell;
     private readonly string _resourcesRoot;
     private readonly string _storageRoot;
-    private readonly bool _skipFirmwareCheck;
+    internal string? CompletedCoreReplacementId { get; set; }
 
     public DeviceFeatureService(IRemoteShell shell, string? resourcesRoot = null, string? storageRoot = null, bool skipFirmwareCheck = false)
     {
         _shell = shell ?? throw new ArgumentNullException(nameof(shell));
-        _skipFirmwareCheck = skipFirmwareCheck;
         _resourcesRoot = resourcesRoot ?? Path.Combine(AppContext.BaseDirectory, "Resources");
         _storageRoot = storageRoot ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ZTE IMEI Studio");
     }
 
     private void CheckLocalPending()
     {
+        var replacement = Path.Combine(_storageRoot, "core-replacement-pending.json");
+        if (File.Exists(replacement) || Directory.Exists(replacement))
+        {
+            Check(File.Exists(replacement) && (File.GetAttributes(replacement) & FileAttributes.ReparsePoint) == 0 && new FileInfo(replacement).Length is > 0 and <= 65536,
+                "Повреждён журнал замены основных компонентов.");
+            using var document = JsonDocument.Parse(File.ReadAllBytes(replacement));
+            Check(document.RootElement.TryGetProperty("Phase", out var phase) && phase.GetString() == "complete" &&
+                document.RootElement.TryGetProperty("Id", out var id) && CompletedCoreReplacementId is not null && id.GetString() == CompletedCoreReplacementId,
+                "Сначала продолжите подготовку модема или установку агента.");
+        }
         var cleanup = Path.Combine(_storageRoot, "component-cleanup-pending.json");
         Check(!File.Exists(cleanup) && !Directory.Exists(cleanup), "Сначала завершите очистку компонентов программы в подготовке модема.");
         foreach (var name in new[] { "adb-access-pending.json", AdbToggleTransaction.PendingName, "system-restore-pending.json" })
@@ -74,9 +83,6 @@ public sealed partial class DeviceFeatureService
         // Access identity also represents an absent modem.b16 (for example HK B04).
         // Feature managers validate their own files and ABI before mutation.
         var measured = await Core.AccessIdentity.ReadAsync(_shell, ct);
-        if (requireSupportedFirmware && !_skipFirmwareCheck)
-            Check(measured.FirmwareHash == FirmwareHash && measured.RouterHash == RouterHash,
-                "Для этой операции не подтверждена совместимость прошивки. Соберите данные для адаптации.");
         return new DeviceIdentity(measured.Cid, measured.BootId, measured.FirmwareHash, measured.RouterHash);
     }
 

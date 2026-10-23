@@ -275,12 +275,14 @@ private final class UnavailableSSH: RemoteTransport {
     var identityReads = 0, changeBootAfterAuthentication = false
     var accessProofReads = 0, changeAccessBoot = false, accessCID = testCID, accessRouter = ModemEngine.routerHash
     var accessFailure: CommandResult?
+    var accessError: Error?
     var expectedAgentPassword = testPassword
     var agentDiskHash = digest(Data("SYNTHETIC-zte-agent".utf8)), agentMappedHash: String?
     var processProofCalls = 0, changeProcessAfterAuth = false, agentProcessValid = true
     private func output(_ value: String, status: Int32 = 0) -> CommandResult {CommandResult(status:status,stdout:Data(value.utf8),stderr:Data())}
     func run(_ command: String, input: Data?, timeout: TimeInterval) throws -> CommandResult {
         calls.append(command)
+        if let accessError, command.hasPrefix(AccessIdentity.command) || command == SSHReadProof.command { throw accessError }
         if let accessFailure, command.hasPrefix(AccessIdentity.command) || command == SSHReadProof.command { return accessFailure }
         if !ready {throw IMEIError.message("Synthetic SSH unavailable")}
         if input == Data("SYNTHETIC-clean-components.sh".utf8) || command.contains("SYNTHETIC-clean-components.sh") {
@@ -703,6 +705,45 @@ private struct Fixture {
                 if failure == 2 { f.ssh.accessRouter = String(repeating: "0", count: 64) }
                 try rejects { _ = try f.engine.prepareSSH(expectedIdentity: Identity(cid: testCID, firmwareHash: ModemEngine.firmwareHash)) }
                 try check(f.web.requests.isEmpty && f.host.calls.allSatisfy { $0 == ["devices", "-l"] || $0 == ["-d", "get-serialno"] } && f.ssh.uploads.isEmpty && f.ssh.authenticationCalls == 0, "Invalid identity reached mutation/authentication")
+            }
+        }
+        for delivery in ["exit-status", "exception"] {
+            for scenario in ["same-cid", "wrong-cid", "unknown-cid", "no-usb-web"] {
+                run("Core replacement changed SSH pin requires matching measured USB CID: \(delivery)/\(scenario)") {
+                    let f = try Fixture(); defer { f.remove() }
+                    try savePrivate(Data("synthetic key".utf8), URL(fileURLWithPath: f.engine.currentConnection.keyPath))
+                    try savePrivate(Data("[192.0.2.1]:2222 ssh-ed25519 synthetic\n".utf8), URL(fileURLWithPath: f.engine.currentConnection.knownHostsPath))
+                    let rejection = "WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!"
+                    if delivery == "exit-status" { f.ssh.accessFailure = CommandResult(status: 255, stdout: Data(), stderr: Data(rejection.utf8)) }
+                    else { f.ssh.accessError = IMEIError.message(rejection) }
+                    f.host.identityMode = true; f.host.deviceList = "List of devices attached\nABC device usb:1\n"
+                    if scenario == "no-usb-web" { f.host.deviceList = "List of devices attached\n" }
+                    f.host.preflightError = true
+                    if scenario == "wrong-cid" { f.host.identityCID = String(repeating: "b", count: 32) }
+                    let expected = scenario == "unknown-cid" ? nil : Identity(cid: testCID, firmwareHash: ModemEngine.firmwareHash)
+                    try rejects(scenario == "same-cid" ? "PREFLIGHT_TOOL" : nil) {
+                        _ = try f.engine.replaceCore(webPassword: scenario == "no-usb-web" ? testPassword : "", agentPassword: testPassword,
+                            expectedIdentity: expected, expectedIMEI: scenario == "no-usb-web" ? testIMEI : nil)
+                    }
+                    let reachedPreflight = f.host.calls.contains { $0.joined(separator: " ").contains("'--preflight'") }
+                    try check(reachedPreflight == (scenario == "same-cid"), "Changed pin bypassed expected USB CID or blocked matching USB")
+                    try check(f.host.pushCount == 0 && f.host.installerCalls == 0 && f.ssh.uploads.isEmpty && f.web.restoreCount == 0 && f.web.uploadedData == nil, "Changed pin reached a write before measured prerequisites")
+                    if scenario == "unknown-cid" { try check(f.host.calls.isEmpty && f.web.requests.isEmpty, "Changed pin without known CID started fallback") }
+                    if scenario == "no-usb-web" { try check(f.web.requests.isEmpty && f.web.directCount == 0, "Changed pin with known IMEI authorized unbound HTTP fallback") }
+                }
+            }
+        }
+        for pin in ["missing", "empty", "other-host"] {
+            run("Core replacement without selected host pin permits measured USB bootstrap: \(pin)") {
+                let f = try Fixture(); defer { f.remove() }
+                try savePrivate(Data("synthetic key".utf8), URL(fileURLWithPath: f.engine.currentConnection.keyPath))
+                if pin != "missing" {
+                    try savePrivate(Data((pin == "empty" ? "" : "[192.0.2.2]:2222 ssh-ed25519 synthetic\n").utf8), URL(fileURLWithPath: f.engine.currentConnection.knownHostsPath))
+                }
+                f.host.identityMode = true; f.host.deviceList = "List of devices attached\nABC device usb:1\n"; f.host.preflightError = true
+                try rejects("PREFLIGHT_TOOL") { _ = try f.engine.replaceCore(webPassword: "", agentPassword: testPassword) }
+                try check(f.host.calls.contains { $0.joined(separator: " ").contains("'--preflight'") } && f.ssh.calls.isEmpty, "Missing host pin did not use measured USB bootstrap")
+                try check(f.host.pushCount == 0 && f.host.installerCalls == 0 && f.web.restoreCount == 0 && f.web.uploadedData == nil, "Bootstrap crossed preflight boundary")
             }
         }
         run("SSH preparation observes B02 and unknown firmware without NV or an override") {
@@ -1232,6 +1273,91 @@ private struct Fixture {
             try check(f.web.requests.isEmpty && f.host.calls.isEmpty && f.ssh.calls.isEmpty && f.host.installerCalls==0,
                       "Unknown cleanup state replayed preparation or accessed a device")
         }
+        for scenario in ["new-boot", "same-boot", "wrong-cid", "foreign-setup", "foreign-plan", "dispatched"] {
+            run("Core replacement retires only undispatched same-device cleanup after USB reboot: \(scenario)") {
+                let f = try Fixture(); defer { f.remove() }
+                let id = UUID().uuidString.lowercased(), oldBoot = scenario == "same-boot" ? "01234567-89ab-4cde-8f01-23456789abcd" : "11111111-1111-1111-1111-111111111111"
+                let setup = f.root.appendingPathComponent("SetupBackups/" + id), backup = f.root.appendingPathComponent("ComponentBackups/" + id)
+                try secureDirectory(setup); try secureDirectory(backup)
+                try savePrivate(Data("synthetic key".utf8), URL(fileURLWithPath: f.engine.currentConnection.keyPath))
+                try savePrivate(Data("[192.0.2.1]:2222 ssh-ed25519 synthetic\n".utf8), URL(fileURLWithPath: f.engine.currentConnection.knownHostsPath))
+                var journal = AccessSetupJournal(id: id, cid: testCID, bootID: oldBoot, firmwareHash: ModemEngine.firmwareHash,
+                    routerHash: ModemEngine.routerHash, installerProfile: "linux-arm64-access", directory: setup.path, adbSerial: "ABC")
+                journal.phase = "complete"; journal.installRequested = true; journal.forceReinstall = true; journal.cleanComponents = true
+                if scenario == "foreign-setup" { journal.cid = String(repeating: "c", count: 32) }
+                if scenario == "foreign-plan" { journal.cid = String(repeating: "b", count: 32) }
+                journal.remoteStage = SetupRemotePaths.anchor + "/stage-" + id; journal.remoteJournal = SetupRemotePaths.anchor + "/installations/" + id
+                try saveJSON(journal, setup.appendingPathComponent("setup-result.json")); try saveJSON(journal, f.engine.pending)
+                var plan = ComponentCleanupPlan(id: id, cid: testCID, bootID: oldBoot, firmwareHash: ModemEngine.firmwareHash,
+                    routerHash: ModemEngine.routerHash, connection: f.engine.currentConnection,
+                    setupReceipt: setup.appendingPathComponent("setup-result.json").path, backupDirectory: backup.path)
+                if scenario == "foreign-plan" { plan.cid = String(repeating: "b", count: 32) }
+                if scenario == "dispatched" {
+                    let data = Data("synthetic preserved components".utf8)
+                    try savePrivate(data, backup.appendingPathComponent("components.tar"))
+                    plan.phase = "clean-requested"; plan.archiveSha = digest(data); plan.archiveBytes = Int64(data.count)
+                }
+                let pending = ComponentCleanup.pendingURL(f.root)
+                try saveJSON(plan, pending)
+                let original = try Data(contentsOf: pending), originalSetup = try Data(contentsOf: f.engine.pending)
+                f.ssh.accessFailure = CommandResult(status: 255, stdout: Data(), stderr: Data("Connection refused".utf8))
+                f.host.identityMode = true; f.host.deviceList = "List of devices attached\nABC device usb:1\n"; f.host.preflightError = true
+                if scenario == "wrong-cid" || scenario == "foreign-plan" { f.host.identityCID = String(repeating: "b", count: 32) }
+                try rejects(scenario == "new-boot" ? "PREFLIGHT_TOOL" : nil) {
+                    _ = try f.engine.replaceCore(webPassword: testPassword, agentPassword: testPassword,
+                        expectedIdentity: Identity(cid: testCID, firmwareHash: ModemEngine.firmwareHash))
+                }
+                let preflight = f.host.calls.contains { $0.joined(separator: " ").contains("'--preflight'") }
+                try check(preflight == (scenario == "new-boot"), "Cleanup recovery crossed the wrong USB identity/dispatch boundary")
+                try check(f.ssh.cleanupActions.isEmpty && f.web.restoreCount == 0 && f.web.uploadedData == nil && f.web.directCount == 0 && f.host.installerCalls == 0 && f.host.pushCount == 0, "Cleanup recovery dispatched old cleanup or device writes")
+                if scenario == "new-boot" {
+                    try check(!FileManager.default.fileExists(atPath: pending.path), "Undispatched cleanup was not retired")
+                    let archived = try FileManager.default.contentsOfDirectory(at: backup, includingPropertiesForKeys: nil).filter { $0.lastPathComponent.hasPrefix("cleanup-before-reset-") }
+                    try check(archived.count == 1, "Missing retired cleanup history")
+                    try check(try Data(contentsOf: archived[0]) == original, "Retired cleanup bytes were not preserved")
+                    try check(try Data(contentsOf: setup.appendingPathComponent("setup-result.json")) == originalSetup, "Completed setup receipt changed")
+                } else {
+                    let retained = try Data(contentsOf: pending), retainedSetup = try Data(contentsOf: f.engine.pending)
+                    try check(retained == original && retainedSetup == originalSetup, "Refused cleanup recovery changed durable intent")
+                }
+            }
+        }
+        for scenario in ["same-cid", "wrong-cid", "changed-proof", "stale-firmware", "foreign-journal"] {
+            run("Explicit replacement supersedes old dispatched setup only after two bound USB proofs: \(scenario)") {
+                let f = try Fixture(); defer { f.remove() }
+                let id = UUID().uuidString.lowercased(), directory = f.root.appendingPathComponent("SetupBackups/" + id)
+                try secureDirectory(directory)
+                try savePrivate(Data("synthetic key".utf8), URL(fileURLWithPath: f.engine.currentConnection.keyPath))
+                try savePrivate(Data("[192.0.2.1]:2222 ssh-ed25519 synthetic\n".utf8), URL(fileURLWithPath: f.engine.currentConnection.knownHostsPath))
+                var previous = AccessSetupJournal(id: id, cid: testCID, bootID: "11111111-1111-1111-1111-111111111111",
+                    firmwareHash: scenario == "stale-firmware" ? String(repeating: "f", count: 64) : ModemEngine.firmwareHash, routerHash: ModemEngine.routerHash,
+                    installerProfile: "linux-arm64-access", directory: directory.path, adbSerial: "ABC")
+                previous.phase = "install-requested"; previous.installRequested = true
+                if scenario == "foreign-journal" { previous.cid = String(repeating: "b", count: 32) }
+                previous.remoteStage = SetupRemotePaths.anchor + "/stage-" + id; previous.remoteJournal = SetupRemotePaths.anchor + "/installations/" + id
+                try saveJSON(previous, f.engine.pending)
+                let original = try Data(contentsOf: f.engine.pending)
+                f.ssh.accessFailure = CommandResult(status: 255, stdout: Data(), stderr: Data("Connection refused".utf8))
+                f.host.identityMode = true; f.host.deviceList = "List of devices attached\nABC device usb:1\n"; f.host.preflightError = true
+                if scenario == "wrong-cid" || scenario == "foreign-journal" { f.host.identityCID = String(repeating: "b", count: 32) }
+                if scenario == "changed-proof" { f.host.identityCIDSequence = [testCID, String(repeating: "b", count: 32)] }
+                try rejects(scenario == "same-cid" ? "PREFLIGHT_TOOL" : nil) {
+                    _ = try f.engine.replaceCore(webPassword: testPassword, agentPassword: testPassword,
+                        expectedIdentity: Identity(cid: testCID, firmwareHash: ModemEngine.firmwareHash))
+                }
+                let preflight = f.host.calls.contains { $0.joined(separator: " ").contains("'--preflight'") }
+                try check(preflight == (scenario == "same-cid"), "Old setup replacement crossed USB identity boundary")
+                try check(f.host.installerCalls == 0 && f.host.pushCount == 0 && f.host.stateProbeCalls == 0 && f.web.restoreCount == 0 && f.web.uploadedData == nil && f.web.directCount == 0,
+                          "Explicit replacement resumed the old helper or activated Web ADB")
+                if scenario == "same-cid" {
+                    let next = try readJSON(AccessSetupJournal.self, f.engine.pending)
+                    try check(next.id != id && !next.installRequested && next.cid == testCID && next.firmwareHash == ModemEngine.firmwareHash && next.routerHash == ModemEngine.routerHash && next.bootID == "01234567-89ab-4cde-8f01-23456789abcd",
+                              "Fresh undispatched setup was not bound to the current measured device")
+                    let files = FileManager.default.enumerator(at: f.root, includingPropertiesForKeys: nil)!.allObjects.compactMap { $0 as? URL }.filter { $0.pathExtension == "json" && $0 != f.engine.pending }
+                    try check(files.contains { (try? Data(contentsOf: $0)) == original }, "Superseded dispatched setup bytes were not archived")
+                } else { try check(try Data(contentsOf: f.engine.pending) == original, "Refused setup replacement changed old durable intent") }
+            }
+        }
         run("Dangling cleanup intent blocks bootstrap before any transport") {
             let f=try Fixture();defer { f.remove() }
             try FileManager.default.createSymbolicLink(at:ComponentCleanup.pendingURL(root:f.root),withDestinationURL:f.root.appendingPathComponent("absent-plan"))
@@ -1673,11 +1799,11 @@ private struct Fixture {
             catch let failure as TestFailure { throw failure }
             catch { try check(error.localizedDescription.contains("локальный код 3") && !error.localizedDescription.contains("unlabelled-sensitive-value"), "Local result leaked sensitive output") }
         }
-        run("Installer profile allows exact B02 only with explicit experimental flag") {
+        run("Installer automatically selects exact B02 without a version override") {
             var object = deviceObject(); object["integrate_version"] = "STD_PL_MU5250V1.0.0B02"; object["wa_inner_version"] = "BD_STDPLMU5250V1.0.0B02"
             let web = try WebIdentity(object, skipFirmwareCheck: true), device = Identity(cid: testCID, firmwareHash: OnboardingEngine.b02FirmwareHash)
             try check(try OnboardingEngine.installerProfile(web: web, device: device, experimental: true) == "b02-experimental", "B02 tuple not recognized")
-            try rejects { _ = try OnboardingEngine.installerProfile(web: web, device: device, experimental: false) }
+            try check(try OnboardingEngine.installerProfile(web: web, device: device, experimental: false) == "b02-experimental", "Exact B02 required a manual override")
             try rejects { _ = try OnboardingEngine.installerProfile(web: web, device: Identity(cid: testCID, firmwareHash: String(repeating: "0", count: 64)), experimental: true) }
         }
         run("B02 incompatible backup template refuses restore without a firmware-name gate") {
@@ -1705,7 +1831,7 @@ private struct Fixture {
             f.host.identityInfo = f.web.info; f.host.identityFirmware = OnboardingEngine.b02FirmwareHash
             f.ssh.info = f.web.info; f.ssh.firmware = OnboardingEngine.b02FirmwareHash
             f.host.onInstall = { [weak host = f.host, weak ssh = f.ssh] in ssh?.ready = true; ssh?.installedJournal = host?.remoteJournal ?? "" }
-            var connection = f.engine.currentConnection; connection.skipFirmwareCheck = true
+            let connection = f.engine.currentConnection
             let manager = try OnboardingEngine(root: f.root, resources: f.resources, connection: connection, backupSuffix: testBackupSuffix, web: f.engine.web, runner: f.host, sshFactory: { _ in f.ssh }, researchRunner: MockResearch())
             let result = try manager.run(password: testPassword)
             try check(result.state == nil && result.identity?.firmwareHash == OnboardingEngine.b02FirmwareHash && result.firmware.hasSuffix("B02"), "B02 falsely reported NV readiness")
@@ -1744,14 +1870,14 @@ private struct Fixture {
             let host=MockHost(),adb=ADBClient(binary:URL(fileURLWithPath:"/synthetic/adb"),runner:host)
             host.identityMode=true;let expected=try WebIdentity(deviceObject())
             try check(try adb.identity("ABC",expected:expected).cid==testCID,"Verified ADB identity")
-            host.identityHashesValid=false;try rejects {_ = try adb.identity("ABC",expected:expected)}
+            host.identityHashesValid=false;try check(try adb.identity("ABC",expected:expected).firmwareHash == String(repeating: "0", count: 64), "Identity read lost measured unknown hash")
             host.identityHashesValid=true;host.identityIMEI="353490068701230";try rejects {_ = try adb.identity("ABC",expected:expected)}
             host.identityIMEI=testIMEI;host.identityCID="../../other";try rejects {_ = try adb.identity("ABC",expected:expected)}
         }
         run("Firmware override web identity still validates IMEI and preserves version") {
             var object = deviceObject(); object["integrate_version"] = "CN_ZTE_MU5250V1.0.0B32"
             object["wa_inner_version"] = "BD_CNMU5250V1.0.0B32"
-            try rejects { _ = try WebIdentity(object) }
+            try check(try WebIdentity(object).firmware.hasSuffix("B32"), "Identity read was treated as a write grant")
             let value = try WebIdentity(object, skipFirmwareCheck: true)
             try check(value.firmware.hasSuffix("B32") && value.inner.hasSuffix("B32"), "Version replaced with B31")
             object["imei"] = "353490068701223"

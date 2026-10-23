@@ -8,6 +8,7 @@ if (args.Contains("--imei-read-only")) { await ImeiReadTests.RunAsync(); return;
 if (args.Contains("--preparation-recovery-only")) { await PreparationRecoveryTests.RunAsync(); return; }
 
 if (args.Contains("--component-cleanup-only")) { await ComponentCleanupTests.RunAsync(); return; }
+if (args.Contains("--core-replacement-only")) { await CoreReplacementTests.RunAsync(); return; }
 if (args.Contains("--ready-reinstall-only")) { await ReadyReinstallTests.RunAsync(); return; }
 if (args.Contains("--force-preparation-only")) { await ForcePreparationTests.RunAsync(); return; }
 

@@ -12,6 +12,8 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import sys
+import shlex
 
 RES = Path(__file__).resolve().parents[1] / 'Resources/Onboarding'
 BOOT = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
@@ -40,10 +42,11 @@ class InstallTests(unittest.TestCase):
         self.env = dict(os.environ, PATH=str(self.bin) + ':/usr/bin:/bin', MOCK_ROOT=str(self.root))
         self.write('/etc/rc.local', '#!/bin/sh\necho 1 > /sys/class/android_usb/android0/usb_op\n# preserved\nexit 0\n', 0o751)
         self.write('/sys/block/mmcblk0/device/cid', CID + '\n')
-        self.write('/proc/net/tcp', '  0: 00000000:08AE 00000000:0000 0A 0 0 0 0 0 4242\n')
+        self.write('/proc/net/tcp', '')
         self.write('/proc/net/tcp6', '')
         self.write('/proc/1/cmdline', 'procd\0')
         self.write('/proc/1234/cmdline', '/data/zte-agent\0')
+        self.write('/proc/1234/stat','1234 (zte-agent) '+' '.join(['S']+['0']*18+['777'])+'\n')
         self.write('/proc/5678/cmdline', '/data/zte-imei-studio/bin/dropbear\0')
         self.write('/proc/sys/kernel/random/boot_id', BOOT+'\n')
         self.write('/proc/sys/kernel/random/uuid', 'cccccccc-dddd-eeee-ffff-111111111111\n')
@@ -63,22 +66,25 @@ class InstallTests(unittest.TestCase):
         self.command('df', '#!/bin/sh\nprintf "Filesystem 1024-blocks Used Available Capacity Mounted\\nmock 200000 0 200000 0 /\\n"\n')
         self.command('pidof', '#!/bin/sh\nif [ "$1" = dropbear ]; then [ -f "$MOCK_ROOT/data/zte-imei-studio/bin/dropbear" ] || exit 1; echo 5678; else [ -f "$MOCK_ROOT/running" ] || exit 1; echo 1234; fi\n')
         self.command('readlink', '#!/bin/sh\ncase "$1" in */proc/1234/exe) printf "%s/data/zte-agent\\n" "$MOCK_ROOT";; */proc/5678/exe) printf "%s/data/zte-imei-studio/bin/dropbear\\n" "$MOCK_ROOT";; *) exec /usr/bin/readlink "$@";; esac\n')
-        self.command('stat', f'''#!{shutil.which('python3')}
-import os,stat,sys
-args=[a for a in sys.argv[1:] if a != '-L'];field=args[1];path=args[2]
-if path.endswith('/proc/1234/exe'):path=os.environ['MOCK_ROOT']+'/data/zte-agent'
-if path.endswith('/proc/5678/exe'):path=os.environ['MOCK_ROOT']+'/data/zte-imei-studio/bin/dropbear'
-value=os.fstat(9) if path.endswith('/proc/self/fd/9') else os.stat(path); mode=oct(stat.S_IMODE(value.st_mode))[2:]
-owner=os.environ.get('MOCK_STARTUP_OWNER','0') if path.endswith('/start_zte_agent.sh') else '0'
-if field=='%u': print(owner)
-elif field=='%a': print(mode)
-elif field=='%h': print(value.st_nlink)
-elif field=='%s': print(value.st_size)
-elif field=='%u:%a': print(owner+':'+mode)
-elif field=='%u:%h': print(owner+':'+str(value.st_nlink))
-elif field=='%d:%i:%u:%a:%h': print(str(value.st_dev)+':'+str(value.st_ino)+':'+owner+':'+mode+':'+str(value.st_nlink))
-else: sys.exit(1)
+        self.command('fd-stat', f'''#!{sys.executable}
+import os,sys
+s=os.fstat(9)
+values={{'%d':str(s.st_dev),'%i':str(s.st_ino),'%u':'0','%a':format(s.st_mode & 0o7777,'o'),'%h':str(s.st_nlink),'%s':str(s.st_size)}}
+print(':'.join(values[x] for x in sys.argv[1].split(':')))
 ''')
+        formats=['%u','%a','%h','%s','%u:%a','%u:%h','%d:%i:%u:%a:%h']
+        stat_lines=['follow=; if [ "${1:-}" = -L ];then follow=-L;shift;fi',
+                    '[ "$1" = -c ] || exit 1','field=$2; path=$3',
+                    'case "$path" in */proc/1234/exe) path="$MOCK_ROOT/data/zte-agent";; */proc/5678/exe) path="$MOCK_ROOT/data/zte-imei-studio/bin/dropbear";; */proc/self/fd/9) exec fd-stat "$field";; esac',
+                    'stat_owner=0; case "$path" in */start_zte_agent.sh) stat_owner=${MOCK_STARTUP_OWNER:-0};; esac',
+                    'case "$field" in']
+        for field in formats:
+            native=field.replace('%u','${stat_owner}')
+            if sys.platform=='darwin':native=native.replace('%a','%Lp').replace('%h','%l').replace('%s','%z')
+            flag='-f' if sys.platform=='darwin' else '-c'
+            stat_lines.append(field+') exec /usr/bin/stat $follow '+flag+' "'+native+'" "$path";;')
+        stat_lines.append('*) exit 1;; esac')
+        self.command('stat','#!/bin/sh\n'+'\n'.join(stat_lines)+'\n')
         self.command('sha256sum', f'''#!{shutil.which('python3')}
 from pathlib import Path
 import hashlib,sys,os
@@ -134,6 +140,7 @@ else:
 case "$1" in
  -t) printf 'mock host key\n' > "$4";;
  -y) grep -q 'mock host key' "$3" || exit 1; printf 'ssh-ed25519 AAAA mock\n';;
+ -s) printf '  0: 00000000:08AE 00000000:0000 0A 0 0 0 0 0 4242\n' > "$MOCK_ROOT/proc/net/tcp";;
  *) exit 0;;
 esac
 ''')
@@ -160,11 +167,12 @@ esac
         p.write_text(text)
         p.chmod(0o700)
 
-    def run_setup(self, cid=CID, agent_hash=None, profile=None, firmware=None, router=ROUTER, boot=None, force=False, clean=False):
+    def run_setup(self, cid=CID, agent_hash=None, profile=None, firmware=None, router=ROUTER, boot=None, force=False, clean=False, preserve=False):
         args = [str(self.stage), cid, agent_hash or digest(self.stage/'zte-agent'), digest(self.stage/'dropbear'), digest(self.stage/'id_ed25519.pub')]
         if profile is not None: args.extend([profile, firmware or FIRMWARE, router])
         if boot is not None: args.append(boot)
         if clean or force: args.insert(0,'--clean-reinstall' if clean else '--reinstall')
+        if preserve:args.insert(0,'--preserve-agent-settings')
         return subprocess.run(['/bin/sh', str(self.stage/'setup-agent.sh'), *args], env=self.env, capture_output=True, text=True)
 
     def commit(self, profile=None, firmware=None, router=ROUTER, boot=None):
@@ -173,10 +181,11 @@ esac
         if boot is not None: args.append(boot)
         return subprocess.run(['/bin/sh', str(self.stage/'setup-agent.sh'), *args], env=self.env, capture_output=True, text=True)
 
-    def preflight(self, cid=CID, profile='b31', firmware=FIRMWARE, router=ROUTER, boot=None, force=False, clean=False):
+    def preflight(self, cid=CID, profile='b31', firmware=FIRMWARE, router=ROUTER, boot=None, force=False, clean=False, preserve=False):
         args=['/bin/sh','-c',self.script_text,'--','--preflight',cid,profile,firmware,router]
         if boot is not None: args.append(boot)
         if clean or force:args.insert(4,'--clean-reinstall' if clean else '--reinstall')
+        if preserve:args.insert(4,'--preserve-agent-settings')
         return subprocess.run(args,env=self.env,capture_output=True,text=True)
 
     def recover(self, cid=CID, profile='b31', firmware=FIRMWARE, router=ROUTER, boot=None, token=TOKEN):
@@ -195,6 +204,7 @@ esac
 
     def forced_existing(self, running=True):
         self.owner()
+        self.write('/proc/net/tcp', '  0: 00000000:08AE 00000000:0000 0A 0 0 0 0 0 4242\n')
         marker=self.stage/'.install-requested';marker.write_bytes((self.stage/'.owner').read_bytes());marker.chmod(0o600)
         old=self.write('/data/zte-agent','#!/bin/sh\n# old running binary\n',0o700)
         oldhash=digest(old);newhash=digest(self.stage/'zte-agent')
@@ -216,6 +226,191 @@ esac
 
     def verify_not_started(self):
         return subprocess.run(['/bin/sh','-c',self.script_text,'--','--verify-not-started',str(self.stage),CID,'b31',FIRMWARE,ROUTER],env=self.env,capture_output=True,text=True)
+
+    def test_old_agent_installer_is_archived_regardless_of_owner_schema(self):
+        self.write('/data/zte-agent-installer/owner','unknown historical format')
+        self.write('/data/zte-agent-installer/pending','broken pending')
+        self.write('/data/zte-agent-installer/previous.bin','previous program kept')
+        self.assert_success(self.preflight())
+        self.assertFalse((self.root/'data/zte-agent-installer').exists())
+        saved=list(self.stage.parent.glob('core-recovery-*'))[0]/'agent-installer'
+        self.assertEqual((saved/'previous.bin').read_text(),'previous program kept')
+        self.assertEqual((saved/'pending').read_text(),'broken pending')
+        self.assert_success(self.run_setup());self.assert_success(self.commit())
+
+    def test_other_running_agent_writers_block_history_retirement(self):
+        marker=self.write('/data/zte-agent-installer/pending','keep')
+        for name in ['/tmp/update-agent.sh','/tmp/package/upgrade-controller.sh','/tmp/zte-vpn-agent/install']:
+            with self.subTest(name=name):
+                self.write('/proc/9911/cmdline','sh\0'+name+'\0')
+                result=self.preflight();self.assertIn('CORE_RECOVERY_BUSY',result.stderr)
+                self.assertEqual(marker.read_text(),'keep');self.assertFalse(list(self.stage.parent.glob('core-recovery-*')))
+
+    def test_process_reuse_after_previous_agent_stop_is_checked_before_signal(self):
+        proof='1234:777:'+'a'*64+'\n5678:777:'+'a'*64
+        self.write('/running-hash','a'*64)
+        self.write('/proc/5678/stat','5678 (zte-agent) '+' '.join(['S']+['0']*18+['777'])+'\n')
+        self.command('pidof','#!/bin/sh\n[ -f "$MOCK_ROOT/first-stopped" ] || printf "1234 "\nprintf "5678\\n"\n')
+        self.command('readlink','#!/bin/sh\ncase "$1" in */proc/5678/exe) if [ -f "$MOCK_ROOT/first-stopped" ];then echo /usr/bin/unrelated;else printf "%s/data/zte-agent\\n" "$MOCK_ROOT";fi;; *) printf "%s/data/zte-agent\\n" "$MOCK_ROOT";; esac\n')
+        self.command('mock-kill','#!/bin/sh\nprintf "%s %s\\n" "$1" "$2" >> "$MOCK_ROOT/signals"\ntouch "$MOCK_ROOT/first-stopped"\n')
+        body=self.script_text[self.script_text.index('core_stop_agents() {'):self.script_text.index('# A running pinned SSH listener')]
+        script='hash() { printf "%s\\n" "'+('a'*64)+'"; }\ncore_agent_processes() { printf "%s\\n" "$agent_process"; }\n'+body+'\nagent_process="'+proof+'"\ncore_stop_agents\n'
+        result=subprocess.run(['/bin/sh','-c',script],env=self.env,capture_output=True,text=True)
+        self.assertNotEqual(result.returncode,0)
+        self.assertEqual((self.root/'signals').read_text(),'TERM 1234\n')
+
+    def test_supplied_password_replaces_startup_directory_and_preserves_its_contents(self):
+        old=self.root/'data/zte-imei-studio/start_zte_agent.sh';old.mkdir(mode=0o755)
+        (old/'user-note').write_text('must be recoverable')
+        self.assert_success(self.run_setup());self.assert_success(self.commit())
+        self.assertTrue(old.is_file())
+        archive=list(self.stage.parent.glob('core-objects-*'))[0]
+        objects=[p for p in archive.iterdir() if p.is_dir()]
+        self.assertEqual(len(objects),1);self.assertEqual((objects[0]/'user-note').read_text(),'must be recoverable')
+
+    def test_supplied_password_replaces_startup_link_without_touching_external_target(self):
+        target=self.write('/data/OEM-canary','#!/bin/sh\ntouch "$MOCK_ROOT/forbidden"\n',0o751);before=target.read_bytes();mode=target.stat().st_mode
+        old=self.stage.parent/'start_zte_agent.sh';old.symlink_to(target)
+        self.assert_success(self.run_setup());self.assert_success(self.commit())
+        self.assertFalse(old.is_symlink());self.assertEqual(target.read_bytes(),before);self.assertEqual(target.stat().st_mode,mode)
+        self.assertFalse((self.root/'forbidden').exists())
+        archive=list(self.stage.parent.glob('core-objects-*'))[0]
+        links=[p for p in archive.iterdir() if p.is_symlink()];self.assertEqual(len(links),1);self.assertEqual(links[0].readlink(),target)
+
+    def test_invalid_binary_directory_is_archived_before_fresh_install(self):
+        old=self.root/'data/zte-agent';old.mkdir();(old/'unknown').write_text('old installation data')
+        self.assert_success(self.run_setup());self.assertTrue(old.is_file())
+        archive=list(self.stage.parent.glob('core-objects-*'))[0]
+        self.assertEqual(next(p for p in archive.iterdir() if p.is_dir()).joinpath('unknown').read_text(),'old installation data')
+
+    def test_quarantined_invalid_startup_is_not_reactivated_on_rollback(self):
+        target=self.write('/data/external-startup','untouched');old=self.stage.parent/'start_zte_agent.sh';old.symlink_to(target)
+        (self.stage/'start-agent.sh').write_text('#!/bin/sh\nexit 41\n')
+        result=self.run_setup();self.assertIn('INSTALL_ROLLED_BACK',result.stderr)
+        self.assertFalse(old.exists());self.assertFalse(old.is_symlink());self.assertEqual(target.read_text(),'untouched')
+        archive=list(self.stage.parent.glob('core-objects-*'))[0];self.assertTrue(any(p.is_symlink() for p in archive.iterdir()))
+        self.assert_success(self.verify_rollback())
+
+    def test_mount_at_invalid_product_file_is_not_quarantined(self):
+        old=self.root/'data/zte-agent';old.mkdir()
+        mount=self.root/'proc/self/mountinfo';mount.write_text(mount.read_text()+f'4 2 8:3 / {old} rw - ext4 /dev/foreign rw\n')
+        result=self.run_setup();self.assertIn('CORE_OBJECT_MOUNT',result.stderr)
+        self.assertTrue(old.is_dir());self.assertFalse(list(self.stage.parent.glob('core-objects-*')))
+
+    def test_core_preflight_records_and_normalizes_safe_legacy_directory_modes(self):
+        (self.stage.parent/'bin').mkdir(mode=0o750)
+        self.journal.parent.mkdir(mode=0o755)
+        self.stage.parent.chmod(0o755)
+        self.assert_success(self.preflight())
+        for directory in [self.stage.parent,self.stage.parent/'bin',self.journal.parent]:self.assertEqual(directory.stat().st_mode & 0o777,0o700)
+        archives=list(self.stage.parent.glob('directory-recovery-*'));self.assertEqual(len(archives),1)
+        metadata=(archives[0]/'modes').read_text();self.assertIn(':0:755:',metadata);self.assertIn(':0:750:',metadata)
+        self.assert_success(self.preflight());self.assertEqual(len(list(self.stage.parent.glob('directory-recovery-*'))),1)
+
+    def test_core_replaces_helpers_while_legacy_ssh_listener_remains_live(self):
+        self.forced_existing()
+        legacy=self.write('/data/bin/dropbear','#!/bin/sh\ntouch "$MOCK_ROOT/old-ssh-executed"\n',0o755)
+        before=legacy.read_bytes()
+        self.command('readlink','#!/bin/sh\ncase "$1" in */proc/1234/exe) printf "%s/data/zte-agent\\n" "$MOCK_ROOT";; */proc/5678/exe) printf "%s/data/bin/dropbear\\n" "$MOCK_ROOT";; *) exec /usr/bin/readlink "$@";; esac\n')
+        self.assert_success(self.run_setup());self.assert_success(self.commit())
+        self.assertEqual(legacy.read_bytes(),before);self.assertFalse((self.root/'old-ssh-executed').exists())
+        self.assertNotIn('5678',(self.root/'signals').read_text())
+
+    def test_boot_entries_are_replaced_once_and_unrelated_oem_line_is_kept(self):
+        startup=str(self.root)+'/data/zte-imei-studio/start_zte_imei_studio.sh'
+        legacy=str(self.root)+'/data/local/tmp/start_zte_agent.sh'
+        self.write('/etc/rc.local',f'#!/bin/sh\n# OEM retained\nsh {legacy}\nsh {startup}\nsh {startup}\nexit 0\n',0o755)
+        self.assert_success(self.run_setup())
+        text=(self.root/'etc/rc.local').read_text()
+        self.assertEqual(text.count(startup),1);self.assertNotIn(legacy,text);self.assertIn('# OEM retained',text)
+        self.assertIn(legacy,(self.journal/'before/etc_rc.local').read_text())
+
+    def test_partial_core_history_archive_can_continue_with_new_operation(self):
+        self.write('/data/zte-imei-studio/installations/active','owned old history\n')
+        legacy=self.write('/data/local/tmp/zte-imei-installations/active','legacy old history\n')
+        target=legacy.parent
+        self.command('mv',f'#!/bin/sh\nif [ "$1" = "{target}" ] && [ ! -f "$MOCK_ROOT/once" ];then touch "$MOCK_ROOT/once";exit 17;fi\nexec /bin/mv "$@"\n')
+        result=self.preflight();self.assertIn('CORE_RECOVERY_ARCHIVE',result.stderr)
+        self.assertFalse(self.journal.parent.exists());self.assertTrue(legacy.exists())
+        self.write('/proc/sys/kernel/random/uuid','dddddddd-eeee-ffff-1111-222222222222\n')
+        self.assert_success(self.preflight());self.assertFalse(legacy.exists())
+        archives=list(self.stage.parent.glob('core-recovery-*'));self.assertEqual(len(archives),2)
+        self.assertEqual(sum((p/'installations/active').exists() for p in archives),1)
+        self.assertEqual(sum((p/'legacy-installations/active').exists() for p in archives),1)
+
+    def test_default_replaces_unknown_programs_without_executing_old_startup(self):
+        self.forced_existing(running=False)
+        old=self.write('/data/zte-imei-studio/start_zte_agent.sh','not valid shell $(touch "$MOCK_ROOT/old-executed")\n',0o777)
+        oldbytes=old.read_bytes()
+        for name in ('dropbear','dropbearkey'):
+            self.write('/data/zte-imei-studio/bin/'+name,'#!/bin/sh\ntouch "$MOCK_ROOT/old-executed"\nexit 73\n',0o777)
+        result=self.run_setup(profile='b31');self.assert_success(result)
+        self.assertFalse((self.root/'old-executed').exists())
+        self.assertEqual((self.journal/'before/data_zte-imei-studio_start_zte_agent.sh').read_bytes(),oldbytes)
+        self.assertEqual((self.root/'data/zte-imei-studio/bin/dropbear').read_bytes(),(self.stage/'dropbear').read_bytes())
+        self.assertEqual((self.root/'data/zte-imei-studio/start_zte_agent.sh').read_bytes(),(self.stage/'start-agent.sh').read_bytes())
+        self.assert_success(self.commit())
+
+    def test_preserve_settings_rebuilds_startup_from_literals_without_old_commands(self):
+        self.forced_existing(running=False)
+        old=self.write('/data/zte-imei-studio/start_zte_agent.sh',"#!/bin/sh\nexport ZTE_AGENT_PASSWORD='literal $(touch should-never-execute)'\nexport ZTE_AGENT_MODE='discovery'\nexport ZTE_AGENT_BIND='192.168.0.1:9090'\ntouch \"$MOCK_ROOT/old-executed\"\n",0o777)
+        self.command('nohup','#!/bin/sh\nsha256sum "$MOCK_ROOT/data/zte-agent" | awk \'{print $1}\' > "$MOCK_ROOT/running-hash"\ntouch "$MOCK_ROOT/running"\n')
+        self.command('sleep','#!/bin/sh\n/bin/sleep 0.03\n')
+        self.assert_success(self.preflight(preserve=True))
+        self.assert_success(self.run_setup(profile='b31',preserve=True))
+        text=old.read_text()
+        self.assertIn("export ZTE_AGENT_PASSWORD='literal $(touch should-never-execute)'",text)
+        self.assertIn("export ZTE_AGENT_BIND='192.168.0.1:9090'",text)
+        self.assertNotIn('old-executed',text);self.assertFalse((self.root/'old-executed').exists())
+        self.assertEqual(old.stat().st_mode & 0o777,0o700)
+
+    def test_preserve_missing_or_dynamic_settings_refuses_before_install(self):
+        self.forced_existing(running=False)
+        for text in ['#!/bin/sh\n# no password\n','export ZTE_AGENT_PASSWORD=$(danger)\n',"export ZTE_AGENT_PASSWORD='one'\nexport ZTE_AGENT_PASSWORD='two'\n"]:
+            with self.subTest(text=text):
+                self.write('/data/zte-imei-studio/start_zte_agent.sh',text)
+                before=(self.root/'data/zte-agent').read_bytes()
+                result=self.preflight(preserve=True);self.assertIn('AGENT_SETTINGS_REQUIRED',result.stderr)
+                result=self.run_setup(profile='b31',preserve=True);self.assertIn('AGENT_SETTINGS_REQUIRED',result.stderr)
+                self.assertEqual((self.root/'data/zte-agent').read_bytes(),before);self.assertFalse(self.journal.exists())
+
+    def test_default_archives_unknown_product_history_without_recovery_execution(self):
+        self.write('/data/zte-imei-studio/installations/active','old-unknown-token\n')
+        self.write('/data/zte-imei-studio/installations/lock/unrecognized','old marker\n')
+        payload=self.write('/data/zte-imei-studio/installations/old/custom','retained user data\n')
+        outside=self.write('/data/OEM-keep','OEM bytes\n')
+        (payload.parent/'external-link').symlink_to(outside)
+        result=self.preflight();self.assert_success(result);self.assertIn('INSTALL_CORE_RECOVERY_ARCHIVED',result.stderr)
+        archives=list(self.stage.parent.glob('core-recovery-*'));self.assertEqual(len(archives),1)
+        saved=archives[0]/'installations';self.assertEqual((saved/'old/custom').read_text(),'retained user data\n')
+        self.assertTrue((saved/'old/external-link').is_symlink());self.assertEqual(outside.read_text(),'OEM bytes\n')
+        self.assertFalse(self.journal.parent.exists());self.assert_success(self.preflight())
+        self.assert_success(self.run_setup());self.assert_success(self.commit())
+
+    def test_default_recovery_keeps_active_installer_and_foreign_nv_markers(self):
+        self.write('/data/zte-imei-studio/installations/active','old\n')
+        self.write('/proc/9191/cmdline','sh\0/data/zte-imei-studio/stage-other/setup-agent.sh\0')
+        result=self.preflight();self.assertIn('CORE_RECOVERY_BUSY',result.stderr)
+        self.assertTrue((self.journal.parent/'active').exists())
+        shutil.rmtree(self.root/'proc/9191')
+        self.write('/data/local/tmp/open-u60-transactions/active','foreign NV\n')
+        result=self.preflight();self.assertIn('RECOVERY_PENDING_NV',result.stderr)
+        self.assertTrue((self.journal.parent/'active').exists())
+
+    def test_core_replace_write_failure_restores_files_without_old_code_or_ssh_signal(self):
+        self.forced_existing()
+        paths=['data/zte-agent','data/zte-imei-studio/start_zte_agent.sh','data/zte-imei-studio/bin/dropbear','etc/dropbear/authorized_keys']
+        before={path:(self.root/path).read_bytes() for path in paths}
+        old=self.root/'data/zte-imei-studio/start_zte_agent.sh'
+        old.write_text('#!/bin/sh\ntouch "$MOCK_ROOT/old-executed"\n')
+        before['data/zte-imei-studio/start_zte_agent.sh']=old.read_bytes()
+        target=self.root/'data/zte-imei-studio/bin/dropbear'
+        self.command('mv',f'#!/bin/sh\nif [ "$2" = "{target}" ] && [ ! -f "$MOCK_ROOT/fault-once" ];then touch "$MOCK_ROOT/fault-once";exit 73;fi\nexec /bin/mv "$@"\n')
+        result=self.run_setup();self.assertNotEqual(result.returncode,0);self.assertIn('INSTALL_ROLLED_BACK',result.stderr)
+        for path,value in before.items():self.assertEqual((self.root/path).read_bytes(),value,path)
+        self.assertFalse((self.root/'old-executed').exists());self.assertFalse((self.root/'running').exists())
+        self.assertNotIn('5678',(self.root/'signals').read_text())
+        self.assert_success(self.verify_rollback())
 
     def test_failed_before_journal_is_proven_unstarted(self):
         self.owner()
@@ -254,15 +449,17 @@ esac
         self.assertIn('INSTALL_AGENT new',result.stdout);self.assertEqual(digest(self.root/'data/zte-agent'),newhash)
         self.assertEqual(startup.read_bytes(),(self.stage/'start-agent.sh').read_bytes())
         self.assertEqual((self.journal/'before/data_zte-imei-studio_start_zte_agent.sh').read_bytes(),oldstartup)
-        self.assertEqual(helper.stat().st_ino,inode)
+        self.assertNotEqual(helper.stat().st_ino,inode)
         for p,b in keys.items():
             if p.name!='authorized_keys':self.assertEqual(p.read_bytes(),b)
         self.assertEqual((self.root/'signals').read_text(),'TERM 1234\n');self.assert_success(self.commit(profile='b31'))
 
+
     def test_force_foreign_mapped_agent_refuses_before_snapshot_and_signal(self):
-        self.forced_existing();self.write('/running-hash','f'*64+'\n')
+        self.forced_existing();self.command('readlink','#!/bin/sh\ncase "$1" in */proc/1234/exe) echo /usr/bin/foreign-agent;; *) exec /usr/bin/readlink "$@";; esac\n')
         result=self.run_setup(profile='b31',force=True)
         self.assertIn('EXISTING_AGENT_PROCESS',result.stderr);self.assertFalse(self.journal.exists());self.assertFalse((self.root/'signals').exists())
+
 
     def test_force_start_failure_rolls_back_all_targets_and_verifies_for_retry(self):
         oldhash,_=self.forced_existing()
@@ -270,12 +467,13 @@ esac
         (self.stage/'start-agent.sh').write_text('#!/bin/sh\nexit 9\n')
         result=self.run_setup(profile='b31',force=True)
         self.assertNotEqual(result.returncode,0);self.assertIn('INSTALL_ROLLED_BACK',result.stderr)
-        self.assertEqual(digest(self.root/'data/zte-agent'),oldhash);self.assertEqual(helper.stat().st_ino,inode)
+        self.assertEqual(digest(self.root/'data/zte-agent'),oldhash);self.assertEqual(helper.read_bytes(),(self.journal/'before/data_zte-imei-studio_bin_dropbear').read_bytes())
         self.assertEqual((self.journal/'state').read_text(),'rolled-back\n');self.assertFalse((self.journal.parent/'active').exists())
         self.assertFalse(self.stage.exists(),'Confirmed rollback must remove its private staged password')
         verified=self.verify_rollback();self.assert_success(verified);self.assertEqual(verified.stdout.strip(),'INSTALL_ROLLBACK_VERIFIED '+str(self.journal))
         self.write('/etc/rc.local','#!/bin/sh\n# foreign change\n')
         self.assertIn('ROLLBACK_UNVERIFIED',self.verify_rollback().stderr)
+
 
     def test_force_unknown_new_process_preserves_pending_and_never_kills_foreign(self):
         self.forced_existing()
@@ -284,10 +482,13 @@ esac
         self.assertIn('INSTALL_ROLLBACK_UNKNOWN',result.stderr);self.assertTrue((self.journal.parent/'active').exists())
         self.assertEqual((self.root/'signals').read_text(),'TERM 1234\n');self.assertNotEqual(self.verify_rollback().returncode,0)
 
-    def test_force_pending_transaction_is_never_replayed(self):
+    def test_default_pending_history_is_archived_before_fresh_replacement(self):
         self.forced_existing();self.write('/data/zte-imei-studio/installations/active','another\n')
-        result=self.run_setup(profile='b31',force=True)
-        self.assertIn('RECOVERY_PENDING',result.stderr);self.assertFalse((self.root/'signals').exists())
+        result=self.run_setup(profile='b31');self.assert_success(result)
+        self.assertIn('INSTALL_CORE_RECOVERY_ARCHIVED',result.stderr)
+        self.assertEqual(list(self.stage.parent.glob('core-recovery-*'))[0].joinpath('installations/active').read_text(),'another\n')
+        self.assert_success(self.commit())
+
 
     def old_stage(self,suffix='66666666-2222-3333-4444-555555555555',completed=False):
         stage=self.root/('data/zte-imei-studio/stage-'+suffix);stage.mkdir(mode=0o700)
@@ -344,17 +545,19 @@ esac
         result=self.commit();self.assertIn('JOURNAL_OWNER',result.stderr)
         self.assertTrue((self.journal.parent/'active').exists());self.assertEqual((self.journal.parent/'lock/owner').read_text(),'foreign\n')
 
-    def test_only_forced_preflight_reconciles_complete_owned_transaction(self):
-        self.forced_existing();self.assert_success(self.run_setup(profile='b31',force=True));(self.journal/'state').write_text('complete\n')
-        self.assertIn('RECOVERY_PENDING',self.preflight().stderr);self.assertTrue((self.journal.parent/'active').exists())
-        result=self.preflight(force=True);self.assert_success(result)
-        self.assertEqual(result.stdout.strip(),'INSTALL_PREFLIGHT b31 imei_config=unknown');self.assertIn('INSTALL_COMPLETED_OWNER_CLEARED',result.stderr)
-        self.assertFalse((self.journal.parent/'active').exists());self.assertFalse((self.journal.parent/'lock').exists())
+    def test_default_preflight_archives_complete_owned_history(self):
+        self.forced_existing();self.assert_success(self.run_setup(profile='b31'));(self.journal/'state').write_text('complete\n')
+        result=self.preflight();self.assert_success(result)
+        self.assertIn('INSTALL_CORE_RECOVERY_ARCHIVED',result.stderr)
+        self.assertFalse((self.journal.parent/'active').exists())
+        self.assertEqual(list(self.stage.parent.glob('core-recovery-*'))[0].joinpath('installations',TOKEN,'state').read_text(),'complete\n')
 
-    def test_forced_preflight_keeps_changed_completed_transaction(self):
-        self.forced_existing();self.assert_success(self.run_setup(profile='b31',force=True));(self.journal/'state').write_text('complete\n')
-        self.write('/etc/rc.local','#!/bin/sh\n# changed outside installer\n')
-        self.assertIn('RECOVERY_PENDING',self.preflight(force=True).stderr);self.assertTrue((self.journal.parent/'active').exists())
+
+    def test_default_recovery_preserves_current_targets_instead_of_old_rollback(self):
+        self.forced_existing();self.assert_success(self.run_setup(profile='b31'));(self.journal/'state').write_text('complete\n')
+        current=b'#!/bin/sh\n# unrelated current settings\n';(self.root/'etc/rc.local').write_bytes(current)
+        self.assert_success(self.preflight());self.assertEqual((self.root/'etc/rc.local').read_bytes(),current)
+
 
     def owner(self, profile='b31', firmware=FIRMWARE, router=ROUTER, boot=None):
         p=self.stage/'.owner';p.write_text(f'{TOKEN} {CID} {profile} {firmware} {router}'+(' '+boot if boot else '')+'\n');p.chmod(0o600)
@@ -397,70 +600,17 @@ esac
         (self.root/'running').unlink(missing_ok=True)
         return args
 
-    def test_clean_previous_boot_archives_owned_transaction_and_preserves_current_targets(self):
-        args=self.reset_transaction()
-        previous={str(p.relative_to(self.journal)):p.read_bytes() for p in self.journal.rglob('*') if p.is_file()}
-        current=(self.root/'etc/rc.local').read_bytes()
-        result=self.preflight(**args,clean=True);self.assert_success(result)
-        self.assertEqual(result.stdout.strip(),'INSTALL_PREFLIGHT linux-arm64-access imei_config=unknown')
-        self.assertIn('INSTALL_RESET_ARCHIVED',result.stderr)
-        archives=list(self.stage.parent.glob('reset-recovery-*'));self.assertEqual(len(archives),1)
-        archive=archives[0]
-        for name,value in previous.items():
-            self.assertEqual((self.journal/name).read_bytes(),value)
-            self.assertEqual((archive/'journal'/name).read_bytes(),value)
-        self.assertEqual((archive/'current/etc_rc.local').read_bytes(),current)
-        self.assertEqual((self.root/'etc/rc.local').read_bytes(),current)
-        self.assertFalse((self.journal.parent/'active').exists());self.assertFalse((self.journal.parent/'lock').exists())
-        self.assertFalse((self.root/'running').exists(),'Archived recovery must not restart old credentials')
-        # A fresh installer using a new stage completes after reset recovery.
-        new_token='dddddddd-eeee-ffff-1111-222222222222'
-        new_stage=self.stage.parent/('stage-'+new_token);shutil.copytree(self.stage,new_stage)
-        self.stage=new_stage;self.journal=self.journal.parent/new_token
-        (self.stage/'.owner').write_text(f"{new_token} {CID} {args['profile']} {args['firmware']} {args['router']} {args['boot']}\n")
-        self.write('/proc/1234/stat','1234 (zte-agent) '+' '.join(['S']+['0']*18+['777'])+'\n')
-        self.assert_success(self.run_setup(**args,clean=True));self.assertEqual((self.journal/'state').read_text(),'ready\n')
-        self.assert_success(self.commit(**args));self.assertEqual((self.journal/'state').read_text(),'complete\n')
-        self.assertTrue((archive/'active').is_file());self.assertTrue((archive/'lock/owner').is_file())
 
-    def test_clean_previous_boot_accepts_interrupted_completed_lock_release(self):
-        args=self.reset_transaction()
-        (self.journal/'state').write_text('complete\n')
-        (self.journal.parent/'lock').rename(self.journal/'completed-lock')
-        result=self.preflight(**args,clean=True);self.assert_success(result)
-        archive=list(self.stage.parent.glob('reset-recovery-*'))[0]
-        self.assertEqual((archive/'journal/completed-lock/owner').read_text(),TOKEN+'\n')
-        self.assertIn('/journal/completed-lock/owner',(archive/'snapshot.sha256').read_text())
-        self.assertEqual((self.journal/'completed-lock/owner').read_text(),TOKEN+'\n')
-        self.assertTrue((archive/'active').is_file());self.assertFalse((self.journal.parent/'active').exists())
 
-    def test_clean_previous_boot_keeps_foreign_completed_lock_owner_or_contents(self):
-        for scenario in ['foreign-owner','extra-file']:
-            with self.subTest(scenario=scenario):
-                if scenario!='foreign-owner':self.tearDown();self.setUp()
-                args=self.reset_transaction();(self.journal/'state').write_text('complete\n')
-                (self.journal.parent/'lock').rename(self.journal/'completed-lock')
-                if scenario=='foreign-owner':(self.journal/'completed-lock/owner').write_text('foreign\n')
-                else:self.write(str(self.journal.relative_to(self.root))+'/completed-lock/extra','foreign')
-                result=self.preflight(**args,clean=True);self.assertNotEqual(result.returncode,0)
-                self.assertTrue((self.journal.parent/'active').exists());self.assertTrue((self.journal/'completed-lock/owner').exists())
-                self.assertFalse(list(self.stage.parent.glob('reset-recovery-*')))
 
-    def test_clean_reset_recovery_refuses_busy_foreign_and_changed_identity(self):
-        for scenario in ['busy','foreign','cid','firmware','force-only','corrupt-copy']:
-            with self.subTest(scenario=scenario):
-                if scenario!='busy':self.tearDown();self.setUp()
-                args=self.reset_transaction()
-                if scenario=='busy':self.write('/proc/9999/cmdline',f'sh\0{self.stage}/setup-agent.sh\0')
-                elif scenario=='foreign':self.write(str(self.journal.relative_to(self.root))+'/unexpected','foreign')
-                elif scenario=='cid':(self.journal/'cid').write_text('b'*32+'\n')
-                elif scenario=='firmware':(self.journal/'profile.identity').write_text(f"linux-arm64-access {'a'*64} {args['router']} {BOOT}\n")
-                elif scenario=='corrupt-copy':self.command('cp','#!/bin/sh\n/bin/cp "$@" || exit 1\ncase "$1" in -Rp) for last do :; done; printf corrupt >> "$last/cid";; esac\n')
-                result=self.preflight(**args,force=True,clean=scenario!='force-only')
-                self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
-                self.assertTrue((self.journal.parent/'active').exists());self.assertTrue((self.journal.parent/'lock/owner').exists())
-                if scenario!='corrupt-copy':self.assertFalse(list(self.stage.parent.glob('reset-recovery-*')))
-                else:self.assertIn('CLEAN_RECOVERY_CHANGED',result.stderr)
+
+
+
+
+
+
+
+
 
     def test_clean_same_boot_recovers_exact_native_and_generic_owned_installation(self):
         for profile in ['b31','b02-experimental','linux-arm64-access']:
@@ -687,12 +837,13 @@ esac
         self.write('/proc/1234/environ','')
         self.assert_success(self.commit(**args))
 
-    def test_generic_unpinned_preserved_helper_blocks_before_mutation(self):
+    def test_generic_unknown_helper_is_archived_and_replaced(self):
         args=self.generic()
-        original=self.write('/data/zte-imei-studio/bin/dropbearkey','#!/bin/sh\n# arbitrary existing helper\n',0o700)
-        self.assertIn('EXISTING_DROPBEAR_REVIEW_REQUIRED',self.run_setup(**args).stderr)
-        self.assertEqual(original.read_text(),'#!/bin/sh\n# arbitrary existing helper\n')
-        self.assertFalse(self.journal.parent.exists())
+        original=self.write('/data/zte-imei-studio/bin/dropbearkey','#!/bin/sh\n# arbitrary existing helper\n',0o777);before=original.read_bytes()
+        self.assert_success(self.run_setup(**args))
+        self.assertEqual((self.journal/'before/data_zte-imei-studio_bin_dropbearkey').read_bytes(),before)
+        self.assertEqual(original.read_bytes(),(self.stage/'dropbear').read_bytes())
+
 
     def test_generic_pinned_agent_runtime_failure_blocks_before_mutation(self):
         args=self.generic();(self.stage/'zte-agent').write_text('#!/bin/sh\nexit 1\n')
@@ -718,6 +869,29 @@ esac
         args['router']='absent'
         self.assertIn('ROUTER_MISMATCH',self.preflight(**args).stderr)
         self.assertFalse(self.journal.parent.exists())
+
+    def test_committed_owner_bound_stage_password_is_removed_and_retry_remains_valid(self):
+        self.owner()
+        (self.stage/'start-agent.sh').chmod(0o600)
+        self.assert_success(self.run_setup(profile='b31'))
+        self.assertTrue((self.stage/'start-agent.sh').exists())
+        self.assert_success(self.commit(profile='b31'))
+        self.assertFalse((self.stage/'start-agent.sh').exists())
+        self.assertTrue((self.stage/'setup-agent.sh').exists())
+        self.assert_success(self.commit(profile='b31'))
+
+    def test_committed_secret_delete_failure_is_retryable_without_reinstall(self):
+        self.owner()
+        (self.stage/'start-agent.sh').chmod(0o600)
+        self.assert_success(self.run_setup(profile='b31'))
+        self.command('rm','#!/bin/sh\ncase "$1" in */start-agent.sh) exit 18;; esac\nexec /bin/rm "$@"\n')
+        failed=self.commit(profile='b31')
+        self.assertIn('CLEANUP_FAILED',failed.stderr)
+        self.assertEqual((self.journal/'state').read_text().strip(),'complete')
+        self.assertTrue((self.stage/'start-agent.sh').exists())
+        (self.bin/'rm').unlink()
+        self.assert_success(self.commit(profile='b31'))
+        self.assertFalse((self.stage/'start-agent.sh').exists())
 
     def test_fresh_setup_snapshot_commit_preserves_rc(self):
         original = (self.root/'etc/rc.local').read_bytes()
@@ -747,12 +921,11 @@ esac
         self.assertIn('AGENT_HASH', result.stderr)
         self.assertFalse(self.journal.parent.exists())
 
-    def test_pending_recovery_blocks(self):
+    def test_opaque_product_marker_is_preserved_in_archive(self):
         self.write('/data/zte-imei-studio/installations/active', 'earlier\n')
-        result = self.run_setup()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('RECOVERY_PENDING', result.stderr)
-        self.assertFalse((self.root/'data/zte-agent').exists())
+        self.assert_success(self.run_setup())
+        self.assertEqual(list(self.stage.parent.glob('core-recovery-*'))[0].joinpath('installations/active').read_text(),'earlier\n')
+
 
     def test_inactive_old_agent_updated_with_credentials_and_keys_preserved(self):
         agent = self.write('/data/zte-agent', '#!/bin/sh\n# old agent\n', 0o700)
@@ -762,19 +935,17 @@ esac
         self.assert_success(self.run_setup())
         self.assertEqual(agent.read_bytes(), (self.stage/'zte-agent').read_bytes())
         self.assertEqual((self.journal/'before/data_zte-agent').read_bytes(), old_agent)
-        self.assertEqual(startup.read_bytes(), old_startup)
+        self.assertEqual(startup.read_bytes(), (self.stage/'start-agent.sh').read_bytes())
+        self.assertEqual((self.journal/'before/data_zte-imei-studio_start_zte_agent.sh').read_bytes(),old_startup)
         self.assertIn('ssh-ed25519 AAAA old\n', keys.read_text())
         self.assert_success(self.commit())
 
-    def test_running_old_agent_with_valid_startup_refuses_before_transaction(self):
-        agent=self.write('/data/zte-agent','#!/bin/sh\n# earlier running agent\n',0o700)
-        self.write('/data/zte-imei-studio/start_zte_agent.sh','#!/bin/sh\ntouch "$MOCK_ROOT/running"\n',0o700)
-        original=agent.read_bytes();self.write('/running','yes')
-        result=self.run_setup()
-        self.assertNotEqual(result.returncode,0)
-        self.assertIn('EXISTING_AGENT_RUNNING_REQUIRES_UPDATE',result.stderr)
-        self.assertEqual(agent.read_bytes(),original)
-        self.assertFalse(self.journal.parent.exists())
+
+    def test_running_old_agent_is_replaced_using_fresh_package(self):
+        self.forced_existing();self.assert_success(self.run_setup())
+        self.assertEqual((self.root/'signals').read_text(),'TERM 1234\n')
+        self.assertEqual((self.root/'data/zte-agent').read_bytes(),(self.stage/'zte-agent').read_bytes())
+
 
     def test_old_agent_with_startup_started_after_snapshot_never_replaced(self):
         agent=self.write('/data/zte-agent','#!/bin/sh\n# earlier inactive agent\n',0o700)
@@ -823,13 +994,12 @@ esac
         self.assert_success(self.run_setup())
         self.assertEqual((self.journal/'before/data_zte-agent').stat().st_mode & 0o777,0o750)
 
-    def test_writable_executable_orphan_is_not_replaced(self):
-        old=self.write('/data/zte-agent','#!/bin/sh\n# writable executable\n',0o777)
-        original=old.read_bytes()
-        result=self.run_setup()
-        self.assertIn('EXISTING_AGENT_TYPE',result.stderr)
-        self.assertEqual(old.read_bytes(),original)
-        self.assertFalse(self.journal.parent.exists())
+    def test_writable_executable_orphan_is_archived_without_execution(self):
+        old=self.write('/data/zte-agent','#!/bin/sh\ntouch "$MOCK_ROOT/forbidden"\n',0o777);original=old.read_bytes()
+        self.assert_success(self.run_setup())
+        self.assertEqual((self.journal/'before/data_zte-agent').read_bytes(),original)
+        self.assertFalse((self.root/'forbidden').exists());self.assertEqual(old.stat().st_mode & 0o777,0o700)
+
 
     def test_generic_inactive_orphan_is_replaced_without_executing_old_binary(self):
         args=self.generic()
@@ -842,7 +1012,7 @@ esac
 
     def legacy_startup(self):
         text = "#!/bin/sh\nexport ZTE_AGENT_PASSWORD='synthetic-private-test'\nunset ZTE_AGENT_PIN\ntrap '' HUP\nnohup sh -c '"+str(self.root)+"/data/zte-agent 2>&1 | logger -t zte-agent' >/dev/null 2>&1 </dev/null &\n"
-        self.command('nohup','#!/bin/sh\ntouch "$MOCK_ROOT/running"\n')
+        self.command('nohup','#!/bin/sh\nsha256sum "$MOCK_ROOT/data/zte-agent" | awk \'{print $1}\' > "$MOCK_ROOT/running-hash"\ntouch "$MOCK_ROOT/running"\n')
         return self.write('/data/local/tmp/start_zte_agent.sh',text,0o700)
 
     def test_legacy_startup_migrates_as_private_validated_data(self):
@@ -850,10 +1020,10 @@ esac
         legacy=self.legacy_startup();original=legacy.read_bytes();old_agent=agent.read_bytes()
         for path in ('data/local','data/local/tmp'):(self.root/path).chmod(0o777)
         self.write('/etc/rc.local','#!/bin/sh\nsh '+str(self.root)+'/data/local/tmp/start_zte_imei_studio.sh\nexit 0\n',0o751)
-        self.assert_success(self.run_setup())
+        self.assert_success(self.run_setup(preserve=True))
         self.assertEqual(legacy.read_bytes(),original)
         migrated=self.root/'data/zte-imei-studio/start_zte_agent.sh'
-        self.assertEqual(migrated.read_bytes(),original)
+        self.assertIn("export ZTE_AGENT_PASSWORD='synthetic-private-test'",migrated.read_text())
         self.assertEqual(migrated.stat().st_mode & 0o777,0o700)
         self.assertEqual(agent.read_bytes(),(self.stage/'zte-agent').read_bytes())
         self.assertEqual((self.journal/'before/data_zte-agent').read_bytes(),old_agent)
@@ -862,26 +1032,21 @@ esac
         self.assertEqual(rc.count('start_zte_imei_studio.sh'),1)
         self.assert_success(self.commit())
 
-    def test_legacy_startup_unknown_grammar_cannot_execute(self):
-        self.write('/data/zte-agent','#!/bin/sh\n# preserved agent\n',0o700)
-        legacy=self.legacy_startup();legacy.write_text(legacy.read_text()+'touch "$MOCK_ROOT/forbidden"\n')
-        result=self.run_setup()
-        self.assertIn('LEGACY_STARTUP_GRAMMAR',result.stderr)
-        self.assertFalse((self.root/'forbidden').exists())
-        self.assertFalse(self.journal.parent.exists())
 
-    def test_legacy_startup_hardlink_symlink_and_writable_rejected(self):
-        for kind in ('hardlink','symlink','writable'):
-            with self.subTest(kind=kind):
-                self.write('/data/zte-agent','#!/bin/sh\n# preserved agent\n',0o700)
-                legacy=self.legacy_startup();alias=self.root/'alias'
-                if kind=='hardlink':os.link(legacy,alias)
-                elif kind=='symlink':legacy.rename(alias);legacy.symlink_to(alias)
-                else:legacy.chmod(0o777)
-                expected={'hardlink':'HARDLINK','symlink':'LINK','writable':'WRITABLE'}[kind]
-                self.assertIn('EXISTING_AGENT_STARTUP_'+expected,self.run_setup().stderr)
-                self.assertFalse(self.journal.parent.exists())
-                legacy.unlink();alias.unlink(missing_ok=True)
+
+    def test_legacy_startup_unknown_commands_are_not_migrated_or_executed(self):
+        self.write('/data/zte-agent','#!/bin/sh\n# previous agent\n',0o700)
+        legacy=self.legacy_startup();legacy.write_text(legacy.read_text()+'touch "$MOCK_ROOT/forbidden"\n')
+        self.assert_success(self.run_setup(preserve=True));self.assertFalse((self.root/'forbidden').exists())
+        self.assertNotIn('forbidden',(self.root/'data/zte-imei-studio/start_zte_agent.sh').read_text())
+
+
+    def test_preserve_settings_does_not_follow_legacy_symlink(self):
+        legacy=self.legacy_startup();alias=self.root/'alias';legacy.rename(alias);legacy.symlink_to(alias)
+        before=alias.read_bytes();result=self.run_setup(preserve=True)
+        self.assertIn('AGENT_SETTINGS_REQUIRED',result.stderr);self.assertEqual(alias.read_bytes(),before)
+        self.assertFalse(self.journal.exists())
+
 
     def known_startup(self, location, mode):
         self.write('/data/zte-agent','#!/bin/sh\n# preserved old agent\n',0o700)
@@ -895,18 +1060,22 @@ esac
     def check_readable_startup_migration(self, location, mode):
         source=self.known_startup(location,mode);original=source.read_bytes()
         old_agent=(self.root/'data/zte-agent').read_bytes()
-        self.assert_success(self.run_setup())
+        self.assert_success(self.run_setup(preserve=True))
         private=self.root/'data/zte-imei-studio/start_zte_agent.sh'
-        self.assertEqual(private.read_bytes(),original)
+        self.assertIn("export ZTE_AGENT_PASSWORD='synthetic-private-test'",private.read_text())
         self.assertEqual(private.stat().st_mode & 0o777,0o700)
-        snapshot=self.stage/'legacy-agent.private.sh'
+        snapshot=self.journal/'startup.before.sh'
         self.assertEqual(snapshot.read_bytes(),original)
-        self.assertEqual(snapshot.stat().st_mode & 0o777,0o600)
+        self.assertEqual(snapshot.stat().st_mode & 0o777,mode)
         self.assertEqual((self.journal/'before/data_zte-agent').read_bytes(),old_agent)
         preserved=source if location=='legacy' else self.journal/'before/data_zte-imei-studio_start_zte_agent.sh'
         self.assertEqual(preserved.read_bytes(),original)
         self.assertEqual(preserved.stat().st_mode & 0o777,mode)
         self.assert_success(self.commit())
+
+
+
+
 
     def test_known_anchor_startup_0640_migrates(self):self.check_readable_startup_migration('anchor',0o640)
     def test_known_anchor_startup_0644_migrates(self):self.check_readable_startup_migration('anchor',0o644)
@@ -917,71 +1086,67 @@ esac
     def test_known_legacy_startup_0750_migrates(self):self.check_readable_startup_migration('legacy',0o750)
     def test_known_legacy_startup_0755_migrates(self):self.check_readable_startup_migration('legacy',0o755)
 
-    def test_readable_unknown_startup_grammar_preserves_source(self):
-        source=self.known_startup('anchor',0o755)
-        source.write_text(source.read_text()+'touch "$MOCK_ROOT/forbidden"\n');original=source.read_bytes()
-        result=self.run_setup()
-        self.assertIn('LEGACY_STARTUP_GRAMMAR',result.stderr)
-        self.assertEqual(source.read_bytes(),original)
-        self.assertEqual(source.stat().st_mode & 0o777,0o755)
-        self.assertFalse(self.journal.parent.exists())
-        self.assertFalse((self.root/'forbidden').exists())
+    def test_unknown_startup_commands_are_archived_but_never_executed(self):
+        source=self.known_startup('anchor',0o755);source.write_text(source.read_text()+'touch "$MOCK_ROOT/forbidden"\n');before=source.read_bytes()
+        self.assert_success(self.run_setup(preserve=True));self.assertFalse((self.root/'forbidden').exists())
+        self.assertEqual((self.journal/'before/data_zte-imei-studio_start_zte_agent.sh').read_bytes(),before)
+
 
     def test_readable_startup_nonroot_owner_preserves_source(self):
         source=self.known_startup('anchor',0o755);original=source.read_bytes()
         self.env['MOCK_STARTUP_OWNER']='1000'
-        result=self.run_setup()
-        self.assertIn('EXISTING_AGENT_STARTUP_OWNER',result.stderr)
+        result=self.run_setup(preserve=True)
+        self.assertIn('AGENT_SETTINGS_REQUIRED',result.stderr)
         self.assertEqual(source.read_bytes(),original)
         self.assertFalse(self.journal.parent.exists())
 
-    def test_startup_group_and_world_write_remain_refused(self):
-        source=self.known_startup('anchor',0o755);original=source.read_bytes()
-        for mode in (0o620,0o602,0o660,0o664,0o775,0o777):
-            with self.subTest(mode=oct(mode)):
-                source.chmod(mode)
-                self.assertIn('EXISTING_AGENT_STARTUP_WRITABLE',self.run_setup().stderr)
-                self.assertEqual(source.read_bytes(),original)
-                self.assertEqual(source.stat().st_mode & 0o777,mode)
-                self.assertFalse(self.journal.parent.exists())
+
+
+    def test_writable_startup_is_migrated_as_data_not_executed(self):
+        source=self.known_startup('anchor',0o777);before=source.read_bytes()
+        self.assert_success(self.run_setup(preserve=True))
+        self.assertEqual((self.journal/'before/data_zte-imei-studio_start_zte_agent.sh').read_bytes(),before)
+        self.assertEqual(source.stat().st_mode & 0o777,0o700)
+
 
     def test_readable_startup_source_change_during_copy_refused(self):
         source=self.known_startup('legacy',0o644)
         self.env['MOCK_STARTUP_CHANGE']=str(source)
         original_agent=(self.root/'data/zte-agent').read_bytes()
-        result=self.run_setup()
-        self.assertIn('LEGACY_STARTUP_CHANGED',result.stderr)
+        result=self.run_setup(preserve=True)
+        self.assertIn('AGENT_SETTINGS_REQUIRED',result.stderr)
         self.assertEqual((self.root/'data/zte-agent').read_bytes(),original_agent)
         self.assertEqual(source.stat().st_mode & 0o777,0o644)
         self.assertFalse(self.journal.parent.exists())
         self.assertFalse((self.root/'running').exists())
 
+
+
     def test_readable_startup_source_change_before_mutation_refused(self):
         source=self.known_startup('anchor',0o755)
         self.env['MOCK_STARTUP_CHANGE_LATE']=str(source)
         original_agent=(self.root/'data/zte-agent').read_bytes()
-        result=self.run_setup()
+        result=self.run_setup(preserve=True)
         self.assertIn('LEGACY_STARTUP_CHANGED',result.stderr)
         self.assertEqual((self.root/'data/zte-agent').read_bytes(),original_agent)
         self.assertEqual(source.stat().st_mode & 0o777,0o755)
         self.assertFalse(self.journal.parent.exists())
         self.assertFalse((self.root/'running').exists())
 
+
     def test_readable_startup_failed_digest_cannot_look_unchanged(self):
         source=self.known_startup('anchor',0o755);original=source.read_bytes()
         self.env['MOCK_STARTUP_HASH_FAIL']='1'
-        result=self.run_setup()
-        self.assertIn('LEGACY_STARTUP_READ',result.stderr)
+        result=self.run_setup(preserve=True)
+        self.assertIn('AGENT_SETTINGS_REQUIRED',result.stderr)
         self.assertEqual(source.read_bytes(),original)
         self.assertFalse(self.journal.parent.exists())
         self.assertFalse((self.root/'running').exists())
 
+
+
     def test_recovery_markers_have_distinct_diagnostics_and_are_preserved(self):
         markers={
-            '/data/zte-imei-studio/installations/active':'OWN_ACTIVE',
-            '/data/zte-imei-studio/installations/lock':'OWN_LOCK',
-            '/data/local/tmp/zte-imei-installations/active':'LEGACY_ACTIVE',
-            '/data/local/tmp/zte-imei-installations/lock':'LEGACY_LOCK',
             '/data/local/tmp/open-u60-transactions/active':'NV',
             '/tmp/fota_install_processing':'FOTA',
             '/tmp/zte-imei-app.lock':'APP_LOCK',
@@ -1004,16 +1169,18 @@ esac
                     if kind=='directory':marker.rmdir()
                     else:marker.unlink()
 
-    def test_running_orphan_agent_never_gets_new_credentials(self):
-        self.write('/data/zte-agent',(self.stage/'zte-agent').read_text(),0o700)
-        self.write('/running','yes')
-        self.assertIn('EXISTING_AGENT_STARTUP_MISSING',self.run_setup().stderr)
-        self.assertFalse(self.journal.parent.exists())
+    def test_running_agent_without_startup_receives_supplied_settings(self):
+        self.write('/data/zte-agent',(self.stage/'zte-agent').read_text(),0o700);self.write('/running','yes')
+        self.assert_success(self.run_setup())
+        self.assertEqual((self.root/'data/zte-imei-studio/start_zte_agent.sh').read_bytes(),(self.stage/'start-agent.sh').read_bytes())
 
-    def test_legacy_pending_blocks_new_anchor_transaction(self):
-        self.write('/data/local/tmp/zte-imei-installations/active','old-pending\n')
-        self.assertIn('RECOVERY_PENDING',self.run_setup().stderr)
-        self.assertFalse(self.journal.parent.exists())
+
+    def test_legacy_pending_is_archived_without_touching_other_legacy_data(self):
+        self.write('/data/local/tmp/zte-imei-installations/active','old\n')
+        outside=self.write('/data/local/tmp/user-note','keep\n')
+        self.assert_success(self.run_setup());self.assertEqual(outside.read_text(),'keep\n')
+        self.assertEqual(list(self.stage.parent.glob('core-recovery-*'))[0].joinpath('legacy-installations/active').read_text(),'old\n')
+
 
     def test_symlink_authorized_keys_rejected(self):
         target = self.write('/elsewhere', 'untouched')
@@ -1049,9 +1216,10 @@ esac
         result = self.run_setup()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('HOST_KEY_INVALID', result.stderr)
-        self.assertIn('INSTALL_INCOMPLETE', result.stderr)
+        self.assertIn('INSTALL_ROLLED_BACK', result.stderr)
         self.assertTrue((self.journal/'before/etc_rc.local').exists())
-        self.assertTrue((self.journal.parent/'active').exists())
+        self.assertFalse((self.journal.parent/'active').exists())
+
 
     def test_b02_preflight_install_and_commit_bound_identity(self):
         self.env['MOCK_FIRMWARE']=B02_FIRMWARE
@@ -1110,7 +1278,8 @@ esac
         self.assertIn('DIRECTORY_LINK',self.preflight().stderr)
         self.stage.parent.unlink()
         self.stage.parent.mkdir(mode=0o755)
-        self.assertIn('PRIVATE_DIRECTORY_MODE',self.preflight().stderr)
+        self.assert_success(self.preflight())
+        self.assertEqual(self.stage.parent.stat().st_mode & 0o777,0o700)
         self.stage.parent.chmod(0o777)
         self.assertIn('DIRECTORY_MODE',self.preflight().stderr)
 

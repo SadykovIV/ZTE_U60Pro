@@ -24,7 +24,8 @@ owned_listener() {
         owned=0
         for process in $(pidof dropbear 2>/dev/null || true); do
             case "$process" in ''|*[!0-9]*) continue;; esac
-            test "$(readlink "/proc/$process/exe" 2>/dev/null || true)" = /data/zte-imei-studio/bin/dropbear || continue
+            case "$(readlink "/proc/$process/exe" 2>/dev/null || true)" in /data/zte-imei-studio/bin/dropbear|"/data/zte-imei-studio/bin/dropbear (deleted)"|/data/bin/dropbear|"/data/bin/dropbear (deleted)") ;; *) continue;; esac
+            test "$(stat -L -c %u "/proc/$process/exe")" = 0 || return 1
             for descriptor in /proc/"$process"/fd/*; do
                 socket=$(readlink "$descriptor" 2>/dev/null || true)
                 if test "$socket" = "socket:[$inode]"; then owned=1; break; fi

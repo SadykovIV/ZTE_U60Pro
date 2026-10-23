@@ -40,7 +40,7 @@ class Contracts(unittest.TestCase):
         second=self.run_script(wrapper,stage);self.assertEqual((second.returncode,second.stdout),(0,'VPN_AGENT_UPDATED\n'))
         leaf.write_text('#!/bin/sh\necho WRONG\n')
         self.assertNotEqual(self.run_script(wrapper,stage,'preflight').returncode,0)
-    def listener(self, kind='legacy', valid=True, listening=True):
+    def listener(self, kind='legacy', valid=True, listening=True, recycled=False):
         legacy=self.root/'data/bin/dashboard-uhttpd'
         private=self.root/'data/zte-dashboard-runtime/dashboard-uhttpd'
         selected=legacy if kind=='legacy' else private
@@ -49,9 +49,12 @@ class Contracts(unittest.TestCase):
         if not valid:selected.write_bytes(b'unknown executable')
         proc=self.root/'proc';(proc/'net').mkdir(parents=True,exist_ok=True);(proc/'123/fd').mkdir(parents=True,exist_ok=True)
         (proc/'123/exe').symlink_to(selected)
+        (proc/'123/stat').write_text('123 (dashboard-uhttpd) S '+ '0 '*18+'456 0\n')
         (proc/'123/fd/3').symlink_to('socket:[99]')
         (proc/'net/tcp').write_text('0: 00000000:1F90 00000000:0000 '+('0A' if listening else '01')+' 0 0 0 0 0 99\n')
         (proc/'net/tcp6').write_text('')
+        if recycled:
+            self.script('bin/readlink',f'#!{sys.executable}\nimport os,sys,pathlib\np=sys.argv[-1]\nif p.endswith("/fd/3"):\n s=pathlib.Path(p).parents[1]/"stat";s.write_text(s.read_text().replace("456", "789"))\nprint(os.readlink(p))\n')
         text=(VPN/'stop-owned-listener.sh').read_text().replace('/data',str(self.root)+'/data')
         import re
         text=re.sub(r'(?m)^dashboard_sha=.*','dashboard_sha='+digest,text)
@@ -61,16 +64,18 @@ class Contracts(unittest.TestCase):
         result=self.listener();self.assertEqual((result.returncode,result.stdout),(0,'123\n'))
     def test_known_private_listener_can_be_selected(self):
         result=self.listener('private');self.assertEqual((result.returncode,result.stdout),(0,'123\n'))
-    def test_unknown_legacy_executable_fails_closed(self):
-        result=self.listener(valid=False);self.assertNotEqual(result.returncode,0);self.assertEqual(result.stdout,'')
+    def test_unknown_legacy_version_can_be_replaced_without_executing_it(self):
+        result=self.listener(valid=False);self.assertEqual((result.returncode,result.stdout),(0,'123\n'))
     def test_established_socket_is_not_selected(self):
         result=self.listener(listening=False);self.assertEqual((result.returncode,result.stdout),(0,''))
+    def test_reused_pid_during_socket_scan_is_not_selected(self):
+        result=self.listener(recycled=True);self.assertNotEqual(result.returncode,0);self.assertEqual(result.stdout,'')
     def test_boot_entry_moves_to_private_runtime_and_preserves_other_lines(self):
         rc=self.root/'etc/rc.local';rc.parent.mkdir()
         rc.write_text('#!/bin/sh\nsh /data/local/tmp/start_zte_agent.sh\nsh /data/local/tmp/start_dashboard.sh\nexit 0\n')
         text=(VPN/'update-rc-local.sh').read_text().replace('/etc/',str(self.root)+'/etc/')
         # BSD sed adapter accepts the script's GNU in-place spelling.
-        self.script('bin/sed',f'#!{sys.executable}\nimport os,sys\na=sys.argv[1:]\nif a[0]=="-i":\n a=["-i", "", *a[1:]]\n if a[2].startswith("/^exit 0/i "):a[2]="/^exit 0/i\\\\\\n"+a[2][11:]+"\\n"\nos.execv("/usr/bin/sed",["sed",*a])\n')
+        self.script('bin/sed',f'#!{sys.executable}\nimport os,sys\na=sys.argv[1:]\nif a[0]=="-i" and sys.platform=="darwin":\n a=["-i", "", *a[1:]]\n if a[2].startswith("/^exit 0/i "):a[2]="/^exit 0/i\\\\\\n"+a[2][11:]+"\\n"\nos.execv("/usr/bin/sed",["sed",*a])\n')
         script=self.script('rc-update.sh',text)
         result=self.run_script(script,'sh /data/zte-dashboard-runtime/start-dashboard.sh')
         self.assertEqual(result.returncode,0,result.stderr)
@@ -79,6 +84,10 @@ class Contracts(unittest.TestCase):
         self.assertEqual(body.count('sh /data/zte-dashboard-runtime/start-dashboard.sh'),1)
         self.assertLess(body.index('sh /data/zte-dashboard-runtime'),body.index('exit 0'))
         self.assertEqual(self.run_script(script,'sh /data/zte-dashboard-runtime/start-dashboard.sh').returncode,0)
+        stale=self.root/'etc/rc.local.open-u60-new';stale.write_text('old interrupted staging')
+        self.assertEqual(self.run_script(script,'sh /data/zte-dashboard-runtime/start-dashboard.sh').returncode,0)
+        self.assertEqual(stale.read_text(),'old interrupted staging')
+        self.assertEqual(list((self.root/'etc').glob('rc.local.open-u60-new.*')),[])
 
 
 if __name__=='__main__':unittest.main()

@@ -1,8 +1,8 @@
-# ZTE Agent 2.9.0-esim.13
+# ZTE Agent 2.9.0-esim.14
 
-This agent runs on the **ZTE U60 Pro / MU5250 modem**, on Linux ARM64. Install it with **ZTE U60Pro Manager 1.25**. The desktop application prepares SSH, installs the matching agent and dashboard, and checks the result.
+This agent runs on the **ZTE U60 Pro / MU5250 modem**, on Linux ARM64. Install it with **ZTE U60Pro Manager 1.27**. Preparation and bundled-agent installation automatically replace the core components and matching dashboard while retaining user settings.
 
-Agent installation and dashboard access were checked on **Firmware `CN_ZTE_MU5250V1.0.0B31`**, **Inner `BD_CNMU5250V1.0.0B31`**. B28 and B04 were compared using supplied firmware captures and local tests; this release has no fresh hardware result for those devices. See the [release notes](RELEASE-1.25.md) for the complete verification limits. The separate agent archive is intended for developers and prepared devices; it is not a modem firmware image or a standalone factory-reset installer.
+Earlier agent installation and dashboard access were checked on **Firmware `CN_ZTE_MU5250V1.0.0B31`**, **Inner `BD_CNMU5250V1.0.0B31`**. This release has no fresh hardware installation result. B28 and B04 adapters use supplied firmware captures and local tests; B02 lacks evidence for several features. See the [release notes](RELEASE-1.27.md) and [compatibility matrix](FIRMWARE-COMPATIBILITY.md). The separate agent archive is intended for developers and prepared devices; it is not a modem firmware image or a standalone factory-reset installer.
 
 ## Contents
 

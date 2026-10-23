@@ -26,10 +26,9 @@ import AppKit
     var channelSession: ReadOnlyChannelSession?
     @Published var skipFirmwareCheck = false
     @Published var backupSuffix = ""
-    @Published var forcePreparation = false { didSet { if !forcePreparation { cleanPreparationComponents = false } } }
-    @Published var cleanPreparationComponents = false { didSet { if cleanPreparationComponents { forcePreparation = true } } }
     @Published var setupPending = false
     @Published var componentCleanupPending = false
+    @Published var coreReplacementPending = false
     @Published var componentCleanupCanCancel = false
     @Published var keyPath = ""
     @Published var knownHostsPath = ""
@@ -153,7 +152,8 @@ import AppKit
         return "Оба IMEI корректны по формату и контрольной сумме"
     }
     var canApply: Bool { canManage && !pendingOperation && !setupPending && !diagnosticADBPending && imeiRecordCount != nil && IMEI.valid(imei1) && (imeiRecordCount == 1 ? imei1 != currentIMEI1 : IMEI.valid(imei2) && imei1 != imei2 && (imei1 != currentIMEI1 || imei2 != currentIMEI2)) }
-    var canManage: Bool { connected && activeChannel == .ssh && accessReady && permitsSSHOperations && !busy && !terminalActive && !adbTogglePending && !systemRestorePending }
+    var canReplaceCore: Bool { connected && activeChannel == .ssh && accessReady && permitsSSHOperations && !busy && !terminalActive && !adbTogglePending && !systemRestorePending }
+    var canManage: Bool { canReplaceCore && !coreReplacementPending }
     var ttlValidationMessage: String {
         do {
             _ = try TTLConfiguration(outboundEnabled: ttlOutboundEnabled, outboundText: ttlOutboundValue,
@@ -536,8 +536,9 @@ import AppKit
         adbTogglePending = FileManager.default.fileExists(atPath: storage.appendingPathComponent("adb-toggle-pending.json").path)
         diagnosticADBPending = FileManager.default.fileExists(atPath: storage.appendingPathComponent("adb-access-pending.json").path)
         componentCleanupPending = ComponentCleanup.hasPending(root: storage)
+        coreReplacementPending = FileManager.default.fileExists(atPath: storage.appendingPathComponent("core-replacement-pending.json").path)
         componentCleanupCanCancel = ComponentCleanup.canCancel(root: storage)
-        setupPending = FileManager.default.fileExists(atPath: storage.appendingPathComponent("setup-pending.json").path) || componentCleanupPending
+        setupPending = FileManager.default.fileExists(atPath: storage.appendingPathComponent("setup-pending.json").path) || FileManager.default.fileExists(atPath: storage.appendingPathComponent("core-replacement-pending.json").path) || componentCleanupPending
         pendingOperation = FileManager.default.fileExists(atPath: storage.appendingPathComponent("pending.json").path)
         let dir = storage.appendingPathComponent("Backups")
         let urls = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []

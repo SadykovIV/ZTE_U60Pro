@@ -18,6 +18,8 @@ extension ContentView {
             }
             Text(L10n.text("Сведения об устройстве, файлы прошивки и результаты чтения DIAG/QMI для исследования IMEI и SIM/eSIM — в одном ZIP. Подробные проверки остаются в архиве."))
                 .font(.system(size: 12)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
+            Text(L10n.text("Для неизвестной прошивки или неподдерживаемого компонента сохраните этот архив и передайте его разработчику. Проверки выполняются автоматически; архив не включает пароли и не отправляется без вашего действия.", "For an unknown firmware or unsupported component, save this archive and share it with the developer. Checks run automatically; the archive excludes passwords and is never sent automatically."))
+                .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
             Button(L10n.text("Собрать данные для адаптации прошивки")) { model.collectFirmwareSupport() }
                 .buttonStyle(StudioButtonStyle(prominent: true)).disabled(!model.canCollectFirmwareSupport)
             if !model.firmwareSupportExportSummary.isEmpty {

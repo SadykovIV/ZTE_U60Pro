@@ -24,7 +24,29 @@ import AppKit
         })
     }
     func installAgent(custom: Bool) {
-        guard canManage else { return }
+        guard custom ? canManage : canReplaceCore else { return }
+        if !custom {
+            let config = connection, root = storage, assets = resources, expected = connectedIdentity
+            busy = true; progress = 0; agentInstallationStatus = nil; vpnInspection = nil; modemInformation = nil
+            clearEsim()
+            append("Заменяю агент и веб-панель с сохранением настроек…")
+            operationTask = Task { [weak self] in
+                guard let self else { return }
+                do {
+                    let result = try await Task.detached(priority: .userInitiated) { [weak self] in
+                        let installer = try OnboardingEngine(root: root, resources: assets, connection: config, update: { [weak self] message, value in
+                            Task { @MainActor [weak self] in self?.append(message, progress: value) }
+                        })
+                        return try installer.replaceCore(webPassword: "", agentPassword: "", preserveSettings: true, expectedIdentity: expected)
+                    }.value
+                    keyPath = result.connection.keyPath; knownHostsPath = result.connection.knownHostsPath; port = result.connection.port
+                    append("Агент и веб-панель обновлены; пользовательские настройки сохранены", progress: 1)
+                } catch { append("Установка агента: " + error.localizedDescription) }
+                busy = false; refreshBackups(); refreshActivity(); operationTask = nil
+                refreshAgent()
+            }
+            return
+        }
         let candidate: AgentCandidate
         do {
             if custom {

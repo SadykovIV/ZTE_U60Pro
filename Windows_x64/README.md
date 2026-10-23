@@ -1,4 +1,4 @@
-# ZTE U60Pro Manager 1.26.1 для Windows x64
+# ZTE U60Pro Manager 1.27 для Windows x64
 
 ## Кандидат FileVersion 1.24.5.0
 
@@ -118,8 +118,8 @@ pwsh -NoProfile -File Windows_x64/build.ps1
 SSClash binary, пользовательский known_hosts или ключ бэкапа. SSClash при явной
 установке загружается из закреплённого upstream-релиза с проверкой хеша.
 
-Результаты находятся в `Windows_x64/dist/portable1.26.1/`,
-`ZTE-U60Pro-Manager-1.26.1-Windows-x64-portable.zip` и
+Результаты находятся в `Windows_x64/dist/portable1.27/`,
+`ZTE-U60Pro-Manager-1.27-Windows-x64-portable.zip` и
 `windows-1.23.3-build-manifest.json`. Распакуйте весь ZIP; `Resources` должны
 оставаться рядом с EXE. Дополнительная установка .NET не нужна.
 

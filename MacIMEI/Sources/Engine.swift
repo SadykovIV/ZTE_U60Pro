@@ -76,7 +76,7 @@ final class ModemEngine: @unchecked Sendable {
             catch { journal.markIncomplete(operationID) }
             update(message, value)
         }
-        try journal.record(operationID: operationID, category: "engine", title: "Создан контекст операции", result: "started", details: ["endpoint": connection.host + ":" + connection.port, "firmwareCheckSkipped": String(connection.skipFirmwareCheck)])
+        try journal.record(operationID: operationID, category: "engine", title: "Создан контекст операции", result: "started", details: ["endpoint": connection.host + ":" + connection.port, "firmwarePolicy": "component-prerequisites"])
         self.transport = AuditedRemoteTransport(base: transport ?? SSHTransport(connection), journal: try ActivityJournal(root: root),
                                                operationID: logDirectory.lastPathComponent, endpoint: connection.host + ":" + connection.port)
     }
@@ -105,7 +105,14 @@ final class ModemEngine: @unchecked Sendable {
     }
     func text(_ command: String) throws -> String { String(decoding: try remote(command), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) }
     var tokenURL: URL { root.appendingPathComponent("device-lock.json") }
+    var coreReplacementID: String?
     func acquireRemoteLock(allowSystemRestore: Bool = false) throws {
+        let replacement = root.appendingPathComponent("core-replacement-pending.json")
+        if fm.fileExists(atPath: replacement.path) {
+            let plan = try JSONDecoder().decode(CoreReplacementPlan.self, from: DeviceBackups.smallFile(replacement, maximum: 65536))
+            try plan.validate(connection)
+            try require(plan.phase == "complete" && coreReplacementID == plan.id, "Сначала продолжите подготовку модема или установку агента")
+        }
         try require(!ComponentCleanup.hasPending(root: root), "Сначала завершите очистку компонентов программы в подготовке модема")
         try require(!fm.fileExists(atPath: root.appendingPathComponent("adb-access-pending.json").path), "Сначала завершите включение ADB для диагностики")
         try require(!fm.fileExists(atPath: root.appendingPathComponent("adb-toggle-pending.json").path), "Сначала проверьте незавершённое переключение ADB")
@@ -136,31 +143,27 @@ final class ModemEngine: @unchecked Sendable {
             remoteLockToken = nil
         }
     }
-    func identity() throws -> (Identity, String) { try readIdentity(enforceFirmware: true) }
+    func identity() throws -> (Identity, String) { try readIdentity() }
     private func imeiIdentity() throws -> (Identity, String) {
         let observed = try measuredIdentity()
         try require(observed.routerHash == Self.routerHash, "Чтение NV требует совместимый diag-router. Соберите данные для адаптации прошивки.")
-        try require(observed.identity.firmwareHash != "absent", "Для записи IMEI нужен измеренный хэш прошивки для привязки бэкапа и журнала")
+        // Explicit image absence remains part of CID-bound backup/journal identity.
+        // The exact router and fresh NV/config contracts remain mandatory.
         // Write eligibility comes from fresh NV/config contracts below. Keep the
         // real image identity, but do not equate a firmware name with its format.
         return (observed.identity, observed.bootID)
     }
     /// Read-only diagnosis does not grant any write capability or change the connection policy.
-    func diagnosticIdentity() throws -> (Identity, String) { try readIdentity(enforceFirmware: false) }
-    private func readIdentity(enforceFirmware: Bool) throws -> (Identity, String) {
+    func diagnosticIdentity() throws -> (Identity, String) { try readIdentity() }
+    private func readIdentity() throws -> (Identity, String) {
         let raw = try text(AccessIdentity.command)
         let lines = raw.split(separator: "\n").map(String.init)
         try require(lines.count == 4, "Не удалось прочитать идентификаторы модема")
         let firmware = try AccessIdentity.observedHash(lines[0], path: "/firmware/image/modem.b16")
         let router = try AccessIdentity.observedHash(lines[1], path: "/usr/bin/diag-router")
-        try ActivityJournal(root: root).record(operationID: logDirectory.lastPathComponent, category: "firmware", title: "Сверка прошивки", result: firmware == Self.firmwareHash && router == Self.routerHash ? "completed" : "warning", details: ["firmwareSHA256":firmware, "routerSHA256":router, "expectedFirmwareSHA256": Self.firmwareHash, "expectedRouterSHA256": Self.routerHash, "readOnlyProbe": String(!enforceFirmware)])
-        try require(!enforceFirmware || (firmware != "absent" && router != "absent"), "Для записи NV и системных копий этой прошивки ещё нужен отдельный адаптер. Чтение IMEI и независимые компоненты доступны отдельно.")
-        try require(!enforceFirmware || connection.skipFirmwareCheck || (firmware == Self.firmwareHash && router == Self.routerHash), "Прошивка отличается от проверенной MU5250 B31. Операции остановлены.")
+        try ActivityJournal(root: root).record(operationID: logDirectory.lastPathComponent, category: "firmware", title: "Идентификация компонентов", result: "completed", details: ["firmwareSHA256":firmware, "routerSHA256":router, "readOnlyProbe": "true"])
         try require(lines[2].count == 32 && lines[2].utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }, "Не удалось определить уникальный eMMC CID модема")
         try require(UUID(uuidString: lines[3]) != nil, "Не удалось прочитать boot ID")
-        if connection.skipFirmwareCheck {
-            try ActivityJournal(root: root).record(operationID: logDirectory.lastPathComponent, category: "firmware", title: "Проверка соответствия B31 отключена пользователем", result: "warning", details: ["firmwareSHA256":firmware, "routerSHA256":router])
-        }
         return (Identity(cid: lines[2], firmwareHash: firmware), lines[3])
     }
     func helper(_ name: String, _ mode: String, plan: Data? = nil) throws -> String {
