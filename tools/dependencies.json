@@ -1,7 +1,7 @@
 {
-  "archive": "Build-dependencies-1.26.tar.gz",
-  "url": "https://github.com/SadykovIV/ZTE_U60Pro/releases/download/v1.26/Build-dependencies-1.26.tar.gz",
-  "sha256": "5d7df06f7c7f90c2afd57a1ca9aa7c3d5ed02ca62252d7c5fd34f55da76abe9f",
+  "archive": "Build-dependencies-1.26.1.tar.gz",
+  "url": "https://github.com/SadykovIV/ZTE_U60Pro/releases/download/v1.26.1/Build-dependencies-1.26.1.tar.gz",
+  "sha256": "8b4ce16d63277adbe99f0f3d941442e871f90da73c6faba330c25522e2e2a44b",
   "files": {
     "MacIMEI/DeviceHelpers/bin/manifest.json": "7816d8063ccc406dab0c97c1b45e34145987f78de595dba8d924b4e3fadcdffb",
     "MacIMEI/DeviceHelpers/bin/zte_config": "c435bf62c9b9719913a493bcddc80428944d38d300a1ef2259da962f132c698d",
@@ -14,7 +14,7 @@
     "MacIMEI/Resources/AgentDashboardInstall/dashboard-uhttpd": "76f021c43a02eab5bb634b01461370fcb8bfb270b1f14e348e5b57acb43b1d12",
     "MacIMEI/Resources/AgentDashboardInstall/dashboard.tar.gz": "de1f1fb24aca74d53db5b689355647e1f1912bed5f2776e4ca4ef07e8de1e3b2",
     "MacIMEI/Resources/DiagnosticTools/bundle.tar.gz": "2f4529305333523d916e3588223ed42ce1537562d4e659bd822888deef464577",
-    "MacIMEI/Resources/Esim/eSIM-sources.tar.gz": "2d79a9d9845dbe29ba8600bcaf820e31cabbcb3ce68b3124e3bddd5385b9cb3a",
+    "MacIMEI/Resources/Esim/eSIM-sources.tar.gz": "7f1f7f151925a41b114d5eae4c518e6d13cb4af343ddae96f9ba64c98ad49e75",
     "MacIMEI/Resources/Esim/zte-agent-esim": "2dd19f6e482e269a22c515e6dc0baa507ace98d78067a6a56c0af8c515f021e4",
     "MacIMEI/Resources/ExperimentalOpkg/runtime.tar.gz": "a78ea29007d1c30616172760f725a64655f9ae1889721b9c323e78b899ee54fe",
     "MacIMEI/Resources/FirmwareSupport/NOTICE-QMI.txt": "0a4fbc7c40b920492af75db765de3334d90648f9737046430b289951129b5fe5",
@@ -47,7 +47,7 @@
     "Windows_x64/Resources/AgentDashboardInstall/dashboard-uhttpd": "76f021c43a02eab5bb634b01461370fcb8bfb270b1f14e348e5b57acb43b1d12",
     "Windows_x64/Resources/AgentDashboardInstall/dashboard.tar.gz": "de1f1fb24aca74d53db5b689355647e1f1912bed5f2776e4ca4ef07e8de1e3b2",
     "Windows_x64/Resources/DiagnosticTools/bundle.tar.gz": "2f4529305333523d916e3588223ed42ce1537562d4e659bd822888deef464577",
-    "Windows_x64/Resources/Esim/eSIM-sources.tar.gz": "2d79a9d9845dbe29ba8600bcaf820e31cabbcb3ce68b3124e3bddd5385b9cb3a",
+    "Windows_x64/Resources/Esim/eSIM-sources.tar.gz": "7f1f7f151925a41b114d5eae4c518e6d13cb4af343ddae96f9ba64c98ad49e75",
     "Windows_x64/Resources/Esim/zte-agent-esim": "2dd19f6e482e269a22c515e6dc0baa507ace98d78067a6a56c0af8c515f021e4",
     "Windows_x64/Resources/ExperimentalOpkg/runtime.tar.gz": "a78ea29007d1c30616172760f725a64655f9ae1889721b9c323e78b899ee54fe",
     "Windows_x64/Resources/FirmwareSupport/NOTICE-QMI.txt": "0a4fbc7c40b920492af75db765de3334d90648f9737046430b289951129b5fe5",
