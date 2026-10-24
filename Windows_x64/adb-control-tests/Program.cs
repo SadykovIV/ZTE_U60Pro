@@ -76,6 +76,23 @@ internal static class Program
         try{require.Invoke(service,[false]);throw new Exception("direct SSH manager gate accepted pending");}
         catch(TargetInvocationException e) when(e.InnerException is InvalidOperationException){Check(true,"direct eSIM/terminal SSH gate also refuses pending runtime toggle");}
         File.Delete(Path.Combine(root,AdbToggleTransaction.PendingName));
+        foreach (var resolved in new[] { true, false })
+        foreach (var operation in new[] { ModemOperation.ReadImei, ModemOperation.InstallVpn })
+        foreach (var firmware in new[] { DeviceFeatureService.FirmwareHash, AdbToggleTransaction.B04FirmwareHash, "absent" })
+        {
+            var pending = Path.Combine(root, AdbToggleTransaction.PendingName);
+            File.WriteAllText(pending, System.Text.Json.JsonSerializer.Serialize(new { Schema = 1, Token = Guid.NewGuid().ToString("D"), Cid = "0123456789abcdef0123456789abcdef", Boot = "00000000-0000-0000-0000-000000000001", Firmware = firmware, Router = DeviceFeatureService.RouterHash, Desired = true, Original = false, Phase = "dispatched" }));
+            var recovery = new TransactionShell { RecoveryReply = "settled-before", RecoveryDenied = !resolved, B04Image = firmware == AdbToggleTransaction.B04FirmwareHash, B04 = firmware == "absent" };
+            Field("_features", new DeviceFeatureService(recovery, Path.Combine(root, "transaction-resources"), root));
+            Field("_imei", new ImeiEngine(recovery, root, root));
+            var ordinary = await service.RunAsync(new(operation));
+            Check(recovery.OrdinaryLocks == (resolved ? 1 : 0), operation + " actual backend lock reached only after proved recovery");
+            if (operation == ModemOperation.InstallVpn) Check(recovery.VpnDependencyChecks == (resolved ? 1 : 0), "actual VPN install dependency preflight reached only after proved recovery");
+            Check(recovery.Recoveries == 1 && recovery.Applies == 0 && recovery.Acks == 0, "ordinary operation first attempts proof-only pending recovery");
+            Check(File.Exists(pending) != resolved, "ordinary operation retains unknown pending or archives proved terminal");
+            if (!resolved) Check(!ordinary.Success && ordinary.Message.Contains("Результат переключения ADB"), "unresolved recovery still blocks unrelated operation");
+            File.Delete(pending);
+        }
         await TransactionTests.Run(root, Check);
         await BootstrapTimeoutTests.Run(root, Check);
         Console.WriteLine($"{passed} assertions PASS; no modem access");

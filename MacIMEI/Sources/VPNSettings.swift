@@ -313,7 +313,7 @@ final class VPNSettingsManager {
     static let root = "/data/zte-vpn"
     static let launcherHash = "6e24686d0310c710c734ccc7c21469858e42a2e474f4a3c073bf1c476b460c50"
     static let agentHash = BundledAgent.sha256
-    static let dashboardIndexHash = "870b88a3725b3b989d82a6a117e7077f74c927ca7dab25667d12be6165ea0b2a"
+    static let dashboardIndexHash = "66864773cfde70fdb56765923b9e90a5f05d820c9fc7b5e310dcca72e9011b58"
     static let helperHash = "46257e8e24397f097b3ce3e53067ad59b265803f66aeb2da6d216b05dd2e5db7"
     // Exact previously shipped controllers may serve read-only status before upgrade.
     // Mutations continue to require the current controller hash.

@@ -12,11 +12,12 @@ namespace ZteImeiStudio.Windows.Features;
 internal sealed class AdbToggleTransaction(IRemoteShell shell, string resources, string storage,
     TimeSpan? waitBudget = null, TimeSpan? pollInterval = null)
 {
-    internal const string ScriptSha256 = "0ca5d10426c8398bab5e35af525782c490dce30f841a073e2cc64e3dc49c27dd";
+    internal const string ScriptSha256 = "8e8f39ca743a4e53971db885afc3117ab3023a0ff3d6144c0954b078f6562a79";
+    internal const string PreviousScriptSha256 = "0ca5d10426c8398bab5e35af525782c490dce30f841a073e2cc64e3dc49c27dd";
     internal const string B04FirmwareHash = "c57e063d390983229dfc53aa87380b3d4655ee8daa1c748e1a032ac90cd0df81";
     internal const string B28FirmwareHash = "5a4489882538b5ab1d3e0049371f1b620d28d262a429923299b4f2626d40d478";
     internal const string PendingName = "adb-toggle-pending.json";
-    internal const string Unknown = "Результат переключения ADB не подтверждён. Подключитесь по SSH и обновите состояние ADB. Повторное переключение заблокировано.";
+    internal const string Unknown = "Результат переключения ADB не подтверждён. Подключитесь по SSH и обновите состояние ADB. Повторное переключение заблокировано. Если повторная проверка не помогает, перезапустите модем и подключитесь снова.";
     internal const string CapabilityCommand = "set -eu; test \"$(id -u)\" = 0; for tool in sh stat readlink sha256sum cut awk sed sort pidof nohup sleep cat mv rm rmdir mkdir ln id uname cmp chmod; do command -v \"$tool\" >/dev/null || exit 71; done; test ! -L /sbin/adbd; test -f /sbin/adbd && test -x /sbin/adbd && test \"$(stat -c %u /sbin/adbd)\" = 0; printf 'ADB_CONTROL_CAPABLE\\n'";
     // The captured B04 image or its absence requires the measured native build; it
     // is never an ADB write grant.
@@ -77,20 +78,38 @@ internal sealed class AdbToggleTransaction(IRemoteShell shell, string resources,
     {
         if (File.Exists(PendingPath) || Directory.Exists(PendingPath))
         {
-            // A persisted pre-dispatch intent may cancel preparation only. Once
-            // dispatch is recorded, reconnect is result-only: never ACK/apply.
             var pending = Load();
-            await Bound(pending, ct);
+            var current = await AccessIdentity.ReadAsync(shell, ct);
+            if (current.Cid != pending.Cid || current.FirmwareHash != pending.Firmware || current.RouterHash != pending.Router) throw Failure();
+            if (current.BootId != pending.Boot)
+            {
+                // Reboot destroys /tmp. An old dispatch is retired only after two
+                // fresh proofs of the same hardware, absent stage/lock and a
+                // readable current USB state. No remote file is deleted.
+                if (!await StageAbsent(pending, ct)) throw Failure();
+                var observed = await Observe(ct, current);
+                if (observed.Enabled is null || !await StageAbsent(pending, ct) || await AccessIdentity.ReadAsync(shell, ct) != current) throw Failure();
+                Archive(pending);
+                return observed;
+            }
             if (pending.Phase != "dispatched" && await RecoverAbsentStage(pending, ct))
                 return await Observe(ct, pending.Identity);
-            if (pending.Phase != "dispatched")
-                _ = await Call(pending, "cancel", ct);
-            var phase = Phase(await Call(pending, "result", ct));
-            if (phase is not ("committed" or "rolled-back" or "cancelled")) throw Failure();
+            // Reconnect never ACKs or reapplies. Execute current verified code
+            // over stdin; the old staged script is an identity proof only.
+            var source = await Script(ct);
+            var recovery = await shell.RunAsync("set -eu; " + ScriptGuard(pending, recovery: true) +
+                "exec /bin/sh -s -- " + string.Join(' ', new[] { "reconcile", pending.Stage, pending.Token, pending.Cid, pending.Boot, pending.Desired ? "1" : "0" }.Select(Q)) + " \"$stage_hash\"",
+                source, TimeSpan.FromSeconds(30), ct);
+            var phase = new[] { "cancelled", "settled-before", "settled-after" }.FirstOrDefault(p => Exact(recovery, "ADB_RECOVERED=" + p));
+            if (phase is null) throw Failure();
             var state = await Observe(ct, pending.Identity);
-            if (state.Enabled != (phase == "committed" ? pending.Desired : pending.Original)) throw Failure();
-            await Cleanup(pending, ct);
-            File.Delete(PendingPath);
+            if (state.Enabled != (phase == "settled-after" ? pending.Desired : pending.Original)) throw Failure();
+            await Bound(pending, ct);
+            // Archive exact local intent before optional stage housekeeping. A
+            // lost cleanup response must not recreate an already settled lock.
+            Archive(pending);
+            try { await Cleanup(pending, ct); }
+            catch (Exception error) when (error is IOException or TimeoutException or DeviceFeatureException or Renci.SshNet.Common.SshException) { }
             return state;
         }
         return await Observe(ct);
@@ -123,8 +142,8 @@ internal sealed class AdbToggleTransaction(IRemoteShell shell, string resources,
             {
                 var same = await Observe(ct, identity);
                 if (same.Enabled != desired) throw Failure();
-                await Cleanup(pending, ct);
-                File.Delete(PendingPath); return same;
+                await Complete(pending, ct);
+                return same;
             }
             if (!Exact(prepared, "ADB_PREPARED")) throw Failure();
             pending = pending with { Phase = "prepared" }; Save(pending);
@@ -157,8 +176,7 @@ internal sealed class AdbToggleTransaction(IRemoteShell shell, string resources,
                     {
                         var final = await Observe(deadline.Token, identity);
                         if (final.Enabled != (phase == "committed" ? desired : pending.Original)) throw Failure();
-                        await Cleanup(pending, deadline.Token);
-                        File.Delete(PendingPath);
+                        await Complete(pending, deadline.Token);
                         if (phase != "committed") throw Failure("Переключение ADB отменено; прежнее состояние USB восстановлено.");
                         return final;
                     }
@@ -181,7 +199,7 @@ internal sealed class AdbToggleTransaction(IRemoteShell shell, string resources,
                     await Bound(pending, cleanupDeadline.Token);
                     if (await RecoverAbsentStage(pending, cleanupDeadline.Token)) preparationCleared = true;
                     else if (Exact(await Call(pending, "cancel", cleanupDeadline.Token), "ADB_CANCELLED") && Phase(await Call(pending, "result", cleanupDeadline.Token)) == "cancelled")
-                    { await Cleanup(pending, cleanupDeadline.Token); File.Delete(PendingPath); preparationCleared = true; }
+                    { await Complete(pending, cleanupDeadline.Token); preparationCleared = true; }
                 }
                 catch { /* Unknown ownership/staging stays recorded for inspection. */ }
             }
@@ -190,26 +208,45 @@ internal sealed class AdbToggleTransaction(IRemoteShell shell, string resources,
             throw Failure(); // Never surface raw SSH output or identity/token data.
         }
     }
+    private async Task<bool> StageAbsent(Pending pending, CancellationToken ct)
+    {
+        var stage = Q(pending.Stage);
+        var command = "set -eu; test -d /tmp && test ! -L /tmp && test \"$(stat -c %u /tmp)\" = 0 || exit 71; " +
+            "test ! -e " + stage + " && test ! -L " + stage + " && test ! -e /tmp/zte-imei-app.lock && test ! -L /tmp/zte-imei-app.lock || exit 71; printf 'ADB_STAGE_ABSENT\\n'";
+        return Exact(await shell.RunAsync(command, timeout: TimeSpan.FromSeconds(10), ct: ct), "ADB_STAGE_ABSENT");
+    }
     private async Task<bool> RecoverAbsentStage(Pending pending, CancellationToken ct)
     {
         if (pending.Phase == "dispatched") return false;
         await Bound(pending, ct);
-        var stage = Q(pending.Stage);
-        var command = "set -eu; test -d /tmp && test ! -L /tmp && test \"$(stat -c %u /tmp)\" = 0 || exit 71; " +
-            "test ! -e " + stage + " && test ! -L " + stage + " && test ! -e /tmp/zte-imei-app.lock && test ! -L /tmp/zte-imei-app.lock || exit 71; printf 'ADB_STAGE_ABSENT\\n'";
-        if (!Exact(await shell.RunAsync(command, timeout: TimeSpan.FromSeconds(10), ct: ct), "ADB_STAGE_ABSENT")) return false;
+        if (!await StageAbsent(pending, ct)) return false;
+        var observed = await Observe(ct, pending.Identity);
+        if (observed.Enabled is null || !await StageAbsent(pending, ct)) throw Failure();
         await Bound(pending, ct);
-        File.Delete(PendingPath);
+        Archive(pending);
         return true;
+    }
+    private void Archive(Pending pending)
+    {
+        if (Load() != pending) throw Failure();
+        var destination = Path.Combine(storage, "adb-toggle-recovered-" + pending.Token + ".json");
+        if (File.Exists(destination) || Directory.Exists(destination))
+        {
+            var info = new FileInfo(destination);
+            if (info.LinkTarget is not null || info.Length is < 1 or > 2048 || !File.ReadAllBytes(destination).SequenceEqual(File.ReadAllBytes(PendingPath))) throw Failure();
+            File.Delete(PendingPath);
+        }
+        else File.Move(PendingPath, destination);
     }
     private async Task Bound(Pending pending, CancellationToken ct)
     { if (await AccessIdentity.ReadAsync(shell, ct) != pending.Identity) throw Failure(); }
-    private string ScriptGuard(Pending pending)
+    private string ScriptGuard(Pending pending, bool recovery = false)
     {
         var stage = Q(pending.Stage); var path = Q(pending.Stage + "/adb-toggle.sh");
         return "test -d " + stage + " && test ! -L " + stage + " && test \"$(stat -c '%u:%a' " + stage + ")\" = 0:700 || exit 71; " +
             "test -f " + path + " && test ! -L " + path + " && test \"$(stat -c '%u:%a:%h' " + path + ")\" = 0:600:1 && test \"$(stat -c %s " + path + ")\" -le 65536 || exit 71; " +
-            "test \"$(sha256sum " + path + " | cut -d ' ' -f 1)\" = " + Q(ScriptSha256) + " || exit 71; ";
+            "stage_hash=$(sha256sum " + path + " | cut -d ' ' -f 1); " +
+            (recovery ? "case \"$stage_hash\" in " + ScriptSha256 + "|" + PreviousScriptSha256 + ") :;; *) exit 71;; esac; " : "test \"$stage_hash\" = " + Q(ScriptSha256) + " || exit 71; ");
     }
     private static string Arguments(Pending pending, string action) => string.Join(' ', new[] { pending.Stage + "/adb-toggle.sh", action, pending.Stage, pending.Token, pending.Cid, pending.Boot, pending.Desired ? "1" : "0" }.Select(Q));
     private Task<RemoteResult> Call(Pending pending, string action, CancellationToken ct) => shell.RunAsync("set -eu; " + ScriptGuard(pending) + "sh " + Arguments(pending, action), timeout: TimeSpan.FromSeconds(10), ct: ct);
@@ -219,18 +256,28 @@ internal sealed class AdbToggleTransaction(IRemoteShell shell, string resources,
             if (Exact(result, "ADB_PHASE=" + phase)) return phase;
         throw new IOException("ADB phase unavailable.");
     }
+    private async Task Complete(Pending pending, CancellationToken ct)
+    {
+        await Bound(pending, ct);
+        Archive(pending);
+        try { await Cleanup(pending, ct); }
+        catch (Exception error) when (error is IOException or TimeoutException or DeviceFeatureException or Renci.SshNet.Common.SshException) { }
+    }
     private async Task Cleanup(Pending pending, CancellationToken ct)
     {
         await Bound(pending, ct);
         var stage = Q(pending.Stage);
-        var names = new[] { "adb-toggle.sh", "before", "after", "udc", "daemon", "name", "target", "desired", "original", "phase", "ack", "worker.log", "rc.before", "rc.after", "rc.mode" };
+        var names = new[] { "adb-toggle.sh", "before", "after", "udc", "daemon", "name", "target", "desired", "original", "phase", "ack", "worker.log", "rc.before", "rc.after", "rc.mode", "phase.new", "before.new", "after.new", "udc.new", "daemon.new", "name.new", "target.new", "desired.new", "original.new", "ack.new", "rc.mode.new" };
         var files = string.Join(' ', names.Select(n => Q(pending.Stage + "/" + n)));
-        var command = "set -eu; test -d " + stage + " && test ! -L " + stage + " && test \"$(stat -c '%u:%a' " + stage + ")\" = 0:700 || exit 71; " +
-            "for entry in " + stage + "/* " + stage + "/.[!.]* " + stage + "/..?*; do test ! -e \"$entry\" && test ! -L \"$entry\" && continue; case \"${entry##*/}\" in adb-toggle.sh|before|after|udc|daemon|name|target|desired|original|phase|ack|worker.log|rc.before|rc.after|rc.mode|apply-once|decision) :;; *) exit 71;; esac; done; " +
+        var released = Q(pending.Stage + "/released-lock");
+        var releasedGuard = "if test -e " + released + " || test -L " + released + "; then test -d " + released + " && test ! -L " + released + " && test \"$(stat -c '%u:%a' " + released + ")\" = 0:700 || exit 71; for p in " + released + "/* " + released + "/.[!.]* " + released + "/..?*; do test ! -e \"$p\" && test ! -L \"$p\" && continue; test \"${p##*/}\" = owner && test -f \"$p\" && test ! -L \"$p\" && test \"$(stat -c '%u:%a:%h' \"$p\")\" = 0:600:1 && test \"$(cat \"$p\")\" = " + Q(pending.Token) + " || exit 71; done; fi; ";
+        var releasedRemove = "if test -d " + released + "; then rm -f " + Q(pending.Stage + "/released-lock/owner") + "; rmdir " + released + "; fi; ";
+        var command = "set -eu; test -d " + stage + " && test ! -L " + stage + " && test \"$(stat -c '%u:%a' " + stage + ")\" = 0:700 || exit 71; " + releasedGuard +
+            "for entry in " + stage + "/* " + stage + "/.[!.]* " + stage + "/..?*; do test ! -e \"$entry\" && test ! -L \"$entry\" && continue; case \"${entry##*/}\" in adb-toggle.sh|before|after|udc|daemon|name|target|desired|original|phase|ack|worker.log|rc.before|rc.after|rc.mode|phase.new|before.new|after.new|udc.new|daemon.new|name.new|target.new|desired.new|original.new|ack.new|rc.mode.new|apply-once|decision|released-lock) :;; *) exit 71;; esac; done; " +
             "for dir in " + Q(pending.Stage + "/apply-once") + " " + Q(pending.Stage + "/decision") + "; do if test -e \"$dir\" || test -L \"$dir\"; then test -d \"$dir\" && test ! -L \"$dir\" && test \"$(stat -c '%u:%a' \"$dir\")\" = 0:700 || exit 71; for f in \"$dir\"/* \"$dir\"/.[!.]* \"$dir\"/..?*; do test ! -e \"$f\" && test ! -L \"$f\" || exit 71; done; fi; done; " +
             "for f in " + files + "; do if test -e \"$f\" || test -L \"$f\"; then test -f \"$f\" && test ! -L \"$f\" && test \"$(stat -c '%u:%a:%h' \"$f\")\" = 0:600:1 || exit 71; fi; done; " +
-            "for dir in " + Q(pending.Stage + "/apply-once") + " " + Q(pending.Stage + "/decision") + "; do if test -d \"$dir\"; then rmdir \"$dir\"; fi; done; " +
-            "rm -f " + files + "; rmdir " + stage + "; printf 'ADB_STAGE_REMOVED\\n'";
+            releasedRemove + "rm -f " + files + "; " +
+            "for dir in " + Q(pending.Stage + "/apply-once") + " " + Q(pending.Stage + "/decision") + "; do if test -d \"$dir\"; then rmdir \"$dir\"; fi; done; rmdir " + stage + "; printf 'ADB_STAGE_REMOVED\\n'";
         if (!Exact(await shell.RunAsync(command, timeout: TimeSpan.FromSeconds(10), ct: ct), "ADB_STAGE_REMOVED")) throw Failure();
     }
     private void Save(Pending pending, bool create = false)

@@ -16,7 +16,8 @@ struct ADBControlManager {
     var now: () -> Date = Date.init
     var wait: (TimeInterval) -> Void = Thread.sleep
     // Updated only from the reviewed bundled source, never learned from a modem.
-    static let scriptHash = "0ca5d10426c8398bab5e35af525782c490dce30f841a073e2cc64e3dc49c27dd"
+    static let scriptHash = "8e8f39ca743a4e53971db885afc3117ab3023a0ff3d6144c0954b078f6562a79"
+    static let previousScriptHash = "0ca5d10426c8398bab5e35af525782c490dce30f841a073e2cc64e3dc49c27dd"
     static let b04FirmwareHash = "c57e063d390983229dfc53aa87380b3d4655ee8daa1c748e1a032ac90cd0df81"
     static let b28FirmwareHash = "5a4489882538b5ab1d3e0049371f1b620d28d262a429923299b4f2626d40d478"
     static func known(firmware: String, router: String) -> Bool {
@@ -51,34 +52,42 @@ fi
             let (bytes, truncated) = try DiagnosticArchive.readRegular(root: engine.root, relative: "adb-toggle-pending.json", limit: 4096)
             let pending = try JSONDecoder().decode(ADBControlPending.self, from: bytes)
             try require(!truncated && pending.schema == 1 && pending.token.range(of: #"^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$"#, options: .regularExpression) != nil && pending.cid.range(of: #"^[0-9a-f]{32}$"#, options: .regularExpression) != nil && UUID(uuidString: pending.boot) != nil && Self.known(firmware: pending.firmware, router: pending.router), "Некорректная сохранённая операция ADB")
-            try same(pending)
-            if !pending.dispatched {
-                let absent = "set -eu; test -d /tmp && test ! -L /tmp && test -r /tmp && test -x /tmp && test \"$(stat -c %u /tmp)\" = 0 || exit 71; test ! -e " + shellQuote(pending.stage) + "; test ! -L " + shellQuote(pending.stage) + "; test ! -e /tmp/zte-imei-app.lock; test ! -L /tmp/zte-imei-app.lock; printf 'ADB_STAGE_ABSENT\\n'"
-                if (try? run(absent)) == "ADB_STAGE_ABSENT\n" {
-                    try same(pending)
-                    try engine.fm.removeItem(at: pendingURL)
-                    return try observedStatus()
-                }
+            let current = try engine.measuredIdentity()
+            try require(current.identity.cid == pending.cid && current.identity.firmwareHash == pending.firmware && current.routerHash == pending.router, "Устройство изменилось во время восстановления ADB")
+            if current.bootID != pending.boot {
+                try require(try stageAbsent(pending), "Старая операция ADB всё ещё присутствует")
+                let observed = try observedStatus()
+                try require(observed.enabled != nil && (try stageAbsent(pending)) && (try engine.measuredIdentity()) == current, "Восстановление ADB после перезагрузки не подтверждено")
+                try archive(pending, bytes: bytes)
+                return try observedStatus()
             }
-            let recoveredPhase = try? phase(pending)
-            if recoveredPhase == nil && !pending.dispatched {
-                try require(try run(command("cancel", pending)) == "ADB_CANCELLED\n", "Отмена подготовки ADB не подтверждена")
-                try require(try phase(pending) == "cancelled", "Отмена подготовки ADB не подтверждена")
-                try cleanup(pending)
-            } else if let observed = recoveredPhase {
-                if ["committed", "rolled-back", "cancelled"].contains(observed) {
-                    try cleanup(pending)
-                } else if ["prepared", "preparing"].contains(observed) && !pending.dispatched {
-                    try require(try run(command("cancel", pending)) == "ADB_CANCELLED\n", "Отмена неподтверждённой подготовки ADB не завершена")
-                    try require(try phase(pending) == "cancelled", "Отмена неподтверждённой подготовки ADB не завершена")
-                    try cleanup(pending)
-                }
+            if try !pending.dispatched && stageAbsent(pending) {
+                let observed = try observedStatus()
+                try require(observed.enabled != nil && (try stageAbsent(pending)), "Состояние ADB не подтверждено")
+                try same(pending)
+                try archive(pending, bytes: bytes)
+                return try observedStatus()
+            }
+            // Only the current bundled helper executes. Old staged bytes are
+            // compared with a reviewed hash, never loaded as recovery code.
+            let recoveryCommand = scriptGuard(pending, recovery: true) + "exec /bin/sh -s -- " +
+                ["reconcile", pending.stage, pending.token, pending.cid, pending.boot, pending.enabled ? "1" : "0"].map(shellQuote).joined(separator: " ") + " \"$stage_hash\""
+            let source = try script()
+            if let reply = try? run(recoveryCommand, input: source, timeout: 30),
+               ["ADB_RECOVERED=cancelled\n", "ADB_RECOVERED=settled-before\n", "ADB_RECOVERED=settled-after\n"].contains(reply) {
+                let observed = try observedStatus()
+                try require(observed.enabled != nil && (reply != "ADB_RECOVERED=settled-after\n" || observed.enabled == pending.enabled), "Восстановленное состояние ADB не подтверждено")
+                try same(pending)
+                try archive(pending, bytes: bytes)
+                // Cleanup is optional after the exact intent has been archived.
+                // A lost housekeeping reply cannot recreate a settled lock.
+                try? cleanup(pending, removePending: false)
             }
         }
         var observed = try observedStatus()
         if engine.fm.fileExists(atPath: pendingURL.path) {
             observed.supportsChange = false
-            observed.message = "Операция ADB ещё не подтверждена. Обновите состояние после автоматического отката; повторная запись заблокирована."
+            observed.message = "Операция ADB ещё не подтверждена. Обновите состояние после автоматического отката; повторная запись заблокирована. Если повторная проверка не помогает, перезапустите модем и подключитесь снова."
         }
         return observed
     }
@@ -96,15 +105,31 @@ fi
         try require(try engine.measuredIdentity() == before, "Устройство или сеанс загрузки изменились при чтении ADB")
         return state
     }
+    private func stageAbsent(_ pending: ADBControlPending) throws -> Bool {
+        let command = "set -eu; test -d /tmp && test ! -L /tmp && test -r /tmp && test -x /tmp && test \"$(stat -c %u /tmp)\" = 0 || exit 71; test ! -e " + shellQuote(pending.stage) + "; test ! -L " + shellQuote(pending.stage) + "; test ! -e /tmp/zte-imei-app.lock; test ! -L /tmp/zte-imei-app.lock; printf 'ADB_STAGE_ABSENT\\n'"
+        return (try? run(command)) == "ADB_STAGE_ABSENT\n"
+    }
+    private func archive(_ pending: ADBControlPending, bytes: Data) throws {
+        let (current, truncated) = try DiagnosticArchive.readRegular(root: engine.root, relative: "adb-toggle-pending.json", limit: 4096)
+        try require(!truncated && current == bytes, "Сохранённая операция ADB изменилась")
+        let name = "adb-toggle-recovered-" + pending.token + ".json"
+        let destination = engine.root.appendingPathComponent(name)
+        if engine.fm.fileExists(atPath: destination.path) {
+            let (saved, oversized) = try DiagnosticArchive.readRegular(root: engine.root, relative: name, limit: 4096)
+            try require(!oversized && saved == bytes, "Архив операции ADB не подтверждён")
+            try engine.fm.removeItem(at: pendingURL)
+        } else { try engine.fm.moveItem(at: pendingURL, to: destination) }
+    }
     private func same(_ pending: ADBControlPending) throws {
         let proof = try engine.measuredIdentity()
         try require(proof.identity.cid == pending.cid && proof.bootID == pending.boot && proof.identity.firmwareHash == pending.firmware && proof.routerHash == pending.router, "Устройство или сеанс загрузки изменились во время переключения ADB")
     }
-    private func scriptGuard(_ pending: ADBControlPending) -> String {
+    private func scriptGuard(_ pending: ADBControlPending, recovery: Bool = false) -> String {
         let stage = shellQuote(pending.stage), path = shellQuote(pending.stage + "/adb-toggle.sh")
         return "set -eu; test -d " + stage + " && test ! -L " + stage + " && test \"$(stat -c '%u:%a' " + stage + ")\" = 0:700 || exit 71; " +
             "test -f " + path + " && test ! -L " + path + " && test \"$(stat -c '%u:%a:%h' " + path + ")\" = 0:600:1 && test \"$(stat -c %s " + path + ")\" -le 32768 || exit 71; " +
-            "test \"$(sha256sum " + path + " | cut -d ' ' -f 1)\" = " + shellQuote(Self.scriptHash) + " || exit 71; "
+            "stage_hash=$(sha256sum " + path + " | cut -d ' ' -f 1); " +
+            (recovery ? "case \"$stage_hash\" in " + Self.scriptHash + "|" + Self.previousScriptHash + ") :;; *) exit 71;; esac; " : "test \"$stage_hash\" = " + shellQuote(Self.scriptHash) + " || exit 71; ")
     }
     private func invocation(_ mode: String, _ pending: ADBControlPending) -> String {
         "/bin/sh " + shellQuote(pending.stage + "/adb-toggle.sh") + " " + mode + " " +
@@ -122,19 +147,28 @@ fi
         guard let value = phases.first(where: { reply == "ADB_PHASE=" + $0 + "\n" }) else { throw IMEIError.message("Некорректный ответ переключения ADB") }
         return value
     }
-    private func cleanup(_ pending: ADBControlPending) throws {
+    private func cleanup(_ pending: ADBControlPending, removePending: Bool = true) throws {
         try same(pending)
         let stage = shellQuote(pending.stage)
         // Never recurse and never remove a lock. The worker releases its own
         // lock before publishing a terminal receipt.
-        let files = ["adb-toggle.sh", "phase", "before", "after", "udc", "daemon", "name", "target", "desired", "original", "ack", "worker.log", "rc.before", "rc.after", "rc.mode"]
-        let inventoryGuard = "for p in " + stage + "/* " + stage + "/.[!.]* " + stage + "/..?*; do test -e \"$p\" || test -L \"$p\" || continue; case \"${p##*/}\" in " + files.joined(separator: "|") + "|apply-once|decision) :;; *) exit 71;; esac; done; " +
+        let files = ["adb-toggle.sh", "phase", "before", "after", "udc", "daemon", "name", "target", "desired", "original", "ack", "worker.log", "rc.before", "rc.after", "rc.mode", "phase.new", "before.new", "after.new", "udc.new", "daemon.new", "name.new", "target.new", "desired.new", "original.new", "ack.new", "rc.mode.new"]
+        let inventoryGuard = "for p in " + stage + "/* " + stage + "/.[!.]* " + stage + "/..?*; do test -e \"$p\" || test -L \"$p\" || continue; case \"${p##*/}\" in " + files.joined(separator: "|") + "|apply-once|decision|released-lock) :;; *) exit 71;; esac; done; " +
             "for d in " + shellQuote(pending.stage + "/apply-once") + " " + shellQuote(pending.stage + "/decision") + "; do if test -e \"$d\" || test -L \"$d\"; then test -d \"$d\" && test ! -L \"$d\" && test \"$(stat -c '%u:%a' \"$d\")\" = 0:700 || exit 71; for p in \"$d\"/* \"$d\"/.[!.]* \"$d\"/..?*; do if test -e \"$p\" || test -L \"$p\"; then exit 71; fi; done; fi; done; "
-        let command = "set -eu; test ! -e " + shellQuote(pending.stage + "/prepare-active") + "; test ! -L " + shellQuote(pending.stage + "/prepare-active") + "; test -d " + stage + " && test ! -L " + stage + " || exit 71; test \"$(stat -c '%u:%a' " + stage + ")\" = 0:700; " + inventoryGuard +
+        let released = shellQuote(pending.stage + "/released-lock")
+        let releasedGuard = "if test -e " + released + " || test -L " + released + "; then test -d " + released + " && test ! -L " + released + " && test \"$(stat -c '%u:%a' " + released + ")\" = 0:700 || exit 71; for p in " + released + "/* " + released + "/.[!.]* " + released + "/..?*; do test ! -e \"$p\" && test ! -L \"$p\" && continue; test \"${p##*/}\" = owner && test -f \"$p\" && test ! -L \"$p\" && test \"$(stat -c '%u:%a:%h' \"$p\")\" = 0:600:1 && test \"$(cat \"$p\")\" = " + shellQuote(pending.token) + " || exit 71; done; fi; "
+        let releasedRemove = "if test -d " + released + "; then rm -f " + shellQuote(pending.stage + "/released-lock/owner") + "; rmdir " + released + "; fi; "
+        let command = "set -eu; test ! -e " + shellQuote(pending.stage + "/prepare-active") + "; test ! -L " + shellQuote(pending.stage + "/prepare-active") + "; test -d " + stage + " && test ! -L " + stage + " || exit 71; test \"$(stat -c '%u:%a' " + stage + ")\" = 0:700; " + inventoryGuard + releasedGuard +
             "for f in " + files.map { shellQuote(pending.stage + "/" + $0) }.joined(separator: " ") + "; do test ! -L \"$f\" || exit 71; if test -e \"$f\"; then test -f \"$f\" && test \"$(stat -c '%u:%a:%h' \"$f\")\" = 0:600:1 || exit 71; fi; done; " +
-            "rm -f " + files.map { shellQuote(pending.stage + "/" + $0) }.joined(separator: " ") + "; if test -d " + shellQuote(pending.stage + "/apply-once") + "; then rmdir " + shellQuote(pending.stage + "/apply-once") + "; fi; if test -d " + shellQuote(pending.stage + "/decision") + "; then rmdir " + shellQuote(pending.stage + "/decision") + "; fi; rmdir " + stage + "; printf 'ADB_STAGE_REMOVED\\n'"
-        try require(try run(command) == "ADB_STAGE_REMOVED\n", "Очистка временной операции ADB не подтверждена")
-        try engine.fm.removeItem(at: pendingURL)
+            releasedRemove + "rm -f " + files.map { shellQuote(pending.stage + "/" + $0) }.joined(separator: " ") + "; if test -d " + shellQuote(pending.stage + "/apply-once") + "; then rmdir " + shellQuote(pending.stage + "/apply-once") + "; fi; if test -d " + shellQuote(pending.stage + "/decision") + "; then rmdir " + shellQuote(pending.stage + "/decision") + "; fi; rmdir " + stage + "; printf 'ADB_STAGE_REMOVED\\n'"
+        if removePending {
+            let (bytes, truncated) = try DiagnosticArchive.readRegular(root: engine.root, relative: "adb-toggle-pending.json", limit: 4096)
+            try require(!truncated, "Сохранённая операция ADB повреждена")
+            try archive(pending, bytes: bytes)
+            _ = try? run(command)
+        } else {
+            try require(try run(command) == "ADB_STAGE_REMOVED\n", "Очистка временной операции ADB не подтверждена")
+        }
     }
     func setEnabled(_ enabled: Bool) throws -> ADBControlStatus {
         try require(engine.lockFD >= 0, "Переключение ADB требует блокировки приложения")

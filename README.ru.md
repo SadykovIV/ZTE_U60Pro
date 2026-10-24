@@ -5,13 +5,21 @@
 Управление **ZTE U60 Pro / MU5250**: подготовка доступа, резервные копии, IMEI, TTL,
 русский интерфейс экрана, VPN через отдельный Wi-Fi, физическая eUICC и диагностика.
 
-Версия **1.27** (macOS build **67**, Windows FileVersion **1.27.0.0**),
-агент **2.9.0-esim.14**, контроллер VPN **1.5.0**.
-[Скачать macOS ARM64](https://github.com/SadykovIV/ZTE_U60Pro/releases/download/v1.27/ZTE-U60Pro-Manager-1.27-macOS-arm64.zip) ·
-[Скачать Windows x64](https://github.com/SadykovIV/ZTE_U60Pro/releases/download/v1.27/ZTE-U60Pro-Manager-1.27-Windows-x64-portable.zip) ·
-[Выпуск и контрольные суммы](https://github.com/SadykovIV/ZTE_U60Pro/releases/tag/v1.27).
+Версия **1.27.1** (macOS build **68**, Windows FileVersion **1.27.1.0**),
+агент **2.9.0-esim.15**, контроллер VPN **1.5.0**.
+[Скачать macOS ARM64](https://github.com/SadykovIV/ZTE_U60Pro/releases/download/v1.27.1/ZTE-U60Pro-Manager-1.27.1-macOS-arm64.zip) ·
+[Скачать Windows x64](https://github.com/SadykovIV/ZTE_U60Pro/releases/download/v1.27.1/ZTE-U60Pro-Manager-1.27.1-Windows-x64-portable.zip) ·
+[Выпуск и контрольные суммы](https://github.com/SadykovIV/ZTE_U60Pro/releases/tag/v1.27.1).
 
-## Изменения относительно 1.26.1
+## Исправления в 1.27.1
+
+Исправлено чтение физических 9eSIM, отвечающих `61xx` после SELECT.
+Программа дочитывает ответ в своём канале; ошибки чтения больше не выдаются
+за ошибки его закрытия. Чтение карты и профилей проверено на модеме B31.
+
+[Изменения и результаты проверок](docs/RELEASE-1.27.1.md#русский).
+
+## Изменения, добавленные в 1.27
 
 - Подготовка модема и установка комплектного агента используют одну автоматическую
   замену агента, SSH и веб-панели. Отдельных галочек очистки и принудительной

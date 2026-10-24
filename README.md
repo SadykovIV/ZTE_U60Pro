@@ -6,13 +6,22 @@ Manage the **ZTE U60 Pro / MU5250**: access preparation, backups, IMEI, TTL,
 Russian screen localization, VPN over a separate Wi-Fi network, removable
 physical eUICC cards, and diagnostics.
 
-Version **1.27** (macOS build **67**, Windows FileVersion **1.27.0.0**),
-agent **2.9.0-esim.14**, VPN controller **1.5.0**.
-[Download macOS ARM64](https://github.com/SadykovIV/ZTE_U60Pro/releases/download/v1.27/ZTE-U60Pro-Manager-1.27-macOS-arm64.zip) ·
-[Download Windows x64](https://github.com/SadykovIV/ZTE_U60Pro/releases/download/v1.27/ZTE-U60Pro-Manager-1.27-Windows-x64-portable.zip) ·
-[Release and checksums](https://github.com/SadykovIV/ZTE_U60Pro/releases/tag/v1.27).
+Version **1.27.1** (macOS build **68**, Windows FileVersion **1.27.1.0**),
+agent **2.9.0-esim.15**, VPN controller **1.5.0**.
+[Download macOS ARM64](https://github.com/SadykovIV/ZTE_U60Pro/releases/download/v1.27.1/ZTE-U60Pro-Manager-1.27.1-macOS-arm64.zip) ·
+[Download Windows x64](https://github.com/SadykovIV/ZTE_U60Pro/releases/download/v1.27.1/ZTE-U60Pro-Manager-1.27.1-Windows-x64-portable.zip) ·
+[Release and checksums](https://github.com/SadykovIV/ZTE_U60Pro/releases/tag/v1.27.1).
 
-## Changes since 1.26.1
+## Fixes in 1.27.1
+
+Removable 9eSIM cards returning `61xx` after SELECT are read correctly.
+The bounded continuation keeps the owned card channel; actual read failures
+retain their cause instead of being reported as cleanup failures. Card and
+profile reads were verified on a B31 modem.
+
+[Release details and verification](docs/RELEASE-1.27.1.md).
+
+## Changes introduced in 1.27
 
 - Preparation and bundled-agent installation share automatic replacement of the
   agent, SSH and dashboard. There are no separate clean/forced-install checkboxes;

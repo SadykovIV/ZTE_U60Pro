@@ -4,6 +4,16 @@ namespace ZteImeiStudio.Windows;
 
 public sealed partial class WindowsModemService
 {
+    private bool HasAdbTogglePending => File.Exists(Path.Combine(_storage, AdbToggleTransaction.PendingName)) || Directory.Exists(Path.Combine(_storage, AdbToggleTransaction.PendingName));
+    private async Task ReconcileAdbPendingAsync(CancellationToken ct)
+    {
+        if (!HasAdbTogglePending || _ssh is null || _features is null || _imei is null) return;
+        // The existing status path can retire a proven terminal intent. It never
+        // applies or acknowledges a toggle. Failure retains the global gate.
+        try { _ = await RefreshAdbStateAsync(ct); }
+        catch (Exception error) when (error is not OperationCanceledException)
+        { ClearAdbState(); }
+    }
     private void ClearAdbState() => _snapshot = _snapshot with
     {
         AdbEnabled = null, AdbControlSupported = false,

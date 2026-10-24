@@ -134,7 +134,7 @@
   "Некорректная сохранённая операция ADB": "Invalid saved ADB operation",
   "Отмена подготовки ADB не подтверждена": "Cancellation of ADB preparation was not confirmed",
   "Отмена неподтверждённой подготовки ADB не завершена": "Cancellation of the unconfirmed ADB preparation is incomplete",
-  "Операция ADB ещё не подтверждена. Обновите состояние после автоматического отката; повторная запись заблокирована.": "The ADB operation is not yet confirmed. Refresh its state after the automatic rollback; another write is blocked.",
+  "Операция ADB ещё не подтверждена. Обновите состояние после автоматического отката; повторная запись заблокирована. Если повторная проверка не помогает, перезапустите модем и подключитесь снова.": "The ADB operation is not yet confirmed. Refresh its state after the automatic rollback; another write is blocked. If checking again does not help, restart the modem and connect again.",
   "Устройство или сеанс загрузки изменились при чтении ADB": "The device or boot session changed while reading the ADB state",
   "Не удалось прочитать состояние ADB через SSH": "Could not read the ADB state over SSH",
   "Устройство или сеанс загрузки изменились во время переключения ADB": "The device or boot session changed during the ADB switch",

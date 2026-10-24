@@ -4,6 +4,10 @@ private func check(_ value: @autoclosure () throws -> Bool, _ message: String) t
 private final class Transport: RemoteTransport {
     var firmwareHash = ModemEngine.firmwareHash
     var calls: [String] = [], phase = "", enabled = true, wanted = false
+    var recoveryReply: String? = nil
+    var lostCleanup = false
+    var recoveryDenied = false, foreignLock = false, wrongCID = false
+    var recoveries = 0, ordinaryLocks = 0
     var absentStage = false, capabilityMissing = false, descriptorsMissing = false, b04Measured = true
     var identityReads=0, changeOnIdentityRead=Int.max
     var lostDispatch = false, lostACK = false, lostResult = false, outcome = "committed", changed = false
@@ -11,17 +15,25 @@ private final class Transport: RemoteTransport {
     func run(_ command: String, input: Data?, timeout: TimeInterval) throws -> CommandResult {
         calls.append(command)
         var reply = ""
-        if command == AccessIdentity.command {
+        if command.contains("if mkdir /tmp/zte-imei-app.lock") {
+            ordinaryLocks += 1
+        } else if command == AccessIdentity.command {
             identityReads += 1
-            reply = firmwareHash+"  /firmware/image/modem.b16\n"+ModemEngine.routerHash+" /usr/bin/diag-router\n0123456789abcdef0123456789abcdef\n"+(changed || identityReads >= changeOnIdentityRead ? "11111111-1111-1111-1111-111111111111" : "00000000-0000-0000-0000-000000000001")+"\n"
+            reply = firmwareHash+"  /firmware/image/modem.b16\n"+ModemEngine.routerHash+" /usr/bin/diag-router\n"+(wrongCID ? "1123456789abcdef0123456789abcdef" : "0123456789abcdef0123456789abcdef")+"\n"+(changed || identityReads >= changeOnIdentityRead ? "11111111-1111-1111-1111-111111111111" : "00000000-0000-0000-0000-000000000001")+"\n"
         } else if command == ADBControlManager.capabilityCommand || command.contains(ADBControlManager.b04CapabilityCommand) {
             if command.contains(ADBControlManager.b04CapabilityCommand) && !b04Measured { return .init(status:71,stdout:Data(),stderr:Data()) }
             if capabilityMissing { return .init(status:127,stdout:Data(),stderr:Data()) }
             reply="ADB_CAPABILITY_READY\n"
         } else if command.contains("ADB_STAGE_ABSENT") {
-            return .init(status:absentStage ? 0 : 71,stdout:Data((absentStage ? "ADB_STAGE_ABSENT\n" : "").utf8),stderr:Data())
+            return .init(status:absentStage && !foreignLock ? 0 : 71,stdout:Data((absentStage ? "ADB_STAGE_ABSENT\n" : "").utf8),stderr:Data())
         } else if command == ADBControlProtocol.command {
             reply = "ZTE_ADB_STATE_V1\nlinked=\(enabled ? 1 : 0)\nready=\(descriptorsMissing ? "unknown" : "1")\nbound=1\ndaemon=\(descriptorsMissing ? "0" : "1")\n"
+        } else if command.contains("'reconcile'") {
+            recoveries += 1
+            try check(input != nil && digest(input!) == ADBControlManager.scriptHash && command.contains("exec /bin/sh -s --") && command.contains(ADBControlManager.previousScriptHash), "Recovery must execute current pinned stdin")
+            let receipt = recoveryReply ?? (["prepared", "preparing"].contains(phase) ? "cancelled" : phase == "rolled-back" ? "settled-before" : phase == "committed" ? "settled-after" : "busy")
+            if absentStage || foreignLock || recoveryDenied || receipt == "busy" { return .init(status:71,stdout:Data(),stderr:Data()) }
+            reply = "ADB_RECOVERED=" + receipt + "\n"
         } else if input != nil {
             try check(digest(input!) == ADBControlManager.scriptHash,"Bad upload")
         } else if command.contains(" prepare ") {
@@ -38,7 +50,7 @@ private final class Transport: RemoteTransport {
             reply = "ADB_PHASE="+phase+"\n"
         } else if command.contains(" cancel ") {
             cancels += 1; phase="cancelled"; reply="ADB_CANCELLED\n"
-        } else if command.contains("ADB_STAGE_REMOVED") { cleans += 1; reply="ADB_STAGE_REMOVED\n"
+        } else if command.contains("ADB_STAGE_REMOVED") { cleans += 1; if lostCleanup { throw IMEIError.message("lost cleanup reply") }; reply="ADB_STAGE_REMOVED\n"
         } else { throw Failure.assertion("Unexpected remote operation") }
         return .init(status:0,stdout:Data(reply.utf8),stderr:Data())
     }
@@ -58,7 +70,7 @@ private final class Fixture {
     deinit {try? FileManager.default.removeItem(at:root)}
     var manager:ADBControlManager { .init(engine:engine,now:{self.clock},wait:{self.clock.addTimeInterval($0)}) }
     func pending(dispatched:Bool=true,phase:String="awaiting-ack") throws {
-        let value:[String:Any] = ["schema":1,"token":"11111111-2222-3333-4444-555555555555","cid":"0123456789abcdef0123456789abcdef","boot":"00000000-0000-0000-0000-000000000001","firmware":ModemEngine.firmwareHash,"router":ModemEngine.routerHash,"enabled":false,"dispatched":dispatched]
+        let value:[String:Any] = ["schema":1,"token":"11111111-2222-3333-4444-555555555555","cid":"0123456789abcdef0123456789abcdef","boot":"00000000-0000-0000-0000-000000000001","firmware":transport.firmwareHash,"router":ModemEngine.routerHash,"enabled":false,"dispatched":dispatched]
         try savePrivate(JSONSerialization.data(withJSONObject:value),manager.pendingURL);transport.phase=phase
     }
 }
@@ -125,12 +137,12 @@ private final class Fixture {
         try test("prepared undispatched transaction cancels and cleans only") {
             let f=try Fixture();try f.pending(dispatched:false,phase:"prepared")
             _=try f.engine.locked{try f.manager.status()}
-            try check(f.transport.cancels==1&&f.transport.applies==0&&f.transport.cleans==1,"Unlaunched recovery")
+            try check(f.transport.recoveries==1&&f.transport.cancels==0&&f.transport.applies==0&&f.transport.cleans==1,"Unlaunched recovery")
         }
-        try test("prepared but possibly dispatched remains pending") {
+        try test("prepared dispatch is cancelled only by proof-bearing recovery") {
             let f=try Fixture();try f.pending(dispatched:true,phase:"prepared")
             _=try f.engine.locked{try f.manager.status()}
-            try check(f.transport.cancels==0&&f.transport.cleans==0,"Unsafe cancel")
+            try check(f.transport.recoveries==1&&f.transport.cancels==0&&f.transport.cleans==1,"Recovery failed")
         }
         try test("deadline retains pending and does not resend apply") {
             let f=try Fixture();f.transport.lostResult=true
@@ -140,7 +152,7 @@ private final class Fixture {
         try test("changed boot prevents pending reconciliation before any action") {
             let f=try Fixture();try f.pending(phase:"committed");f.transport.changed=true
             try reject{_=try f.engine.locked{try f.manager.status()}}
-            try check(f.transport.calls==[AccessIdentity.command],"Changed device acted on")
+            try check(f.transport.applies==0 && f.transport.recoveries==0 && f.transport.cleans==0,"Changed device acted on")
         }
         try test("corrupt resource cannot grant capability or dispatch") {
             let f=try Fixture();try savePrivate(Data("bad".utf8),f.resources.appendingPathComponent("Onboarding/adb-toggle.sh"))
@@ -187,6 +199,49 @@ private final class Fixture {
             try reject{_=try f.engine.locked{try f.manager.setEnabled(false)}}
             try check(f.transport.applies==0 && !FileManager.default.fileExists(atPath:f.manager.pendingURL.path),"Changed target became authorized")
             try check(!f.transport.calls.contains(where:{$0.contains("mkdir -m 700")}),"Changed target staged")
+        }
+        try test("verified terminal survives lost cleanup response") {
+            let f = try Fixture(); f.transport.lostCleanup = true
+            let state = try f.engine.locked { try f.manager.setEnabled(false) }
+            try check(state.enabled == false && !FileManager.default.fileExists(atPath:f.manager.pendingURL.path), "Cleanup loss retained terminal pending")
+            try check(f.transport.applies == 1 && f.transport.acks == 1, "Cleanup loss replayed mutation")
+        }
+        for scenario in ["before", "after", "busy", "foreign", "wrong-cid", "reboot", "reboot-foreign"] {
+            try test("proof-based recovery " + scenario) {
+                let f = try Fixture(); try f.pending(phase: "rollback-unknown")
+                let bytes = try Data(contentsOf: f.manager.pendingURL)
+                f.transport.recoveryReply = scenario == "after" ? "settled-after" : "settled-before"
+                f.transport.enabled = scenario != "after"
+                f.transport.recoveryDenied = scenario == "busy"
+                f.transport.foreignLock = ["foreign", "reboot-foreign"].contains(scenario)
+                f.transport.wrongCID = scenario == "wrong-cid"
+                f.transport.changed = scenario.hasPrefix("reboot")
+                f.transport.absentStage = scenario.hasPrefix("reboot")
+                if ["wrong-cid", "reboot-foreign"].contains(scenario) {
+                    try reject { _ = try f.engine.locked { try f.manager.status() } }
+                } else { _ = try f.engine.locked { try f.manager.status() } }
+                if ["busy", "foreign", "wrong-cid", "reboot-foreign"].contains(scenario) {
+                    try check(try Data(contentsOf: f.manager.pendingURL) == bytes, "Pending changed without proof")
+                } else {
+                    let archived = f.root.appendingPathComponent("adb-toggle-recovered-11111111-2222-3333-4444-555555555555.json")
+                    try check(try Data(contentsOf: archived) == bytes, "Exact intent not preserved")
+                    try check(!FileManager.default.fileExists(atPath:f.manager.pendingURL.path), "Settled intent still pending")
+                }
+                try check(f.transport.applies == 0 && f.transport.acks == 0 && f.transport.cancels == 0, "Recovery replayed USB or ACK")
+            }
+        }
+        for image in [ModemEngine.firmwareHash, ADBControlManager.b04FirmwareHash, "absent"] {
+        for resolved in [true, false] {
+            try test("ordinary operation gate reconciles only proven pending " + String(resolved)) {
+                let f = try Fixture(); f.transport.firmwareHash = image; try f.pending(phase: "rollback-unknown")
+                f.transport.recoveryReply = "settled-before"; f.transport.recoveryDenied = !resolved
+                if resolved { try f.engine.locked { try f.engine.acquireRemoteLock() } }
+                else { try reject { try f.engine.locked { try f.engine.acquireRemoteLock() } } }
+                try check(FileManager.default.fileExists(atPath:f.manager.pendingURL.path) != resolved, "Gate did not retain unknown intent")
+                try check(f.transport.recoveries == 1 && f.transport.applies == 0 && f.transport.acks == 0, "Gate replayed USB")
+                try check(f.transport.ordinaryLocks == (resolved ? 1 : 0), "Ordinary remote lock acquired without recovery proof")
+            }
+        }
         }
         print("\(n) transaction fixtures PASS; no modem access")
     }

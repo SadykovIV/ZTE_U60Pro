@@ -68,6 +68,25 @@ class UpgradeTests(unittest.TestCase):
   self.assertIn(self.new_sha.encode(),self.network.read_bytes());self.assertNotIn(self.old_sha.encode(),self.network.read_bytes())
   self.assertFalse((self.root/'controller-upgrade').exists())
   self.assertEqual(self.run_upgrade().returncode,0)
+ def test_legacy_upgrade_and_repeat_preserve_profiles_and_wifi_without_starting_runtime(self):
+  # The reviewed pre-IKEv2 controller from v1.25 remains an upgrade source.
+  self.assertIn('8aaece533e2503c7a501497bb1bf191f37a0ffbba067e7a7ff3a4c6f9623673f',SOURCE.read_text().split('known() {',1)[1].split('\n}',1)[0])
+  for name in NEW_RUNTIME:self.assertFalse((self.root/name).exists())
+  for name in ['active','config.json','wifi-settings.json','catalog.json']:(self.root/name).write_bytes(('private-fixture-'+name).encode())
+  (self.root/'profiles').mkdir();(self.root/'profiles/profile.json').write_bytes(b'private-profile-fixture')
+  (self.root/'runtime-disabled').touch()
+  protected=['active','config.json','wifi-settings.json','catalog.json','profiles/profile.json','runtime-disabled','configured']
+  before={name:(self.root/name).read_bytes() for name in protected}
+  for attempt in range(2):
+   result=self.run_upgrade();self.assertEqual(result.returncode,0,result.stderr.decode())
+   self.assertEqual(result.stdout,b'VPN_CONTROLLER_UPDATED\n')
+   self.assertEqual({name:(self.root/name).read_bytes() for name in protected},before)
+   self.assertEqual((self.root/'vpnctl').read_bytes(),self.new_helper)
+   for name,contents in self.new_files.items():self.assertEqual((self.root/name).read_bytes(),contents)
+   self.assertFalse((self.root/'controller-upgrade').exists())
+   self.assertNotIn(b'private-fixture',result.stdout+result.stderr)
+  # Runtime fixtures intentionally are not executable shell programs: any
+  # attempt to start them during either upgrade would make the command fail.
  def test_unknown_controller_rejected_before_execution_or_replacement(self):
   marker=self.base/'executed'
   unknown=('#!/bin/sh\ntouch "'+str(marker)+'"\nexit 0\n').encode()

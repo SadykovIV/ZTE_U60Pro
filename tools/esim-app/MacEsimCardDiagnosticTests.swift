@@ -29,6 +29,13 @@ private func failedResult(_ error: String, cause: Any? = nil) throws -> (EsimRPC
                 try check(EsimLog.resultMetadata(result).contains("component_error=" + code), "cause not journaled")
             }
         }
+        try test("wire APDU counter is labelled as lpac traffic only") {
+            for count in [0, 3] {
+                let detail = try EsimProgressDetail(["event":"component_exit", "log_seq":1,
+                    "elapsed_ms":10, "apdu_count":count, "http_count":0, "component":"snapshot"])
+                try check(detail.summary.contains("lpac_apdu_count=\(count)") && !detail.summary.contains(" apdu="), "lpac count presented as all card traffic")
+            }
+        }
         try test("six card failures stay typed for exit zero and one and cannot authorize writes") {
             for code in ["card_busy", "card_open_rejected", "card_cleanup_unknown", "card_not_ready", "card_reset_failed", "card_power_restore_failed"] {
                 try check(EsimLog.backendError(code) == code, "new fixed code hidden")
@@ -49,6 +56,28 @@ private func failedResult(_ error: String, cause: Any? = nil) throws -> (EsimRPC
             let text = EsimLog.resultMetadata(result)
             try check(text.contains("error=card_cleanup_unknown") && text.contains("component_error=qmi_open_rejected"), "first cause overwritten")
             try check(EsimLog.recoveryCode(.backend("card_cleanup_unknown")) == "restart_modem_before_retry", "unsafe retry advice")
+        }
+        try test("card status read failure is not a cleanup failure or ordinary SIM") {
+            let frame: [String: Any] = ["type":"result", "ok":false, "error":"snapshot_failed",
+                "component_error":"snapshot_card_status_error",
+                "card":["kind":"unknown", "management":"unknown", "reason":"read_failed", "cleanup_confirmed":false]]
+            var decoder = EsimRPCDecoder()
+            _ = try decoder.consume(JSONSerialization.data(withJSONObject: frame))
+            try check(decoder.result?.card?.kind == "unknown" && decoder.result?.card?.reason == "read_failed", "read failure changed card evidence")
+            try check(decoder.result?.snapshot == nil, "failed read retained profile authorization")
+            for exit: Int32 in [0, 1] {
+                do { _ = try decoder.finish(exitCode:exit, operation:.list, before:nil); throw Failure(message:"read failure accepted") }
+                catch let error as EsimFailure {
+                    guard case .backend("snapshot_failed") = error else { throw Failure(message:"read failure code lost") }
+                    try check(EsimLog.recoveryCode(error) == "refresh_profiles_before_retry", "read failure incorrectly requires reboot")
+                }
+            }
+            let metadata = EsimLog.resultMetadata(decoder.result!)
+            try check(metadata.contains("error=snapshot_failed component_error=snapshot_card_status_error") && !metadata.contains("cleanup_failed"), "fixed read cause lost or relabelled")
+            let ru = EsimFailure.backend("snapshot_failed").localizedDescription
+            let en = EsimLog.localizedCardMessage(ru, language:"en")
+            try check(ru.contains("Тип SIM-карты не определён") && en.contains("card type is unknown"), "read failure does not explain unknown card")
+            try check(!ru.contains("Перезагруз") && !en.contains("Restart") && !en.contains("cleanup"), "read error claims cleanup failure")
         }
         try test("unknown and private causes are discarded before journal and UI") {
             for privateValue in ["LPA:1$private.invalid$synthetic-secret", String(repeating: "8", count: 32), "qmi_open_unknown\nprivate"] {
@@ -79,6 +108,9 @@ private func failedResult(_ error: String, cause: Any? = nil) throws -> (EsimRPC
                 try check(english.contains("Wait") && english.contains("refresh"), "readiness advice missing")
                 try check(EsimLog.recoveryCode(.backend(code)) == "wait_then_refresh_profiles", "wrong recovery action")
             }
+            let readyRU = EsimFailure.backend("card_not_ready").localizedDescription
+            let readyEN = EsimLog.localizedCardMessage(readyRU, language:"en")
+            try check(!readyRU.contains("Радио") && !readyRU.contains("после перечитывания") && !readyEN.contains("radio") && !readyEN.contains("switch"), "readiness failure invented a radio or switch result")
         }
         try test("SIM power errors preserve distinct recovery and do not extend helper catalog") {
             for code in ["card_reset_failed", "card_power_restore_failed"] {

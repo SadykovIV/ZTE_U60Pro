@@ -27,7 +27,9 @@ export function journalEntry(value: unknown): JournalEntry | null {
   if (typeof d.component === 'string' && components.has(d.component)) parts.push(d.component)
   if (typeof d.waiting_for === 'string' && waits.has(d.waiting_for)) parts.push(`waiting=${d.waiting_for}`)
   for (const key of ['apdu_count','http_count','duration_ms','request_bytes','response_bytes','http_status']) {
-    if (safeInt(d[key], key === 'http_status' ? 599 : 100_000_000)) parts.push(`${key}=${d[key]}`)
+    // The relay counter excludes exchanges performed inside the snapshot helper.
+    const label = key === 'apdu_count' ? 'lpac_apdu_count' : key
+    if (safeInt(d[key], key === 'http_status' ? 599 : 100_000_000)) parts.push(`${label}=${d[key]}`)
   }
   if (d.outcome === 'ok' || d.outcome === 'failed') parts.push(`outcome=${d.outcome}`)
   if (typeof d.error === 'string' && safeEsimErrors.has(d.error)) parts.push(`error=${d.error}`)

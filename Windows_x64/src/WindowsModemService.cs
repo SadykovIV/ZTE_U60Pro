@@ -152,9 +152,12 @@ public sealed partial class WindowsModemService : IModemService
                     ModemOperation.VerifyDeviceBackup or ModemOperation.VerifySystemBackup or ModemOperation.ExportDiagnostics or ModemOperation.CollectFirmwareAdaptation or
                     ModemOperation.RefreshDiagnostics or ModemOperation.VerifyBackupKey or ModemOperation.RefreshAdbState))
                 throw new InvalidOperationException("Сначала продолжите подготовку модема или установку агента.");
-            if (File.Exists(Path.Combine(_storage, AdbToggleTransaction.PendingName)) && request.Operation is not
+            if (HasAdbTogglePending && request.Operation is not
                 (ModemOperation.RefreshAdbState or ModemOperation.Connect or ModemOperation.DiscoverConnections or ModemOperation.ExportDiagnostics or ModemOperation.CollectFirmwareAdaptation or ModemOperation.VerifyBackupKey))
-                throw new InvalidOperationException(AdbToggleTransaction.Unknown);
+            {
+                await ReconcileAdbPendingAsync(cancellationToken);
+                if (HasAdbTogglePending) throw new InvalidOperationException(AdbToggleTransaction.Unknown);
+            }
             string result;
             switch (request.Operation)
             {
@@ -414,6 +417,7 @@ public sealed partial class WindowsModemService : IModemService
         var identity = await SshReadProof.ReadSessionAsync(ssh,ct);
         identity.Verify(await SshReadProof.ReadSessionAsync(ssh,ct));
         _ssh = transport; _sshRead = ssh; _imei = imei; _features = new DeviceFeatureService(ssh,_resources,_storage,_skipFirmwareCheck);
+        await ReconcileAdbPendingAsync(ct);
         _connectionProof = identity;
         _snapshot = new DeviceSnapshot(true,"Подключено по SSH · доступ подтверждён; функции проверяются отдельно",
             IpAddress:host,ConnectionMode:"SSH",Serial:identity.Cid);

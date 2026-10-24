@@ -106,6 +106,14 @@ final class ModemEngine: @unchecked Sendable {
     func text(_ command: String) throws -> String { String(decoding: try remote(command), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) }
     var tokenURL: URL { root.appendingPathComponent("device-lock.json") }
     var coreReplacementID: String?
+    func reconcileADBPendingIfNeeded() throws {
+        let pending = root.appendingPathComponent("adb-toggle-pending.json")
+        guard fm.fileExists(atPath: pending.path) else { return }
+        // Reuse status reconciliation, never apply or ACK. The caller holds the
+        // local app lock and still cannot proceed if ownership remains unknown.
+        _ = try ADBControlManager(engine: self).status()
+        try require(!fm.fileExists(atPath: pending.path), "Сначала проверьте незавершённое переключение ADB")
+    }
     func acquireRemoteLock(allowSystemRestore: Bool = false) throws {
         let replacement = root.appendingPathComponent("core-replacement-pending.json")
         if fm.fileExists(atPath: replacement.path) {
@@ -115,7 +123,7 @@ final class ModemEngine: @unchecked Sendable {
         }
         try require(!ComponentCleanup.hasPending(root: root), "Сначала завершите очистку компонентов программы в подготовке модема")
         try require(!fm.fileExists(atPath: root.appendingPathComponent("adb-access-pending.json").path), "Сначала завершите включение ADB для диагностики")
-        try require(!fm.fileExists(atPath: root.appendingPathComponent("adb-toggle-pending.json").path), "Сначала проверьте незавершённое переключение ADB")
+        try reconcileADBPendingIfNeeded()
         try require(allowSystemRestore || !SystemBackups.hasPendingRestore(root: root), "Сначала завершите восстановление полного образа модема")
         guard remoteLockToken == nil else { return }
         let endpoint = connection.host + ":" + connection.port
@@ -286,7 +294,7 @@ final class ModemEngine: @unchecked Sendable {
     }
     func begin(targets: [String]?, restore: URL? = nil) throws -> DeviceState {
         try require(!fm.fileExists(atPath: root.appendingPathComponent("adb-access-pending.json").path), "Сначала завершите включение ADB для диагностики")
-        try require(!fm.fileExists(atPath: root.appendingPathComponent("adb-toggle-pending.json").path), "Сначала проверьте незавершённое переключение ADB")
+        try reconcileADBPendingIfNeeded()
         try require(!fm.fileExists(atPath: root.appendingPathComponent("setup-pending.json").path), "Сначала завершите первоначальную настройку модема")
         try require(!fm.fileExists(atPath: pendingURL.path), "Сначала продолжите незавершённую операцию")
         _ = try imeiIdentity() // Reading NV does not grant permission to write on another firmware.

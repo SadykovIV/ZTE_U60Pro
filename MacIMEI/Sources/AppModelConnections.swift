@@ -336,7 +336,9 @@ import AppKit
                     if let resolve { return try resolve() }
                     let engine = try ModemEngine(root: root, resources: assets, connection: config) { _, _ in }
                     return try engine.locked {
-                        try ConnectionRouter(engine: engine, expectedIdentity: expected, expectedWebIdentity: expectedWeb, expectedIMEI: expectedIMEI, expectedCID: expectedCID).connect(mode: mode)
+                        let selection = try ConnectionRouter(engine: engine, expectedIdentity: expected, expectedWebIdentity: expectedWeb, expectedIMEI: expectedIMEI, expectedCID: expectedCID).connect(mode: mode)
+                        if selection.actualMode == .ssh { try? engine.reconcileADBPendingIfNeeded() }
+                        return selection
                     }
                 }.value
                 acceptChannelSelection(result)

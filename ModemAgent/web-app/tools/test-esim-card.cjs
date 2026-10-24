@@ -69,6 +69,34 @@ test('malformed final metadata fails closed, while successful legacy API derives
   const api = apiFor(async () => ({ job_id: 'ab'.repeat(16), state: 'complete', result: { ok: true, snapshot: snapshot() } }))
   assert.equal((await api.runOperation(request, () => {}, new AbortController().signal)).card.kind, 'euicc_confirmed')
 })
+test('snapshot read failure preserves the card-status cause without inventing a cleanup failure', async () => {
+  let calls = 0
+  const logs = []
+  const api = apiFor(async () => {
+    calls++
+    return { job_id: 'ab'.repeat(16), state: 'complete', result: {
+      ok: false, error: 'snapshot_failed', component_error: 'snapshot_card_status_error', card: unknown('read_failed')
+    } }
+  })
+  await assert.rejects(api.runOperation(request, (_, line) => logs.push(line), new AbortController().signal), error => {
+    assert.equal(error.message, 'snapshot_failed')
+    assert.equal(error.card.kind, 'unknown')
+    assert.equal(error.card.reason, 'read_failed')
+    return true
+  })
+  assert.equal(calls, 1)
+  assert.match(JSON.stringify(logs), /snapshot_card_status_error/)
+  assert.doesNotMatch(JSON.stringify(logs), /cleanup_failed|cleanup_unknown/)
+  assert.match(errors.failureMessage('snapshot_failed'), /Card reading failed/)
+  assert.doesNotMatch(errors.failureMessage('snapshot_failed'), /[Rr]estart|[Cc]leanup/)
+})
+test('snapshot journal labels zero APDUs as the LPAC relay counter', () => {
+  const entry = journal.journalEntry({ type: 'progress', stage: 'reading_profiles', detail: {
+    event: 'component_exit', component: 'snapshot', elapsed_ms: 19, log_seq: 3, apdu_count: 0, outcome: 'failed'
+  } })
+  assert.match(entry.text, /lpac_apdu_count=0/)
+  assert.doesNotMatch(entry.text, / · apdu_count=/)
+})
 test('every type banner is translated and cleanup unconfirmed alone never gives restart advice', () => {
   const exports = {}
   vm.runInNewContext(ts.transpileModule(fs.readFileSync(path.join(base, '../../locales/ru-esim.ts'), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText, { exports })

@@ -1,10 +1,10 @@
 {
   "agent_version": "2.9.0-esim.14",
-  "agent_sha256": "26a685235b521910056fc2a3b6b9a678e000c1f8944a775158af95e03bb4e739",
+  "agent_sha256": "5bcf685b87439b856a92c7f1e41a4d05c87056c32eefd95b76fec22d828fcc1d",
   "lpac_version": "2.3.0 + pinned stdio backports",
   "lpac_commit": "c2fcf5e4b21c712d54e35a11da2ad9ad134fb821",
   "lpac_linux_sha256": "92aaeb96bd02e8f3e7ab9847b15e3fae31795b244fcab92f70b595719b18718d",
-  "qmi_bridge_sha256": "67d5f32928c5279db50d390ce51322e2602bb68a158ed1fbf0cfe3f831e6e12e",
+  "qmi_bridge_sha256": "420049450020763a2c969710b50e2b3b9f792ef190d60f680912af62f9df1530",
   "qmi_component": {
     "component": "QMI/ES10 transport",
     "license_status": "license_unspecified",
@@ -63,7 +63,7 @@
     "sha256": "29c00a9cc4bd76f5190141be668230acf00ad008871fad72a200e17f40d4883b"
   },
   "source_archive_files": 512,
-  "source_archive_sha256": "4ab3298841dd33a8de914a6e3c358d67c717076febaead37ab9c100ef47479c1",
+  "source_archive_sha256": "34b759f40d647c27b5d48d9ad5ab3e2d714229da36bb01cb3a49d2e1bd429b8b",
   "gsma_pem_sha256": "7364a2ac4d2b5f77c1b83ee7e1c535e8fc806c67ee42e73ad97c35464d203477",
   "gsma_roots": [
     {

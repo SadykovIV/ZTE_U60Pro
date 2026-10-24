@@ -1,4 +1,5 @@
 export const ruEsim: Record<string, string> = {
+  'Card reading failed. The profile list could not be confirmed. See the operation log for the error code.': 'Не удалось прочитать карту и подтвердить список профилей. Код причины указан в журнале операции.',
   'SIM card and eSIM profiles': 'SIM-карта и профили eSIM',
   'Ordinary SIM: eSIM management is unavailable.': 'Обычная SIM: управление eSIM недоступно.',
   'Check card and profiles': 'Проверить карту и профили',

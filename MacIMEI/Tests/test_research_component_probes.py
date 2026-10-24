@@ -457,12 +457,15 @@ class ComponentProbes(unittest.TestCase):
         blob=SPEC.read_bytes();s=json.loads(blob)
         self.assertEqual(blob,(REPO/'Windows_x64/Resources/FirmwareResearch/probes.json').read_bytes())
         baseline=json.loads(subprocess.check_output(['git','show','814a5a1:MacIMEI/Resources/FirmwareResearch/probes.json'],cwd=REPO))
-        changed={'opkg-layout','firmware-hashes','launcher-abi','screen-abi'}
+        changed={'opkg-layout','firmware-hashes','launcher-abi','screen-abi','backup-layout'}
         self.assertEqual([x for x in s['probes'][:46] if x['id'] not in changed],[x for x in baseline['probes'] if x['id'] not in changed])
-        changed_features={'agent','diagnostic-apps','opkg','launcher','screen-localization','ttl','vpn'}
-        self.assertEqual([f for f in s['features'] if f['id'] not in changed_features],[f for f in baseline['features'] if f['id'] not in changed_features])
-        self.assertEqual(s['revision'],12);self.assertEqual(len(s['probes']),57)
-        self.assertLessEqual(len(s['probes']),64);self.assertEqual(len({p['id'] for p in s['probes']}),57)
+        old_backup=next(x for x in baseline['probes'] if x['id']=='backup-layout')
+        expected_backup={**old_backup,'command':old_backup['command'].replace('/data/zte-imei-ttl','/data/zte-vpn/catalog.json /data/zte-imei-ttl',1)}
+        self.assertEqual(next(x for x in s['probes'] if x['id']=='backup-layout'),expected_backup)
+        released=json.loads(subprocess.check_output(['git','show','f7333706cd810da30636f289af2ca2cb1ebc3800:MacIMEI/Resources/FirmwareResearch/probes.json'],cwd=REPO))
+        self.assertEqual(s['features'],released['features'])
+        self.assertEqual(s['revision'],14);self.assertEqual(len(s['probes']),58)
+        self.assertLessEqual(len(s['probes']),64);self.assertEqual(len({p['id'] for p in s['probes']}),58)
         self.assertEqual(len({o['id'] for o in s['observations']}),len(s['observations']))
         for p in s['probes']:
             r=subprocess.run(['/bin/sh','-n'],input=p['command'],text=True,capture_output=True)

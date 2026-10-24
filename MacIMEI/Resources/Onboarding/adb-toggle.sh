@@ -129,7 +129,14 @@ rc_backup() {
   regular "$BACKUPS/rc.local.$TOKEN.before" && cmp -s "$STAGE/rc.before" "$BACKUPS/rc.local.$TOKEN.before" || fail
 }
 owned() { private_dir "$LOCK" && regular "$LOCK/owner" && test "$(cat "$LOCK/owner")" = "$TOKEN"; }
-release() { owned || return 1; rm "$LOCK/owner" && rmdir "$LOCK"; }
+release() {
+  owned && lock_safe || return 1
+  test ! -e "$STAGE/released-lock" && test ! -L "$STAGE/released-lock" || return 1
+  # Same /tmp filesystem: ownership is archived atomically, never erased while
+  # the global lock still exists. A crash leaves a replayable private receipt.
+  mv -T "$LOCK" "$STAGE/released-lock" || return 1
+  released_lock_safe
+}
 phase() { write phase "$1"; }
 validate_current() {
   binding; layout
@@ -175,8 +182,157 @@ restore() {
   printf '%s\n' "$(read_saved udc)" > "$BASE/UDC" || return 1
   validate_current before
 }
+# Reconciliation never changes USB or rc.local. It runs from the currently
+# verified host bundle, not from a possibly old staged executable.
+empty_private_dir() {
+  private_dir "$1" || return 1
+  for item in "$1"/* "$1"/.[!.]* "$1"/..?*; do
+    test ! -e "$item" && test ! -L "$item" || return 1
+  done
+}
+released_lock_safe() {
+  private_dir "$STAGE/released-lock" && regular "$STAGE/released-lock/owner" && test "$(cat "$STAGE/released-lock/owner")" = "$TOKEN" || return 1
+  for item in "$STAGE/released-lock"/* "$STAGE/released-lock"/.[!.]* "$STAGE/released-lock"/..?*; do
+    test ! -e "$item" && test ! -L "$item" && continue
+    test "$item" = "$STAGE/released-lock/owner" || return 1
+  done
+}
+lock_safe() {
+  if test ! -e "$LOCK" && test ! -L "$LOCK"; then return 0; fi
+  owned || return 1
+  for item in "$LOCK"/* "$LOCK"/.[!.]* "$LOCK"/..?*; do
+    test ! -e "$item" && test ! -L "$item" && continue
+    test "$item" = "$LOCK/owner" || return 1
+  done
+}
+process_start() {
+  # comm may contain spaces or parentheses; starttime is field 20 after comm.
+  awk '{sub(/^.*\) /, ""); print $20}' "$1/stat"
+}
+no_worker() {
+  stage_hex=$(printf '%s' "$STAGE" | od -An -v -tx1 | tr -d ' \n')
+  scanned=0
+  for proc in /proc/[0-9]*; do
+    test -d "$proc" || continue
+    test "${proc##*/}" != "$$" || continue
+    scanned=$((scanned + 1)); test "$scanned" -le 4096 || fail
+    start_before=$(process_start "$proc" 2>/dev/null) || { test ! -d "$proc" && continue; fail; }
+    case "$start_before" in ''|*[!0-9]*) test ! -d "$proc" && continue; fail;; esac
+    # Never emit cmdline. Oversized, unreadable or reused live PIDs are unknown.
+    command_bytes=$(od -An -v -N 8193 -tx1 "$proc/cmdline" 2>/dev/null) || { test ! -d "$proc" && continue; fail; }
+    command_hex=$(printf '%s' "$command_bytes" | tr -d ' \n')
+    test -r "$proc/cmdline" || { test ! -d "$proc" && continue; fail; }
+    test "${#command_hex}" -le 16384 || fail
+    start_after=$(process_start "$proc" 2>/dev/null) || { test ! -d "$proc" && continue; fail; }
+    test "$start_before" = "$start_after" || fail
+    case "$command_hex" in *"$stage_hex"*) fail;; esac
+  done
+}
+acquire_recovery_marker() {
+  marker=$1
+  if test -e "$marker" || test -L "$marker"; then
+    empty_private_dir "$marker" || fail
+    marker_identity=$(stat -c '%d:%i:%u:%a' "$marker") || fail
+    no_worker
+    test "$(stat -c '%d:%i:%u:%a' "$marker")" = "$marker_identity" && empty_private_dir "$marker" || fail
+    rmdir "$marker" || fail
+  fi
+  # A concurrent prepare winning this gap causes refusal, never its removal.
+  mkdir "$marker" || fail
+}
+recovery_inventory() {
+  for item in "$STAGE"/* "$STAGE"/.[!.]* "$STAGE"/..?*; do
+    test ! -e "$item" && test ! -L "$item" && continue
+    case "${item##*/}" in
+      adb-toggle.sh|phase|before|after|udc|daemon|name|target|desired|original|ack|worker.log|rc.before|rc.after|rc.mode|phase.new|before.new|after.new|udc.new|daemon.new|name.new|target.new|desired.new|original.new|ack.new|rc.mode.new)
+        regular "$item" || fail
+        test "$(stat -c %s "$item")" -le 65536 || fail;;
+      released-lock) released_lock_safe || fail;;
+      decision|apply-once|settle-active|prepare-active) empty_private_dir "$item" || fail;;
+      *) fail;;
+    esac
+  done
+}
+validate_saved_links() {
+  printf '%s\n' "$1" | awk -F= '
+    NF != 2 || $1 !~ /^f([1-9]|[12][0-9]|3[0-2])$/ || $2 !~ /^[a-zA-Z0-9._-]+$/ {exit 1}
+    seen[$1]++ {exit 1}
+    {n++; if ($2 == "ffs.adb") adb++}
+    END {if (n > 32 || adb > 1) exit 1}' || fail
+  test "$(printf '%s\n' "$1" | sort)" = "$1" || fail
+}
+recovery_snapshots() {
+  before=$(read_saved before); after=$(read_saved after)
+  validate_saved_links "$before"; validate_saved_links "$after"
+  name=$(read_saved name); case "$name" in f[1-9]|f[12][0-9]|f3[0-2]) :;; *) fail;; esac
+  original=$(read_saved original); case "$original" in present|absent) :;; *) fail;; esac
+  test "$(read_saved desired)" = "$WANT" || fail
+  before_adb=$(printf '%s\n' "$before" | awk -F= '$2 == "ffs.adb" {print $1}')
+  if test "$original" = present; then test "$before_adb" = "$name" || fail
+  else test -z "$before_adb" && ! printf '%s\n' "$before" | awk -F= -v n="$name" '$1 == n {found=1} END {exit !found}' || fail; fi
+  expected=$(printf '%s\n' "$before" | sed "/^$name=/d")
+  if test "$WANT" = 1; then expected=$(printf '%s\n%s=ffs.adb\n' "$expected" "$name" | sed '/^$/d' | sort); fi
+  test "$after" = "$expected" || fail
+  for saved in rc.before rc.after; do
+    regular "$STAGE/$saved" && test "$(stat -c %s "$STAGE/$saved")" -le 65536 && sh -n "$STAGE/$saved" || fail
+  done
+  test "$(awk '$0=="#!/bin/sh" {n++} END {print n+0}' "$STAGE/rc.before")" = 1 || fail
+  # Compare streams, not command substitutions which discard terminal newlines.
+  awk -v wanted="$WANT" -v line="$BOOT_LINE" '$0 == line {next} {print} $0 == "#!/bin/sh" && wanted == 1 {print line}' "$STAGE/rc.before" | cmp -s - "$STAGE/rc.after" || fail
+  saved_mode=$(read_saved rc.mode); case "$saved_mode" in [0-7][0-7][0-7]|[0-7][0-7][0-7][0-7]) :;; *) fail;; esac
+  test "$(stat -c %a "$RC")" = "$saved_mode" || fail
+}
+recovery_current() {
+  binding; layout
+  test "$(udc)" = "$(read_saved udc)" || fail
+  current=$(links)
+  if test "$current" = "$before" && rc_matches before; then settled=settled-before
+  elif test "$current" = "$after" && rc_matches after; then settled=settled-after
+  else fail; fi
+  if printf '%s\n' "$current" | awk -F= '$2 == "ffs.adb" {found=1} END {exit !found}'; then
+    current_daemon=$(daemon) || fail
+  else current_daemon=not-linked; fi
+}
+reconcile() {
+  expected_script=${7:-}
+  case "$expected_script" in ????????????????????????????????????????????????????????????????) case "$expected_script" in *[!0-9a-f]*) fail;; esac;; *) fail;; esac
+  regular "$STAGE/adb-toggle.sh" && test "$(sha256sum "$STAGE/adb-toggle.sh" | cut -d ' ' -f 1)" = "$expected_script" || fail
+  no_worker
+  acquire_recovery_marker "$STAGE/settle-active"
+  trap 'rmdir "$STAGE/settle-active" 2>/dev/null || :' EXIT
+  recovery_inventory; lock_safe || fail
+  state=preparing
+  if test -e "$STAGE/phase" || test -L "$STAGE/phase"; then state=$(read_saved phase); fi
+  if test "$state" = prepared && test -d "$STAGE/apply-once"; then state=changing; fi
+  case "$state" in
+    preparing|prepared|cancelled)
+      # The decision directory is the same atomic fence used by old apply.
+      # It blocks a delayed launch even when its SSH dispatch reply was lost.
+      test ! -e "$STAGE/apply-once" && test ! -L "$STAGE/apply-once" || fail
+      acquire_recovery_marker "$STAGE/prepare-active"
+      trap 'rmdir "$STAGE/prepare-active" "$STAGE/settle-active" 2>/dev/null || :' EXIT
+      if test -e "$STAGE/decision" || test -L "$STAGE/decision"; then empty_private_dir "$STAGE/decision" || fail
+      else mkdir "$STAGE/decision" || fail; fi
+      no_worker; binding; lock_safe || fail
+      if owned; then release || fail; fi
+      if test -e "$STAGE/phase.new"; then regular "$STAGE/phase.new" || fail; rm "$STAGE/phase.new"; fi
+      phase cancelled
+      printf 'ADB_RECOVERED=cancelled\n';;
+    changing|awaiting-ack|committed|rolled-back|rollback-unknown|cleanup-unknown|settled-before|settled-after)
+      empty_private_dir "$STAGE/decision" && empty_private_dir "$STAGE/apply-once" || fail
+      recovery_snapshots; recovery_current
+      first_settled=$settled; first_daemon=$current_daemon
+      no_worker; recovery_inventory; lock_safe || fail
+      recovery_snapshots; recovery_current
+      test "$first_settled" = "$settled" && test "$first_daemon" = "$current_daemon" || fail
+      if owned; then release || fail; fi
+      printf 'ADB_RECOVERED=%s\n' "$settled";;
+    *) fail;;
+  esac
+}
+
 mode=${1:-}; STAGE=${2:-}; TOKEN=${3:-}; CID=${4:-}; BOOT=${5:-}; WANT=${6:-}
-case "$mode" in prepare|apply|ack|result|cancel) :;; *) fail;; esac
+case "$mode" in prepare|apply|ack|result|cancel|reconcile) :;; *) fail;; esac
 case "$TOKEN" in ????????-????-????-????-????????????) case "$TOKEN" in *[!0-9a-f-]*) fail;; esac;; *) fail;; esac
 case "$CID" in ????????????????????????????????) case "$CID" in *[!0-9a-f]*) fail;; esac;; *) fail;; esac
 case "$BOOT" in ????????-????-????-????-????????????) case "$BOOT" in *[!0-9a-f-]*) fail;; esac;; *) fail;; esac
@@ -184,6 +340,7 @@ case "$WANT" in 0|1) :;; *) fail;; esac
 test "$STAGE" = "/tmp/zte-adb-toggle-$TOKEN" && private_dir "$STAGE" || fail
 umask 077
 binding
+if test "$mode" = reconcile; then reconcile "$@"; exit 0; fi
 if test "$mode" = cancel; then
   mkdir "$STAGE/prepare-active" || fail
   trap 'rmdir "$STAGE/prepare-active" 2>/dev/null || :' EXIT

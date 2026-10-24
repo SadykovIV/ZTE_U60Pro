@@ -91,9 +91,9 @@ class DiscoveryTests(unittest.TestCase):
     def run_probe(self,name):
         result,text,facts=self.f.run(name);self.assertEqual(result.returncode,0,result.stderr.decode());return text,facts
     def test_mirror_shape_and_shell_syntax(self):
-        s=json.loads(SPEC.read_text());self.assertEqual(s['revision'],13);self.assertEqual(len(s['probes']),57)
+        s=json.loads(SPEC.read_text());self.assertEqual(s['revision'],14);self.assertEqual(len(s['probes']),58)
         self.assertEqual(SPEC.read_bytes(),(ROOT/'Windows_x64/Resources/FirmwareResearch/probes.json').read_bytes())
-        self.assertEqual(len({p['id'] for p in s['probes']}),57)
+        self.assertEqual(len({p['id'] for p in s['probes']}),58)
         self.assertEqual(len({o['id'] for o in s['observations']}),len(s['observations']))
         for o in s['observations']: self.assertIn(o['probe'],[p['id'] for p in s['probes']])
         for p in s['probes']:

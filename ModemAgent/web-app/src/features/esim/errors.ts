@@ -49,6 +49,7 @@ export const safeEsimErrors = new Set([
   "resource_ownership_changed",
   "snapshot_changed",
   "snapshot_cleanup_failed",
+  "snapshot_failed",
   "snapshot_missing",
   "snapshot_required",
   "stream_read_failed",
@@ -119,6 +120,7 @@ export const safeComponentErrors = new Set([
 export const componentError = (value: unknown): string | undefined => typeof value === 'string' && safeComponentErrors.has(value) ? value : undefined
 export function failureMessage(code: string): string {
   switch (code) {
+    case 'snapshot_failed': return 'Card reading failed. The profile list could not be confirmed. See the operation log for the error code.'
     case 'card_busy': return 'The card is busy with another operation. Wait for it to finish, then read profiles again.'
     case 'card_open_rejected': return 'The modem refused to open the card channel. Wait a moment, then read profiles again. No profile operation was retried.'
     case 'card_cleanup_unknown': return 'Card channel cleanup is unconfirmed. Restart the modem before retrying, then read profiles again. Do not remove the card lock manually.'

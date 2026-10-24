@@ -15,13 +15,19 @@ async Task<EsimResult> Parse(string frames)
 }
 string Failure(string code, object? cause) => JsonSerializer.Serialize(new { type = "result", ok = false, error = code, component_error = cause, raw_stderr = "PRIVATE-STDERR", iccid = "89000000000000000001" }) + "\n";
 Check(catalog.Length == 51, "fixed catalog count");
+foreach (var count in new[] { 0, 3 })
+{
+    using var trace = JsonDocument.Parse(JsonSerializer.Serialize(new { @event = "component_exit", log_seq = 1, elapsed_ms = 10, apdu_count = count, http_count = 0, component = "snapshot" }));
+    var line = EsimDiagnostics.ProgressLine("checking_card", trace.RootElement);
+    Check(line.Contains("lpac_apdu_count=" + count) && !line.Contains(" apdu_count="), "wire APDU count is labelled as lpac traffic only");
+}
 foreach (var cause in catalog)
 {
     Check(EsimDiagnostics.SafeComponentError(cause) == cause, "fixed cause retained");
     var result = await Parse(Failure("card_open_rejected", cause));
     Check(!result.Ok && result.Error == "card_open_rejected" && result.ComponentError == cause, "typed final cause retained");
 }
-foreach (var code in new[] { "card_busy", "card_open_rejected", "card_cleanup_unknown", "card_not_ready", "card_reset_failed", "card_power_restore_failed" })
+foreach (var code in new[] { "card_busy", "card_open_rejected", "card_cleanup_unknown", "card_not_ready", "card_reset_failed", "card_power_restore_failed", "snapshot_failed" })
 {
     Check(EsimDiagnostics.SafeError(code) == code, "fixed card error retained");
     var message = EsimDiagnostics.FailureMessage(code);
@@ -40,6 +46,24 @@ foreach (var code in new[] { "card_busy", "card_open_rejected", "card_cleanup_un
 }
 Check(EsimDiagnostics.FailureMessage("card_cleanup_unknown").Contains("перезагрузите"), "cleanup unknown requires reboot");
 Check(EsimDiagnostics.FailureMessage("card_not_ready").Contains("Подождите"), "not ready asks to wait");
+Check(!EsimDiagnostics.FailureMessage("card_not_ready").Contains("Радио") && !EsimDiagnostics.FailureMessage("card_not_ready").Contains("после перечитывания"), "readiness failure does not invent radio or refresh success");
+var readFailure = await Parse("{\"type\":\"result\",\"ok\":false,\"error\":\"snapshot_failed\",\"component_error\":\"snapshot_card_status_error\",\"card\":{\"kind\":\"unknown\",\"management\":\"unknown\",\"reason\":\"read_failed\",\"cleanup_confirmed\":false}}\n");
+Check(readFailure.Error == "snapshot_failed" && readFailure.ComponentError == "snapshot_card_status_error" && readFailure.Card?.Kind == "unknown" && readFailure.Card.Reason == "read_failed" && readFailure.Snapshot is null, "card status read failure retains exact cause and unknown card");
+foreach (var exit in new[] { 0, 1 })
+{
+    try {
+        var completed = EsimProtocol.Completed(readFailure, exit);
+        Check(exit == 0 && !completed.Ok && completed.Error == "snapshot_failed" && completed.ComponentError == "snapshot_card_status_error", "zero-exit failed read remains a failed result for the UI");
+    }
+    catch (EsimException error) { Check(exit == 1 && error.Code == "snapshot_failed" && error.ComponentError == "snapshot_card_status_error", "nonzero read failure retains code and cause"); }
+}
+bool readAuthorized = false;
+try { EsimCardStatus.FromAcceptedResult(readFailure); readAuthorized = true; } catch (EsimException) { }
+Check(!readAuthorized, "unknown card read cannot authorize eUICC changes");
+var readMessage = EsimDiagnostics.FailureMessage("snapshot_failed");
+Check(readMessage.Contains("Тип SIM-карты не определён") && !readMessage.Contains("перезагруз", StringComparison.OrdinalIgnoreCase) && !readMessage.Contains("Закрытие"), "read failure is not presented as ordinary SIM or cleanup failure");
+var readLines = new List<string>(); new EsimJournal("list", (_, text) => readLines.Add(text)).BackendResult(readFailure);
+Check(readLines.Any(text => text.Contains("error=snapshot_failed") && text.Contains("component_error=snapshot_card_status_error")) && readLines.All(text => !text.Contains("snapshot_cleanup_failed")), "sanitized journal preserves read failure without cleanup relabel");
 Check(EsimDiagnostics.FailureMessage("card_reset_failed").Contains("Перезапуск SIM не подтверждён"), "reset remains unconfirmed");
 Check(EsimDiagnostics.FailureMessage("card_power_restore_failed").Contains("Перезагрузите модем"), "power restore failure requires reboot");
 foreach (var code in new[] { "card_reset_failed", "card_power_restore_failed" })

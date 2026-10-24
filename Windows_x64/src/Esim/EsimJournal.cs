@@ -12,7 +12,7 @@ public static class EsimDiagnostics
     private static readonly HashSet<string> Errors = [
         "operation_failed", "operation_busy", "cancelled", "transport_timeout", "agent_exit_failed", "identity_changed", "temporary_cleanup_failed",
         "http_tls_failed", "http_dns_failed", "http_timeout", "http_connection_failed", "http_response_too_large", "http_cancelled",
-        "card_not_euicc", "card_busy", "card_open_rejected", "card_cleanup_unknown", "card_not_ready",
+        "card_not_euicc", "card_busy", "card_open_rejected", "card_cleanup_unknown", "card_not_ready", "snapshot_failed",
         "card_reset_failed", "card_power_restore_failed",
         "esim_busy", "operation_lock_failed", "launcher_operation_refused", "radio_read_failed", "radio_not_online", "radio_set_failed", "radio_offline_failed", "radio_restore_failed", "modem_readback_failed", "modem_slot_mismatch", "modem_iccid_mismatch",
         "bridge_already_open", "bridge_cleanup_failed", "bridge_missing", "card_changed", "component_already_closed", "component_closed", "component_eof", "component_exit_failed", "component_start_failed",
@@ -79,7 +79,8 @@ public static class EsimDiagnostics
         "card_open_rejected" => "Модем отказал в открытии канала карты. Немного подождите и перечитайте профили. Операция с профилем не повторялась.",
         "card_cleanup_unknown" => "Закрытие канала карты не подтверждено. Перед повторной попыткой перезагрузите модем и перечитайте профили. Не удаляйте блокировку карты вручную.",
         "card_not_euicc" => "Управление eSIM недоступно для выбранной SIM-карты.",
-        "card_not_ready" => "Выбранное приложение SIM ещё не готово. Подождите и перечитайте профили. Операция с профилем не повторялась.",
+        "card_not_ready" => "SIM ещё не готова к чтению. Подождите и обновите список профилей. Автоматического повтора не было.",
+        "snapshot_failed" => "Не удалось прочитать данные карты. Тип SIM-карты не определён. Повторите проверку карты и профилей. Автоматического повтора не было.",
         "card_reset_failed" => "Перезапуск SIM не подтверждён. Перечитайте профили и проверьте результат переключения. Автоматического повтора не было.",
         "card_power_restore_failed" => "Включение SIM не подтверждено. Перезагрузите модем перед повторной попыткой, затем перечитайте профили.",
         "radio_restore_failed" => "Включение радио после авиарежима не подтверждено. Проверьте авиарежим на модеме и перечитайте профили. Автоматического повтора не было.",
@@ -110,7 +111,7 @@ public static class EsimDiagnostics
         {
             if (!value.TryGetProperty(key, out var number)) { if (required) throw new EsimException(); return; }
             if (!number.TryGetUInt64(out var n) || n < minimum || n > maximum) throw new EsimException();
-            fields.Add(key + "=" + n.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            fields.Add((key == "apdu_count" ? "lpac_apdu_count" : key) + "=" + n.ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         fields.Add("event=" + Word("event", Events));
         Number("log_seq", required: true, minimum: 1);

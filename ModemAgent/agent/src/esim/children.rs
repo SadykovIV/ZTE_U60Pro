@@ -423,7 +423,9 @@ impl super::Runtime for LocalRuntime {
             }
             Ok(snapshot)
         })();
-        let closed = child.finish_helper("snapshot_cleanup_failed");
+        // A non-zero helper exit may be a read/APDU failure after a normal
+        // Close. Only explicit cleanup diagnostics imply unknown ownership.
+        let closed = child.finish_helper("snapshot_failed");
         self.event(super::trace::Event::ComponentExit(
             super::trace::Component::Snapshot,
             result.is_ok() && closed.is_ok(),
@@ -615,7 +617,7 @@ mod diagnostic_tests {
             "{\"event\":\"cleanup_unknown\",\"stage\":\"private\"}\n"
         );
         let report = diagnostics(text.as_bytes());
-        assert!(report.failure("snapshot_cleanup_failed").is_none());
+        assert!(report.failure("snapshot_failed").is_none());
         assert!(!format!("{report:?}").contains("PRIVATE"));
     }
 
@@ -698,11 +700,11 @@ mod diagnostic_tests {
             ("channel_open_outcome_unknown", "card_cleanup_unknown"),
             ("card_cleanup_unknown", "card_cleanup_unknown"),
             ("card_not_ready", "card_not_ready"),
-            ("selection_mismatch", "snapshot_cleanup_failed"),
+            ("selection_mismatch", "snapshot_failed"),
         ] {
             let line = format!("{{\"event\":\"error\",\"code\":\"{code}\"}}\n");
             let report = diagnostics(line.as_bytes());
-            let error = report.failure("snapshot_cleanup_failed").unwrap();
+            let error = report.failure("snapshot_failed").unwrap();
             assert_eq!(error.code, expected);
             assert_eq!(error.component_error, Some(code));
         }
@@ -742,9 +744,12 @@ mod diagnostic_tests {
     struct Script(PathBuf);
     impl Script {
         fn new(body: &str) -> Self {
+            static NEXT_SCRIPT: std::sync::atomic::AtomicU64 =
+                std::sync::atomic::AtomicU64::new(0);
             let path = std::env::temp_dir().join(format!(
-                "esim-child-diagnostic-{}-{}",
+                "esim-child-diagnostic-{}-{}-{}",
                 std::process::id(),
+                NEXT_SCRIPT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap()
@@ -773,7 +778,9 @@ mod diagnostic_tests {
             ("lock_unavailable", "card_busy"),
             ("qmi_open_rejected", "card_open_rejected"),
             ("qmi_open_unknown", "card_cleanup_unknown"),
-            ("SYNTHETIC_PRIVATE", "snapshot_cleanup_failed"),
+            ("snapshot_card_status_error", "snapshot_failed"),
+            ("qmi_transmit_error", "snapshot_failed"),
+            ("SYNTHETIC_PRIVATE", "snapshot_failed"),
         ] {
             let script = Script::new(&format!(
                 "printf '%s\\n' '{{\"event\":\"error\",\"code\":\"{code}\"}}' >&2\nexit 1"
@@ -790,7 +797,25 @@ mod diagnostic_tests {
             } else {
                 assert_eq!(wire["component_error"], code);
             }
+            if expected == "snapshot_failed" {
+                assert_eq!(wire["card"]["reason"], "read_failed");
+            }
         }
+    }
+
+    #[test]
+    fn actual_snapshot_read_failure_preserves_later_cleanup_uncertainty() {
+        let script = Script::new(concat!(
+            "printf '%s\\n' '{\"event\":\"error\",\"code\":\"snapshot_card_status_error\"}' >&2\n",
+            "printf '%s\\n' '{\"event\":\"cleanup_failed\",\"stage\":\"channel_close\"}' >&2\n",
+            "exit 1"
+        ));
+        let mut runtime = LocalRuntime::new(script.0.clone(), PathBuf::from("unused"));
+        let error = runtime.snapshot().unwrap_err();
+        assert_eq!(error.code, "card_cleanup_unknown");
+        assert_eq!(error.component_error, Some("snapshot_card_status_error"));
+        let (wire, _) = crate::esim::final_value(Err(error));
+        assert_eq!(wire["card"]["reason"], "cleanup_unknown");
     }
 
     #[test]

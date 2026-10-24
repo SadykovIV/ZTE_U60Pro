@@ -7,7 +7,9 @@ internal sealed class TransactionShell : IRemoteShell
 {
     internal bool Original, Desired, Applied, Acked, Removed, UnknownFirmware, WrongReadback, B28, B04, B04Image, DescriptorsMissing;
     internal bool LostDispatch, LostAck, ChangedBoot, FailCleanup, PrivateFailure, CapabilityMissing, StageAbsent, ForeignLock;
-    internal int Applies, Acks, Cancels, ResultReads;
+    internal int Applies, Acks, Cancels, ResultReads, Recoveries, OrdinaryLocks, VpnDependencyChecks;
+    internal string? RecoveryReply;
+    internal bool RecoveryDenied, WrongCid, WrongRouter, LostCleanup;
     internal string ResultPhase = "awaiting-ack";
     internal string PrepareReply = "ADB_PREPARED";
     internal CancellationTokenSource? CancelOnPrepare;
@@ -17,11 +19,14 @@ internal sealed class TransactionShell : IRemoteShell
     public Task<RemoteResult> RunAsync(string command, byte[]? stdin = null, TimeSpan? timeout = null, CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested(); Commands.Add(command);
+        if (command.Contains("mkdir /tmp/zte-imei-app.lock")) { OrdinaryLocks++; return Task.FromResult(Reply("")); }
+        if (command.StartsWith("for c in lua nft iptables")) { VpnDependencyChecks++; return Task.FromResult(Reply("synthetic-missing-dependency")); }
+        if (command.Contains("rmdir /tmp/zte-imei-app.lock")) return Task.FromResult(Reply(""));
         if (command == AccessIdentity.Command)
         {
             var firmware = B04Image ? AdbToggleTransaction.B04FirmwareHash : B04 ? "absent" : UnknownFirmware ? new string('a', 64) : B28 ? AdbToggleTransaction.B28FirmwareHash : DeviceFeatureService.FirmwareHash;
             var boot = ChangedBoot && Applied ? "11111111-1111-1111-1111-111111111111" : "00000000-0000-0000-0000-000000000001";
-            return Task.FromResult(Reply(firmware + "  /firmware/image/modem.b16\n" + DeviceFeatureService.RouterHash + "  /usr/bin/diag-router\n0123456789abcdef0123456789abcdef\n" + boot));
+            return Task.FromResult(Reply(firmware + "  /firmware/image/modem.b16\n" + (WrongRouter ? new string('f', 64) : DeviceFeatureService.RouterHash) + "  /usr/bin/diag-router\n" + (WrongCid ? "1123456789abcdef0123456789abcdef" : "0123456789abcdef0123456789abcdef") + "\n" + boot));
         }
         if (command == AdbControlProtocol.Command)
         {
@@ -31,6 +36,14 @@ internal sealed class TransactionShell : IRemoteShell
         if (command == AdbToggleTransaction.CapabilityCommand || command.Contains(AdbToggleTransaction.B04CapabilityCommand))
         { if (command.Contains("setsid") || !command.Contains("sort pidof nohup sleep")) throw new Exception("unsupported launch dependency"); return Task.FromResult(Reply("ADB_CONTROL_CAPABLE", CapabilityMissing ? 71 : 0)); }
         if (command.Contains("ADB_STAGE_ABSENT")) return Task.FromResult(Reply("ADB_STAGE_ABSENT", StageAbsent && !ForeignLock ? 0 : 71));
+        if (command.Contains("'reconcile'"))
+        {
+            Recoveries++;
+            if (stdin is null || !command.Contains("exec /bin/sh -s --") || !command.Contains(AdbToggleTransaction.PreviousScriptSha256)) throw new Exception("recovery must execute current pinned stdin");
+            if (StageAbsent || ForeignLock || RecoveryDenied) return Task.FromResult(Reply("refused", 71));
+            var phase = RecoveryReply ?? (ResultPhase == "prepared" ? "cancelled" : ResultPhase == "committed" ? "settled-after" : ResultPhase == "rolled-back" ? "settled-before" : "busy");
+            return Task.FromResult(Reply("ADB_RECOVERED=" + phase, phase == "busy" ? 71 : 0));
+        }
         if (command.Contains("ADB_STAGED"))
         {
             if (stdin is null || !command.Contains("mkdir -m 700") || !command.Contains(AdbToggleTransaction.ScriptSha256)) throw new Exception("missing stage proof");
@@ -57,7 +70,7 @@ internal sealed class TransactionShell : IRemoteShell
         if (command.Contains("'cancel'"))
         { Cancels++; if (StageAbsent) return Task.FromResult(Reply("no stage", 71)); ResultPhase = "cancelled"; return Task.FromResult(Reply("ADB_CANCELLED")); }
         if (command.Contains("ADB_STAGE_REMOVED"))
-        { if (command.Contains("rm -rf") || command.Contains("zte-imei-app.lock")) throw new Exception("unsafe cleanup"); Removed = !FailCleanup; return Task.FromResult(Reply("ADB_STAGE_REMOVED", FailCleanup ? 71 : 0)); }
+        { if (command.Contains("rm -rf") || command.Contains("zte-imei-app.lock")) throw new Exception("unsafe cleanup"); if (LostCleanup) throw new Renci.SshNet.Common.SshConnectionException("PRIVATE-CLEANUP-CANARY"); Removed = !FailCleanup; return Task.FromResult(Reply("ADB_STAGE_REMOVED", FailCleanup ? 71 : 0)); }
         throw new Exception("Unexpected fake command");
     }
     public Task UploadAsync(string p, byte[] d, TimeSpan? t = null, CancellationToken ct = default) => throw new Exception("Unexpected upload");
@@ -78,7 +91,7 @@ internal static class TransactionTests
             var fake = new TransactionShell { StageAbsent = true, ForeignLock = caseName == "foreign-lock", Applied = caseName == "changed-boot", ChangedBoot = caseName == "changed-boot" }; var store = Store();
             var data = new { Schema = 1, Token = Guid.NewGuid().ToString("D"), Cid = "0123456789abcdef0123456789abcdef", Boot = "00000000-0000-0000-0000-000000000001", Firmware = DeviceFeatureService.FirmwareHash, Router = DeviceFeatureService.RouterHash, Desired = true, Original = false, Phase = caseName == "dispatched" ? "dispatched" : "preparing" };
             File.WriteAllText(Path.Combine(store, AdbToggleTransaction.PendingName), System.Text.Json.JsonSerializer.Serialize(data));
-            if (caseName == "absent")
+            if (caseName is "absent" or "changed-boot")
             {
                 check((await Create(fake, store).ReadAsync(default)).Enabled == false && !Pending(store) && fake.Cancels == 0 && fake.Applies == 0 && !fake.Removed, "undispatched absent stage and absent lock clear only local journal after fresh binding");
             }
@@ -143,7 +156,7 @@ internal static class TransactionTests
             await Refuse(async () => { await Create(fake, store).SetAsync(true, default); }, "verified rollback");
             check(!Pending(store) && fake.Removed && fake.Applies == 1 && fake.Acks == 0, "verified rollback cleans only stage after original observation");
         }
-        foreach (var failure in new[] { "identity", "cleanup", "readback", "private" })
+        foreach (var failure in new[] { "identity", "readback", "private" })
         {
             var fake = new TransactionShell { Desired = true, ChangedBoot = failure == "identity", FailCleanup = failure == "cleanup", WrongReadback = failure == "readback", PrivateFailure = failure == "private" }; var store = Store();
             await Refuse(async () => { await Create(fake, store).SetAsync(true, default); }, failure);
@@ -165,12 +178,40 @@ internal static class TransactionTests
         {
             var fake = new TransactionShell { Desired = true, ResultPhase = "cleanup-unknown" }; var store = Store();
             await Refuse(async () => { await Create(fake, store).SetAsync(true, default); }, "create pending fixture");
-            fake.ResultPhase = "prepared";
-            await Refuse(async () => { await Create(fake, store).ReadAsync(default); }, "reconnect prepared");
-            check(Pending(store) && fake.Applies == 1 && fake.Acks == 0 && fake.Cancels == 0 && !fake.Removed, "read-only reconnect preserves incomplete transaction");
+            fake.ResultPhase = "prepared"; fake.RecoveryDenied = true;
+            await Refuse(async () => { await Create(fake, store).ReadAsync(default); }, "reconnect live prepared");
+            check(Pending(store) && fake.Applies == 1 && fake.Acks == 0 && fake.Cancels == 0 && !fake.Removed, "live preparation preserves incomplete transaction");
             var count = fake.Commands.Count;
             await Refuse(async () => { await Create(fake, store).SetAsync(true, default); }, "pending blocks second intent");
             check(fake.Commands.Count == count, "pending refusal before remote I/O");
         }
+        foreach (var lost in new[] { false, true })
+        {
+            var fake = new TransactionShell { Desired = true, FailCleanup = !lost, LostCleanup = lost }; var store = Store();
+            var result = await Create(fake, store).SetAsync(true, default);
+            check(result.Enabled == true && !Pending(store) && fake.Applies == 1 && fake.Acks == 1, "verified terminal survives lost cleanup reply without retaining pending");
+            check(Directory.GetFiles(store, "adb-toggle-recovered-*.json").Length == 1, "terminal intent archived before optional cleanup");
+        }
+        foreach (var scenario in new[] { "before", "after", "prepared", "busy", "foreign", "wrong-cid", "reboot", "reboot-foreign", "reboot-firmware", "reboot-router" })
+        {
+            var fake = new TransactionShell { Original = scenario == "after", Desired = true, ResultPhase = scenario == "prepared" ? "prepared" : "rollback-unknown", RecoveryReply = scenario == "after" ? "settled-after" : scenario == "prepared" ? "cancelled" : "settled-before", RecoveryDenied = scenario == "busy", ForeignLock = scenario is "foreign" or "reboot-foreign", WrongCid = scenario == "wrong-cid", WrongRouter = scenario == "reboot-router", UnknownFirmware = scenario == "reboot-firmware", Applied = scenario.StartsWith("reboot"), ChangedBoot = scenario.StartsWith("reboot"), StageAbsent = scenario.StartsWith("reboot") };
+            var store = Store(); var token = Guid.NewGuid().ToString("D");
+            var path = Path.Combine(store, AdbToggleTransaction.PendingName);
+            var bytes = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(new { Schema = 1, Token = token, Cid = "0123456789abcdef0123456789abcdef", Boot = "00000000-0000-0000-0000-000000000001", Firmware = DeviceFeatureService.FirmwareHash, Router = DeviceFeatureService.RouterHash, Desired = true, Original = false, Phase = "dispatched" });
+            File.WriteAllBytes(path, bytes);
+            if (scenario is "busy" or "foreign" or "wrong-cid" or "reboot-foreign" or "reboot-firmware" or "reboot-router")
+            {
+                await Refuse(async () => { await Create(fake, store).ReadAsync(default); }, scenario);
+                check(Pending(store) && File.ReadAllBytes(path).SequenceEqual(bytes) && !fake.Removed, scenario + " retains exact pending");
+            }
+            else
+            {
+                var state = await Create(fake, store).ReadAsync(default);
+                check(state.Enabled == (scenario == "after") && !Pending(store), scenario + " reconciles observed state");
+                check(File.ReadAllBytes(Path.Combine(store, "adb-toggle-recovered-" + token + ".json")).SequenceEqual(bytes), scenario + " archives exact journal");
+            }
+            check(fake.Applies == 0 && fake.Acks == 0 && fake.Cancels == 0, scenario + " recovery never replays USB or ACK");
+        }
+
     }
 }

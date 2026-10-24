@@ -160,7 +160,10 @@ struct EsimRPCResult: Decodable, Sendable {
         modemVerified = try fields.decodeIfPresent(Bool.self, forKey: .modemVerified)
         radioRestored = try fields.decodeIfPresent(Bool.self, forKey: .radioRestored)
         error = try fields.decodeIfPresent(String.self, forKey: .error)
-        componentError = try fields.decodeIfPresent(String.self, forKey: .componentError)
+        let rawComponentError = try fields.decodeIfPresent(String.self, forKey: .componentError)
+        // Failed helper responses retain fixed diagnostics only. Preserve a
+        // contradictory success field so accepted() still rejects that response.
+        componentError = ok ? rawComponentError : EsimLog.componentError(rawComponentError)
         if ok && card?.kind == "ordinary_sim" {
             guard ![CodingKeys.snapshot, .modemVerified, .radioRestored, .componentError, .error].contains(where: fields.contains) else { throw EsimFailure.protocolError }
         }
@@ -321,7 +324,7 @@ struct EsimProgressDetail {
               let seq = try number("log_seq", max: 10000), seq > 0,
               let elapsed = try number("elapsed_ms"), let apdu = try number("apdu_count"), let http = try number("http_count") else { throw EsimFailure.protocolError }
         sequence = seq
-        var parts = [event, "seq=\(seq)", "agent_ms=\(elapsed)", "apdu=\(apdu)", "http=\(http)"]
+        var parts = [event, "seq=\(seq)", "agent_ms=\(elapsed)", "lpac_apdu_count=\(apdu)", "http=\(http)"]
         for (key, allowed) in [("component", ["snapshot", "bridge", "lpac"]), ("waiting_for", ["card", "operator_https", "cleanup"]), ("outcome", ["ok", "failed"])] {
             if let value = fields[key] as? String, allowed.contains(value) { parts.append(key + "=" + value) }
         }
@@ -386,6 +389,7 @@ enum EsimLog {
         "resource_ownership_changed",
         "snapshot_changed",
         "snapshot_cleanup_failed",
+        "snapshot_failed",
         "snapshot_missing",
         "snapshot_required",
         "stream_read_failed",
@@ -433,8 +437,10 @@ enum EsimLog {
                                "The modem rejected opening a card channel. Wait for the SIM to be ready, then refresh the profile list. No automatic retry was made."),
         "card_cleanup_unknown": ("Закрытие канала карты не подтверждено. Перезагрузите модем перед повторной попыткой, затем обновите список профилей. Не повторяйте переключение до перезагрузки.",
                                  "Card channel cleanup is unconfirmed. Restart the modem before trying again, then refresh the profile list. Do not retry the profile switch before restarting."),
-        "card_not_ready": ("SIM ещё не готова после перечитывания. Радио включено. Дождитесь готовности SIM и обновите список профилей; переключение автоматически не повторялось.",
-                           "The SIM is not ready after the refresh. The radio is online. Wait for the SIM to be ready, then refresh the profile list; the switch was not retried automatically."),
+        "card_not_ready": ("SIM ещё не готова к чтению. Подождите и обновите список профилей. Автоматического повтора не было.",
+                           "The SIM is not ready to read. Wait, then refresh the profile list. No automatic retry was made."),
+        "snapshot_failed": ("Не удалось прочитать данные карты. Тип SIM-карты не определён. Повторите проверку карты и профилей. Автоматического повтора не было.",
+                            "Could not read the card data. The SIM card type is unknown. Check the card and profiles again. No automatic retry was made."),
         "card_reset_failed": ("Перезапуск SIM не подтверждён. Перечитайте профили и проверьте результат переключения. Автоматического повтора не было.",
                               "The SIM restart is unconfirmed. Read profiles again and check the switch result. No automatic retry was made."),
         "card_power_restore_failed": ("Включение SIM не подтверждено. Перезагрузите модем перед повторной попыткой, затем перечитайте профили.",

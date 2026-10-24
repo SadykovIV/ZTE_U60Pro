@@ -240,18 +240,40 @@ impl<D: Device> Session<D> {
         }
         let mut command = vec![channel, 0xa4, 0x04, 0x0c, es10::ISD_R_AID.len() as u8];
         command.extend_from_slice(&es10::ISD_R_AID);
-        let response = self.transmit(&command)?;
-        let (data, sw) = es10::split_status(&response).map_err(|_| "short_apdu_response")?;
-        // P2=0C requests no response data. Other SWs, trailing data and transport
-        // errors remain unknown; never infer ordinary SIM from a failed Open.
-        if !data.is_empty() {
-            return Err("snapshot_card_status_error");
+        let mut response = self.transmit(&command)?;
+        let mut response_bytes = 0usize;
+        // Some cards return 61xx even with P2=0C. Drain the selection response
+        // on this owned channel before sending ES10 commands. Its contents are
+        // not needed: the EID and profile read provide the eUICC proof.
+        for attempt in 0..32 {
+            let (data, sw) = es10::split_status(&response).map_err(|_| "short_apdu_response")?;
+            response_bytes = response_bytes.saturating_add(data.len());
+            if response_bytes > MAX_RESPONSE {
+                return Err("snapshot_response_too_large");
+            }
+            match sw {
+                0x9000 => return Ok(true),
+                // Only absence on the original SELECT identifies an ordinary
+                // SIM. A later GET RESPONSE error cannot prove application absence.
+                0x6a82 if attempt == 0 && data.is_empty() => return Ok(false),
+                _ => (),
+            }
+            if attempt == 31 {
+                return Err("snapshot_continuation_limit");
+            }
+            let [sw1, sw2] = sw.to_be_bytes();
+            match sw1 {
+                0x61 => command = vec![channel, 0xc0, 0, 0, sw2],
+                // The original SELECT has no Le: never overwrite its AID.
+                // A five-byte GET RESPONSE does have an Le that 6Cxx corrects.
+                0x6c if command.len() == 5 && command[1] == 0xc0 && data.is_empty() => {
+                    command[4] = sw2;
+                }
+                _ => return Err("snapshot_card_status_error"),
+            }
+            response = self.transmit(&command)?;
         }
-        match sw {
-            0x9000 => Ok(true),
-            0x6a82 => Ok(false),
-            _ => Err("snapshot_card_status_error"),
-        }
+        Err("snapshot_continuation_limit")
     }
 
     pub fn euicc_snapshot(&mut self) -> Result<Value> {
@@ -750,7 +772,6 @@ mod tests {
             vec![],
             vec![0x6a],
             vec![0, 0x6a, 0x82],
-            vec![0x61, 0x10],
             vec![0x6c, 0],
             vec![0x6e, 0],
         ] {
@@ -802,5 +823,61 @@ mod tests {
         assert_eq!(commands[1], es10::get_eid_request().unwrap());
         assert_eq!(commands[2], es10::get_profiles_request().unwrap());
         assert_eq!(commands.len(), 3);
+    }
+
+    #[test]
+    fn select_continuation_then_corrected_length_preserves_owned_channel() {
+        for channel in 1..=3 {
+            let (mut session, counts) = setup();
+            counts.borrow_mut().returned_channel = Some(channel);
+            counts.borrow_mut().responses = VecDeque::from([
+                vec![0x61, 0x21],
+                vec![0x6c, 2],
+                vec![0x62, 0, 0x90, 0],
+            ]);
+            assert!(session.snapshot().unwrap().get("eid").is_some());
+            let c = counts.borrow();
+            assert_eq!(&c.commands[0][..5], &[channel, 0xa4, 4, 0x0c, 16]);
+            assert_eq!(c.commands[1], vec![channel, 0xc0, 0, 0, 0x21]);
+            assert_eq!(c.commands[2], vec![channel, 0xc0, 0, 0, 2]);
+            assert_eq!((c.transmissions, c.closes), (5, 1));
+        }
+    }
+
+    #[test]
+    fn select_continuation_not_found_is_unknown_and_closes() {
+        let (mut session, counts) = setup();
+        counts.borrow_mut().responses = VecDeque::from([vec![0x61, 0x21], vec![0x6a, 0x82]]);
+        assert_eq!(session.snapshot(), Err("snapshot_card_status_error"));
+        assert_eq!((counts.borrow().transmissions, counts.borrow().closes), (2, 1));
+    }
+
+    #[test]
+    fn select_continuation_cleanup_failure_never_returns_card_or_retries_close() {
+        let (mut session, counts) = setup();
+        counts.borrow_mut().responses = VecDeque::from([
+            vec![0x61, 0x21],
+            vec![0x62, 0, 0x90, 0],
+        ]);
+        counts.borrow_mut().fail_close = true;
+        assert_eq!(session.snapshot(), Err("channel_close_failed"));
+        assert!(session.cleanup_failed);
+        assert_eq!(session.disconnect(), Err("card_cleanup_unknown"));
+        drop(session);
+        assert_eq!((counts.borrow().transmissions, counts.borrow().closes), (4, 1));
+    }
+
+    #[test]
+    fn select_continuations_are_bounded_and_do_not_overwrite_aid() {
+        let (mut session, counts) = setup();
+        counts.borrow_mut().responses = VecDeque::from(vec![vec![0x61, 0]; 32]);
+        assert_eq!(session.snapshot(), Err("snapshot_continuation_limit"));
+        assert_eq!((counts.borrow().transmissions, counts.borrow().closes), (32, 1));
+        let (mut session, counts) = setup();
+        counts.borrow_mut().responses.push_back(vec![0x6c, 0x21]);
+        assert_eq!(session.snapshot(), Err("snapshot_card_status_error"));
+        assert_eq!(counts.borrow().transmissions, 1);
+        assert_eq!(&counts.borrow().commands[0][5..], &es10::ISD_R_AID);
+        assert_eq!(counts.borrow().closes, 1);
     }
 }
