@@ -36,7 +36,7 @@ public sealed partial class DeviceFeatureService
             ["PLATFORM"] = "Для установки VPN нужны root и ARM64.",
             ["UNSAFE_STAGE"] = "Временные файлы VPN не прошли проверку владельца и прав.",
             ["ALREADY_PRESENT"] = "Компоненты или служба VPN уже существуют. Обновите состояние и выполните обновление компонентов.",
-            ["UNSUPPORTED_FIRMWARE"] = "Компоненты VPN рассчитаны на исследованные MU5250 CN B31, FLY B28 (B13) и XCBZ HK B04. Соберите данные для адаптации этой прошивки.",
+            ["UNSUPPORTED_FIRMWARE"] = "Для VPN не распознан набор системных компонентов. Поддерживаются профили CN B31, FLY B27 (B11), FLY B28 (B13) и HK B04. Соберите данные для адаптации.",
             ["RUNTIME_TOOLS"] = "В прошивке отсутствует одна из необходимых команд VPN: lua, nft, iptables, ip6tables, ebtables, dnsmasq, ip, ubus, sha256sum или flock.",
             ["TUN_UNAVAILABLE"] = "Для VPN недоступно устройство /dev/net/tun.",
             ["LUA_MODULES"] = "Не удалось загрузить модули Lua uci и luci.jsonc, необходимые для настройки VPN.",

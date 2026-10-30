@@ -434,7 +434,7 @@ impl super::Runtime for LocalRuntime {
         closed?;
         result
     }
-    fn begin(&mut self, expected: &super::model::Snapshot) -> Result<()> {
+    fn begin(&mut self, expected: &super::model::Snapshot, strict_metadata: bool) -> Result<()> {
         self.check_deadline()?;
         if self.bridge.is_some() {
             return Err(Error::new("bridge_already_open"));
@@ -447,7 +447,9 @@ impl super::Runtime for LocalRuntime {
         let result = (|| {
             let v = child.exchange(&serde_json::json!({"expected_eid": expected.eid}))?;
             let actual = super::model::Snapshot::parse(v)?;
-            if !expected.matches(&actual) {
+            if !expected.matches(&actual)
+                || (strict_metadata && !expected.metadata_matches(&actual))
+            {
                 return Err(Error::new("snapshot_changed"));
             }
             Ok(())
@@ -744,8 +746,7 @@ mod diagnostic_tests {
     struct Script(PathBuf);
     impl Script {
         fn new(body: &str) -> Self {
-            static NEXT_SCRIPT: std::sync::atomic::AtomicU64 =
-                std::sync::atomic::AtomicU64::new(0);
+            static NEXT_SCRIPT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             let path = std::env::temp_dir().join(format!(
                 "esim-child-diagnostic-{}-{}-{}",
                 std::process::id(),
@@ -769,6 +770,92 @@ mod diagnostic_tests {
     impl Drop for Script {
         fn drop(&mut self) {
             let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    #[test]
+    fn rename_bridge_rechecks_metadata_under_held_helper_session_and_waits_for_close() {
+        let before = super::super::model::Snapshot::parse(serde_json::json!({
+            "ok":true,"eid":"89000000000000000000000000000000","profiles":[{
+                "iccid":"890000000000000001","isdp_aid":null,"state":"enabled","enabled":true,
+                "nickname":"Original","name":null,"service_provider":null}]}))
+        .unwrap();
+        let mut concurrent = before.clone();
+        concurrent.profiles[0].nickname = Some("Concurrent edit".into());
+        let encoded = serde_json::to_string(&concurrent).unwrap();
+        let marker = Script::new("");
+        std::fs::remove_file(&marker.0).unwrap();
+        let bridge = Script::new(&format!(
+            "IFS= read -r header\nprintf '%s\\n' '{encoded}'\nwhile IFS= read -r line; do :; done\nprintf closed > '{}'",
+            marker.0.display()));
+        let mut runtime = LocalRuntime::new(bridge.0.clone(), PathBuf::from("never-run-lpac"));
+        let error = runtime.begin(&before, true).unwrap_err();
+        assert_eq!(error.code, "snapshot_changed");
+        assert!(runtime.bridge.is_none());
+        assert_eq!(std::fs::read(&marker.0).unwrap(), b"closed");
+        std::fs::remove_file(&marker.0).unwrap();
+        // Existing non-rename operations deliberately retain their inventory
+        // guard, so the new editor does not alter their handshake contract.
+        runtime.begin(&before, false).unwrap();
+        assert!(!marker.0.exists());
+        runtime.end().unwrap();
+        assert_eq!(std::fs::read(&marker.0).unwrap(), b"closed");
+    }
+
+    #[test]
+    fn rename_cli_preserves_literal_arguments_and_private_dependency_text_is_not_trace() {
+        use crate::esim::{model::Request, CardOnlyRelay};
+        use std::sync::{Arc, Mutex};
+        struct NoNetwork;
+        impl crate::esim::Relay for NoNetwork {
+            fn http(&mut self, _: &Value) -> Result<Value> {
+                panic!("rename must not call the network relay")
+            }
+            fn progress(&mut self, _: &'static str) -> Result<()> {
+                Ok(())
+            }
+        }
+        let before = super::super::model::Snapshot::parse(serde_json::json!({
+            "ok":true,"eid":"89000000000000000000000000000000","profiles":[{
+                "iccid":"890000000000000001","isdp_aid":"00112233445566778899AABBCCDDEEFF",
+                "state":"enabled","enabled":true,"nickname":null,"name":null,"service_provider":null}]})).unwrap();
+        let nickname = "--delete 'quoted' $(printf EXPLOITED); & |";
+        let request: Request = serde_json::from_value(serde_json::json!({
+            "protocol":1,"operation":"rename","expected_snapshot":before,
+            "iccid":"890000000000000001","nickname":nickname}))
+        .unwrap();
+        request.validate().unwrap();
+        let encoded = serde_json::to_string(&before).unwrap();
+        let bridge = Script::new(&format!(
+            "IFS= read -r header\nprintf '%s\\n' '{encoded}'\nwhile IFS= read -r line; do :; done"
+        ));
+        let captured = Script::new("");
+        let lpac = Script::new(&format!(
+            "printf '%s\\000' \"$@\" > '{}'\nprintf '%s\\n' '{{\"type\":\"progress\",\"payload\":\"SYNTHETIC_PRIVATE_NAME\"}}'\nprintf '%s\\n' 'SYNTHETIC_PRIVATE_NAME' >&2\nprintf '%s\\n' '{{\"type\":\"lpa\",\"payload\":{{\"code\":0}}}}'",
+            captured.0.display()));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&events);
+        let (trace, heartbeat) = crate::esim::trace::Trace::start(Arc::new(move |event| {
+            sink.lock().unwrap().push(event);
+            Ok(())
+        }));
+        let mut runtime = LocalRuntime::new(bridge.0.clone(), lpac.0.clone());
+        runtime.set_trace(trace);
+        runtime.begin(&before, true).unwrap();
+        let arguments = request.arguments(&before).unwrap();
+        runtime
+            .command(&arguments, &mut CardOnlyRelay(&mut NoNetwork))
+            .unwrap();
+        runtime.end().unwrap();
+        drop(heartbeat);
+        let expected: Vec<_> = arguments
+            .iter()
+            .flat_map(|s| s.bytes().chain([0]))
+            .collect();
+        assert_eq!(std::fs::read(&captured.0).unwrap(), expected);
+        let logs = serde_json::to_string(&*events.lock().unwrap()).unwrap();
+        for private in ["SYNTHETIC_PRIVATE_NAME", nickname, "890000000000000001"] {
+            assert!(!logs.contains(private));
         }
     }
 

@@ -15,6 +15,9 @@ B31 = '604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263'
 # SashaRIP adaptation capture, 2026-10-07: FLY_CN_MU5250V1.0.0B13 / BD_FLYMODEMMU5250V1.0.0B28.
 B28 = '5a4489882538b5ab1d3e0049371f1b620d28d262a429923299b4f2626d40d478'
 
+B27 = '4b1c67e73b94b889adc831168040d40ec368083dfbcec7ae747a2f4f86c66f3e'
+B27_MDM = '00a647cb46fa82a78969b3708c1429d91b37ef99c2c00835ac57ca53c126f25d'
+B27_ROUTER = '786ba99f5d506d01bbe72d9effa90d1a46f5929370f24ccabf6bab291e5a317f'
 B04 = 'c57e063d390983229dfc53aa87380b3d4655ee8daa1c748e1a032ac90cd0df81'
 B04_MDM = '93a346e7d69024503caf9ad42f14c97e1514dd7d04c7b5ebef4e30473b5d5c64'
 ROUTER = '55c54f74aaa427940254a2f16c36771e675a80a002363e4f10b0dfcb604d9c6f'
@@ -35,6 +38,7 @@ class FirmwareTests(unittest.TestCase):
         self.mdm = self.base / 'usr/bin/zte_topsw_mdm'
         self.mdm.parent.mkdir(parents=True)
         self.mdm.write_text('fixture')
+        self.mdm.with_name('diag-router').write_text('fixture')
         self.bin = self.base / 'bin'
         self.bin.mkdir()
         self.cid = self.base / 'cid'
@@ -73,10 +77,10 @@ class FirmwareTests(unittest.TestCase):
     def install(self, firmware, **env):
         if firmware: self.firmware.write_text('fixture')
         else: self.firmware.unlink(missing_ok=True)
-        return subprocess.run(['/bin/sh', str(self.script), str(self.stage)], env={**os.environ, 'VPN_TEST_FIRMWARE': firmware, 'VPN_TEST_MDM': B04_MDM, 'VPN_TEST_ROUTER': ROUTER, 'VPN_TEST_NETWORK': NETWORK, **env}, capture_output=True, text=True, timeout=10)
+        return subprocess.run(['/bin/sh', str(self.script), str(self.stage)], env={**os.environ, 'VPN_TEST_FIRMWARE': firmware, 'VPN_TEST_MDM': B27_MDM if firmware == B27 else B04_MDM, 'VPN_TEST_ROUTER': B27_ROUTER if firmware == B27 else ROUTER, 'VPN_TEST_NETWORK': NETWORK, **env}, capture_output=True, text=True, timeout=10)
 
     def test_clean_install_accepts_b04_b28_and_b31(self):
-        for firmware in [B28, B31, "", B04]:
+        for firmware in [B28, B31, "", B04, B27]:
             with self.subTest(firmware=firmware[:8]):
                 result = self.install(firmware)
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -99,6 +103,20 @@ class FirmwareTests(unittest.TestCase):
                 self.assertIn('VPN_INSTALL_ERROR UNSUPPORTED_FIRMWARE', result.stderr)
                 self.assertFalse(self.root.exists())
                 self.assertFalse(self.init.exists())
+
+    def test_b27_requires_native_components_and_stock_network_before_writes(self):
+        for key in ['VPN_TEST_MDM', 'VPN_TEST_ROUTER', 'VPN_TEST_NETWORK']:
+            with self.subTest(dependency=key):
+                result = self.install(B27, **{key: '0' * 64})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('VPN_INSTALL_ERROR UNSUPPORTED_FIRMWARE', result.stderr)
+                self.assertFalse(self.root.exists())
+                self.assertFalse(self.init.exists())
+        self.mdm.unlink()
+        self.mdm.symlink_to(self.cid)
+        result = self.install(B27)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(self.root.exists())
 
     def test_b04_startup_profile_needs_no_vendor_rpc(self):
         # Early network startup must remain independent of zwrt_web readiness.
@@ -157,11 +175,11 @@ class FirmwareTests(unittest.TestCase):
         # This suite isolates the firmware gate; test_vpn_ipa exercises the real
         # measured daemon preparation for all four supported image variants.
         script.write_text(self.remap((VPN / 'manager.sh').read_text()).replace('ipa_prepare\n', ': # IPA preparation covered by test_vpn_ipa\n'))
-        for firmware, status in [(B28, 0), (B31, 0), ('', 0), (B04, 0), ('f' * 64, 1)]:
+        for firmware, status in [(B28, 0), (B31, 0), ('', 0), (B04, 0), (B27, 0), ('f' * 64, 1)]:
             if firmware: self.firmware.write_text('fixture')
             else: self.firmware.unlink(missing_ok=True)
             with self.subTest(firmware=firmware[:8]):
-                result = subprocess.run(['/bin/sh', str(script), 'prepare'], env={**os.environ, 'VPN_TEST_FIRMWARE': firmware, 'VPN_TEST_MDM': B04_MDM, 'VPN_TEST_ROUTER': ROUTER}, capture_output=True, text=True, timeout=10)
+                result = subprocess.run(['/bin/sh', str(script), 'prepare'], env={**os.environ, 'VPN_TEST_FIRMWARE': firmware, 'VPN_TEST_MDM': B27_MDM if firmware == B27 else B04_MDM, 'VPN_TEST_ROUTER': B27_ROUTER if firmware == B27 else ROUTER}, capture_output=True, text=True, timeout=10)
                 self.assertEqual(result.returncode, status, result.stderr)
                 if status: self.assertIn('VPN_UNSUPPORTED_FIRMWARE', result.stderr)
         self.assertFalse((self.root / 'backup').exists())

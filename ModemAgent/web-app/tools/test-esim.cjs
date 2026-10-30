@@ -49,6 +49,46 @@ test('enable success requires both modem readback and restored radio; refresh pe
   assert.equal(model.verifiedResult({ ...request, expected_snapshot: after }, { ok: true, changed: false, snapshot: after, modem_verified: true, radio_restored: true }).profiles[0].enabled, true)
   assert.throws(() => model.verifiedResult(request, { ok: true, changed: false, snapshot: after, modem_verified: true, radio_restored: true }))
 })
+test('rename validates 64 Unicode characters and produces a trimmed card-bound request', () => {
+  const before = snapshot([profile('01'), profile('02', true)])
+  for (const value of ['Домашний', '😀'.repeat(64), 'я'.repeat(64), 'a'.repeat(64)]) assert.equal(model.profileNickname(value), value)
+  assert.equal(model.profileNickname('  Работа  '), 'Работа')
+  for (const value of ['', '   ', 'я'.repeat(65), '😀'.repeat(65), 'a\nname', 'a\tname', 'a\u0000b', 'a\u007fb', 'a\u009fb', '\ud800', '\udfff', 'a\u2028b', 'a\u2029b', 'a\u061cb', 'a\u200eb', 'a\u200fb', 'a\u202ab', 'a\u202eb', 'a\u2066b', 'a\u2069b']) assert.throws(() => model.profileNickname(value), /invalid_nickname/)
+  const request = model.renameRequest(before, before.profiles[0].iccid, '  Работа  ')
+  assert.equal(request.operation, 'rename'); assert.equal(request.nickname, 'Работа'); assert.equal(request.expected_snapshot, before)
+  assert.equal(request.iccid, before.profiles[0].iccid)
+  assert.throws(() => model.renameRequest(before, profile('99').iccid, 'New'), /profile_not_found/)
+  assert.equal(model.renameRequest(snapshot([{ ...profile('01'), state: 'unknown' }]), profile('01').iccid, 'New').nickname, 'New')
+})
+test('rename confirms only the requested nickname and preserves every profile and its metadata', () => {
+  const before = snapshot([profile('01'), profile('02', true)])
+  for (const selected of before.profiles) {
+    const request = model.renameRequest(before, selected.iccid, 'Работа')
+    const after = snapshot(before.profiles.map(p => p === selected ? { ...p, nickname: 'Работа' } : { ...p }))
+    assert.equal(model.verifiedResult(request, { ok: true, changed: true, snapshot: after }), after)
+    const corruptions = [
+      { ...after, eid: '8'.repeat(32) },
+      snapshot(after.profiles.slice(0, 1)),
+      snapshot([...after.profiles, profile('03')]),
+      snapshot(after.profiles.map(p => p.iccid === selected.iccid ? { ...p, nickname: 'Other' } : p)),
+      ...['name', 'service_provider', 'nickname', 'isdp_aid'].map(key => snapshot(after.profiles.map(p => p.iccid !== selected.iccid ? { ...p, [key]: key === 'isdp_aid' ? 'A000' : 'changed' } : p))),
+      ...['name', 'service_provider', 'isdp_aid'].map(key => snapshot(after.profiles.map(p => p.iccid === selected.iccid ? { ...p, [key]: key === 'isdp_aid' ? 'A001' : 'changed' } : p))),
+      snapshot(after.profiles.map(p => ({ ...p, enabled: !p.enabled, state: p.enabled ? 'disabled' : 'enabled' })))
+    ]
+    for (const value of corruptions) assert.throws(() => model.verifiedResult(request, { ok: true, changed: true, snapshot: value }), /unconfirmed/)
+    for (const changed of [false, undefined, 'true']) assert.throws(() => model.verifiedResult(request, { ok: true, changed, snapshot: after }), /unconfirmed/)
+    for (const nickname of [undefined, '', '  Работа  ']) assert.throws(() => model.verifiedResult({ ...request, nickname }, { ok: true, changed: true, snapshot: after }))
+    const unchanged = model.renameRequest(after, selected.iccid, 'Работа')
+    assert.equal(model.verifiedResult(unchanged, { ok: true, changed: false, snapshot: after }), after)
+    assert.throws(() => model.verifiedResult(unchanged, { ok: true, changed: true, snapshot: after }), /unconfirmed/)
+  }
+})
+test('rename journal exposes stage and fixed error without names or card identifiers', () => {
+  const entry = journal.journalEntry({ type: 'progress', stage: 'renaming_profile', detail: { event: 'stage', elapsed_ms: 12, log_seq: 1, nickname: 'PRIVATE-NAME', iccid: profile('01').iccid, error: 'invalid_nickname' } })
+  assert.match(entry.text, /renaming_profile.*invalid_nickname/)
+  assert.doesNotMatch(entry.text, /PRIVATE-NAME|890000/)
+  assert.equal(journal.stageMessage('renaming_profile'), 'Renaming the selected profile…')
+})
 test('real QR decoder reads a synthetic LPA image and rejects multiple or unrelated QR codes', () => {
   const qr = load('qr', { jsqr: require('jsqr'), './model': model })
   function decode(name) {

@@ -1,6 +1,6 @@
 {
-  "revision": "20261013",
-  "profile": "Exact screen profiles: MU5250 B31, FLY B28 and XCBZHK B04",
+  "revision": "20261030",
+  "profile": "Exact screen profiles: MU5250 B31, FLY B27/B28 and XCBZHK B04",
   "input_sources": {
     "dictionaries": "Device screen language resources, revised locally and accepted on the device",
     "font_patch": "Locally generated AArch64 font-size hook; original executable read from the connected device"
@@ -15,9 +15,9 @@
   "special_spaces_removed": 26,
   "font_scale": 0.85,
   "font_hook_execution_vectors": 44992,
-  "live_visual_confirmation": "B31 historical only; XCBZHK B04 not yet assessed",
-  "vpn_menu_label": "WiFi \u0441 VPN / WiFi with VPN",
-  "previous_revision": "20261006",
+  "live_visual_confirmation": "B31 historical only; FLY B27/B28 and XCBZHK B04 not assessed in this update",
+  "vpn_menu_label": "WiFi с VPN / WiFi with VPN",
+  "previous_revision": "20261013",
   "profiles": [
     {
       "id": "b31",
@@ -45,9 +45,19 @@
       "patched_ui_sha256": "0db2294b3e428fb53f4b6b725063ad8ffd9c396e5a27c54452f0ea479fa78f3b",
       "original_english_sha256": "47348faa9783bc69109743eb9cfcc3bd3888508040e9eca51cb4a6460b7a70ce",
       "validation": "verified private capture; complete font getter and launcher functions audited offline; host patch/installer fixtures; device execution and visual validation not yet performed"
+    },
+    {
+      "id": "fly-b27",
+      "firmware_label": "FLY_CN_MU5250V1.0.0B11 / BD_FLYMODEMMU5250V1.0.0B27",
+      "patch": "font.patch.b27.json",
+      "stock_ui_sha256": "d7aab64cafb5d0ec5c9479c3247a2e504c6ab76dd192cf8de997fc12f5d213fe",
+      "patched_ui_sha256": "83c2623f4a7a87816466ba9e1eeae1da24384b7ff6e8c972e9df836495103c55",
+      "original_english_sha256": "70686abbcd8baef9e0889395f1045acd4b420eb64bea1a13d78f4837f963fd88",
+      "original_chinese_sha256": "ff4a40615b3ff96a8b29a2a1777d1bd79be98438859ddba48c6ad481114eb91e",
+      "validation": "verified private archive; exact complete font getter/loader and language field review; host patch and installation tests; device execution and visual validation pending"
     }
   ],
-  "shared_original_chinese_sha256": "b84c05af9046dd2458b2220633320fb0089e1000e03c45c3dc81dc72df0c44fc",
   "shared_original_init_sha256": "a30da6481637f1fd94e037373d406e574be7e722937a4965325086740be67e35",
-  "required_cyrillic_font_sha256": "b8b1aca17b0e53c2ea7e840f7fe5d6f05db038f2d549fde95c1308a600665a56"
+  "required_cyrillic_font_sha256": "b8b1aca17b0e53c2ea7e840f7fe5d6f05db038f2d549fde95c1308a600665a56",
+  "shared_original_chinese_sha256_except_b27": "b84c05af9046dd2458b2220633320fb0089e1000e03c45c3dc81dc72df0c44fc"
 }

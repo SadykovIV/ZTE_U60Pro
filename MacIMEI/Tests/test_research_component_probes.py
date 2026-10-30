@@ -87,14 +87,15 @@ elif cmd=='curl':
  assert args[-1] in ['http://127.0.0.1:9090/api/health','http://127.0.0.1:9090/api/capabilities']
  print(cfg.get('http','401'),end='')
 elif cmd=='pidof':
- if not cfg.get('pids'):sys.exit(1)
- print(' '.join(map(str,cfg['pids'])))
+ pids=cfg.get('adbd_pids',[]) if args==['adbd'] else cfg.get('pids',[])
+ if not pids:sys.exit(1)
+ print(' '.join(map(str,pids)))
 elif cmd=='stat':
  p=args[-1]
  try:m=os.lstat(p)
  except OSError:sys.exit(1)
  fmt=args[args.index('-c')+1]
- values={'%s':str(m.st_size),'%u':'0','%a':oct(stat.S_IMODE(m.st_mode))[2:],'%h':str(m.st_nlink)}
+ values={'%s':str(m.st_size),'%u':str(cfg.get('uids',{}).get(str(Path(p).relative_to(root)),0)),'%a':oct(stat.S_IMODE(m.st_mode))[2:],'%h':str(m.st_nlink)}
  if fmt not in values:sys.exit(3)
  print(values[fmt])
 elif cmd=='readlink':
@@ -152,6 +153,8 @@ class ComponentProbes(unittest.TestCase):
         body=body.replace('/usr/bin/zte_topsw_devui',str(self.root)+'/usr/bin/zte_topsw_devui')
         for name in ['zte_topsw_mdm','diag-router']: body=body.replace('/usr/bin/'+name,str(self.root)+'/usr/bin/'+name)
         body=body.replace('/dev/diag',str(self.root)+'/dev/diag')
+        body=body.replace('/sbin/adbd',str(self.root)+'/sbin/adbd')
+        body=body.replace('/dev/usb-ffs',str(self.root)+'/dev/usb-ffs')
         before=self.snapshot()
         result=subprocess.run(['/bin/sh','-c',body],env=self.env,capture_output=True,text=True,timeout=15)
         self.assertEqual(result.returncode,0,result.stderr)
@@ -393,6 +396,53 @@ class ComponentProbes(unittest.TestCase):
         self.cfg['fail']=['readlink']
         f,_=self.execute(IDS[9]);self.assertEqual(f['usb_gadget_1_unknown_links'],'2')
 
+    def adb_daemon(self):
+        self.cfg['adbd_pids']=[77]
+        self.file('/sbin/adbd',b'ELF synthetic daemon',0o755)
+        self.link('/proc/77/exe','/sbin/adbd')
+        for endpoint in range(3):
+            self.link('/proc/77/fd/'+str(endpoint),'/dev/usb-ffs/adb/ep'+str(endpoint))
+        self.link('/proc/77/fd/4','/data/'+CANARY)
+
+    def test_usb_exact_adb_layout_and_descriptor_contract_are_projected_only(self):
+        self.usb();self.adb_daemon()
+        f,out=self.execute('usb-configfs-shape')
+        for field in ['fixed_layout','link_layout','udc_rw','single_daemon','daemon_root','daemon_mapped','descriptors_ready']:
+            self.assertEqual(f['usb_adb_'+field],'1',field)
+        self.assertNotIn('/proc/77',out);self.assertNotIn('/dev/usb-ffs',out)
+        calls=[json.loads(line) for line in self.calls.read_text().splitlines()]
+        self.assertFalse(any(c[0]=='cat' and '/fd/' in str(c) for c in calls))
+
+    def test_usb_extra_configuration_and_nonstandard_link_names_are_separate_failures(self):
+        base=self.usb()
+        extra=self.root/(base+'/configs/c.2').lstrip('/');extra.mkdir()
+        f,_=self.execute('usb-configfs-shape');self.assertEqual(f['usb_adb_fixed_layout'],'0')
+        extra.rmdir()
+        bad=self.link(base+'/configs/c.1/f33',base+'/functions/ffs.adb')
+        f,_=self.execute('usb-configfs-shape');self.assertEqual(f['usb_adb_fixed_layout'],'1')
+        self.assertEqual(f['usb_adb_link_layout'],'0')
+        bad.unlink();self.link(base+'/configs/c.1/f3','/data/'+CANARY)
+        f,_=self.execute('usb-configfs-shape');self.assertNotEqual(f['usb_adb_link_layout'],'1')
+
+    def test_usb_g1_symlink_and_other_gadget_are_not_expected_layout(self):
+        base=self.usb();original=self.root/base.lstrip('/');foreign=original.with_name('another-gadget')
+        original.rename(foreign)
+        f,_=self.execute('usb-configfs-shape');self.assertEqual(f['usb_adb_fixed_layout'],'0')
+        original.symlink_to(foreign)
+        f,_=self.execute('usb-configfs-shape');self.assertEqual(f['usb_adb_fixed_layout'],'0')
+
+    def test_usb_adbd_missing_endpoint_multiple_processes_and_wrong_owner(self):
+        self.usb();self.adb_daemon()
+        (self.root/'proc/77/fd/2').unlink()
+        f,_=self.execute('usb-configfs-shape');self.assertEqual(f['usb_adb_descriptors_ready'],'0')
+        self.cfg['uids']={'proc/77':1000}
+        f,_=self.execute('usb-configfs-shape');self.assertEqual(f['usb_adb_daemon_root'],'0')
+        (self.root/'proc/77/exe').unlink();self.link('/proc/77/exe','/data/'+CANARY)
+        f,_=self.execute('usb-configfs-shape');self.assertEqual(f['usb_adb_daemon_mapped'],'0')
+        self.cfg['adbd_pids']=[77,78]
+        f,_=self.execute('usb-configfs-shape');self.assertEqual(f['usb_adb_single_daemon'],'0')
+        self.assertEqual(f['usb_adb_descriptors_ready'],'not-assessed')
+
     def test_response_shapes_execute_actual_lua_projection_no_values(self):
         self.cfg['responses'].update({
             'zte_nwinfo_api':{'network_type':CANARY,'lte_rsrp':-90,CANARY:{'password':CANARY}},
@@ -457,14 +507,27 @@ class ComponentProbes(unittest.TestCase):
         blob=SPEC.read_bytes();s=json.loads(blob)
         self.assertEqual(blob,(REPO/'Windows_x64/Resources/FirmwareResearch/probes.json').read_bytes())
         baseline=json.loads(subprocess.check_output(['git','show','814a5a1:MacIMEI/Resources/FirmwareResearch/probes.json'],cwd=REPO))
-        changed={'opkg-layout','firmware-hashes','launcher-abi','screen-abi','backup-layout'}
+        changed={'opkg-layout','firmware-hashes','launcher-abi','screen-abi','backup-layout','startup-structure'}
         self.assertEqual([x for x in s['probes'][:46] if x['id'] not in changed],[x for x in baseline['probes'] if x['id'] not in changed])
         old_backup=next(x for x in baseline['probes'] if x['id']=='backup-layout')
         expected_backup={**old_backup,'command':old_backup['command'].replace('/data/zte-imei-ttl','/data/zte-vpn/catalog.json /data/zte-imei-ttl',1)}
         self.assertEqual(next(x for x in s['probes'] if x['id']=='backup-layout'),expected_backup)
         released=json.loads(subprocess.check_output(['git','show','f7333706cd810da30636f289af2ca2cb1ebc3800:MacIMEI/Resources/FirmwareResearch/probes.json'],cwd=REPO))
-        self.assertEqual(s['features'],released['features'])
-        self.assertEqual(s['revision'],14);self.assertEqual(len(s['probes']),58)
+        # The B27 component profile must not widen older firmware contracts or
+        # grant unrelated DIAG/raw-backup capabilities.
+        previous_features=json.loads(json.dumps(s['features']))
+        for feature in previous_features:
+            if feature['id'] in ('ttl','vpn','physical-euicc'):
+                self.assertIn('b27',feature['profiles'])
+                feature['profiles'].remove('b27')
+            if feature['id']=='ttl':
+                b27=[r for r in feature['requirements'] if r.get('profiles')==['b27']]
+                self.assertEqual([(r['probe'],r['fact'],r['equals']) for r in b27],[('ipa-runtime','ipacm_sha256','a843789933a0b5747927583021c1480957ea942626cab17cb13ad415d1dfd3ae')])
+                feature['requirements']=[r for r in feature['requirements'] if r.get('profiles')!=['b27']]
+            if feature['id']=='physical-euicc':
+                feature['limitations']={k:v.replace('B27/','') for k,v in feature['limitations'].items()}
+        self.assertEqual(previous_features,released['features'])
+        self.assertEqual(s['revision'],15);self.assertEqual(len(s['probes']),58)
         self.assertLessEqual(len(s['probes']),64);self.assertEqual(len({p['id'] for p in s['probes']}),58)
         self.assertEqual(len({o['id'] for o in s['observations']}),len(s['observations']))
         for p in s['probes']:

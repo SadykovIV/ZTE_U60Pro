@@ -3,6 +3,7 @@ private enum Failure: Error { case assertion(String) }
 private func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws { if try !value() { throw Failure.assertion(message) } }
 private final class Transport: RemoteTransport {
     var firmwareHash = ModemEngine.firmwareHash
+    var routerHash = ModemEngine.routerHash
     var calls: [String] = [], phase = "", enabled = true, wanted = false
     var recoveryReply: String? = nil
     var lostCleanup = false
@@ -19,9 +20,9 @@ private final class Transport: RemoteTransport {
             ordinaryLocks += 1
         } else if command == AccessIdentity.command {
             identityReads += 1
-            reply = firmwareHash+"  /firmware/image/modem.b16\n"+ModemEngine.routerHash+" /usr/bin/diag-router\n"+(wrongCID ? "1123456789abcdef0123456789abcdef" : "0123456789abcdef0123456789abcdef")+"\n"+(changed || identityReads >= changeOnIdentityRead ? "11111111-1111-1111-1111-111111111111" : "00000000-0000-0000-0000-000000000001")+"\n"
-        } else if command == ADBControlManager.capabilityCommand || command.contains(ADBControlManager.b04CapabilityCommand) {
-            if command.contains(ADBControlManager.b04CapabilityCommand) && !b04Measured { return .init(status:71,stdout:Data(),stderr:Data()) }
+            reply = firmwareHash+"  /firmware/image/modem.b16\n"+routerHash+" /usr/bin/diag-router\n"+(wrongCID ? "1123456789abcdef0123456789abcdef" : "0123456789abcdef0123456789abcdef")+"\n"+(changed || identityReads >= changeOnIdentityRead ? "11111111-1111-1111-1111-111111111111" : "00000000-0000-0000-0000-000000000001")+"\n"
+        } else if command == ADBControlManager.capabilityCommand || command.contains(ADBControlManager.b04CapabilityCommand) || command.contains(ADBControlManager.b27CapabilityCommand) {
+            if (command.contains(ADBControlManager.b04CapabilityCommand) || command.contains(ADBControlManager.b27CapabilityCommand)) && !b04Measured { return .init(status:71,stdout:Data(),stderr:Data()) }
             if capabilityMissing { return .init(status:127,stdout:Data(),stderr:Data()) }
             reply="ADB_CAPABILITY_READY\n"
         } else if command.contains("ADB_STAGE_ABSENT") {
@@ -70,7 +71,7 @@ private final class Fixture {
     deinit {try? FileManager.default.removeItem(at:root)}
     var manager:ADBControlManager { .init(engine:engine,now:{self.clock},wait:{self.clock.addTimeInterval($0)}) }
     func pending(dispatched:Bool=true,phase:String="awaiting-ack") throws {
-        let value:[String:Any] = ["schema":1,"token":"11111111-2222-3333-4444-555555555555","cid":"0123456789abcdef0123456789abcdef","boot":"00000000-0000-0000-0000-000000000001","firmware":transport.firmwareHash,"router":ModemEngine.routerHash,"enabled":false,"dispatched":dispatched]
+        let value:[String:Any] = ["schema":1,"token":"11111111-2222-3333-4444-555555555555","cid":"0123456789abcdef0123456789abcdef","boot":"00000000-0000-0000-0000-000000000001","firmware":transport.firmwareHash,"router":transport.routerHash,"enabled":false,"dispatched":dispatched]
         try savePrivate(JSONSerialization.data(withJSONObject:value),manager.pendingURL);transport.phase=phase
     }
 }
@@ -88,6 +89,21 @@ private final class Fixture {
             let f=try Fixture();f.transport.firmwareHash=ADBControlManager.b28FirmwareHash
             let result=try f.engine.locked{try f.manager.setEnabled(false)}
             try check(result.enabled==false && result.supportsChange && f.transport.applies==1 && f.transport.acks==1,"B28 path")
+        }
+        try test("B27 measured native tuple uses the verified USB transaction") {
+            let f=try Fixture();f.transport.firmwareHash=ADBControlManager.b27FirmwareHash;f.transport.routerHash=ADBControlManager.b27RouterHash
+            let result=try f.engine.locked{try f.manager.setEnabled(false)}
+            try check(result.enabled==false && result.supportsChange && f.transport.applies==1 && f.transport.acks==1,"B27 path")
+            try check(f.transport.calls.contains { $0.contains(ADBControlManager.b27CapabilityCommand) },"B27 native proof missing")
+        }
+        for component in ["router", "mdm"] {
+            try test("B27 rejects mixed native \(component) before staging") {
+                let f=try Fixture();f.transport.firmwareHash=ADBControlManager.b27FirmwareHash
+                f.transport.routerHash=component == "router" ? ModemEngine.routerHash : ADBControlManager.b27RouterHash
+                f.transport.b04Measured=component != "mdm"
+                try reject{_=try f.engine.locked{try f.manager.setEnabled(false)}}
+                try check(f.transport.applies==0 && f.transport.calls.allSatisfy{!$0.contains("mkdir -m 700")},"Mixed native B27 writes")
+            }
         }
         for image in ["absent", ADBControlManager.b04FirmwareHash] {
         try test("B04 image state \(image) requires native capability before switching") {

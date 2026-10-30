@@ -4,14 +4,14 @@
   "adb": "1811e253b21b12cbfda7201ebaf86c10e7ddcb5c606a7a81f7c82b4c429c2d3b",
   "adb-source.properties": "2dccd788c0234d8cf7f7457377e57f57527a86a629c6ed54feb8af0f549dac38",
   "adb-stream.sh": "0692a6b053b7cadae5d4a754684e94062ecaa94067f8f103913c1191e9dc6a1c",
-  "adb-toggle.sh": "8e8f39ca743a4e53971db885afc3117ab3023a0ff3d6144c0954b078f6562a79",
-  "clean-components.sh": "3eef9d11e2a7a94dabf827544297b3a9dccd7dc64fc4318910f35a107d529ed2",
+  "adb-toggle.sh": "1ab9a52c4a5bf062e0863dba043e5f5da08d7397dde2d0fb1856e7955eb9e363",
+  "clean-components.sh": "f588089dde77f3a6cd69aa45cd41ae043f397fd0d6ca92c467f30927f21a021d",
   "dropbear": "e3833acdaa8b11e6150f82a35d3dc53d685561d5504ef337ad4af5e530345378",
   "dropbear-LICENSE.txt": "a99ce657d790b761c132ee7e0de18edb437ae6361e536d991c6a12f36e770445",
   "dropbear-libtomcrypt-LICENSE.txt": "8f196cb13afd271f5e267fd29543fc454596382ad580e7592709492843996ac8",
   "dropbear-libtommath-LICENSE.txt": "2fa64b163659f41965c9815882a8296d3d03ff546b76153e11445f9bdecf955a",
-  "provenance.json": "25c26bc3099c44a2b5b2ba80731b872563b15bb9b641f77f671a50b92d759eb0",
+  "provenance.json": "85b46386acaf14a01d064110a910aaad373003f8032f21a171b02aa96989cfda",
   "setup-agent.sh": "221672470ab2ab11bc46c0db342566c5bd6d0ae891102f8e6948389746fa1206",
   "start_zte_imei_studio.sh": "77e72038dba80e4a94f06cceaffb3f387ead79bdee4fc8aab659ed73c097133c",
-  "zte-agent": "5bcf685b87439b856a92c7f1e41a4d05c87056c32eefd95b76fec22d828fcc1d"
+  "zte-agent": "fd5babee29e63366fb743c76c72f2a29eec47377ccda32659a85ce6e5effd959"
 }

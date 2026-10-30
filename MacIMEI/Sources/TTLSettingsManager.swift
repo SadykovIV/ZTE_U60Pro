@@ -6,16 +6,17 @@ final class TTLSettingsManager {
     static let remoteRoot = "/data/zte-imei-ttl"
     // Updated from reviewed resources before each release.
     static let resourceHashes: [String: String] = [
-        "manager.sh": "7e629d347d1dc1777cb6322430de0d4188b442d624108efbaba8ad110f012666",
+        "manager.sh": "4d17d08f6ded676cd0f696c4a839c398306bd6cfd916891a43218d56ca48e796",
         "firewall.sh": "7610ef7955d21dd21532ce7149a57418daedd7dfcac1887350eb3223ba943600",
         "hotplug.sh": "5943e73d5f09a19b920f0ca3687a4f4a3215f9bd972d619af3a0b7d780dee30a",
         "boot.sh": "d13e69f8b9471ac6ab11fbace62cac1d5b64a16770c02d728bbebae3bd898040"
     ]
+    static let previous1271ManagerHash = "7e629d347d1dc1777cb6322430de0d4188b442d624108efbaba8ad110f012666"
     static let previousManagerHash = "b6588072c82ddd7678093a29b983ec4417c6807562819e3bda69cd6534637b7c"
     static let previous12420ManagerHash = "a70afc13c3645f64b5fd937162e7d403e133bcfa0a2da0e565d39a693f9ab488"
     static let previous12418ManagerHash = "79d5a2e696613f966fe2dff3fe59a0366455fe16681284c65d8ddb36c5e35b5a"
     static let previous12422ManagerHash = "e4684cb0fa040de0525d0248897da01a5af2c4ee8509a851719afe9c970e9194"
-    static let upgradableManagerHashes: Set<String> = [previousManagerHash, previous12418ManagerHash, previous12420ManagerHash, previous12422ManagerHash]
+    static let upgradableManagerHashes: Set<String> = [previous1271ManagerHash, previousManagerHash, previous12418ManagerHash, previous12420ManagerHash, previous12422ManagerHash]
     let engine: ModemEngine
     init(engine: ModemEngine) { self.engine = engine }
 
@@ -39,7 +40,7 @@ final class TTLSettingsManager {
             "for dir in /data " + remoteRoot + "; do test -d \"$dir\"; test ! -L \"$dir\"; test \"$(stat -c '%u' \"$dir\")\" = 0; mode=$(stat -c '%a' \"$dir\"); test \"$((0$mode & 022))\" = 0; done; " +
             "test -f " + manager + "; test ! -L " + manager + "; test \"$(stat -c '%u' " + manager + ")\" = 0; " +
             "mode=$(stat -c '%a' " + manager + "); test \"$((0$mode & 022))\" = 0; " +
-            "manager_hash=$(sha256sum " + manager + " | cut -d ' ' -f1); case \"$manager_hash\" in " + shellQuote(hash) + "|" + shellQuote(previousManagerHash) + "|" + shellQuote(previous12418ManagerHash) + "|" + shellQuote(previous12420ManagerHash) + "|" + shellQuote(previous12422ManagerHash) + ") ;; *) exit 1;; esac; " +
+            "manager_hash=$(sha256sum " + manager + " | cut -d ' ' -f1); case \"$manager_hash\" in " + shellQuote(hash) + "|" + shellQuote(previous1271ManagerHash) + "|" + shellQuote(previousManagerHash) + "|" + shellQuote(previous12418ManagerHash) + "|" + shellQuote(previous12420ManagerHash) + "|" + shellQuote(previous12422ManagerHash) + ") ;; *) exit 1;; esac; " +
             "sh " + manager + " " + arguments.map(shellQuote).joined(separator: " ")
     }
 

@@ -8,7 +8,12 @@
   `lpac-build/`; `verify_source_backport.py` verifies the supplied source.
 - Public export additionally pins `cmake/git-version.cmake` to
   `v2.3.0-stdio-backports`, avoiding the enclosing application's Git tag.
-  Profile/notification logic is unchanged. Only stdio APDU/HTTP drivers are built.
+  `es10c_set_nickname` additionally uses a separate bounded DER request buffer
+  for nicknames of up to 64 Unicode characters (256 UTF-8 bytes), allowing the
+  existing ES10x transport to split long requests without overwriting their
+  source. The exact original, local patch and verification are in `lpac-build/`.
+  Other profile and notification logic is unchanged. Only stdio APDU/HTTP
+  drivers are built.
 - QMI/ES10 bridge: `tools/removable-euicc/device/component.json` records current
   source identities. License status: `license_unspecified`; the component notice
   does not grant a license or assert sole authorship.

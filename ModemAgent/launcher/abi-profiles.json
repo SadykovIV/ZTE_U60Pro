@@ -858,6 +858,292 @@
         "firstSlot": "0xe72a18",
         "rtti": "10TUFormMain"
       }
+    },
+    {
+      "id": "fly-b27",
+      "entry": "0x41b078",
+      "phdr": "0x400040",
+      "uiSHA256": [
+        "d7aab64cafb5d0ec5c9479c3247a2e504c6ab76dd192cf8de997fc12f5d213fe",
+        "83c2623f4a7a87816466ba9e1eeae1da24384b7ff6e8c972e9df836495103c55"
+      ],
+      "functions": [
+        {
+          "id": "0x429128",
+          "address": "0x4223dc",
+          "bytes": 8,
+          "sha256": "bd237e5d99f6462770946dd64c9d5273577f92aeb78154ba485fef49e0d73851"
+        },
+        {
+          "id": "0x4291a0",
+          "address": "0x422454",
+          "bytes": 284,
+          "sha256": "9a50ae7e178885b67c5e4c0e5007d6ebc85112ea5e4cccb50b215f691ca122b8"
+        },
+        {
+          "id": "0x42a8c0",
+          "address": "0x423b74",
+          "bytes": 12,
+          "sha256": "51613e3848110f60dbf21be2e536a4a790c5102c278f6f25f2d94f503aa441c5"
+        },
+        {
+          "id": "0x42ace8",
+          "address": "0x423f9c",
+          "bytes": 44,
+          "sha256": "1b7cee95d95d13b574dbfc66abde47e51d8824825c551e39ceef56d7a0f11252"
+        },
+        {
+          "id": "0x42ad14",
+          "address": "0x423fc8",
+          "bytes": 40,
+          "sha256": "fe0d8fabd48b0a645523f803a7842604e06163ddd523a30e0292f680dd26cf2e"
+        },
+        {
+          "id": "0x42e3c0",
+          "address": "0x427674",
+          "bytes": 308,
+          "sha256": "370728dc7903bcf0c40b8ebbba8b0060fc53c9b15f65ca1efda93d1e82bd90b6"
+        },
+        {
+          "id": "0x42e4f4",
+          "address": "0x4277a8",
+          "bytes": 364,
+          "sha256": "8919c0c8ea8ebab0a8bfce45c86f3a19c047b8b0d38a2407310fb769fdf0edaa"
+        },
+        {
+          "id": "0x42e660",
+          "address": "0x427914",
+          "bytes": 28,
+          "sha256": "47760131aaa0f3f7b6d4386d158720a2cbef3d67658ff883effd7855bb31eb7d"
+        },
+        {
+          "id": "0x42e67c",
+          "address": "0x427930",
+          "bytes": 28,
+          "sha256": "2b74263b757b4919ae8914a952fe87435e23a60b62cb5f515946ef7c44a1ef8f"
+        },
+        {
+          "id": "0x433134",
+          "address": "0x42c3e8",
+          "bytes": 100,
+          "sha256": "8a162269e5ed7e6b982c276ed6ad58484679bda0e5c24508edbc5c1542d88917"
+        },
+        {
+          "id": "0x433198",
+          "address": "0x42c44c",
+          "bytes": 76,
+          "sha256": "aed0ed22f2eecf75f1411908ab45edd1518420cbae19f7438eb990d861469262"
+        },
+        {
+          "id": "0x481428",
+          "address": "0x47a6dc",
+          "bytes": 248,
+          "sha256": "87fc4b9564931ba06bc4ee0ecff7e18f8b044dbe77da6d9927fcd9f208693364"
+        },
+        {
+          "id": "0x481540",
+          "address": "0x47a7f4",
+          "bytes": 76,
+          "sha256": "d63ec26fda6564c42c1add2affb0838bbf5d29e5c04fd1a190b58bece04533b1"
+        },
+        {
+          "id": "0x4b7ffc",
+          "address": "0x4b1014",
+          "bytes": 800,
+          "sha256": "552be99936af87295f2bb8f88bda85a6664c0e9f6f41bb3fb198a566a13a11d6"
+        },
+        {
+          "id": "0x4bc1d0",
+          "address": "0x4b51e8",
+          "bytes": 436,
+          "sha256": "3c2cc4ff4296632e89ce864349a05ea84f9a2b4995b4201ea7111caafb2f7b71"
+        },
+        {
+          "id": "0x4bd900",
+          "address": "0x4b6918",
+          "bytes": 236,
+          "sha256": "329729ecf4ee52bba3130385769372435567c98b07eab7e27175f406894e5855"
+        },
+        {
+          "id": "0x4bd9ec",
+          "address": "0x4b6a04",
+          "bytes": 620,
+          "sha256": "edc9e99e5e22dcd291c1c3693ebf4550f785691ff7bef2c77461eee0566d8dda"
+        },
+        {
+          "id": "0x52f73c",
+          "address": "0x5278c8",
+          "bytes": 52,
+          "sha256": "671b73315cf4d9d86f8056108e0cee8ed2d8fe3635150159c4ea5513d26bbc5e"
+        },
+        {
+          "id": "0x52f904",
+          "address": "0x527a90",
+          "bytes": 116,
+          "sha256": "f3fd17c22c21c7f1dfc9962d2d5537abe6528c34c2e380a3f8b9e4264c4f6c24"
+        },
+        {
+          "id": "0x52fa04",
+          "address": "0x527b90",
+          "bytes": 124,
+          "sha256": "5d90533917e75ca3211eabc0e0c1394e8a83bc2e3c48f69d72bc63a53f8b7c11"
+        },
+        {
+          "id": "0x52fa80",
+          "address": "0x527c0c",
+          "bytes": 580,
+          "sha256": "984e7d41df66628c9280cfab8bb5fd316ab61def22e313653e8e58704311ba98"
+        },
+        {
+          "id": "0x52fcc4",
+          "address": "0x527e50",
+          "bytes": 492,
+          "sha256": "b33ad323dc938288e8f2d337ca76b3d1026d26f2f86fb7e049978ca0f970e505"
+        },
+        {
+          "id": "0x533dcc",
+          "address": "0x52bf58",
+          "bytes": 768,
+          "sha256": "ca2ded187c5674be77185e5f2fb08146fe32e10ab8ef04de18590b897e695725"
+        },
+        {
+          "id": "0x534a94",
+          "address": "0x52cc20",
+          "bytes": 372,
+          "sha256": "1bc93a0fefebceb6067d9942b8d312bbccb987d505fb01817a6493a65a6ff3f2"
+        },
+        {
+          "id": "0x534c08",
+          "address": "0x52cd94",
+          "bytes": 12,
+          "sha256": "f949a98258254c51f5dd8250f140a9544ec93b890dfdb25624bfd67f4b118c60"
+        },
+        {
+          "id": "0x534c14",
+          "address": "0x52cda0",
+          "bytes": 68,
+          "sha256": "a57a0919475a5ec169442d457a158674991361a3beedd1197e49bfdf76a5b81a"
+        },
+        {
+          "id": "0x537450",
+          "address": "0x52f5dc",
+          "bytes": 60,
+          "sha256": "856594dbcd57166ce58a0be86e2f9eb10c680fdf7bf653e772844e67c79fa87c"
+        },
+        {
+          "id": "0x537868",
+          "address": "0x52f9f4",
+          "bytes": 56,
+          "sha256": "20f2deb8dfbeebcf6aaab9bb9e25313e45c63e5bcacd258b7fa9ea7e09f3644d"
+        },
+        {
+          "id": "0x53793c",
+          "address": "0x52fac8",
+          "bytes": 116,
+          "sha256": "f43b3ceedcd6266472770075e96a23a4e9c2f118df7a82253d55fbb6cdca4273"
+        },
+        {
+          "id": "0x538080",
+          "address": "0x53020c",
+          "bytes": 60,
+          "sha256": "12414887f1290e2b1b15b1fda48a187af214b816d79f50548d201a9087121d28"
+        },
+        {
+          "id": "0x5380bc",
+          "address": "0x530248",
+          "bytes": 60,
+          "sha256": "4402d92bdae6c0d652d220fb4eab93db30120e5ec969010cc1c3c668b13f0892"
+        },
+        {
+          "id": "0x5382b4",
+          "address": "0x530440",
+          "bytes": 212,
+          "sha256": "e135113b2445512575813440ec9a865ca15ab2c57c87b6e0580d60305987bae1"
+        },
+        {
+          "id": "0x5384a0",
+          "address": "0x53062c",
+          "bytes": 44,
+          "sha256": "b15664d0dece20643a890005ddfea5fa301bfd12b69a483529dceb2514b0729e"
+        },
+        {
+          "id": "0x538658",
+          "address": "0x5307e4",
+          "bytes": 52,
+          "sha256": "241f320d2d75d84bb7f06fe81e6b2cc75d6518e22447a90d7eda44dc0135eed2"
+        }
+      ],
+      "globals": {
+        "language": "0x2277f40",
+        "modal": "0x2277450",
+        "palette": "0xe7020c"
+      },
+      "paletteBytes": 256,
+      "paletteSHA256": "5cfc80552b4ec594a03e3f5624ff820c457a76ff48a1fdeca8a39367e6e9704d",
+      "hooks": [
+        {
+          "slot": "0xe62bc8",
+          "target": "0x4b6918"
+        },
+        {
+          "slot": "0xe6d988",
+          "target": "0x4b6a04"
+        },
+        {
+          "slot": "0xe6b478",
+          "target": "0x4b51e8"
+        },
+        {
+          "slot": "0xe62b30",
+          "target": "0x4b1014"
+        },
+        {
+          "slot": "0xe69c78",
+          "target": "0x4b1014"
+        }
+      ],
+      "checks": [
+        {
+          "address": "0x42c44c",
+          "word": "0xa9be7bfd"
+        },
+        {
+          "address": "0x42c484",
+          "word": "0x33180e81"
+        },
+        {
+          "address": "0x42c3e8",
+          "word": "0xa9be7bfd"
+        },
+        {
+          "address": "0x42c428",
+          "word": "0x33000681"
+        },
+        {
+          "address": "0x530248",
+          "word": "0xa9be7bfd"
+        },
+        {
+          "address": "0x53027c",
+          "word": "0xf946b210"
+        },
+        {
+          "address": "0x423f9c",
+          "word": "0xb4000120"
+        },
+        {
+          "address": "0x423fb8",
+          "word": "0xd3608c00"
+        },
+        {
+          "address": "0x423fe0",
+          "word": "0xf9402000"
+        }
+      ],
+      "vtable": {
+        "firstSlot": "0xe62b30",
+        "rtti": "10TUFormMain"
+      }
     }
   ]
 }

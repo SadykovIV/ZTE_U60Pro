@@ -15,6 +15,7 @@ private_dir() { test -d "$1" && test ! -L "$1" && test "$(stat -c '%u:%a' "$1")"
 write() { test ! -e "$STAGE/$1.new" && test ! -L "$STAGE/$1.new" || fail; (umask 077; printf '%s\n' "$2" > "$STAGE/$1.new"); mv "$STAGE/$1.new" "$STAGE/$1"; }
 read_saved() { regular "$STAGE/$1" && test "$(stat -c %s "$STAGE/$1")" -le 8192 || fail; cat "$STAGE/$1"; }
 binding() {
+  expected_router=$ROUTER
   test "$(id -u)" = 0 && test "$(uname -s)" = Linux && test "$(uname -m)" = aarch64 || fail
   test "$(cat /sys/block/mmcblk0/device/cid)" = "$CID" && test "$(cat /proc/sys/kernel/random/boot_id)" = "$BOOT" || fail
   for component in /usr/bin/diag-router /sbin/adbd; do
@@ -27,6 +28,10 @@ binding() {
   fi
   case "$image" in
     604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263|5a4489882538b5ab1d3e0049371f1b620d28d262a429923299b4f2626d40d478) :;;
+    4b1c67e73b94b889adc831168040d40ec368083dfbcec7ae747a2f4f86c66f3e)
+      test -f /usr/bin/zte_topsw_mdm && test ! -L /usr/bin/zte_topsw_mdm && test "$(stat -c %u /usr/bin/zte_topsw_mdm)" = 0 || fail
+      test "$(sha256sum /usr/bin/zte_topsw_mdm | cut -d ' ' -f 1)" = 00a647cb46fa82a78969b3708c1429d91b37ef99c2c00835ac57ca53c126f25d || fail
+      expected_router=786ba99f5d506d01bbe72d9effa90d1a46f5929370f24ccabf6bab291e5a317f;;
     c57e063d390983229dfc53aa87380b3d4655ee8daa1c748e1a032ac90cd0df81|absent)
       test -f /usr/bin/zte_topsw_mdm && test ! -L /usr/bin/zte_topsw_mdm && test "$(stat -c %u /usr/bin/zte_topsw_mdm)" = 0 || fail
       test "$(sha256sum /usr/bin/zte_topsw_mdm | cut -d ' ' -f 1)" = 93a346e7d69024503caf9ad42f14c97e1514dd7d04c7b5ebef4e30473b5d5c64 || fail
@@ -35,7 +40,7 @@ binding() {
       test "$(printf '%s' "$info" | jsonfilter -e '@.wa_inner_version')" = BD_XCBZHKMU5250V1.0.0B04 || fail;;
     *) fail;;
   esac
-  test "$(sha256sum /usr/bin/diag-router | cut -d ' ' -f 1)" = "$ROUTER" || fail
+  test "$(sha256sum /usr/bin/diag-router | cut -d ' ' -f 1)" = "$expected_router" || fail
 }
 layout() {
   for directory in /sys/kernel/config /sys/kernel/config/usb_gadget "$BASE" "$BASE/configs" "$BASE/configs/c.1" "$BASE/functions"; do

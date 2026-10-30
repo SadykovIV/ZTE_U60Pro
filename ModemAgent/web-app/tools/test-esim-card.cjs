@@ -110,18 +110,18 @@ test('every type banner is translated and cleanup unconfirmed alone never gives 
 
 // Execute the production page's hooks and event handlers without browser/network.
 // State persists across render calls; the explicit operation uses a controlled promise.
-function pageFixture(advertised = ['list', 'enable', 'download', 'delete']) {
-  let cursor = 0, effects = [], cleanups = [], mounted = false, operationCalls = 0, capabilityCalls = 0, resolve, reject
-  const state = [], refs = new Set(), listeners = new Map()
+function pageFixture(advertised = ['list', 'enable', 'download', 'delete', 'rename']) {
+  let cursor = 0, effects = [], cleanups = [], mounted = false, operationCalls = 0, capabilityCalls = 0, confirmationCalls = 0, resolve, reject
+  const state = [], refs = new Set(), listeners = new Map(), requests = []
   function useState(initial) { const i = cursor++; if (!(i in state)) state[i] = initial; return [state[i], value => { state[i] = typeof value === 'function' ? value(state[i]) : value }] }
   function useRef(initial) { const i = cursor++; if (!refs.has(i)) { state[i] = { current: initial }; refs.add(i) } return state[i] }
   const node = (type, props) => ({ type, props: props ?? {} })
   const ui = { Button: 'button', Field: 'field', Input: 'input', Select: 'select' }
   const module = load('EsimPage', { react: { useState, useRef, useEffect: effect => { if (!mounted) effects.push(effect) } },
     'react/jsx-runtime': { jsx: node, jsxs: node }, '../../i18n': { useI18n: () => ({ t: x => x }) }, '../../ui/controls': ui,
-    '../../ui/primitives': { Card: 'card', Chip: 'chip' }, '../../ui/feedback': { confirm: async () => true },
+    '../../ui/primitives': { Card: 'card', Chip: 'chip' }, '../../ui/feedback': { confirm: async () => { confirmationCalls++; return true } },
     './api': { capabilities: async () => { capabilityCalls++; return { protocol: 1, operations: advertised } },
-      runOperation: () => { operationCalls++; return new Promise((yes, no) => { resolve = yes; reject = no }) } },
+      runOperation: request => { operationCalls++; requests.push(request); return new Promise((yes, no) => { resolve = yes; reject = no }) } },
     './model': model, './qr': { decodeImage: async () => { throw Error('not used') } }, './journal': journal, './errors': errors
   }, { window: { addEventListener: (name, fn) => listeners.set(name, fn), removeEventListener: name => listeners.delete(name) } }, 'tsx')
   const render = () => { cursor = 0; return module.default() }
@@ -131,7 +131,7 @@ function pageFixture(advertised = ['list', 'enable', 'download', 'delete']) {
     return [value, ...Object.values(value.props ?? {}).flatMap(elements)]
   }
   const clickCheck = () => { const button = elements(render()).find(e => e.type === 'button' && e.props.children === 'Check card and profiles'); assert.equal(button.props.disabled, false); button.props.onClick() }
-  return { render, elements, clickCheck, get calls() { return operationCalls }, get capabilityCalls() { return capabilityCalls },
+  return { render, elements, clickCheck, requests, get calls() { return operationCalls }, get capabilityCalls() { return capabilityCalls }, get confirmationCalls() { return confirmationCalls },
     mount: () => { render(); cleanups = effects.map(effect => effect()); effects = []; mounted = true },
     resolve: value => resolve(value), reject: value => reject(value), unmount: () => cleanups.forEach(fn => fn?.()) }
 }
@@ -149,7 +149,7 @@ test('page checks only on demand and clears accepted profiles and write permissi
   assert.equal(page.elements(page.render()).find(e => e.type === 'button' && e.props.children === 'Make active').props.disabled, true)
   page.reject(new model.EsimOperationError('card_open_rejected', unknown('open_rejected'))); await settle()
   tree = page.render(); assert.match(JSON.stringify(tree), /Card type is unknown/); assert.doesNotMatch(JSON.stringify(tree), /99999999|89000000000000000001|EID and profiles were read/)
-  for (const label of ['Make active', 'Delete profile', 'Install profile']) assert.equal(page.elements(tree).find(e => e.type === 'button' && e.props.children === label).props.disabled, true)
+  for (const label of ['Make active', 'Rename profile', 'Delete profile', 'Install profile']) assert.equal(page.elements(tree).find(e => e.type === 'button' && e.props.children === label).props.disabled, true)
   page.render(); await settle(); assert.equal(page.calls, 2)
   page.unmount()
 })
@@ -166,7 +166,7 @@ test('ordinary is successful list only, absent snapshot and exact cleanup proof'
   const value = model.verifiedCard(request, ordinaryResult())
   assert.equal(value.snapshot, null); assert.equal(value.card.kind, 'ordinary_sim')
   for (const extra of [{ error: null }, { error: 'card_cleanup_unknown' }, { snapshot: null }, { snapshot: snapshot() }, { changed: true }, { notifications_pending: true }, { modem_verified: false }, { radio_restored: true }, { component_error: null }, { ok: false }]) assert.throws(() => model.verifiedCard(request, { ...ordinaryResult(), ...extra }))
-  for (const operation of ['download', 'enable', 'delete']) assert.throws(() => model.verifiedCard({ ...request, operation }, ordinaryResult()))
+  for (const operation of ['download', 'enable', 'delete', 'rename']) assert.throws(() => model.verifiedCard({ ...request, operation }, ordinaryResult()))
   assert.throws(() => model.verifiedCard(request, { ...ordinaryResult(), card: { ...ordinary(), cleanup_confirmed: false } }))
 })
 test('card change eUICC to ordinary clears profiles and writes; later error remains unknown', async () => {
@@ -175,7 +175,7 @@ test('card change eUICC to ordinary clears profiles and writes; later error rema
   page.clickCheck(); page.resolve({ snapshot: null, card: ordinary(), pending: false }); await settle()
   let tree = page.render(); assert.match(JSON.stringify(tree), /Ordinary SIM: eSIM management is unavailable/)
   assert.doesNotMatch(JSON.stringify(tree), /99999999|89000000000000000001|EID and profiles were read/)
-  for (const label of ['Make active', 'Delete profile', 'Install profile']) assert.equal(page.elements(tree).find(e => e.type === 'button' && e.props.children === label).props.disabled, true)
+  for (const label of ['Make active', 'Rename profile', 'Delete profile', 'Install profile']) assert.equal(page.elements(tree).find(e => e.type === 'button' && e.props.children === label).props.disabled, true)
   page.clickCheck(); page.reject(new model.EsimOperationError('card_open_rejected', unknown('open_rejected'))); await settle()
   tree = page.render(); assert.match(JSON.stringify(tree), /Card type is unknown/); assert.doesNotMatch(JSON.stringify(tree), /Ordinary SIM: eSIM management is unavailable/)
   assert.equal(page.calls, 3); page.unmount()
@@ -186,6 +186,85 @@ test('list capability does not depend on advertised write support', async () => 
   page.resolve({ snapshot: snapshot([profile]), card: confirmed(), pending: false }); await settle()
   let elements = page.elements(page.render()); elements.find(e => e.type === 'button' && e.props['aria-pressed'] === false).props.onClick()
   elements = page.elements(page.render())
-  for (const label of ['Make active', 'Delete profile', 'Install profile']) assert.equal(elements.find(e => e.type === 'button' && e.props.children === label).props.disabled, true)
+  for (const label of ['Make active', 'Rename profile', 'Delete profile', 'Install profile']) assert.equal(elements.find(e => e.type === 'button' && e.props.children === label).props.disabled, true)
   assert.equal(page.calls, 1); page.unmount()
+})
+
+const button = (page, label) => page.elements(page.render()).find(e => e.type === 'button' && e.props.children === label)
+const nameInput = page => page.elements(page.render()).find(e => e.type === 'input' && e.props['aria-invalid'] !== undefined)
+async function readyPage(advertised, profiles = [profile]) {
+  const page = pageFixture(advertised); page.mount(); await settle(); page.clickCheck()
+  page.resolve({ snapshot: snapshot(profiles), card: confirmed(), pending: false }); await settle()
+  page.elements(page.render()).find(e => e.type === 'button' && e.props['aria-pressed'] === false).props.onClick()
+  return page
+}
+test('rename form uses explicit save, selected card snapshot and name, then shows the card readback', async () => {
+  const active = { ...profile, enabled: true, state: 'enabled', nickname: 'Original' }
+  const page = await readyPage(undefined, [active])
+  assert.equal(button(page, 'Rename profile').props.disabled, false)
+  button(page, 'Rename profile').props.onClick()
+  assert.equal(nameInput(page).props.value, 'Original')
+  assert.equal(button(page, 'Save').props.disabled, true)
+  nameInput(page).props.onChange({ target: { value: '  Рабочая  ' } })
+  assert.equal(button(page, 'Save').props.disabled, false)
+  page.elements(page.render()).find(e => e.type === 'form').props.onSubmit({ preventDefault() {} })
+  assert.equal(page.calls, 2); assert.equal(page.confirmationCalls, 0)
+  const rename = page.requests[1]
+  assert.equal(rename.operation, 'rename'); assert.equal(rename.nickname, 'Рабочая'); assert.equal(rename.iccid, active.iccid)
+  assert.equal(rename.expected_snapshot.profiles[0], active)
+  assert.equal(nameInput(page), undefined)
+  const during = page.elements(page.render()).find(e => e.type === 'pre').props.children
+  assert.match(during, /rename · start/); assert.doesNotMatch(during, /Рабочая|Original|890000/)
+  page.resolve({ snapshot: snapshot([{ ...active, nickname: 'Рабочая' }]), card: confirmed(), pending: false }); await settle()
+  assert.match(JSON.stringify(page.render()), /Рабочая/)
+  assert.match(JSON.stringify(page.render()), /The profile name was saved and verified on the card/)
+  assert.equal(page.elements(page.render()).filter(e => e.type === 'button' && e.props['aria-pressed'] === true).length, 1)
+  assert.doesNotMatch(page.elements(page.render()).find(e => e.type === 'pre').props.children, /Рабочая|Original|890000/)
+  page.unmount()
+})
+test('rename validation, cancellation and changing selection do not send writes', async () => {
+  const second = { ...profile, iccid: '89000000000000000002', nickname: 'Second' }
+  const page = await readyPage(undefined, [profile, second])
+  button(page, 'Rename profile').props.onClick()
+  for (const value of ['', '  ', 'я'.repeat(65), 'a\nname', 'a\u202eb']) {
+    nameInput(page).props.onChange({ target: { value } })
+    assert.equal(button(page, 'Save').props.disabled, true)
+    page.elements(page.render()).find(e => e.type === 'form').props.onSubmit({ preventDefault() {} })
+    assert.equal(page.calls, 1)
+  }
+  nameInput(page).props.onChange({ target: { value: 'Private draft' } })
+  button(page, 'Cancel').props.onClick(); assert.equal(nameInput(page), undefined); assert.equal(page.calls, 1)
+  button(page, 'Rename profile').props.onClick()
+  nameInput(page).props.onChange({ target: { value: 'Private draft' } })
+  page.elements(page.render()).find(e => e.type === 'button' && e.props['aria-pressed'] === false).props.onClick()
+  assert.equal(nameInput(page), undefined)
+  button(page, 'Rename profile').props.onClick(); assert.equal(nameInput(page).props.value, 'Second')
+  assert.equal(page.calls, 1); assert.equal(page.confirmationCalls, 0)
+  page.unmount()
+})
+test('rename needs advertised capability and a confirmed snapshot; failed refresh clears the editor', async () => {
+  for (const operations of [['list'], ['list', 'enable', 'delete', 'download']]) {
+    const page = await readyPage(operations)
+    const rename = button(page, 'Rename profile'); assert.equal(rename.props.disabled, true)
+    rename.props.onClick(); assert.equal(nameInput(page), undefined); assert.equal(page.calls, 1)
+    page.unmount()
+  }
+  const page = await readyPage()
+  button(page, 'Rename profile').props.onClick(); nameInput(page).props.onChange({ target: { value: 'Private draft' } })
+  page.clickCheck(); assert.equal(nameInput(page), undefined)
+  page.reject(new model.EsimOperationError('card_busy')); await settle()
+  assert.equal(button(page, 'Rename profile').props.disabled, true)
+  assert.doesNotMatch(JSON.stringify(page.render()), /Private draft/)
+  assert.equal(page.calls, 2); page.unmount()
+})
+test('a profile with unknown activation state may be renamed without enabling or deleting it', async () => {
+  const entry = { ...profile, state: 'unknown' }, page = await readyPage(undefined, [entry])
+  assert.equal(button(page, 'Make active').props.disabled, true)
+  assert.equal(button(page, 'Delete profile').props.disabled, true)
+  assert.equal(button(page, 'Rename profile').props.disabled, false)
+  button(page, 'Rename profile').props.onClick(); nameInput(page).props.onChange({ target: { value: 'New' } })
+  page.elements(page.render()).find(e => e.type === 'form').props.onSubmit({ preventDefault() {} })
+  assert.equal(page.requests[1].operation, 'rename'); assert.equal(page.requests[1].expected_snapshot.profiles[0].state, 'unknown')
+  page.resolve({ snapshot: snapshot([{ ...entry, nickname: 'New' }]), card: confirmed(), pending: false }); await settle()
+  page.unmount()
 })

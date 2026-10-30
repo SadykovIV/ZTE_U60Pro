@@ -4,7 +4,7 @@ import { Button, Field, Input, Select } from '../../ui/controls'
 import { Card, Chip } from '../../ui/primitives'
 import { confirm } from '../../ui/feedback'
 import { capabilities, runOperation } from './api'
-import { activation, cardMessage, compose, EsimOperationError, mask, profileName, unknownCard, type CardStatus, type EsimRequest, type Snapshot } from './model'
+import { activation, cardMessage, compose, EsimOperationError, mask, profileName, profileNickname, renameRequest, unknownCard, type CardStatus, type EsimRequest, type Snapshot } from './model'
 import { decodeImage } from './qr'
 import { stageMessage } from './journal'
 import { failureMessage, safeEsimErrors } from './errors'
@@ -18,9 +18,12 @@ export default function EsimPage() {
   const [mode, setMode] = useState('manual'), [address, setAddress] = useState(''), [matching, setMatching] = useState('')
   const [lpa, setLpa] = useState(''), [confirmation, setConfirmation] = useState(''), [message, setMessage] = useState('')
   const [failed, setFailed] = useState(false), [decoding, setDecoding] = useState(false)
+  const [renaming, setRenaming] = useState(false), [nickname, setNickname] = useState('')
   const [journal, setJournal] = useState<string[]>([])
   const lifetime = useRef<AbortController | null>(null), working = useRef(false), inputRevision = useRef(0)
   const profile = snapshot?.profiles.find(p => p.iccid === selected)
+  let validNickname = ''
+  try { validNickname = profileNickname(nickname) } catch { /* Show validation next to the name field. */ }
   let code = ''
   try { code = mode === 'manual' ? compose(address, matching) : activation(lpa) } catch { /* The form stays disabled until valid. */ }
   const confirmationValid = !confirmation || confirmation.length <= 512 && !confirmation.startsWith('-') && !Array.from(confirmation).some(c => c.charCodeAt(0) < 33 || c.charCodeAt(0) === 127 || /\s/.test(c))
@@ -30,7 +33,7 @@ export default function EsimPage() {
       const operations = value.operations
       if (!controller.signal.aborted) {
         const supported = value.protocol === 1 && Array.isArray(operations) && operations.includes('list')
-        setOperations(supported ? operations.filter((op: unknown): op is string => typeof op === 'string' && ['list', 'download', 'enable', 'delete'].includes(op)) : [])
+        setOperations(supported ? operations.filter((op: unknown): op is string => typeof op === 'string' && ['list', 'download', 'enable', 'delete', 'rename'].includes(op)) : [])
         setReady(supported)
         if (!supported) { setFailed(true); setMessage('Install the eSIM agent and refresh this page.') }
       }
@@ -42,7 +45,7 @@ export default function EsimPage() {
   function clearInputs() { inputRevision.current++; setAddress(''); setMatching(''); setLpa(''); setConfirmation('') }
   async function run(request: EsimRequest) {
     if (working.current || !ready || !lifetime.current || lifetime.current.signal.aborted) return
-    working.current = true; setBusy(true); setFailed(false); clearInputs(); setSnapshot(null); setCard(null); setMessage('Checking the SIM card and profiles…')
+    working.current = true; setBusy(true); setFailed(false); clearInputs(); setRenaming(false); setNickname(''); setSnapshot(null); setCard(null); setMessage('Checking the SIM card and profiles…')
     const started = Date.now()
     const append = (text: string) => setJournal(lines => [...lines, text].slice(-2000))
     append(`${new Date().toISOString()} · ${request.operation} · start`)
@@ -53,7 +56,7 @@ export default function EsimPage() {
       setCard(result.card)
       append(`${((Date.now()-started)/1000).toFixed(1)}s · ${request.operation} · verified${result.pending ? ' · notifications_pending' : ''}`)
       setSelected(result.snapshot?.profiles.some(p => p.iccid === selected) ? selected : '')
-      setMessage(result.card.kind === 'ordinary_sim' ? 'Ordinary SIM: eSIM management is unavailable.' : result.pending ? 'Profiles verified. Operator notifications are pending; refresh before another operation.' : request.operation === 'list' ? 'Profiles read from the physical eUICC.' : request.operation === 'enable' ? 'The profile is active, the SIM was reread and normal radio mode was verified. Check mobile network registration separately.' : 'The profile change was verified on the card. Check mobile network registration separately.')
+      setMessage(result.card.kind === 'ordinary_sim' ? 'Ordinary SIM: eSIM management is unavailable.' : result.pending ? 'Profiles verified. Operator notifications are pending; refresh before another operation.' : request.operation === 'list' ? 'Profiles read from the physical eUICC.' : request.operation === 'rename' ? 'The profile name was saved and verified on the card.' : request.operation === 'enable' ? 'The profile is active, the SIM was reread and normal radio mode was verified. Check mobile network registration separately.' : 'The profile change was verified on the card. Check mobile network registration separately.')
     } catch (error) {
       if (!lifetime.current?.signal.aborted) {
         const code = error instanceof Error && safeEsimErrors.has(error.message) ? error.message : ''
@@ -62,6 +65,14 @@ export default function EsimPage() {
         setMessage(failureMessage(code))
       }
     } finally { working.current = false; if (!lifetime.current?.signal.aborted) setBusy(false) }
+  }
+  function startRename() {
+    if (!profile || busy || working.current || decoding || !operations.includes('rename')) return
+    setNickname(profile.nickname ?? profile.name ?? ''); setRenaming(true)
+  }
+  async function saveRename() {
+    if (!renaming || !snapshot || !profile || busy || working.current || decoding || !operations.includes('rename') || !validNickname || validNickname === profile.nickname) return
+    await run(renameRequest(snapshot, profile.iccid, nickname))
   }
   async function mutate(operation: 'download' | 'enable' | 'delete') {
     if (!snapshot || busy || working.current || decoding || !operations.includes(operation)) return
@@ -101,11 +112,16 @@ export default function EsimPage() {
       {snapshot && <p className="mb-3 text-xs text-ink3">{t('Card EID')}: {mask(snapshot.eid)}</p>}
       {!snapshot && card?.kind !== 'ordinary_sim' && <p className="text-sm text-ink3">{t('Read profiles to enable installation and profile selection.')}</p>}
       {snapshot?.profiles.length === 0 && <p className="text-sm text-ink3">{t('No profiles installed.')}</p>}
-      <div className="space-y-2">{snapshot?.profiles.map(p => <button key={p.iccid} disabled={busy} onClick={() => setSelected(p.iccid)} aria-pressed={selected === p.iccid} className={`flex w-full items-center justify-between gap-3 rounded-lg border p-3 text-left ${selected === p.iccid ? 'border-accent bg-accent/10' : 'border-line/10 bg-surface2/50'}`}>
+      <div className="space-y-2">{snapshot?.profiles.map(p => <button key={p.iccid} disabled={busy} onClick={() => { setSelected(p.iccid); setRenaming(false); setNickname('') }} aria-pressed={selected === p.iccid} className={`flex w-full items-center justify-between gap-3 rounded-lg border p-3 text-left ${selected === p.iccid ? 'border-accent bg-accent/10' : 'border-line/10 bg-surface2/50'}`}>
         <span className="min-w-0"><span className="block break-words text-sm font-semibold text-ink">{profileName(p)}</span><span className="mt-1 block break-words text-xs text-ink3">{p.service_provider} · {mask(p.iccid)}</span></span>
         <Chip tone={p.enabled ? 'ok' : 'default'}>{p.state === 'enabled' ? t('Active') : p.state === 'disabled' ? t('Disabled') : t('Unknown')}</Chip>
       </button>)}</div>
-      <div className="mt-4 flex flex-wrap gap-2"><Button variant="primary" disabled={!operations.includes('enable') || busy || !profile || profile.state === 'unknown'} onClick={() => void mutate('enable')}>{t(profile?.enabled ? 'Reread SIM' : 'Make active')}</Button><Button variant="danger" disabled={!operations.includes('delete') || busy || !profile || profile.state !== 'disabled'} onClick={() => void mutate('delete')}>{t('Delete profile')}</Button></div>
+      <div className="mt-4 flex flex-wrap gap-2"><Button variant="primary" disabled={!operations.includes('enable') || busy || !profile || profile.state === 'unknown'} onClick={() => void mutate('enable')}>{t(profile?.enabled ? 'Reread SIM' : 'Make active')}</Button><Button disabled={!operations.includes('rename') || busy || decoding || !profile} onClick={startRename}>{t('Rename profile')}</Button><Button variant="danger" disabled={!operations.includes('delete') || busy || !profile || profile.state !== 'disabled'} onClick={() => void mutate('delete')}>{t('Delete profile')}</Button></div>
+      {renaming && profile && <form className="mt-3 space-y-2 rounded-lg border border-line/10 bg-surface2/50 p-3" onSubmit={e => { e.preventDefault(); void saveRename() }}>
+        <Field label={t('Profile name')} hint={t('Saved on the eSIM card. Up to 64 characters.')}><Input autoFocus autoComplete="off" value={nickname} disabled={busy || decoding} onChange={e => setNickname(e.target.value)} aria-invalid={!validNickname} aria-describedby={!validNickname ? 'esim-nickname-error' : undefined} /></Field>
+        {!validNickname && <p id="esim-nickname-error" className="text-xs text-danger">{t('Enter a name up to 64 characters, without control or text direction characters.')}</p>}
+        <div className="flex gap-2"><Button type="submit" variant="primary" disabled={busy || decoding || !validNickname || validNickname === profile.nickname}>{t('Save')}</Button><Button type="button" disabled={busy} onClick={() => { setRenaming(false); setNickname('') }}>{t('Cancel')}</Button></div>
+      </form>}
       <p className="mt-2 text-xs text-ink3">{t('Only a disabled profile can be deleted.')}</p>
     </Card>
     <Card title={t('Add eSIM profile')}>

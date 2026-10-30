@@ -14,6 +14,10 @@ import unittest
 VPN = Path(__file__).resolve().parents[1] / 'Resources/VPN'
 B31 = '604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263'
 B28 = '5a4489882538b5ab1d3e0049371f1b620d28d262a429923299b4f2626d40d478'
+B27 = '4b1c67e73b94b889adc831168040d40ec368083dfbcec7ae747a2f4f86c66f3e'
+B27_MDM = '00a647cb46fa82a78969b3708c1429d91b37ef99c2c00835ac57ca53c126f25d'
+B27_ROUTER = '786ba99f5d506d01bbe72d9effa90d1a46f5929370f24ccabf6bab291e5a317f'
+B27_IPACM = 'a843789933a0b5747927583021c1480957ea942626cab17cb13ad415d1dfd3ae'
 B04 = 'c57e063d390983229dfc53aa87380b3d4655ee8daa1c748e1a032ac90cd0df81'
 IPACM = '95385816da7b2edb9a977cee328c091753463fcd4a70a67fa1676e8b335c11c0'
 B28_IPACM = 'a8a90ee631a3e8de3266d1d4231e455c34fd0b0d1ad570e7c4d0dcd09eea1c54'
@@ -129,12 +133,14 @@ echo hooked-network-init > "$FIXTURE/etc/init.d/network"
         p=self.base/('pending' if pending else 'etc/config/zwrt_router')
         return dict(line.split('=',1) for line in p.read_text().splitlines()) if p.exists() else {}
     def invoke(self,mode='prepare',**env):
+        if env.get('TEST_FIRMWARE',self.env['TEST_FIRMWARE']) == B27:
+            env = {'TEST_MDM': B27_MDM, 'TEST_ROUTER': B27_ROUTER, **env}
         return subprocess.run(['/bin/sh',str(self.script),mode],env={**self.env,**env},capture_output=True,text=True,timeout=20)
     def ok(self,r):self.assertEqual(r.returncode,0,r.stdout+r.stderr)
     def signals(self):return (self.base/'signals').read_text().splitlines() if (self.base/'signals').exists() else []
     def clean_start(self):(self.root/'configured').unlink()
     def test_prepare_b31_b28_b04_and_missing_b04_image(self):
-        for firmware,daemon in [(B31,IPACM),(B28,B28_IPACM),(B04,IPACM),('',IPACM)]:
+        for firmware,daemon in [(B31,IPACM),(B28,B28_IPACM),(B27,B27_IPACM),(B04,IPACM),('',IPACM)]:
             with self.subTest(firmware=firmware[:8]):
                 if firmware:self.write('firmware/image/modem.b16','fixture')
                 else:(self.base/'firmware/image/modem.b16').unlink(missing_ok=True)
@@ -145,6 +151,15 @@ echo hooked-network-init > "$FIXTURE/etc/init.d/network"
                 self.ok(self.invoke('ipa-restore',TEST_FIRMWARE=firmware,TEST_IPACM=daemon))
                 self.assertEqual((self.base/'etc/config/zwrt_router').read_bytes(),self.original)
                 self.assertEqual(self.state(True),{})
+    def test_b27_rejects_mixed_native_components_before_any_signal(self):
+        for key, value in [('TEST_MDM', MDM), ('TEST_ROUTER', ROUTER), ('TEST_IPACM', IPACM)]:
+            with self.subTest(component=key):
+                r = self.invoke(TEST_FIRMWARE=B27, **{'TEST_IPACM': B27_IPACM, key: value})
+                self.assertNotEqual(r.returncode, 0)
+                self.assertEqual((self.base/'etc/config/zwrt_router').read_bytes(), self.original)
+                self.assertFalse((self.root/'ipa-backup').exists())
+                self.assertEqual(self.signals(), [])
+
     def test_unknown_daemon_switch_and_missing_pid_never_mutate(self):
         for extra,code in [({'TEST_IPACM':'f'*64},'VPN_IPA_UNSUPPORTED'),({'TEST_SWITCH':'f'*64},'VPN_IPA_UNSUPPORTED'),({'NO_PID':'1'},'VPN_IPA_NOT_RUNNING')]:
             with self.subTest(code=code):
@@ -184,7 +199,7 @@ echo hooked-network-init > "$FIXTURE/etc/init.d/network"
         self.assertEqual((self.root/'ipa-runtime').read_text(),'next-boot 10\n')
     def test_early_boot_registers_supervisor_before_ipacm_is_available(self):
         self.write('wireless-disabled','0')
-        for firmware,daemon in [(B31,IPACM),(B28,B28_IPACM),(B04,IPACM)]:
+        for firmware,daemon in [(B31,IPACM),(B28,B28_IPACM),(B27,B27_IPACM),(B04,IPACM)]:
             with self.subTest(firmware=firmware[:8]):
                 self.ok(self.invoke('early',NO_PID='1',TEST_FIRMWARE=firmware,TEST_IPACM=daemon))
                 self.assertEqual((self.base/'service').read_text().splitlines()[-1],'start')
@@ -194,7 +209,7 @@ echo hooked-network-init > "$FIXTURE/etc/init.d/network"
     def test_boot_signal_failure_respawns_without_erasing_enabled_selection(self):
         self.write('wireless-disabled','0')
         self.write('data/zte-vpn/mihomo','#!/bin/sh\necho started > "$FIXTURE/core-started"\n',0o700)
-        for firmware,daemon in [(B31,IPACM),(B28,B28_IPACM),(B04,IPACM)]:
+        for firmware,daemon in [(B31,IPACM),(B28,B28_IPACM),(B27,B27_IPACM),(B04,IPACM)]:
             with self.subTest(firmware=firmware[:8]):
                 for rel in ['core-started','signal-failed','data/zte-vpn/ipa-runtime']:(self.base/rel).unlink(missing_ok=True)
                 first=self.invoke('run-core',FAIL_SIGNAL='1',TEST_FIRMWARE=firmware,TEST_IPACM=daemon)

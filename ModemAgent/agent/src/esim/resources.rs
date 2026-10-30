@@ -6,7 +6,7 @@ use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsE
 use std::path::{Path, PathBuf};
 
 pub const BRIDGE_HASH: &str = "420049450020763a2c969710b50e2b3b9f792ef190d60f680912af62f9df1530";
-pub const LPAC_HASH: &str = "92aaeb96bd02e8f3e7ab9847b15e3fae31795b244fcab92f70b595719b18718d";
+pub const LPAC_HASH: &str = "32e7ff567cc38ff3522a02f71c0b9d4df2d5c745dbe664ee94655d737fdef478";
 const BRIDGE: &[u8] = include_bytes!("../../resources/esim/bridge");
 const LPAC: &[u8] = include_bytes!("../../resources/esim/lpac");
 const GSMA_ROOT: &[u8] = include_bytes!("../../resources/esim/gsma-rsp-roots.pem");
@@ -14,12 +14,17 @@ const GSMA_HASH: &str = "7364a2ac4d2b5f77c1b83ee7e1c535e8fc806c67ee42e73ad97c354
 const B31: &str = "604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263";
 const B28_IMAGE: &str = "5a4489882538b5ab1d3e0049371f1b620d28d262a429923299b4f2626d40d478";
 const B28_MDM: &str = "5d140d3b31078607ecfc3333188289f12a9cdf285390448c5ae748bdf53f2995";
+const B27_IMAGE: &str = "4b1c67e73b94b889adc831168040d40ec368083dfbcec7ae747a2f4f86c66f3e";
+const B27_MDM: &str = "00a647cb46fa82a78969b3708c1429d91b37ef99c2c00835ac57ca53c126f25d";
+const B27_ROUTER: &str = "786ba99f5d506d01bbe72d9effa90d1a46f5929370f24ccabf6bab291e5a317f";
 const B04_IMAGE: &str = "c57e063d390983229dfc53aa87380b3d4655ee8daa1c748e1a032ac90cd0df81";
 const B04_MDM: &str = "93a346e7d69024503caf9ad42f14c97e1514dd7d04c7b5ebef4e30473b5d5c64";
 const B04_ROUTER: &str = "55c54f74aaa427940254a2f16c36771e675a80a002363e4f10b0dfcb604d9c6f";
 
 fn radio_profile_matches(image: Option<&str>, mdm: Option<&str>, router: Option<&str>, b04_versions: bool) -> bool {
-    image == Some(B31) || (router == Some(B04_ROUTER)
+    image == Some(B31)
+        || (image == Some(B27_IMAGE) && mdm == Some(B27_MDM) && router == Some(B27_ROUTER))
+        || (router == Some(B04_ROUTER)
         && ((image == Some(B04_IMAGE) && mdm == Some(B04_MDM))
             || (image.is_none() && mdm == Some(B04_MDM) && b04_versions)
             || (image == Some(B28_IMAGE) && mdm == Some(B28_MDM))))
@@ -75,17 +80,18 @@ pub fn check_device() -> Result<()> {
     }
     Ok(())
 }
-/// Radio reset uses measured B31/B28/B04 component profiles. Each operation
+/// Radio reset uses measured B31/B27/B28/B04 component profiles. Each operation
 /// requires a fresh operating-mode and physical-slot read before changing the
-/// profile, then setter acknowledgements and readbacks. B28's live QMI route
-/// remains an owner-validation item. This does not enable a built-in-card route.
+/// profile, then setter acknowledgements and readbacks. The B27 capture confirms
+/// DMS mode/UIM slot-status reads; radio writes still require device validation.
+/// This does not enable a built-in-card route or a private diag-router ABI.
 /// APDU inventory and card operations use actual card/route checks.
 pub fn check_radio_device() -> Result<()> {
     check_device()?;
     let image_path = Path::new("/firmware/image/modem.b16");
     let image = measured_component(image_path, true)?;
     if image.as_deref() == Some(B31) { return Ok(()); }
-    if image.as_deref().is_some_and(|value| value != B04_IMAGE && value != B28_IMAGE) {
+    if image.as_deref().is_some_and(|value| ![B04_IMAGE, B27_IMAGE, B28_IMAGE].contains(&value)) {
         return Err(Error::new("unsupported_firmware"));
     }
     let mdm = measured_component(Path::new("/usr/bin/zte_topsw_mdm"), false)?;
@@ -103,6 +109,20 @@ pub fn check_radio_device() -> Result<()> {
 #[cfg(test)]
 mod radio_profile_tests {
     use super::*;
+    #[test]
+    fn b27_requires_the_complete_captured_triplet_without_name_fallback() {
+        assert!(radio_profile_matches(Some(B27_IMAGE), Some(B27_MDM), Some(B27_ROUTER), false));
+        // Never apply another build's radio transition policy to a mixed image.
+        for image in [None, Some(B04_IMAGE), Some(B28_IMAGE), Some("BD_FLYMODEMMU5250V1.0.0B27")] {
+            assert!(!radio_profile_matches(image, Some(B27_MDM), Some(B27_ROUTER), true));
+        }
+        for mdm in [None, Some(B04_MDM), Some(B28_MDM), Some("unknown")] {
+            assert!(!radio_profile_matches(Some(B27_IMAGE), mdm, Some(B27_ROUTER), true));
+        }
+        for router in [None, Some(B04_ROUTER), Some("unknown")] {
+            assert!(!radio_profile_matches(Some(B27_IMAGE), Some(B27_MDM), router, true));
+        }
+    }
     #[test]
     fn exact_profiles_do_not_infer_compatibility_from_version_names() {
         assert!(radio_profile_matches(Some(B31), None, None, false));

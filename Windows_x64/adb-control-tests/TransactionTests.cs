@@ -5,7 +5,7 @@ using ZteImeiStudio.Windows.Features;
 
 internal sealed class TransactionShell : IRemoteShell
 {
-    internal bool Original, Desired, Applied, Acked, Removed, UnknownFirmware, WrongReadback, B28, B04, B04Image, DescriptorsMissing;
+    internal bool Original, Desired, Applied, Acked, Removed, UnknownFirmware, WrongReadback, B27, B28, B04, B04Image, DescriptorsMissing;
     internal bool LostDispatch, LostAck, ChangedBoot, FailCleanup, PrivateFailure, CapabilityMissing, StageAbsent, ForeignLock;
     internal int Applies, Acks, Cancels, ResultReads, Recoveries, OrdinaryLocks, VpnDependencyChecks;
     internal string? RecoveryReply;
@@ -24,16 +24,16 @@ internal sealed class TransactionShell : IRemoteShell
         if (command.Contains("rmdir /tmp/zte-imei-app.lock")) return Task.FromResult(Reply(""));
         if (command == AccessIdentity.Command)
         {
-            var firmware = B04Image ? AdbToggleTransaction.B04FirmwareHash : B04 ? "absent" : UnknownFirmware ? new string('a', 64) : B28 ? AdbToggleTransaction.B28FirmwareHash : DeviceFeatureService.FirmwareHash;
+            var firmware = B04Image ? AdbToggleTransaction.B04FirmwareHash : B04 ? "absent" : UnknownFirmware ? new string('a', 64) : B27 ? AdbToggleTransaction.B27FirmwareHash : B28 ? AdbToggleTransaction.B28FirmwareHash : DeviceFeatureService.FirmwareHash;
             var boot = ChangedBoot && Applied ? "11111111-1111-1111-1111-111111111111" : "00000000-0000-0000-0000-000000000001";
-            return Task.FromResult(Reply(firmware + "  /firmware/image/modem.b16\n" + (WrongRouter ? new string('f', 64) : DeviceFeatureService.RouterHash) + "  /usr/bin/diag-router\n" + (WrongCid ? "1123456789abcdef0123456789abcdef" : "0123456789abcdef0123456789abcdef") + "\n" + boot));
+            return Task.FromResult(Reply(firmware + "  /firmware/image/modem.b16\n" + (WrongRouter ? new string('f', 64) : B27 ? AdbToggleTransaction.B27RouterHash : DeviceFeatureService.RouterHash) + "  /usr/bin/diag-router\n" + (WrongCid ? "1123456789abcdef0123456789abcdef" : "0123456789abcdef0123456789abcdef") + "\n" + boot));
         }
         if (command == AdbControlProtocol.Command)
         {
             var state = Acked && !WrongReadback ? Desired : Original;
             return Task.FromResult(Reply("ZTE_ADB_STATE_V1\nlinked=" + (state ? "1" : "0") + "\nready=" + (DescriptorsMissing ? "unknown" : "1") + "\nbound=1\ndaemon=" + (DescriptorsMissing ? "0" : "1")));
         }
-        if (command == AdbToggleTransaction.CapabilityCommand || command.Contains(AdbToggleTransaction.B04CapabilityCommand))
+        if (command == AdbToggleTransaction.CapabilityCommand || command.Contains(AdbToggleTransaction.B04CapabilityCommand) || command.Contains(AdbToggleTransaction.B27CapabilityCommand))
         { if (command.Contains("setsid") || !command.Contains("sort pidof nohup sleep")) throw new Exception("unsupported launch dependency"); return Task.FromResult(Reply("ADB_CONTROL_CAPABLE", CapabilityMissing ? 71 : 0)); }
         if (command.Contains("ADB_STAGE_ABSENT")) return Task.FromResult(Reply("ADB_STAGE_ABSENT", StageAbsent && !ForeignLock ? 0 : 71));
         if (command.Contains("'reconcile'"))
@@ -109,9 +109,9 @@ internal static class TransactionTests
             var result = await Create(fake, store).SetAsync(desired, default);
             check(result.Enabled == desired && result.SupportsChange && fake.Applies == 1 && fake.Acks == 1 && fake.Cancels == 0 && fake.Removed && !Pending(store), "one detached apply/ACK and exact verified final " + desired);
         }
-        foreach (var firmware in new[] { "B31", "B28", "B04", "B04-image" })
+        foreach (var firmware in new[] { "B31", "B27", "B28", "B04", "B04-image" })
         {
-            var fake = new TransactionShell { Original = false, Desired = false, B28 = firmware == "B28", B04 = firmware == "B04", B04Image = firmware == "B04-image" }; var store = Store();
+            var fake = new TransactionShell { Original = false, Desired = false, B27 = firmware == "B27", B28 = firmware == "B28", B04 = firmware == "B04", B04Image = firmware == "B04-image" }; var store = Store();
             var result = await Create(fake, store).SetAsync(false, default);
             check(result.Enabled == false && result.SupportsChange && fake.Applies == 1 && fake.Acks == 1 && !Pending(store), firmware + " runtime already off still clears persistent boot activation");
         }
@@ -138,6 +138,12 @@ internal static class TransactionTests
             var fake = new TransactionShell { UnknownFirmware = true }; var store = Store();
             await Refuse(async () => { await Create(fake, store).SetAsync(true, default); }, "unknown firmware");
             check(!Pending(store) && fake.Commands.Count == 1 && fake.Applies == 0, "unknown firmware no staging or journal");
+        }
+        foreach (var nativeMismatch in new[] { "router", "mdm" })
+        {
+            var fake = new TransactionShell { B27 = true, Desired = true, WrongRouter = nativeMismatch == "router", CapabilityMissing = nativeMismatch == "mdm" }; var store = Store();
+            await Refuse(async () => { await Create(fake, store).SetAsync(true, default); }, "B27 mixed native identity");
+            check(!Pending(store) && fake.Applies == 0 && !fake.Commands.Any(c => c.Contains("ADB_STAGED")), "B27 " + nativeMismatch + " mismatch refuses before staging");
         }
         foreach(var image in new[]{false,true})
         {

@@ -11,7 +11,7 @@ use std::{
 };
 const HELPER: &str = "/data/zte-vpn/vpnctl";
 pub const REQUEST_LIMIT: usize = 32 * 1024 * 1024;
-const HELPER_SHA: &str = "46257e8e24397f097b3ce3e53067ad59b265803f66aeb2da6d216b05dd2e5db7";
+const HELPER_SHA: &str = "dbf07f7551415816a66ac18148d45c582649c76529282902533d154f5299c58e";
 
 // Keep reviewed controllers usable when only the agent is updated. The build
 // retains the previous source pin here; no device-provided hash is accepted.
@@ -29,6 +29,7 @@ const PREVIOUS_HELPER_SHAS: &[&str] = &[
     "ff5859edb44d83fad9723ccdc142f28ce918b02fae3da929667726d32746986c",
     "4e8b92cc5089200f3fced24130e47e0918bf8931989af034f709344a42cd5b0d",
     "61ccaf5fa0361178dd6fe4a0104d964168f4f79a8453a8617a80a7403240d393",
+    "46257e8e24397f097b3ce3e53067ad59b265803f66aeb2da6d216b05dd2e5db7",
 ];
 fn supported_helper(hash: &str) -> bool {
     hash == HELPER_SHA || PREVIOUS_HELPER_SHAS.contains(&hash)

@@ -18,7 +18,7 @@ public sealed record ResearchObservation(string Id,ResearchText Title,string Pro
 public sealed record ResearchObservationResult(string Id,ResearchText Title,string Probe,string Fact,string Status,string? Value,string SourceStatus,int? ExitCode);
 public sealed record ResearchSpec(int SchemaVersion,int Revision,ResearchProfile[] Profiles,ResearchProbe[] Probes,ResearchFeature[] Features,ResearchObservation[]? Observations=null)
 {
-    public const string ExpectedSpecificationSha256="f6d8bf582f2ddb780ea1cb5e53ca1bb4ed74d3bc64689163133f7f95f88dd59d";
+    public const string ExpectedSpecificationSha256="1cd41ae24c7c8d78408a13af267e907894458600e765bd48df2cf6a3e16f1086";
     public string? Sha256 { get; private set; }
     public static readonly JsonSerializerOptions Json=new() { PropertyNameCaseInsensitive=true,PropertyNamingPolicy=JsonNamingPolicy.CamelCase,WriteIndented=true };
     public static ResearchSpec Load(string path)
@@ -50,6 +50,23 @@ public sealed record ResearchProbeResult(string Id,ResearchText Title,string Cat
 public sealed record ResearchFeatureResult(string Id,ResearchText Title,string State,ResearchText[] Reasons,ResearchText Limitations);
 public sealed record ResearchProgress(int Completed,int Total,ResearchText Title);
 public sealed record ResearchReport(int SchemaVersion,string Id,DateTimeOffset StartedAt,DateTimeOffset CompletedAt,string Outcome,string Channel,string? Profile,string ApplicationVersion,int SpecificationRevision,ResearchProbeResult[] Probes,ResearchFeatureResult[] Features,string[] Omissions,string? SpecificationSHA256=null,string RequestedMode="auto",string BindingStrength="transport-only",ResearchObservationResult[]? Observations=null);
+
+// These fixed probe fields contain public metadata, never credentials. A value
+// outside its exact projected type still passes through normal secret removal.
+internal static class ResearchExportMetadata
+{
+    internal static bool IsPublic(string key,string value)=>key switch
+    {
+        "tool_chpasswd" or "tmp_private_stage_parent" or "private_opkg_present" or "secret_contents_collected" or
+        "main_2g_iface" or "main_5g_iface" or "wifi_main_2g_disabled" or "wifi_main_5g_disabled" => value is "0" or "1" or "not-assessed",
+        "component_private_bin_path" => value is "present" or "missing" or "symlink" or "not-assessed",
+        "component_private_bin_uid" or "component_private_bin_links" => value=="not-assessed" || Regex.IsMatch(value,@"\A[0-9]{1,10}\z") && uint.TryParse(value,out _),
+        "component_private_bin_mode" => value=="not-assessed" || Regex.IsMatch(value,@"\A[0-7]{1,4}\z"),
+        "wifi_main_2g_device" or "wifi_main_5g_device" or "wifi_main_2g_network" or "wifi_main_5g_network" => value is "lan" or "vpn" or "br-lan" or "br-vpn" or "wifi0" or "wifi1" or "wlan0" or "wlan1" or "wlan2" or "wlan3" or "other" or "not-assessed",
+        "wifi_guest_2g_guest_remaining" or "wifi_guest_5g_guest_remaining" => value=="not-assessed" || Regex.IsMatch(value,@"\A[0-9]{1,9}\z"),
+        _=>false
+    };
+}
 
 public sealed class ResearchRedactor(IEnumerable<string>? secrets=null)
 {
@@ -238,7 +255,7 @@ public sealed class FirmwareResearchEngine(ResearchSpec spec,IResearchTransportF
     }
     private ResearchProbeResult ToResult(ResearchProbe probe,ResearchCommandResult value,long duration)
     {
-        var output=redactor.Clean(value.Stdout);var error=redactor.Clean(value.Stderr);var facts=Facts(value).ToDictionary(x=>x.Key,x=>redactor.Clean(x.Value));
+        var output=redactor.Clean(value.Stdout);var error=redactor.Clean(value.Stderr);var facts=Facts(value).ToDictionary(x=>x.Key,x=>ResearchExportMetadata.IsPublic(x.Key,x.Value)?x.Value:redactor.Clean(x.Value));
         _bytes+=Encoding.UTF8.GetByteCount(output)+Encoding.UTF8.GetByteCount(error);
         return new(probe.Id,probe.Title,probe.Category,probe.Command,value.Status,value.ExitCode,output,error,duration,DateTimeOffset.UtcNow.AddMilliseconds(-duration),value.Truncated,facts,value.LocalExitCode);
     }
@@ -357,6 +374,7 @@ public static class ResearchReportFiles
         string Fact(string key,string value)
         {
             if(key is null || !Regex.IsMatch(key,@"^[a-z0-9_]{1,64}$") || value is null)throw new InvalidDataException("Invalid research fact.");
+            if(ResearchExportMetadata.IsPublic(key,value))return value;
             if(clean is not null && Regex.IsMatch(key,@"password|passwd|passphrase|secret|token|activation|matching|confirmation|cookie|authorization|credential|private|api_key|access_key|psk|(^|_)pin($|_)|(^|_)puk($|_)"))return "[REDACTED]";
             if((key.Contains("sha256",StringComparison.Ordinal)||key.EndsWith("_hash",StringComparison.Ordinal)) && Regex.IsMatch(value,@"^[a-f0-9]{64}$"))return value;
             if(clean is null)return value;
@@ -372,7 +390,7 @@ public static class ResearchReportFiles
         if(probes.Select(p=>p.Id).Distinct().Count()!=probes.Length)throw new InvalidDataException("Duplicate research probe path.");
         report=report with {Id=C(report.Id),Outcome=C(report.Outcome),Channel=C(report.Channel),Profile=report.Profile is null?null:C(report.Profile),ApplicationVersion=cleanApplicationVersion?.Invoke(report.ApplicationVersion)??C(report.ApplicationVersion),RequestedMode=C(report.RequestedMode),BindingStrength=C(report.BindingStrength),Probes=probes,
             Features=report.Features.Select(f=>f is null || f.Reasons is null?throw new InvalidDataException("Invalid research feature."):f with {Id=C(f.Id),Title=T(f.Title),State=C(f.State),Reasons=f.Reasons.Select(T).ToArray(),Limitations=T(f.Limitations)}).ToArray(),
-            Omissions=report.Omissions.Select(C).ToArray(),Observations=report.Observations?.Select(o=>o is null?throw new InvalidDataException("Invalid research observation."):o with {Id=C(o.Id),Title=T(o.Title),Probe=C(o.Probe),Fact=C(o.Fact),Status=C(o.Status),Value=o.Value is null?null:Fact(o.Fact,o.Value),SourceStatus=C(o.SourceStatus)}).ToArray()};
+            Omissions=report.Omissions.Select(C).ToArray(),Observations=report.Observations?.Select(o=>o is null?throw new InvalidDataException("Invalid research observation."):o with {Id=C(o.Id),Title=T(o.Title),Probe=C(o.Probe),Fact=o.Value is not null && ResearchExportMetadata.IsPublic(o.Fact,o.Value)?o.Fact:C(o.Fact),Status=C(o.Status),Value=o.Value is null?null:Fact(o.Fact,o.Value),SourceStatus=C(o.SourceStatus)}).ToArray()};
         var files=new SortedDictionary<string,byte[]> { ["report.json"]=JsonSerializer.SerializeToUtf8Bytes(report,ResearchSpec.Json),
             ["REPORT_RU.md"]=Encoding.UTF8.GetBytes(Markdown(report,false)),["REPORT_EN.md"]=Encoding.UTF8.GetBytes(Markdown(report,true)),
             ["app-context.json"]=JsonSerializer.SerializeToUtf8Bytes(new {platform="windows",report.ApplicationVersion,report.SpecificationRevision,report.SpecificationSHA256,report.RequestedMode,runtime=System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,architecture=System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString(),report.StartedAt,report.CompletedAt,report.Channel,report.Outcome,report.BindingStrength},ResearchSpec.Json) };

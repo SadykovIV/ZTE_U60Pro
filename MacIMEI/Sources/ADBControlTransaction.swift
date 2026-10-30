@@ -16,12 +16,16 @@ struct ADBControlManager {
     var now: () -> Date = Date.init
     var wait: (TimeInterval) -> Void = Thread.sleep
     // Updated only from the reviewed bundled source, never learned from a modem.
-    static let scriptHash = "8e8f39ca743a4e53971db885afc3117ab3023a0ff3d6144c0954b078f6562a79"
+    static let scriptHash = "1ab9a52c4a5bf062e0863dba043e5f5da08d7397dde2d0fb1856e7955eb9e363"
+    static let release1271ScriptHash = "8e8f39ca743a4e53971db885afc3117ab3023a0ff3d6144c0954b078f6562a79"
     static let previousScriptHash = "0ca5d10426c8398bab5e35af525782c490dce30f841a073e2cc64e3dc49c27dd"
     static let b04FirmwareHash = "c57e063d390983229dfc53aa87380b3d4655ee8daa1c748e1a032ac90cd0df81"
     static let b28FirmwareHash = "5a4489882538b5ab1d3e0049371f1b620d28d262a429923299b4f2626d40d478"
+    static let b27FirmwareHash = "4b1c67e73b94b889adc831168040d40ec368083dfbcec7ae747a2f4f86c66f3e"
+    static let b27RouterHash = "786ba99f5d506d01bbe72d9effa90d1a46f5929370f24ccabf6bab291e5a317f"
     static func known(firmware: String, router: String) -> Bool {
-        [ModemEngine.firmwareHash, b28FirmwareHash, b04FirmwareHash, "absent"].contains(firmware) && router == ModemEngine.routerHash
+        if firmware == b27FirmwareHash { return router == b27RouterHash }
+        return [ModemEngine.firmwareHash, b28FirmwareHash, b04FirmwareHash, "absent"].contains(firmware) && router == ModemEngine.routerHash
     }
     static let capabilityCommand = "set -eu; for t in sh stat readlink sha256sum cut awk sed sort pidof nohup sleep cat mv rm rmdir mkdir ln id uname cmp chmod; do command -v \"$t\" >/dev/null 2>&1 || exit 71; done; test -d /tmp && test ! -L /tmp && test -w /tmp && test -r /tmp && test -x /tmp && test \"$(stat -c %u /tmp)\" = 0 || exit 71; test -f /sbin/adbd && test ! -L /sbin/adbd && test \"$(stat -c %u /sbin/adbd)\" = 0 || exit 71; printf 'ADB_CAPABILITY_READY\\n'"
     // The captured B04 image or its absence is only a candidate: native identity is measured
@@ -37,8 +41,13 @@ fi
   test "$(printf '%s' "$info" | jsonfilter -e '@.integrate_version')" = XCBZ_HK_MU5250V1.0.0B04 || exit 71
   test "$(printf '%s' "$info" | jsonfilter -e '@.wa_inner_version')" = BD_XCBZHKMU5250V1.0.0B04 || exit 71
 """#
+    static let b27CapabilityCommand = #"""
+test -f /usr/bin/zte_topsw_mdm && test ! -L /usr/bin/zte_topsw_mdm && test "$(stat -c %u /usr/bin/zte_topsw_mdm)" = 0 || exit 71
+  test "$(sha256sum /usr/bin/zte_topsw_mdm | cut -d ' ' -f 1)" = 00a647cb46fa82a78969b3708c1429d91b37ef99c2c00835ac57ca53c126f25d || exit 71
+"""#
     private func capabilityCommand(_ firmware: String) -> String {
-        ["absent", Self.b04FirmwareHash].contains(firmware) ? "set -eu; " + Self.b04CapabilityCommand + "; " + Self.capabilityCommand : Self.capabilityCommand
+        if firmware == Self.b27FirmwareHash { return "set -eu; " + Self.b27CapabilityCommand + "; " + Self.capabilityCommand }
+        return ["absent", Self.b04FirmwareHash].contains(firmware) ? "set -eu; " + Self.b04CapabilityCommand + "; " + Self.capabilityCommand : Self.capabilityCommand
     }
     var pendingURL: URL { engine.root.appendingPathComponent("adb-toggle-pending.json") }
     private var scriptURL: URL { engine.resources.appendingPathComponent("Onboarding/adb-toggle.sh") }
@@ -129,7 +138,7 @@ fi
         return "set -eu; test -d " + stage + " && test ! -L " + stage + " && test \"$(stat -c '%u:%a' " + stage + ")\" = 0:700 || exit 71; " +
             "test -f " + path + " && test ! -L " + path + " && test \"$(stat -c '%u:%a:%h' " + path + ")\" = 0:600:1 && test \"$(stat -c %s " + path + ")\" -le 32768 || exit 71; " +
             "stage_hash=$(sha256sum " + path + " | cut -d ' ' -f 1); " +
-            (recovery ? "case \"$stage_hash\" in " + Self.scriptHash + "|" + Self.previousScriptHash + ") :;; *) exit 71;; esac; " : "test \"$stage_hash\" = " + shellQuote(Self.scriptHash) + " || exit 71; ")
+            (recovery ? "case \"$stage_hash\" in " + Self.scriptHash + "|" + Self.release1271ScriptHash + "|" + Self.previousScriptHash + ") :;; *) exit 71;; esac; " : "test \"$stage_hash\" = " + shellQuote(Self.scriptHash) + " || exit 71; ")
     }
     private func invocation(_ mode: String, _ pending: ADBControlPending) -> String {
         "/bin/sh " + shellQuote(pending.stage + "/adb-toggle.sh") + " " + mode + " " +

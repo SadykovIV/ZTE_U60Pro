@@ -41,7 +41,7 @@ def main():
     helper=ROOT/'ModemAgent/target/aarch64-unknown-linux-musl/release/zte-vpnctl'
     vpn_path=ROOT/'MacIMEI/Sources/VPNSettings.swift'
     vpn_source=retain_previous_hash(vpn_path.read_text(),sha(helper),'helperHash','supportedStatusHashes')
-    version='2.9.0-esim.15';mac=ROOT/'MacIMEI/Resources';win=ROOT/'Windows_x64/Resources';dist=ROOT/'ModemAgent/web-app/dist'
+    version='2.9.0-esim.17';mac=ROOT/'MacIMEI/Resources';win=ROOT/'Windows_x64/Resources';dist=ROOT/'ModemAgent/web-app/dist'
     if not (dist/'index.html').is_file():raise SystemExit('Build dashboard first')
     helper=ROOT/'ModemAgent/target/aarch64-unknown-linux-musl/release/zte-vpnctl'
     shutil.copy2(helper,mac/'VPN/vpnctl')

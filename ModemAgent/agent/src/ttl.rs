@@ -15,6 +15,7 @@ use std::time::Duration;
 const ROOT: &str = "/data/zte-imei-ttl";
 const MANAGER: &str = "/data/zte-imei-ttl/manager.sh";
 const MANAGER_SHAS: &[&str] = &[
+    "4d17d08f6ded676cd0f696c4a839c398306bd6cfd916891a43218d56ca48e796",
     "7e629d347d1dc1777cb6322430de0d4188b442d624108efbaba8ad110f012666",
     "e4684cb0fa040de0525d0248897da01a5af2c4ee8509a851719afe9c970e9194",
     "a70afc13c3645f64b5fd937162e7d403e133bcfa0a2da0e565d39a693f9ab488",
@@ -741,7 +742,7 @@ mod tests {
         assert!(MANAGER_SHAS.contains(&"79d5a2e696613f966fe2dff3fe59a0366455fe16681284c65d8ddb36c5e35b5a"));
         assert!(MANAGER_SHAS.contains(&"a70afc13c3645f64b5fd937162e7d403e133bcfa0a2da0e565d39a693f9ab488"));
         assert!(MANAGER_SHAS.contains(&"e4684cb0fa040de0525d0248897da01a5af2c4ee8509a851719afe9c970e9194"));
-        assert_eq!(MANAGER_SHAS.len(), 5);
+        assert_eq!(MANAGER_SHAS.len(), 6);
     }
     #[test]
     fn trust_checks_reject_modified_writable_or_linked_manager() {

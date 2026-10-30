@@ -3,3 +3,6 @@
 *NOTICE* -whitespace
 licenses/* -whitespace
 MacIMEI/Resources/Licenses/* -whitespace
+# Unified-diff context markers on empty lines are required patch syntax.
+# verify_source_backport.py checks this patch byte-for-byte against the sources.
+third_party/lpac-build/nickname-buffer.patch whitespace=-blank-at-eol,-blank-at-eof

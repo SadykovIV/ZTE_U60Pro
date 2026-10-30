@@ -53,6 +53,9 @@ path_for() {
       font_zhengyuan) file=/usr/ui/fonts/ZTEZhengYuan.ttf;;
       font_roboto) file=/usr/ui/fonts/Roboto.ttf;;
       font_oswald) file=/usr/ui/fonts/Zoswald-Medium-24.ttf;;
+      busybox) file=/bin/busybox; binary=1;;
+      dropbear) file=/usr/sbin/dropbear; binary=1;;
+      curl) file=/usr/bin/curl; binary=1;;
       ipacm) file=/usr/bin/ipacm; binary=1;;
       ipa_switch) file=/sbin/ipacm_switch.sh;;
       network_init) file=/etc/init.d/network;;
@@ -312,7 +315,7 @@ inspect)
     fact http_dashboard_status "$(http_status dashboard)"
     mounts=$(awk '$5=="/usr/ui/language/English.ini" || $5=="/usr/ui/language/Chinese.ini" || $5=="/usr/bin/zte_topsw_devui" {n++} END {print n+0}' /proc/self/mountinfo 2>/dev/null || printf not_assessed)
     fact ui_mounts "$mounts"
-    for id in ui english chinese init original_ui original_english original_chinese original_init font_zhengyuan font_roboto font_oswald ipacm ipa_switch network_init netifd procd ubusd ubus_cli uci_cli lua_cli mdm qcril diag_router libdiag libzte_sdk libzte_gesture libzte_log libfreetype libpng libdrm libgcc libc libuci libubus libubox libblobmsg_json libjson_c liblua lua_uci lua_jsonc firmware_mdt firmware_b16 libqcril_nr libqcril_nrril libzte_qmi libqmiservices libqmi_cci libqmi_csi libqmi_common libqmi_encdec libqmi_sap libqrtr libqsocket libglib libgthread liblog libtime_genoff libsqlite3; do file_row "$id"; done
+    for id in ui english chinese init original_ui original_english original_chinese original_init font_zhengyuan font_roboto font_oswald busybox dropbear curl ipacm ipa_switch network_init netifd procd ubusd ubus_cli uci_cli lua_cli mdm qcril diag_router libdiag libzte_sdk libzte_gesture libzte_log libfreetype libpng libdrm libgcc libc libuci libubus libubox libblobmsg_json libjson_c liblua lua_uci lua_jsonc firmware_mdt firmware_b16 libqcril_nr libqcril_nrril libzte_qmi libqmiservices libqmi_cci libqmi_csi libqmi_common libqmi_encdec libqmi_sap libqrtr libqsocket libglib libgthread liblog libtime_genoff libsqlite3; do file_row "$id"; done
     printf 'FIRMWARE_SUPPORT_END\n'
     ;;
 file)

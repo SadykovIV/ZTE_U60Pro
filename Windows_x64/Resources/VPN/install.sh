@@ -22,6 +22,15 @@ phase=ALREADY_PRESENT
 [ ! -e "$ROOT" ] && [ ! -L "$ROOT" ] || exit 1
 [ ! -e /etc/init.d/zte_vpn ] && [ ! -L /etc/init.d/zte_vpn ] || exit 1
 phase=UNSUPPORTED_FIRMWARE
+# FLY public B11 / modem B27: measured native components, not the display version.
+b27_profile() {
+    for component in /firmware/image/modem.b16 /usr/bin/zte_topsw_mdm /usr/bin/diag-router; do
+        [ -f "$component" ] && [ ! -L "$component" ] && [ "$(stat -c %u "$component")" = 0 ] || return 1
+    done
+    [ "$(sha256sum /firmware/image/modem.b16 | awk '{print $1}')" = 4b1c67e73b94b889adc831168040d40ec368083dfbcec7ae747a2f4f86c66f3e ] &&
+    [ "$(sha256sum /usr/bin/zte_topsw_mdm | awk '{print $1}')" = 00a647cb46fa82a78969b3708c1429d91b37ef99c2c00835ac57ca53c126f25d ] &&
+    [ "$(sha256sum /usr/bin/diag-router | awk '{print $1}')" = 786ba99f5d506d01bbe72d9effa90d1a46f5929370f24ccabf6bab291e5a317f ]
+}
 # B04 captures include both an unavailable image and this measured modem.b16.
 # Native MDM/router identity remains required; startup needs no vendor RPC.
 b04_profile() {
@@ -36,7 +45,7 @@ b04_profile() {
 # Captured B31/B28 modem images, or the B04 userspace profile.
 case "$(sha256sum /firmware/image/modem.b16 2>/dev/null | awk '{print $1}')" in
     604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263|5a4489882538b5ab1d3e0049371f1b620d28d262a429923299b4f2626d40d478) ;;
-    *) b04_profile || exit 1
+    *) b04_profile || b27_profile || exit 1
        # Verify the collected stock network hook before creating any files.
        [ "$(sha256sum /etc/init.d/network | awk '{print $1}')" = 093e5461be5ea5d23d24522374a27b9a134c4932df3c89b3b756274f123ac508 ] || exit 1;;
 esac

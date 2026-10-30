@@ -20,11 +20,16 @@ RESOURCE = REPO / "MacIMEI/Resources/TTL"
 CID = "0123456789abcdef0123456789abcdef"
 OLD_MANAGER = "a70afc13c3645f64b5fd937162e7d403e133bcfa0a2da0e565d39a693f9ab488"
 OLD_MANAGERS = (OLD_MANAGER,
+    "7e629d347d1dc1777cb6322430de0d4188b442d624108efbaba8ad110f012666",
     "e4684cb0fa040de0525d0248897da01a5af2c4ee8509a851719afe9c970e9194",
     "79d5a2e696613f966fe2dff3fe59a0366455fe16681284c65d8ddb36c5e35b5a",
     "b6588072c82ddd7678093a29b983ec4417c6807562819e3bda69cd6534637b7c")
 TOKEN = "11111111-2222-3333-4444-555555555555"
 FW = "604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263"
+B27_FW = "4b1c67e73b94b889adc831168040d40ec368083dfbcec7ae747a2f4f86c66f3e"
+B27_MDM = "00a647cb46fa82a78969b3708c1429d91b37ef99c2c00835ac57ca53c126f25d"
+B27_ROUTER = "786ba99f5d506d01bbe72d9effa90d1a46f5929370f24ccabf6bab291e5a317f"
+B27_IPACM = "a843789933a0b5747927583021c1480957ea942626cab17cb13ad415d1dfd3ae"
 B28_FW = "5a4489882538b5ab1d3e0049371f1b620d28d262a429923299b4f2626d40d478"
 B04_FW = "c57e063d390983229dfc53aa87380b3d4655ee8daa1c748e1a032ac90cd0df81"
 B04_MDM = "93a346e7d69024503caf9ad42f14c97e1514dd7d04c7b5ebef4e30473b5d5c64"
@@ -191,7 +196,8 @@ class Fixture:
         self.path("ipa-pending").write_text('')
         self.path("etc/config/zwrt_router").write_text("config tmp_router 'tmp_router'\n option close_ipa_acce '0'\n")
         self.path("usr/bin/ipacm").write_text('fixture')
-        if profile in ('b04', 'b04-image'): self.path('usr/bin/zte_topsw_mdm').write_text('fixture')
+        self.path("usr/bin/diag-router").write_text('fixture')
+        if profile in ('b27', 'b04', 'b04-image'): self.path('usr/bin/zte_topsw_mdm').write_text('fixture')
         if profile != 'b04': self.path('firmware/image/modem.b16').write_text('fixture')
         self.path("sbin/ipacm_switch.sh").write_text('#!/bin/sh\nexec ipa-switch "$@"\n')
         self.path("proc/self/mountinfo").write_text(f"20 1 8:2 / {self.path('data')} rw,relatime - ext4 /dev/userdata rw\n")
@@ -203,7 +209,7 @@ class Fixture:
         self.stage = self.path(f"tmp/zte-imei-ttl-{TOKEN}")
         self.stage.mkdir(mode=0o700)
         self.path_line = "export PATH=" + str(self.bin) + ":/usr/sbin:/usr/bin:/sbin:/bin"
-        self.env = dict(os.environ, MOCK_ROOT=str(self.root), FW=B28_FW if profile == "b28" else B04_FW if profile == "b04-image" else FW, MDM=B04_MDM if profile in ("b04", "b04-image") else "0" * 64, IPACM=B28_IPACM if profile == "b28" else B31_IPACM, ROUTER=ROUTER, MOCK_PATH_LINE=self.path_line)
+        self.env = dict(os.environ, MOCK_ROOT=str(self.root), FW=B27_FW if profile == "b27" else B28_FW if profile == "b28" else B04_FW if profile == "b04-image" else FW, MDM=B27_MDM if profile == "b27" else B04_MDM if profile in ("b04", "b04-image") else "0" * 64, IPACM=B27_IPACM if profile == "b27" else B28_IPACM if profile == "b28" else B31_IPACM, ROUTER=B27_ROUTER if profile == "b27" else ROUTER, MOCK_PATH_LINE=self.path_line)
         self.env["PATH"] = str(self.bin) + ":" + os.environ.get("PATH", "")
         for p in RESOURCE.glob("*.sh"):
             text = p.read_text()
@@ -561,6 +567,35 @@ class TTLManagerTests(unittest.TestCase):
         self.f.path('rules.json').write_text(json.dumps(value))
         self.f.install(success=False)
         self.assertEqual(self.f.rules(), value)
+
+
+class TTLManagerB27Tests(TTLManagerTests):
+    """Exercise the same lifecycle and rollback against the captured B27 tuple."""
+    def setUp(self): self.f = Fixture(profile="b27")
+    def test_firmware_and_ipacm_profiles_cannot_be_mixed(self):
+        for ipacm in (B31_IPACM, B28_IPACM, "0" * 64):
+            result = self.f.install(env={"IPACM": ipacm}, success=False)
+            self.assertIn("ACCELERATION_UNVERIFIED", result.stderr)
+            self.assertFalse(self.f.path("data/zte-imei-ttl").exists())
+            self.assertEqual(self.f.rules(), self.f.baseline)
+    def test_b27_cannot_borrow_known_mdm_or_router(self):
+        for env in ({"MDM": B04_MDM}, {"ROUTER": ROUTER}, {"MOCK_FW": B28_FW}):
+            result = self.f.install(env=env, success=False)
+            self.assertIn("UNSUPPORTED_PROFILE", result.stderr)
+            self.assertFalse(self.f.path("data/zte-imei-ttl").exists())
+            self.assertEqual(self.f.rules(), self.f.baseline)
+    def test_b27_requires_regular_native_components(self):
+        for name in ['firmware/image/modem.b16', 'usr/bin/zte_topsw_mdm', 'usr/bin/diag-router']:
+            path = self.f.path(name)
+            path.unlink()
+            result = self.f.install(success=False)
+            self.assertIn('UNSUPPORTED_PROFILE', result.stderr)
+            path.symlink_to(self.f.path('usr/bin/ipacm'))
+            result = self.f.install(success=False)
+            self.assertIn('UNSUPPORTED_PROFILE', result.stderr)
+            path.unlink(); path.write_text('fixture')
+            self.assertFalse(self.f.path('data/zte-imei-ttl').exists())
+            self.assertEqual(self.f.rules(), self.f.baseline)
 
 
 class TTLManagerB28Tests(TTLManagerTests):

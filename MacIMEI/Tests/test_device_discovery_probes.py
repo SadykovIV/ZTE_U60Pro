@@ -91,7 +91,7 @@ class DiscoveryTests(unittest.TestCase):
     def run_probe(self,name):
         result,text,facts=self.f.run(name);self.assertEqual(result.returncode,0,result.stderr.decode());return text,facts
     def test_mirror_shape_and_shell_syntax(self):
-        s=json.loads(SPEC.read_text());self.assertEqual(s['revision'],14);self.assertEqual(len(s['probes']),58)
+        s=json.loads(SPEC.read_text());self.assertEqual(s['revision'],15);self.assertEqual(len(s['probes']),58)
         self.assertEqual(SPEC.read_bytes(),(ROOT/'Windows_x64/Resources/FirmwareResearch/probes.json').read_bytes())
         self.assertEqual(len({p['id'] for p in s['probes']}),58)
         self.assertEqual(len({o['id'] for o in s['observations']}),len(s['observations']))
@@ -361,5 +361,32 @@ class DiscoveryTests(unittest.TestCase):
         _,facts=self.run_probe('startup-structure');self.assertEqual(facts['startup_procd_rc_local'],'0')
         self.f.tool('cat','import sys\nprint("sh /etc/rc.local")\nsys.exit(1)')
         _,facts=self.run_probe('startup-structure');self.assertEqual(facts['startup_procd_rc_local'],'not-assessed')
+
+    def test_startup_permissions_are_separate_numeric_fields(self):
+        self.f.cap_tools();self.f.standard('sh')
+        self.f.file('/etc/rc.local', '#!/bin/sh\nexit 0\n').chmod(0o775)
+        self.f.tool('stat', 'import os,stat,sys\nm=os.lstat(sys.argv[-1]);v={"%u":"0","%g":"0","%a":oct(stat.S_IMODE(m.st_mode))[2:],"%h":str(m.st_nlink)}\nprint(v[sys.argv[2]])')
+        output,facts=self.run_probe('startup-structure')
+        for field,value in [('uid','0'),('gid','0'),('mode','775'),('links','1')]:
+            self.assertEqual(facts['startup_rc_local_'+field],value)
+        self.assertNotIn('startup_rc_local_metadata',facts)
+        self.assertNotIn('0:0:775:1',output)
+        self.f.tool('stat','print("private-host-identifier")')
+        _,facts=self.run_probe('startup-structure')
+        for field in ['uid','gid','mode','links']:
+            self.assertEqual(facts['startup_rc_local_'+field],'not-assessed')
+
+    def test_b27_reviewed_screen_bytes_are_classified_without_running_ui(self):
+        self.f.tool('stat','print("metadata")')
+        for path in ['/usr/bin/zte_topsw_devui','/etc/init.d/zte_topsw_devui','/usr/ui/language/English.ini','/usr/ui/language/Chinese.ini']:
+            self.f.file(path,CANARY).chmod(0o755)
+        values={'English.ini':'70686abbcd8baef9e0889395f1045acd4b420eb64bea1a13d78f4837f963fd88',
+                'Chinese.ini':'ff4a40615b3ff96a8b29a2a1777d1bd79be98438859ddba48c6ad481114eb91e'}
+        for ui_hash in ['d7aab64cafb5d0ec5c9479c3247a2e504c6ab76dd192cf8de997fc12f5d213fe','83c2623f4a7a87816466ba9e1eeae1da24384b7ff6e8c972e9df836495103c55','0'*64]:
+            values['zte_topsw_devui']=ui_hash
+            self.f.tool('sha256sum','import sys,pathlib\nvalues='+repr(values)+'\nprint(values[pathlib.Path(sys.argv[-1]).name]+"  file")')
+            _,facts=self.run_probe('launcher-abi')
+            self.assertEqual(facts['ui_hash_known'],'0' if ui_hash=='0'*64 else '1')
+            _,facts=self.run_probe('screen-abi');self.assertEqual(facts['language_hashes_known'],'1')
 
 if __name__=='__main__': unittest.main()

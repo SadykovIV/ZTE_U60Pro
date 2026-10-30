@@ -13,11 +13,14 @@ fn request(op: &str, before: &Snapshot) -> Request {
     let mut v = json!({"protocol":1,"operation":op,"expected_snapshot":before});
     match op {
         "download" => v["activation_code"] = json!("LPA:1$smdp.example$SYNTHETIC"),
-        "enable" | "delete" => v["iccid"] = json!(ONE),
+        "enable" | "delete" | "rename" => v["iccid"] = json!(ONE),
         _ => (),
     }
     if op == "delete" {
         v["confirm_delete"] = json!(true);
+    }
+    if op == "rename" {
+        v["nickname"] = json!("Рабочая SIM");
     }
     serde_json::from_value(v).unwrap()
 }
@@ -139,6 +142,287 @@ fn exact_mutation_postconditions() {
     let mut other = snapshot(&[(ONE, "enabled")]);
     other.eid.replace_range(31..32, "1");
     assert!(!en.postcondition(&before, &other));
+}
+
+#[test]
+fn rename_accepts_unicode_limits_without_normalizing_or_truncating() {
+    let before = snapshot(&[(ONE, "enabled")]);
+    for name in [
+        "Я".repeat(64),
+        "🛰".repeat(64),
+        "e\u{301}".repeat(32),
+        "-n 'quoted' $(private); <name>".into(),
+    ] {
+        let mut r = request("rename", &before);
+        r.nickname = Some(name.clone());
+        r.validate().unwrap();
+        assert_eq!(
+            r.arguments(&before).unwrap(),
+            vec!["profile".into(), "nickname".into(), ONE.into(), name]
+        );
+    }
+    let mut with_aid = before;
+    with_aid.profiles[0].isdp_aid = Some("00112233445566778899AABBCCDDEEFF".into());
+    assert_eq!(
+        request("rename", &with_aid).arguments(&with_aid).unwrap()[2],
+        ONE
+    );
+}
+
+#[test]
+fn rename_rejects_empty_untrimmed_control_and_overlong_names_before_device_io() {
+    let before = snapshot(&[(ONE, "enabled")]);
+    for name in [
+        "".into(),
+        " ".into(),
+        " x".into(),
+        "x\u{00a0}".into(),
+        "x\0x".into(),
+        "x\nx".into(),
+        "x\tx".into(),
+        "x\u{007f}x".into(),
+        "x\u{0085}x".into(),
+        "x\u{2028}x".into(),
+        "x\u{2029}x".into(),
+        "x\u{061c}x".into(),
+        "x\u{200e}x".into(),
+        "x\u{200f}x".into(),
+        "x\u{202a}x".into(),
+        "x\u{202e}x".into(),
+        "x\u{2066}x".into(),
+        "x\u{2069}x".into(),
+        "a".repeat(65),
+        "Я".repeat(65),
+        "🛰".repeat(65),
+    ] {
+        let mut r = request("rename", &before);
+        r.nickname = Some(name);
+        let mut rt = FakeRuntime::new(before.clone(), before.clone(), vec![]);
+        let error = perform(&r, &mut rt, &mut FakeRelay::default())
+            .err()
+            .unwrap();
+        assert_eq!(error.code, "invalid_nickname");
+        assert_eq!(rt.snapshots.len(), 3);
+        assert_eq!(rt.begins, 0);
+        assert!(rt.commands.is_empty());
+    }
+    let mut r = request("rename", &before);
+    r.nickname = None;
+    assert_eq!(r.validate().unwrap_err().code, "invalid_nickname");
+    let invalid_unicode = br#"{"protocol":1,"operation":"rename","nickname":"\ud800"}"#;
+    assert!(serde_json::from_slice::<Request>(invalid_unicode).is_err());
+}
+
+#[test]
+fn rename_request_fields_do_not_leak_into_other_operations() {
+    let before = snapshot(&[(ONE, "disabled")]);
+    for field in ["activation_code", "confirmation_code", "confirm_delete"] {
+        let mut value = json!({"protocol":1,"operation":"rename","expected_snapshot":before,
+            "iccid":ONE,"nickname":"Private nickname"});
+        value[field] = if field == "confirm_delete" {
+            json!(true)
+        } else {
+            json!("secret")
+        };
+        let r: Request = serde_json::from_value(value).unwrap();
+        assert_eq!(r.validate().unwrap_err().code, "invalid_request");
+    }
+    for operation in ["list", "download", "enable", "delete"] {
+        let mut r = if operation == "list" {
+            serde_json::from_value(json!({"protocol":1,"operation":"list"})).unwrap()
+        } else {
+            request(operation, &before)
+        };
+        r.nickname = Some("Private nickname".into());
+        assert!(r.validate().is_err());
+    }
+    let error = launcher_request(
+        json!({"protocol":1,"operation":"rename", "expected_snapshot":before,
+        "iccid":ONE, "nickname":"Private nickname"}),
+    )
+    .err()
+    .unwrap();
+    assert_eq!(error.code, "launcher_operation_refused");
+    assert!(!format!("{error:?}").contains("Private nickname"));
+}
+
+#[test]
+fn rename_postcondition_allows_only_exact_target_nickname_change() {
+    let before = snapshot(&[(ONE, "enabled"), (TWO, "disabled")]);
+    let r = request("rename", &before);
+    let mut after = before.clone();
+    after.profiles[0].nickname = r.nickname.clone();
+    assert!(r.postcondition(&before, &after));
+    after.profiles.reverse();
+    assert!(r.postcondition(&before, &after));
+    after.profiles.reverse();
+    for alter in 0..10 {
+        let mut wrong = after.clone();
+        match alter {
+            0 => wrong.eid.replace_range(31..32, "1"),
+            1 => wrong.profiles[0].nickname = Some("different".into()),
+            2 => wrong.profiles[1].nickname = Some("different".into()),
+            3 => wrong.profiles[0].isdp_aid = Some("AA00".into()),
+            4 => wrong.profiles[0].name = Some("different".into()),
+            5 => wrong.profiles[0].service_provider = Some("different".into()),
+            6 => {
+                wrong.profiles[0].state = "disabled".into();
+                wrong.profiles[0].enabled = false;
+            }
+            7 => {
+                wrong.profiles[1].state = "enabled".into();
+                wrong.profiles[1].enabled = true;
+            }
+            8 => {
+                wrong.profiles.pop();
+            }
+            9 => wrong.profiles[1].iccid = "890000000000000003".into(),
+            _ => unreachable!(),
+        }
+        assert!(!r.postcondition(&before, &wrong), "case {alter}");
+    }
+}
+
+#[test]
+fn rename_changes_one_name_with_strict_guard_and_no_notifications_http_or_radio() {
+    for state in ["enabled", "disabled", "unknown"] {
+        let before = snapshot(&[(ONE, state), (TWO, "disabled")]);
+        let r = request("rename", &before);
+        let mut after = before.clone();
+        after.profiles[0].nickname = r.nickname.clone();
+        let mut rt = FakeRuntime::new(before, after.clone(), vec![ok()]);
+        rt.fail_radio_ready = true;
+        let mut relay = FakeRelay::default();
+        let result = perform(&r, &mut rt, &mut relay).unwrap();
+        assert!(result.changed);
+        assert!(!result.notifications_pending);
+        assert_eq!(result.modem_verified, None);
+        assert_eq!(result.snapshot, Some(after));
+        assert_eq!((rt.begins, rt.ends, rt.radio_calls), (1, 1, 0));
+        assert_eq!(rt.strict_begins, vec![true]);
+        assert_eq!(
+            rt.commands,
+            vec![args(&["profile", "nickname", ONE, "Рабочая SIM"])]
+        );
+        assert_eq!(
+            relay.stages,
+            ["reading_profiles", "renaming_profile", "verifying"]
+        );
+    }
+}
+
+#[test]
+fn same_nickname_is_a_fresh_read_no_op_without_card_write() {
+    let mut before = snapshot(&[(ONE, "enabled")]);
+    before.profiles[0].nickname = Some("Рабочая SIM".into());
+    let r = request("rename", &before);
+    let mut rt = FakeRuntime::new(before.clone(), before.clone(), vec![]);
+    rt.fail_radio_ready = true;
+    let result = perform(&r, &mut rt, &mut FakeRelay::default()).unwrap();
+    assert!(!result.changed && !result.notifications_pending);
+    assert_eq!(result.snapshot, Some(before));
+    assert_eq!(rt.snapshots.len(), 2, "fresh card read still required");
+    assert_eq!((rt.begins, rt.ends, rt.radio_calls), (0, 0, 0));
+    assert!(rt.commands.is_empty());
+}
+
+#[test]
+fn rename_stale_metadata_or_missing_target_never_starts_mutation() {
+    let before = snapshot(&[(ONE, "enabled"), (TWO, "disabled")]);
+    for change in 0..3 {
+        let r = request("rename", &before);
+        let mut actual = before.clone();
+        match change {
+            0 => actual.profiles[0].nickname = Some("Concurrent edit".into()),
+            1 => actual.profiles[1].name = Some("Changed metadata".into()),
+            2 => actual.profiles[0].iccid = "890000000000000003".into(),
+            _ => unreachable!(),
+        }
+        let mut rt = FakeRuntime::new(actual.clone(), actual, vec![]);
+        let error = perform(&r, &mut rt, &mut FakeRelay::default())
+            .err()
+            .unwrap();
+        assert_eq!(error.code, "snapshot_changed");
+        assert_eq!((rt.begins, rt.ends, rt.radio_calls), (0, 0, 0));
+        assert!(rt.commands.is_empty());
+    }
+    let mut r = request("rename", &before);
+    r.iccid = Some("890000000000000003".into());
+    let mut rt = FakeRuntime::new(before.clone(), before, vec![]);
+    assert_eq!(
+        perform(&r, &mut rt, &mut FakeRelay::default())
+            .err()
+            .unwrap()
+            .code,
+        "profile_not_found"
+    );
+    assert_eq!(rt.begins, 0);
+}
+
+#[test]
+fn rename_failure_and_cleanup_uncertainty_never_retry_or_claim_success() {
+    let before = snapshot(&[(ONE, "enabled")]);
+    let r = request("rename", &before);
+    let mut changed = before.clone();
+    changed.profiles[0].nickname = r.nickname.clone();
+    for code in [
+        "lpac_failed",
+        "job_deadline_exceeded",
+        "invalid_lpac_message",
+    ] {
+        let mut rt = FakeRuntime::new(before.clone(), changed.clone(), vec![Err(Error::new(code))]);
+        let error = perform(&r, &mut rt, &mut FakeRelay::default())
+            .err()
+            .unwrap();
+        assert_eq!(error.code, code);
+        assert_eq!(error.snapshot, Some(changed.clone()));
+        assert_eq!((rt.begins, rt.ends, rt.radio_calls), (1, 1, 0));
+        assert_eq!(rt.commands.len(), 1);
+    }
+    let mut rt = FakeRuntime::new(before.clone(), changed, vec![ok()]);
+    rt.fail_end = Some(1);
+    rt.end_error = Some(Error::new("card_cleanup_unknown").component(Some("channel_close_failed")));
+    let error = perform(&r, &mut rt, &mut FakeRelay::default())
+        .err()
+        .unwrap();
+    assert_eq!(error.code, "card_cleanup_unknown");
+    assert!(error.snapshot.is_none());
+    assert_eq!(
+        rt.snapshots.len(),
+        2,
+        "no new channel after uncertain cleanup"
+    );
+    assert_eq!(rt.commands.len(), 1);
+    assert_eq!(rt.radio_calls, 0);
+}
+
+#[test]
+fn rename_refuses_unexpected_http_without_touching_network_relay() {
+    let before = snapshot(&[(ONE, "enabled")]);
+    let r = request("rename", &before);
+    let mut rt = FakeRuntime::new(before.clone(), before, vec![]);
+    rt.attempt_http = true;
+    let error = perform(&r, &mut rt, &mut FakeRelay::default())
+        .err()
+        .unwrap();
+    assert_eq!(error.code, "invalid_http_request");
+    assert_eq!((rt.begins, rt.ends, rt.radio_calls), (1, 1, 0));
+    assert_eq!(rt.commands.len(), 1);
+}
+
+#[test]
+fn rename_wrong_readback_is_not_success_and_has_no_private_diagnostics() {
+    let before = snapshot(&[(ONE, "enabled")]);
+    let mut r = request("rename", &before);
+    r.nickname = Some("SYNTHETIC_PRIVATE_NAME".into());
+    let mut rt = FakeRuntime::new(before.clone(), before, vec![ok()]);
+    let mut relay = FakeRelay::default();
+    let error = perform(&r, &mut rt, &mut relay).err().unwrap();
+    assert_eq!(error.code, "postcondition_failed");
+    assert!(error.snapshot.is_some());
+    assert!(!format!("{error:?} {:#?}", relay.stages).contains("SYNTHETIC_PRIVATE_NAME"));
+    assert_eq!(rt.commands.len(), 1);
+    assert_eq!(rt.radio_calls, 0);
 }
 
 #[test]
@@ -264,6 +548,8 @@ struct FakeRuntime {
     fail_radio: bool,
     fail_radio_ready: bool,
     ordinary: bool,
+    strict_begins: Vec<bool>,
+    attempt_http: bool,
 }
 impl FakeRuntime {
     fn new(before: Snapshot, after: Snapshot, results: Vec<Result<Value>>) -> Self {
@@ -280,6 +566,8 @@ impl FakeRuntime {
             fail_radio: false,
             fail_radio_ready: false,
             ordinary: false,
+            strict_begins: vec![],
+            attempt_http: false,
         }
     }
 }
@@ -297,16 +585,20 @@ impl Runtime for FakeRuntime {
             .pop_front()
             .expect("bounded snapshot fixture"))
     }
-    fn begin(&mut self, _: &Snapshot) -> Result<()> {
+    fn begin(&mut self, _: &Snapshot, strict_metadata: bool) -> Result<()> {
         self.begins += 1;
+        self.strict_begins.push(strict_metadata);
         if self.fail_begin {
             Err(Error::new("snapshot_changed"))
         } else {
             Ok(())
         }
     }
-    fn command(&mut self, a: &[String], _: &mut dyn Relay) -> Result<Value> {
+    fn command(&mut self, a: &[String], relay: &mut dyn Relay) -> Result<Value> {
         self.commands.push(a.to_vec());
+        if self.attempt_http {
+            return relay.http(&json!({"url":"https://operator.example/"}));
+        }
         self.results.pop_front().expect("no autoretry")
     }
     fn end(&mut self) -> Result<()> {
@@ -738,7 +1030,7 @@ fn actual_lpac_relay_waits_past_result_and_rejects_boolean_success() {
         std::fs::write(&lpa,format!("#!/bin/sh\nprintf '%s\\n' '{{\"type\":\"apdu\",\"payload\":{{\"func\":\"connect\",\"param\":null}}}}'\nIFS= read -r reply\nprintf '%s\\n' '{{\"type\":\"lpa\",\"payload\":{{\"code\":{code}}}}}'\nprintf '%s\\n' '{{\"type\":\"apdu\",\"payload\":{{\"func\":\"disconnect\",\"param\":null}}}}'\nIFS= read -r reply\nexit 0\n")).unwrap();
         std::fs::set_permissions(&lpa, std::fs::Permissions::from_mode(0o700)).unwrap();
         let mut runtime = LocalRuntime::new(bridge.clone(), lpa.clone());
-        runtime.begin(&before).unwrap();
+        runtime.begin(&before, false).unwrap();
         assert_eq!(
             runtime
                 .command(&args(&["profile", "list"]), &mut FakeRelay::default())
@@ -778,7 +1070,7 @@ fn web_deadline_refuses_late_apdu_and_still_closes_owned_bridge() {
         lpa.clone(),
         Instant::now() + Duration::from_millis(100),
     );
-    runtime.begin(&before).unwrap();
+    runtime.begin(&before, false).unwrap();
     assert_eq!(
         runtime
             .command(&args(&["profile", "list"]), &mut FakeRelay::default())

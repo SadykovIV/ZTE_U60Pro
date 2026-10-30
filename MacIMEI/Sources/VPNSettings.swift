@@ -311,14 +311,15 @@ enum VPNRequestFailure: LocalizedError, Equatable {
 /// Both the desktop and agent send private JSON on stdin to the same modem helper.
 final class VPNSettingsManager {
     static let root = "/data/zte-vpn"
-    static let launcherHash = "6e24686d0310c710c734ccc7c21469858e42a2e474f4a3c073bf1c476b460c50"
+    static let launcherHash = "543e15fd4bb2d07bcabbe6b51a5516b01384376b53d5c48453e0196c53b4ce99"
     static let agentHash = BundledAgent.sha256
-    static let dashboardIndexHash = "66864773cfde70fdb56765923b9e90a5f05d820c9fc7b5e310dcca72e9011b58"
-    static let helperHash = "46257e8e24397f097b3ce3e53067ad59b265803f66aeb2da6d216b05dd2e5db7"
+    static let dashboardIndexHash = "7cf016704c40a75ca35bddc3979703fbaa08f6362c3ef7024f2f9d026d4cc82f"
+    static let helperHash = "dbf07f7551415816a66ac18148d45c582649c76529282902533d154f5299c58e"
     // Exact previously shipped controllers may serve read-only status before upgrade.
     // Mutations continue to require the current controller hash.
     static let supportedStatusHashes: Set<String> = [
         helperHash,
+        "46257e8e24397f097b3ce3e53067ad59b265803f66aeb2da6d216b05dd2e5db7",
         "61ccaf5fa0361178dd6fe4a0104d964168f4f79a8453a8617a80a7403240d393",
         "4e8b92cc5089200f3fced24130e47e0918bf8931989af034f709344a42cd5b0d",
         "ff5859edb44d83fad9723ccdc142f28ce918b02fae3da929667726d32746986c",
@@ -436,7 +437,7 @@ final class VPNSettingsManager {
             "VPN_IPA_PREPARE_FAILED": "Не удалось автоматически отключить IPA для VPN. Подробности — в журнале модема.",
             "VPN_IPA_RESTORE_FAILED": "Не удалось восстановить параметры IPA. Подробности — в журнале модема.",
             "VPN_IPA_STATE_INVALID": "Сохранённые параметры IPA повреждены. Проверьте журнал модема.",
-            "VPN_IPA_UNSUPPORTED": "Реализация IPA в этой прошивке ещё не поддерживается.",
+            "VPN_IPA_UNSUPPORTED": "Не распознаны компоненты ускорения трафика IPA (ipacm или ipacm_switch.sh). Соберите данные для адаптации.",
             "VPN_PROFILE_NOT_FOUND": "Профиль не найден. Обновите список.",
             "VPN_REQUEST_TOO_LARGE": "Запрос VPN превышает 32 МиБ.",
             "VPN_SUBSCRIPTION_DOCUMENT": "Документ подписки пуст или превышает 8 МиБ.",
@@ -681,7 +682,7 @@ final class VPNSettingsManager {
             "PLATFORM": "Для установки VPN нужны root и ARM64.",
             "UNSAFE_STAGE": "Временные файлы VPN не прошли проверку владельца и прав.",
             "ALREADY_PRESENT": "Компоненты или служба VPN уже существуют. Обновите состояние и выполните обновление компонентов.",
-            "UNSUPPORTED_FIRMWARE": "Компоненты VPN рассчитаны на исследованные MU5250 CN B31, FLY B28 (B13) и XCBZ HK B04. Соберите данные для адаптации этой прошивки.",
+            "UNSUPPORTED_FIRMWARE": "Для VPN не распознан набор системных компонентов. Поддерживаются профили CN B31, FLY B27 (B11), FLY B28 (B13) и HK B04. Соберите данные для адаптации.",
             "RUNTIME_TOOLS": "В прошивке отсутствует одна из необходимых команд VPN: lua, nft, iptables, ip6tables, ebtables, dnsmasq, ip, ubus, sha256sum или flock.",
             "TUN_UNAVAILABLE": "Для VPN недоступно устройство /dev/net/tun.",
             "LUA_MODULES": "Не удалось загрузить модули Lua uci и luci.jsonc, необходимые для настройки VPN.",

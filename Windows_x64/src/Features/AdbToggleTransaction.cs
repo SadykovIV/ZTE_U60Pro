@@ -12,10 +12,17 @@ namespace ZteImeiStudio.Windows.Features;
 internal sealed class AdbToggleTransaction(IRemoteShell shell, string resources, string storage,
     TimeSpan? waitBudget = null, TimeSpan? pollInterval = null)
 {
-    internal const string ScriptSha256 = "8e8f39ca743a4e53971db885afc3117ab3023a0ff3d6144c0954b078f6562a79";
+    internal const string ScriptSha256 = "1ab9a52c4a5bf062e0863dba043e5f5da08d7397dde2d0fb1856e7955eb9e363";
+    internal const string Release1271ScriptSha256 = "8e8f39ca743a4e53971db885afc3117ab3023a0ff3d6144c0954b078f6562a79";
     internal const string PreviousScriptSha256 = "0ca5d10426c8398bab5e35af525782c490dce30f841a073e2cc64e3dc49c27dd";
     internal const string B04FirmwareHash = "c57e063d390983229dfc53aa87380b3d4655ee8daa1c748e1a032ac90cd0df81";
     internal const string B28FirmwareHash = "5a4489882538b5ab1d3e0049371f1b620d28d262a429923299b4f2626d40d478";
+    internal const string B27FirmwareHash = "4b1c67e73b94b889adc831168040d40ec368083dfbcec7ae747a2f4f86c66f3e";
+    internal const string B27RouterHash = "786ba99f5d506d01bbe72d9effa90d1a46f5929370f24ccabf6bab291e5a317f";
+    internal const string B27CapabilityCommand = """
+        test -f /usr/bin/zte_topsw_mdm && test ! -L /usr/bin/zte_topsw_mdm && test "$(stat -c %u /usr/bin/zte_topsw_mdm)" = 0 || exit 71
+          test "$(sha256sum /usr/bin/zte_topsw_mdm | cut -d ' ' -f 1)" = 00a647cb46fa82a78969b3708c1429d91b37ef99c2c00835ac57ca53c126f25d || exit 71
+        """;
     internal const string PendingName = "adb-toggle-pending.json";
     internal const string Unknown = "Результат переключения ADB не подтверждён. Подключитесь по SSH и обновите состояние ADB. Повторное переключение заблокировано. Если повторная проверка не помогает, перезапустите модем и подключитесь снова.";
     internal const string CapabilityCommand = "set -eu; test \"$(id -u)\" = 0; for tool in sh stat readlink sha256sum cut awk sed sort pidof nohup sleep cat mv rm rmdir mkdir ln id uname cmp chmod; do command -v \"$tool\" >/dev/null || exit 71; done; test ! -L /sbin/adbd; test -f /sbin/adbd && test -x /sbin/adbd && test \"$(stat -c %u /sbin/adbd)\" = 0; printf 'ADB_CONTROL_CAPABLE\\n'";
@@ -32,7 +39,9 @@ internal sealed class AdbToggleTransaction(IRemoteShell shell, string resources,
           test "$(printf '%s' "$info" | jsonfilter -e '@.integrate_version')" = XCBZ_HK_MU5250V1.0.0B04 || exit 71
           test "$(printf '%s' "$info" | jsonfilter -e '@.wa_inner_version')" = BD_XCBZHKMU5250V1.0.0B04 || exit 71
         """;
-    private static string Capability(AccessDeviceIdentity identity) => (identity.FirmwareHash == "absent" || identity.FirmwareHash == B04FirmwareHash)
+    private static string Capability(AccessDeviceIdentity identity) => identity.FirmwareHash == B27FirmwareHash
+        ? "set -eu; " + B27CapabilityCommand + "; " + CapabilityCommand
+        : (identity.FirmwareHash == "absent" || identity.FirmwareHash == B04FirmwareHash)
         ? "set -eu; " + B04CapabilityCommand + "; " + CapabilityCommand : CapabilityCommand;
     private string PendingPath => Path.Combine(storage, PendingName);
     private sealed record Pending(int Schema, string Token, string Cid, string Boot, string Firmware, string Router, bool Desired, bool Original, string Phase)
@@ -43,7 +52,9 @@ internal sealed class AdbToggleTransaction(IRemoteShell shell, string resources,
     private static DeviceFeatureException Failure(string message = Unknown) => new(message);
     private static string Q(string value) => DeviceFeatureService.Quote(value);
     private static bool Exact(RemoteResult result, string line) => result.Success && result.Stdout.AsSpan().SequenceEqual(Encoding.ASCII.GetBytes(line + "\n"));
-    private static bool Known(AccessDeviceIdentity identity) => (identity.FirmwareHash == DeviceFeatureService.FirmwareHash || identity.FirmwareHash == B28FirmwareHash || identity.FirmwareHash == B04FirmwareHash || identity.FirmwareHash == "absent") && identity.RouterHash == DeviceFeatureService.RouterHash;
+    private static bool Known(AccessDeviceIdentity identity) => identity.FirmwareHash == B27FirmwareHash
+        ? identity.RouterHash == B27RouterHash
+        : (identity.FirmwareHash == DeviceFeatureService.FirmwareHash || identity.FirmwareHash == B28FirmwareHash || identity.FirmwareHash == B04FirmwareHash || identity.FirmwareHash == "absent") && identity.RouterHash == DeviceFeatureService.RouterHash;
 
     private async Task<byte[]> Script(CancellationToken ct)
     {
@@ -123,7 +134,7 @@ internal sealed class AdbToggleTransaction(IRemoteShell shell, string resources,
         { throw Failure("Компонент переключения ADB не подтверждён. Настройки модема не изменены."); }
         // Pin failure precedes any remote staging.
         var identity = await AccessIdentity.ReadAsync(shell, ct);
-        if (!Known(identity)) throw Failure("Для этой прошивки переключение ADB ещё не подтверждено; поддерживаются измеренные B04, B28 и B31.");
+        if (!Known(identity)) throw Failure("Для этой прошивки переключение ADB ещё не подтверждено; поддерживаются измеренные B04, B27, B28 и B31.");
         var state = await Observe(ct, identity);
         var persistenceOnly = !desired && state.Enabled == false && Exact(await shell.RunAsync(Capability(identity), timeout: TimeSpan.FromSeconds(10), ct: ct), "ADB_CONTROL_CAPABLE");
         if ((!state.SupportsChange && !persistenceOnly) || state.Enabled is null) throw Failure("Безопасное переключение ADB для этой конфигурации не подтверждено. Для включения нужны готовые USB-дескрипторы ADB; выключение уже отсутствующего ADB доступно через SSH.");
@@ -246,7 +257,7 @@ internal sealed class AdbToggleTransaction(IRemoteShell shell, string resources,
         return "test -d " + stage + " && test ! -L " + stage + " && test \"$(stat -c '%u:%a' " + stage + ")\" = 0:700 || exit 71; " +
             "test -f " + path + " && test ! -L " + path + " && test \"$(stat -c '%u:%a:%h' " + path + ")\" = 0:600:1 && test \"$(stat -c %s " + path + ")\" -le 65536 || exit 71; " +
             "stage_hash=$(sha256sum " + path + " | cut -d ' ' -f 1); " +
-            (recovery ? "case \"$stage_hash\" in " + ScriptSha256 + "|" + PreviousScriptSha256 + ") :;; *) exit 71;; esac; " : "test \"$stage_hash\" = " + Q(ScriptSha256) + " || exit 71; ");
+            (recovery ? "case \"$stage_hash\" in " + ScriptSha256 + "|" + Release1271ScriptSha256 + "|" + PreviousScriptSha256 + ") :;; *) exit 71;; esac; " : "test \"$stage_hash\" = " + Q(ScriptSha256) + " || exit 71; ");
     }
     private static string Arguments(Pending pending, string action) => string.Join(' ', new[] { pending.Stage + "/adb-toggle.sh", action, pending.Stage, pending.Token, pending.Cid, pending.Boot, pending.Desired ? "1" : "0" }.Select(Q));
     private Task<RemoteResult> Call(Pending pending, string action, CancellationToken ct) => shell.RunAsync("set -eu; " + ScriptGuard(pending) + "sh " + Arguments(pending, action), timeout: TimeSpan.FromSeconds(10), ct: ct);

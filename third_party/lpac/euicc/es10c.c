@@ -389,6 +389,14 @@ int es10c_set_nickname(struct euicc_ctx *ctx, const char *iccid, const char *pro
     uint8_t asn1iccid[10];
     struct euicc_derutil_node n_request, n_iccid, n_profileNickname;
     uint32_t reqlen;
+    /* UTF8String SIZE(0..64): at most 256 UTF-8 bytes and 21 DER bytes.
+     * Keep DER separate from the APDU buffer used to transmit each chunk. */
+    uint8_t request[277];
+    size_t nickname_len;
+
+    if (!profileNickname || (nickname_len = strlen(profileNickname)) > 256) {
+        return -1;
+    }
     uint8_t *respbuf = NULL;
     unsigned resplen;
 
@@ -411,15 +419,15 @@ int es10c_set_nickname(struct euicc_ctx *ctx, const char *iccid, const char *pro
     n_iccid.pack.next = &n_profileNickname;
 
     n_profileNickname.tag = 0x90;
-    n_profileNickname.length = strlen(profileNickname);
+    n_profileNickname.length = nickname_len;
     n_profileNickname.value = (const uint8_t *)profileNickname;
 
-    reqlen = sizeof(ctx->apdu._internal.request_buffer.body);
-    if (euicc_derutil_pack(ctx->apdu._internal.request_buffer.body, &reqlen, &n_request)) {
+    reqlen = sizeof(request);
+    if (euicc_derutil_pack(request, &reqlen, &n_request)) {
         goto err;
     }
 
-    if (es10x_command(ctx, &respbuf, &resplen, ctx->apdu._internal.request_buffer.body, reqlen) < 0) {
+    if (es10x_command(ctx, &respbuf, &resplen, request, reqlen) < 0) {
         goto err;
     }
 

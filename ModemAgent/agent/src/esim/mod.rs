@@ -21,6 +21,7 @@ use std::io::{BufRead, Write};
 
 pub const MAX_LINE: usize = 9 * 1024 * 1024;
 pub const MAX_BODY: usize = 4 * 1024 * 1024;
+const OPERATIONS: [&str; 5] = ["list", "download", "enable", "delete", "rename"];
 
 pub struct Error {
     code: &'static str,
@@ -69,7 +70,7 @@ pub trait Runtime {
     fn inspect(&mut self) -> Result<Inspection> {
         self.snapshot().map(Inspection::Euicc)
     }
-    fn begin(&mut self, expected: &Snapshot) -> Result<()>;
+    fn begin(&mut self, expected: &Snapshot, strict_metadata: bool) -> Result<()>;
     fn command(&mut self, arguments: &[String], http: &mut dyn Relay) -> Result<Value>;
     fn end(&mut self) -> Result<()>;
     fn radio_ready(&mut self) -> Result<()>;
@@ -193,6 +194,18 @@ fn notifications(
     Ok(!fresh.is_disjoint(&remaining))
 }
 
+/// SetNickname is local to the card. Refuse even an unexpected dependency HTTP
+/// request instead of forwarding it to the modem or desktop Internet transport.
+struct CardOnlyRelay<'a>(&'a mut dyn Relay);
+impl Relay for CardOnlyRelay<'_> {
+    fn http(&mut self, _: &Value) -> Result<Value> {
+        Err(Error::new("invalid_http_request"))
+    }
+    fn progress(&mut self, stage: &'static str) -> Result<()> {
+        self.0.progress(stage)
+    }
+}
+
 fn perform(request: &Request, runtime: &mut impl Runtime, rpc: &mut dyn Relay) -> Result<Outcome> {
     request.validate()?;
     rpc.progress("reading_profiles")?;
@@ -218,10 +231,20 @@ fn perform(request: &Request, runtime: &mut impl Runtime, rpc: &mut dyn Relay) -
         .expected_snapshot
         .as_ref()
         .ok_or(Error::new("snapshot_required"))?;
-    if !before.matches(expected) {
+    if !before.matches(expected)
+        || (request.operation == Operation::Rename && !before.metadata_matches(expected))
+    {
         return Err(Error::new("snapshot_changed"));
     }
     let arguments = request.arguments(&before)?;
+    if request.operation == Operation::Rename && request.postcondition(&before, &before) {
+        return Ok(Outcome {
+            snapshot: Some(before),
+            changed: false,
+            notifications_pending: false,
+            modem_verified: None,
+        });
+    }
     if request.operation == Operation::Enable {
         // Fail before profile mutation if exact operating-mode readback is
         // unavailable or the user already placed the modem in flight mode.
@@ -245,20 +268,29 @@ fn perform(request: &Request, runtime: &mut impl Runtime, rpc: &mut dyn Relay) -
         });
     }
     // Second guard: helper holds its process lock while performing this handshake.
-    runtime.begin(&before)?;
-    let previous = runtime
-        .command(&args(&["notification", "list"]), rpc)
-        .and_then(|v| sequence_numbers(&v))
-        .ok();
+    runtime.begin(&before, request.operation == Operation::Rename)?;
+    let previous = if request.operation == Operation::Rename {
+        None
+    } else {
+        runtime
+            .command(&args(&["notification", "list"]), rpc)
+            .and_then(|v| sequence_numbers(&v))
+            .ok()
+    };
     let result = (|| {
         rpc.progress(match request.operation {
             Operation::Download => "downloading",
             Operation::Enable => "enabling",
             Operation::Delete => "deleting",
+            Operation::Rename => "renaming_profile",
             Operation::List => unreachable!(),
         })?;
         // Exactly one mutation call. Never retry on a transport or card failure.
-        runtime.command(&arguments, rpc)
+        if request.operation == Operation::Rename {
+            runtime.command(&arguments, &mut CardOnlyRelay(rpc))
+        } else {
+            runtime.command(&arguments, rpc)
+        }
     })();
     let closed = runtime.end();
     closed?;
@@ -273,6 +305,14 @@ fn perform(request: &Request, runtime: &mut impl Runtime, rpc: &mut dyn Relay) -
     }
     if !request.postcondition(&before, &after) {
         return Err(Error::new("postcondition_failed").snapshot(after));
+    }
+    if request.operation == Operation::Rename {
+        return Ok(Outcome {
+            snapshot: Some(after),
+            changed: true,
+            notifications_pending: false,
+            modem_verified: None,
+        });
     }
     if request.operation == Operation::Enable {
         // end() and the postcondition snapshot have both fully closed their
@@ -295,7 +335,7 @@ fn perform(request: &Request, runtime: &mut impl Runtime, rpc: &mut dyn Relay) -
     let mut pending = true;
     if let Some(previous) = previous {
         rpc.progress("notifications")?;
-        match runtime.begin(&after) {
+        match runtime.begin(&after, false) {
             Ok(()) => {
                 let delivery = notifications(runtime, rpc, &previous);
                 if let Err(error) = runtime.end() {
@@ -462,7 +502,7 @@ pub fn early_entry() -> Option<i32> {
         let valid = resources::verify().is_ok();
         let value = json!({"ok":valid,"offline":true,"protocol":1,"version":crate::AGENT_VERSION,
             "helper_sha256":resources::BRIDGE_HASH,"lpac_sha256":resources::LPAC_HASH,
-            "operations":["list","download","enable","delete"]});
+            "operations":OPERATIONS});
         return Some(if emit(&mut output, &value).is_ok() && valid {
             0
         } else {

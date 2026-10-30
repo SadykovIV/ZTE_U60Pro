@@ -9,7 +9,7 @@ using ZteImeiStudio.Windows.Research;
 var passed=0;
 void Check(bool condition,string name) { if(!condition)throw new Exception(name);Console.WriteLine("PASS "+name);passed++; }
 var bundled=Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,"../../../../Resources/FirmwareResearch/probes.json"));
-var productionSpec=ResearchSpec.Load(bundled);Check(productionSpec.Probes.Length==57 && productionSpec.Observations?.Length==76 && productionSpec.Features.Length==19 && productionSpec.Revision==13 && productionSpec.Sha256==ResearchSpec.ExpectedSpecificationSha256,"production probe contract matches pinned digest");
+var productionSpec=ResearchSpec.Load(bundled);Check(productionSpec.Probes.Length==58 && productionSpec.Observations?.Length==76 && productionSpec.Features.Length==19 && productionSpec.Revision==15 && productionSpec.Sha256==ResearchSpec.ExpectedSpecificationSha256,"production probe contract matches pinned digest");
 var genericAccess=productionSpec.Features.Single(f=>f.Id=="generic-access");
 Check(genericAccess.Profiles.Length==0 && genericAccess.Requirements.All(r=>r.Fact!="tool_ubus" && r.Probe!="ubus-inventory" && r.Probe!="firmware-hashes"),"generic access observation has no firmware or vendor API dependency");
 Check(genericAccess.Requirements.Any(r=>r.Probe=="identity" && r.Fact=="root" && r.Expected=="1") && genericAccess.Requirements.Any(r=>r.Fact=="architecture" && r.Expected=="aarch64"),"generic access retains root and ARM64 prerequisites");
@@ -21,7 +21,35 @@ ResearchProbeResult[] ProfileResults(string id)
  foreach(var item in profile.IdentityRequirements??[]) { if(!facts.ContainsKey(item.Probe))facts[item.Probe]=new();facts[item.Probe][item.Fact]=item.Expected; }
  return facts.Select(pair=>new ResearchProbeResult(pair.Key,new("Тест","Test"),"identity","","success",0,"","",0,DateTimeOffset.UtcNow,false,pair.Value)).ToArray();
 }
-foreach(var id in new[]{"b31","b28","b04"})Check(FirmwareResearchEngine.MatchProfile(productionSpec,ProfileResults(id))==id,"measured identity selects "+id);
+foreach(var id in new[]{"b31","b28","b04","b27"})Check(FirmwareResearchEngine.MatchProfile(productionSpec,ProfileResults(id))==id,"measured identity selects "+id);
+Check(productionSpec.Features.Where(f=>f.Profiles.Contains("b27")).Select(f=>f.Id).ToHashSet().SetEquals(["ttl","vpn","physical-euicc"]),"B27 only selects implemented firmware-dependent adapters");
+var b27Facts=new Dictionary<string,Dictionary<string,string>>();
+foreach(var feature in productionSpec.Features)
+ foreach(var item in feature.Requirements.Where(r=>r.Profiles is null || r.Profiles.Contains("b27")))
+ {if(!b27Facts.ContainsKey(item.Probe))b27Facts[item.Probe]=new();b27Facts[item.Probe][item.Fact]=item.Expected;}
+foreach(var probe in ProfileResults("b27"))
+ foreach(var fact in probe.Facts)
+ {if(!b27Facts.ContainsKey(probe.Id))b27Facts[probe.Id]=new();b27Facts[probe.Id][fact.Key]=fact.Value;}
+b27Facts["esim-components"]["native_isdr_access"]="not-assessed";
+b27Facts["boot-protection"]["restore_readiness"]="not-assessed";
+var b27Results=productionSpec.Probes.Select(p=>new ResearchProbeResult(p.Id,p.Title,p.Category,"","success",0,"","",0,DateTimeOffset.UtcNow,false,b27Facts.GetValueOrDefault(p.Id)??[])).ToArray();
+var b27Features=FirmwareResearchEngine.Evaluate(productionSpec,b27Results,FirmwareResearchEngine.MatchProfile(productionSpec,b27Results),"complete");
+Check(b27Features.Where(f=>new[]{"ttl","vpn","physical-euicc"}.Contains(f.Id)).All(f=>f.State=="prerequisites_met"),"B27 measured prerequisites select TTL, VPN and separately verified physical eUICC");
+Check(b27Features.Where(f=>new[]{"imei","modem-backup","full-backup","full-restore"}.Contains(f.Id)).All(f=>f.State=="blocked"),"B27 adapters do not grant DIAG or raw backup/restore compatibility");
+Check(b27Features.Single(f=>f.Id=="native-esim").State=="unknown","B27 identity never certifies built-in eSIM");
+var b28Profile=productionSpec.Profiles.Single(p=>p.Id=="b28");
+foreach(var (key,foreign) in new[]{("firmware_sha256",b28Profile.FirmwareSHA256!),("router_sha256",b28Profile.RouterSHA256),("mdm_sha256",b28Profile.IdentityRequirements!.Single().Expected)})
+ foreach(var value in new[]{foreign,"not-assessed"})
+ {
+  var mixed=b27Results.Select(p=>p.Id=="firmware-hashes"?p with {Facts=p.Facts.ToDictionary(x=>x.Key,x=>x.Key==key?value:x.Value)}:p).ToArray();
+  var profile=FirmwareResearchEngine.MatchProfile(productionSpec,mixed);
+  Check(profile is null,"B27 mixed or unmeasured identity tuple cannot match: "+key);
+  Check(FirmwareResearchEngine.Evaluate(productionSpec,mixed,profile,"complete").Where(f=>new[]{"ttl","vpn","physical-euicc"}.Contains(f.Id)).All(f=>f.State=="unknown"),"mixed B27 identity cannot certify firmware-dependent adapters");
+ }
+var b27Passive=b27Results.Select(p=>p.Id=="esim-components"?p with {Facts=p.Facts.ToDictionary(x=>x.Key,x=>x.Key=="physical_euicc_management"?"not-assessed":x.Value)}:p).ToArray();
+Check(FirmwareResearchEngine.Evaluate(productionSpec,b27Passive,"b27","complete").Single(f=>f.Id=="physical-euicc").State=="unknown","passive B27 collection cannot certify physical eUICC access");
+var b27WrongIPA=b27Results.Select(p=>p.Id=="ipa-runtime"?p with {Facts=p.Facts.ToDictionary(x=>x.Key,x=>x.Key=="ipacm_sha256"?"95385816da7b2edb9a977cee328c091753463fcd4a70a67fa1676e8b335c11c0":x.Value)}:p).ToArray();
+Check(FirmwareResearchEngine.Evaluate(productionSpec,b27WrongIPA,"b27","complete").Single(f=>f.Id=="ttl").State=="blocked","B27 TTL rejects a B31 IPA daemon");
 foreach(var item in productionSpec.Profiles.Single(p=>p.Id=="b04").IdentityRequirements!)
  foreach(var value in new[]{"not-assessed","wrong"})
  {
@@ -104,6 +132,28 @@ Check(report.Features.All(x=>x.State=="prerequisites_met") && report.Probes.Coun
 using(var cancel=new CancellationTokenSource()) { factory=new(new FakeShell("ADB",command=> { if(command=="identity")cancel.Cancel();return Baseline(command); }));report=await Run(factory,ct:cancel.Token);Check(report.Outcome=="cancelled"&&report.Probes.Any(p=>p.Status=="skipped"),"cancel produces exportable partial snapshot"); }
 var secret="my-private-password";var raw="{\"password\":\"my-private-password\",\"psk\":\"wifi pass\",\"token\":\"access-token\"}\nimei=123456789012345 imsi=1234567890123456\nSSID=SecretNetwork\nkey='secret key' cookie=abc\n-----BEGIN PRIVATE KEY-----\nVerySecret\n-----END PRIVATE KEY-----\nfe80::1234 1.2.3.4 aa:bb:cc:dd:ee:ff\nvless://secret-uuid@host.example:443#private\none device usb:1\n0123456789abcdef0123456789abcdef\nFR_FACT cid_sha256="+fingerprint;
 var cleaned=new ResearchRedactor([secret]).Clean(raw);
+var permissionFacts="FR_FACT startup_rc_local_uid=0\nFR_FACT startup_rc_local_gid=0\nFR_FACT startup_rc_local_mode=775\nFR_FACT startup_rc_local_links=1\n";
+Check(new ResearchRedactor().Clean(permissionFacts)==permissionFacts,"startup permission facts survive privacy redaction without looking like IPv6");
+var metadataFactory=new FakeFactory(new FakeShell("ADB",command=>command=="identity"?Ok(Baseline(command).Stdout+"FR_FACT main_2g_iface=1\nFR_FACT private_key=RAW_PRIVATE_CANARY\n"):Baseline(command)));
+var metadataCollected=await new FirmwareResearchEngine(spec,metadataFactory,new ResearchRedactor(["main","RAW_PRIVATE_CANARY"])).CollectAsync("ADB",null,null,CancellationToken.None);
+var metadataProbe=metadataCollected.Probes.Single(p=>p.Id=="identity");
+Check(metadataProbe.Facts["main_2g_iface"]=="1" && !metadataProbe.Stdout.Contains("main_2g_iface") && !metadataProbe.Stdout.Contains("RAW_PRIVATE_CANARY") && metadataProbe.Facts["private_key"]!="RAW_PRIVATE_CANARY","collection preserves typed field names while raw credentials remain redacted");
+var publicMetadata=new Dictionary<string,string> {
+ ["tool_chpasswd"]="1",["tmp_private_stage_parent"]="1",["private_opkg_present"]="not-assessed",["secret_contents_collected"]="0",
+ ["component_private_bin_path"]="present",["component_private_bin_uid"]="0",["component_private_bin_mode"]="700",["component_private_bin_links"]="2",
+ ["main_2g_iface"]="1",["main_5g_iface"]="0",["wifi_main_2g_disabled"]="0",["wifi_main_5g_disabled"]="1",
+ ["wifi_main_2g_device"]="wifi0",["wifi_main_5g_device"]="wifi1",["wifi_main_2g_network"]="lan",["wifi_main_5g_network"]="other",
+ ["wifi_guest_2g_guest_remaining"]="0",["wifi_guest_5g_guest_remaining"]="not-assessed" };
+var metadataFacts=new Dictionary<string,string>(publicMetadata) { ["private_key"]="1",["tmp_private_stage_parent_secret"]="RAW_PRIVATE_CANARY",["arbitrary_fact"]="RAW_PRIVATE_CANARY" };
+var metadataReport=report with {
+ Probes=[new("metadata",text,"metadata","","success",0,"password=RAW_PRIVATE_CANARY","",0,DateTimeOffset.UtcNow,false,metadataFacts)],
+ Observations=publicMetadata.Select((fact,index)=>new ResearchObservationResult("metadata-"+index,text,"metadata",fact.Key,"known",fact.Value,"success",0)).ToArray() };
+var metadataCleaner=new ResearchRedactor(["main","RAW_PRIVATE_CANARY"]);
+var metadataPayload=ResearchReportFiles.BuildExportFiles(metadataReport,metadataCleaner.Clean)["report.json"];
+var exportedMetadata=JsonSerializer.Deserialize<ResearchReport>(metadataPayload,ResearchSpec.Json)!;
+Check(publicMetadata.All(f=>exportedMetadata.Probes[0].Facts[f.Key]==f.Value && exportedMetadata.Observations!.Single(o=>o.Fact==f.Key).Value==f.Value),"fixed typed metadata survives export and registered-secret name collisions");
+Check(!Encoding.UTF8.GetString(metadataPayload).Contains("RAW_PRIVATE_CANARY") && exportedMetadata.Probes[0].Facts["private_key"]!="1","metadata exception does not preserve credential fields or raw credentials");
+Check(new[]{("component_private_bin_mode","888"),("component_private_bin_uid","4294967296"),("component_private_bin_links","1\n"),("tmp_private_stage_parent","password"),("wifi_main_2g_network","private-network"),("wifi_guest_2g_guest_remaining","1234567890"),("private_key","1"),("unknown_private_metadata","0")}.All(item=>!ResearchExportMetadata.IsPublic(item.Item1,item.Item2)),"metadata projection rejects unknown keys, out-of-range values and malformed types");
 Check(!new ResearchRedactor().Clean("{\"password\":\"unterminated secret with spaces").Contains("secret with spaces"),"truncated quoted secrets remain redacted");
 Check(!new[]{secret,"wifi pass","access-token","123456789012345","SecretNetwork","secret key","VerySecret","1.2.3.4","aa:bb:cc:dd:ee:ff","secret-uuid","one device","0123456789abcdef0123456789abcdef"}.Any(cleaned.Contains) && cleaned.Contains(fingerprint),"redaction removes JSON/shell secrets, identities, VPN URLs and addresses but retains SHA256");
 factory=new(new FakeShell("ADB",Baseline));report=await Run(factory);

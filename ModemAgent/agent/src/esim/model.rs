@@ -106,6 +106,16 @@ impl Snapshot {
     pub fn matches(&self, other: &Self) -> bool {
         self.eid == other.eid && self.inventory() == other.inventory()
     }
+    /// A nickname write also owns the displayed metadata, so a stale editor
+    /// cannot overwrite a name changed since the user read the card.
+    pub fn metadata_matches(&self, other: &Self) -> bool {
+        self.matches(other)
+            && self.profiles.len() == other.profiles.len()
+            && self
+                .profiles
+                .iter()
+                .all(|p| other.target(&p.iccid).is_ok_and(|q| p == q))
+    }
     pub fn target(&self, iccid: &str) -> Result<&Profile> {
         self.profiles
             .iter()
@@ -121,6 +131,7 @@ pub enum Operation {
     Download,
     Enable,
     Delete,
+    Rename,
 }
 
 #[derive(Debug, Deserialize)]
@@ -133,6 +144,7 @@ pub struct Request {
     pub confirmation_code: Option<String>,
     pub iccid: Option<String>,
     pub confirm_delete: Option<bool>,
+    pub nickname: Option<String>,
 }
 
 pub fn domain(host: &str) -> bool {
@@ -168,6 +180,7 @@ impl Request {
                 || self.confirmation_code.is_some()
                 || self.iccid.is_some()
                 || self.confirm_delete.is_some()
+                || self.nickname.is_some()
             {
                 return Err(Error::new("invalid_request"));
             }
@@ -195,6 +208,7 @@ impl Request {
                     || fields[2].is_empty()
                     || self.iccid.is_some()
                     || self.confirm_delete.is_some()
+                    || self.nickname.is_some()
                 {
                     return Err(Error::new("invalid_activation_code"));
                 }
@@ -211,6 +225,7 @@ impl Request {
                 if !self.iccid.as_ref().is_some_and(|s| decimal(s, 18, 20))
                     || self.activation_code.is_some()
                     || self.confirmation_code.is_some()
+                    || self.nickname.is_some()
                 {
                     return Err(Error::new("invalid_request"));
                 }
@@ -219,6 +234,31 @@ impl Request {
                 }
                 if self.operation == Operation::Enable && self.confirm_delete.is_some() {
                     return Err(Error::new("invalid_request"));
+                }
+            }
+            Operation::Rename => {
+                if !self.iccid.as_ref().is_some_and(|s| decimal(s, 18, 20))
+                    || self.activation_code.is_some()
+                    || self.confirmation_code.is_some()
+                    || self.confirm_delete.is_some()
+                {
+                    return Err(Error::new("invalid_request"));
+                }
+                // ES10c uses UTF8String(0..64), measured in Unicode characters.
+                // Never truncate or silently alter the requested name.
+                if !self.nickname.as_ref().is_some_and(|name| {
+                    !name.is_empty()
+                        && name.len() <= 256
+                        && name.chars().count() <= 64
+                        && name == name.trim()
+                        && !name.chars().any(|c| {
+                            c.is_control()
+                                || matches!(c, '\u{2028}' | '\u{2029}' | '\u{061c}'
+                                    | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}'
+                                    | '\u{2066}'..='\u{2069}')
+                        })
+                }) {
+                    return Err(Error::new("invalid_nickname"));
                 }
             }
             Operation::List => unreachable!(),
@@ -268,6 +308,17 @@ impl Request {
                 }
                 Ok(a)
             }
+            Operation::Rename => {
+                // Unlike enable/delete, the pinned lpac nickname applet takes
+                // an ICCID only; an ISD-P AID is not an interchangeable target.
+                let p = before.target(self.iccid.as_deref().unwrap_or_default())?;
+                Ok(vec![
+                    "profile".into(),
+                    "nickname".into(),
+                    p.iccid.clone(),
+                    self.nickname.clone().unwrap(),
+                ])
+            }
             Operation::List => Err(Error::new("invalid_request")),
         }
     }
@@ -308,6 +359,15 @@ impl Request {
                     .filter(|(i, _, _)| i != target)
                     .collect::<BTreeSet<_>>();
                 a == expected && after.target(target).is_err()
+            }
+            Operation::Rename => {
+                let target = self.iccid.as_deref().unwrap_or_default();
+                let mut expected = before.clone();
+                let Some(profile) = expected.profiles.iter_mut().find(|p| p.iccid == target) else {
+                    return false;
+                };
+                profile.nickname = self.nickname.clone();
+                expected.metadata_matches(after)
             }
             Operation::List => before.matches(after),
         }

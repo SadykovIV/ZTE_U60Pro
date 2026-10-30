@@ -3,10 +3,10 @@ export interface Profile {
   nickname: string | null; service_provider: string | null; name: string | null
 }
 export interface Snapshot { ok: true; eid: string; profiles: Profile[] }
-export type Operation = 'list' | 'download' | 'enable' | 'delete'
+export type Operation = 'list' | 'download' | 'enable' | 'delete' | 'rename'
 export interface EsimRequest {
   protocol: 1; operation: Operation; expected_snapshot?: Snapshot; activation_code?: string
-  confirmation_code?: string; iccid?: string; confirm_delete?: true
+  confirmation_code?: string; iccid?: string; confirm_delete?: true; nickname?: string
 }
 export type CardReason = 'busy' | 'open_rejected' | 'cleanup_unknown' | 'not_ready' | 'unsupported_device' | 'read_failed' | 'operation_failed'
 export type CardStatus = { kind: 'ordinary_sim'; management: 'unavailable'; reason: 'isdr_not_found'; cleanup_confirmed: true } | { kind: 'euicc_confirmed'; management: 'available'; reason: 'eid_and_profiles_read'; cleanup_confirmed: true } |
@@ -88,12 +88,26 @@ export function validSnapshot(value: unknown): value is Snapshot {
 }
 export const mask = (id: string) => id.slice(0, 4) + '••••' + id.slice(-4)
 export const profileName = (p: Profile) => p.nickname || p.name || p.service_provider || mask(p.iccid)
+export function profileNickname(value: string): string {
+  const nickname = value.trim()
+  if (!nickname || Array.from(nickname).length > 64 || Array.from(nickname).some(c => {
+    const cp = c.codePointAt(0)!
+    return cp < 32 || cp >= 127 && cp <= 159 || cp >= 0xd800 && cp <= 0xdfff ||
+      cp === 0x2028 || cp === 0x2029 || cp === 0x61c || cp === 0x200e || cp === 0x200f ||
+      cp >= 0x202a && cp <= 0x202e || cp >= 0x2066 && cp <= 0x2069
+  })) throw new Error('invalid_nickname')
+  return nickname
+}
+export function renameRequest(snapshot: Snapshot, iccid: string, value: string): EsimRequest {
+  if (!validSnapshot(snapshot) || !snapshot.profiles.some(p => p.iccid === iccid)) throw new Error('profile_not_found')
+  return { protocol: 1, operation: 'rename', expected_snapshot: snapshot, iccid, nickname: profileNickname(value) }
+}
 export function verifiedResult(request: EsimRequest, result: EsimResult): Snapshot {
   if (result.ok !== true || result.component_error !== undefined || !validSnapshot(result.snapshot)) throw new Error('unconfirmed')
   if (parsedCard(result.card, true)?.kind === 'ordinary_sim') throw new Error('unconfirmed')
   const after = result.snapshot, before = request.expected_snapshot
   if (request.operation === 'list') return after
-  if (!before || before.eid !== after.eid || typeof result.changed !== 'boolean' || request.operation !== 'enable' && !result.changed) throw new Error('unconfirmed')
+  if (!before || before.eid !== after.eid || typeof result.changed !== 'boolean' || !['enable', 'rename'].includes(request.operation) && !result.changed) throw new Error('unconfirmed')
   const identity = (p: Profile) => `${p.iccid}:${(p.isdp_aid ?? '').toLowerCase()}`
   const inventory = (p: Profile) => `${identity(p)}:${p.state}`
   const same = (a: string[], b: string[]) => JSON.stringify(a.sort()) === JSON.stringify(b.sort())
@@ -104,6 +118,12 @@ export function verifiedResult(request: EsimRequest, result: EsimResult): Snapsh
     const selected = before.profiles.find(p => p.iccid === request.iccid)
     if (!selected || result.changed !== !selected.enabled || result.modem_verified !== true || result.radio_restored !== true || !same(before.profiles.map(identity), after.profiles.map(identity)) ||
       !after.profiles.every(p => p.state === (p.iccid === request.iccid ? 'enabled' : 'disabled'))) throw new Error('unconfirmed')
+  } else if (request.operation === 'rename') {
+    const selected = before.profiles.find(p => p.iccid === request.iccid)
+    const metadata = (p: Profile, renamed: boolean) => JSON.stringify([inventory(p), p.name, p.service_provider, renamed && p.iccid === request.iccid ? request.nickname : p.nickname])
+    if (!selected || typeof request.nickname !== 'string' || profileNickname(request.nickname) !== request.nickname ||
+      result.changed !== (selected.nickname !== request.nickname) ||
+      !same(before.profiles.map(p => metadata(p, true)), after.profiles.map(p => metadata(p, false)))) throw new Error('unconfirmed')
   } else if (!before.profiles.some(p => p.iccid === request.iccid && p.state === 'disabled') || after.profiles.some(p => p.iccid === request.iccid) ||
     !same(before.profiles.filter(p => p.iccid !== request.iccid).map(inventory), after.profiles.map(inventory))) throw new Error('unconfirmed')
   return after

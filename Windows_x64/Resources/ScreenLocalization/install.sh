@@ -17,7 +17,7 @@ english_target=/usr/ui/language/English.ini
 chinese_target=/usr/ui/language/Chinese.ini
 ui_target=/usr/bin/zte_topsw_devui
 cache_target=/cache/language.txt
-revision=20261013
+revision=20261030
 english_sha=d97925e40f9c119e05dd692e8fbce36593b55aa3faf718af373b2cb57075981a
 chinese_sha=5c4b6e3896593172608f2d8890da56c7ff521667129375d0a52383243bb760df
 patched_ui_sha=16eb92e27f54b5cf5c6b316a6e7a62b782053a2a609d0d4904a7f08a7bc0afa4
@@ -89,6 +89,12 @@ select_profile() {
         original_ui_sha=8d2ebbde880934f52195ad9595815d728f7aa4671bb0633d5a5149b09467ae90
         patched_ui_sha=d6c3cd409705d5aa9c12185c84074513b159088025f005da7dbf01c51e3c3715
         original_english_sha=24a1022bf9380cfadaf4c4a737f1f0ce8ecf1ad025563376f7dd83eb94e6ceae;;
+      d7aab64cafb5d0ec5c9479c3247a2e504c6ab76dd192cf8de997fc12f5d213fe)
+        screen_profile=fly-b27
+        original_ui_sha=d7aab64cafb5d0ec5c9479c3247a2e504c6ab76dd192cf8de997fc12f5d213fe
+        patched_ui_sha=83c2623f4a7a87816466ba9e1eeae1da24384b7ff6e8c972e9df836495103c55
+        original_english_sha=70686abbcd8baef9e0889395f1045acd4b420eb64bea1a13d78f4837f963fd88
+        original_chinese_sha=ff4a40615b3ff96a8b29a2a1777d1bd79be98438859ddba48c6ad481114eb91e;;
       dbe6eadc92d43a0cd7206264f9d75ab242df90e88c02ee2ba3ac65598b58523e)
         screen_profile=xcbzhk-b04
         original_ui_sha=dbe6eadc92d43a0cd7206264f9d75ab242df90e88c02ee2ba3ac65598b58523e
@@ -349,7 +355,7 @@ if test "$mode" = install; then
             prior_chinese=92dd43aff9057ba801a4e41069168a658bd8ed5acd3a12fddee1e245b05c5d98;;
           810aae3c07c8019f2d0657f2bad6f1ee38f1dea5f1081210ab144478dd87c7b8)
             prior_english=$english_sha; prior_chinese=$chinese_sha;;
-          0ce40f0d3e4375165f5e4424db023b786f70f9cacf88bfe07c1c893cff12db7d)
+          089b66525207d9dc9fec54112fbb5786196c4a663fb1609b9aa53d8f07bb15ba|0ce40f0d3e4375165f5e4424db023b786f70f9cacf88bfe07c1c893cff12db7d)
             legacy_b31_only=0
             prior_english=$english_sha; prior_chinese=$chinese_sha;;
           *) prior_english=; prior_chinese=;;

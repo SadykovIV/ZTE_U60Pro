@@ -28,6 +28,9 @@ const FW_SHAS: &[&str] = &[
     "5a4489882538b5ab1d3e0049371f1b620d28d262a429923299b4f2626d40d478", // FLY B28 / public B13
 ];
 const B04_FW_SHA: &str = "c57e063d390983229dfc53aa87380b3d4655ee8daa1c748e1a032ac90cd0df81";
+const B27_FW_SHA: &str = "4b1c67e73b94b889adc831168040d40ec368083dfbcec7ae747a2f4f86c66f3e";
+const B27_MDM_SHA: &str = "00a647cb46fa82a78969b3708c1429d91b37ef99c2c00835ac57ca53c126f25d";
+const B27_ROUTER_SHA: &str = "786ba99f5d506d01bbe72d9effa90d1a46f5929370f24ccabf6bab291e5a317f";
 const B04_MDM_SHA: &str = "93a346e7d69024503caf9ad42f14c97e1514dd7d04c7b5ebef4e30473b5d5c64";
 const FILES: &[(&str, &[u8])] = &[
     (
@@ -149,16 +152,22 @@ fn integrity() -> Result<()> {
     };
     if let Some(image) = firmware.as_deref() {
         if verify_firmware_hash(image).is_ok() { return Ok(()); }
-        if image != B04_FW_SHA { return Err("VPN_UNSUPPORTED_FIRMWARE"); }
+        if image != B04_FW_SHA && image != B27_FW_SHA { return Err("VPN_UNSUPPORTED_FIRMWARE"); }
     }
     let mdm = hash(&read(Path::new("/usr/bin/zte_topsw_mdm"), 1024 * 1024)?);
     let router = hash(&read(Path::new("/usr/bin/diag-router"), 1024 * 1024)?);
     verify_b04_profile(firmware.as_deref(), &mdm, &router)
+        .or_else(|_| verify_b27_profile(firmware.as_deref(), &mdm, &router))
 }
 // This path is also used before netifd/vendor RPC startup. Match measured
 // binaries rather than adding a dependency on zwrt_web being available.
 fn verify_b04_profile(firmware: Option<&str>, mdm: &str, router: &str) -> Result<()> {
     if (firmware.is_none() || firmware == Some(B04_FW_SHA)) && mdm == B04_MDM_SHA && router == "55c54f74aaa427940254a2f16c36771e675a80a002363e4f10b0dfcb604d9c6f" {
+        Ok(())
+    } else { Err("VPN_UNSUPPORTED_FIRMWARE") }
+}
+fn verify_b27_profile(firmware: Option<&str>, mdm: &str, router: &str) -> Result<()> {
+    if firmware == Some(B27_FW_SHA) && mdm == B27_MDM_SHA && router == B27_ROUTER_SHA {
         Ok(())
     } else { Err("VPN_UNSUPPORTED_FIRMWARE") }
 }
@@ -1045,6 +1054,16 @@ mod wifi_request_tests {
         assert!(verify_b04_profile(None, &"0".repeat(64), router).is_err());
         assert!(verify_b04_profile(None, B04_MDM_SHA, &"0".repeat(64)).is_err());
         assert!(verify_b04_profile(None, "BD_XCBZHKMU5250V1.0.0B04", router).is_err());
+    }
+    #[test]
+    fn captured_b27_requires_matching_native_components() {
+        assert!(verify_b27_profile(Some(B27_FW_SHA), B27_MDM_SHA, B27_ROUTER_SHA).is_ok());
+        assert!(verify_firmware_hash(B27_FW_SHA).is_err()); // Image alone is insufficient.
+        for image in [None, Some(B04_FW_SHA), Some("FLY_CN_MU5250V1.0.0B11")] {
+            assert!(verify_b27_profile(image, B27_MDM_SHA, B27_ROUTER_SHA).is_err());
+        }
+        assert!(verify_b27_profile(Some(B27_FW_SHA), B04_MDM_SHA, B27_ROUTER_SHA).is_err());
+        assert!(verify_b27_profile(Some(B27_FW_SHA), B27_MDM_SHA, "55c54f74aaa427940254a2f16c36771e675a80a002363e4f10b0dfcb604d9c6f").is_err());
     }
     #[test]
     fn captured_b28_and_b31_firmware_are_supported_but_unknown_is_not() {

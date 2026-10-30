@@ -1,4 +1,10 @@
 export const ruEsim: Record<string, string> = {
+  'Rename profile': 'Переименовать',
+  'Profile name': 'Название профиля',
+  'Saved on the eSIM card. Up to 64 characters.': 'Сохраняется на карте eSIM. Не более 64 символов.',
+  'Enter a name up to 64 characters, without control or text direction characters.': 'Введите название до 64 символов без управляющих символов и символов направления текста.',
+  'Renaming the selected profile…': 'Переименовываю выбранный профиль…',
+  'The profile name was saved and verified on the card.': 'Название профиля сохранено и проверено на карте.',
   'Card reading failed. The profile list could not be confirmed. See the operation log for the error code.': 'Не удалось прочитать карту и подтвердить список профилей. Код причины указан в журнале операции.',
   'SIM card and eSIM profiles': 'SIM-карта и профили eSIM',
   'Ordinary SIM: eSIM management is unavailable.': 'Обычная SIM: управление eSIM недоступно.',

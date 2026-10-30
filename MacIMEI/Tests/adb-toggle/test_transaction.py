@@ -48,6 +48,7 @@ elif n=='readlink':
  p=a[-1];print(os.path.realpath(p) if '-f' in a else '../../../../usb_gadget/g1/functions/'+os.path.basename(os.path.realpath(p)) if '/configs/c.1/' in p else os.readlink(p))
 '''
   if firmware=='B28':program=program.replace('604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263','5a4489882538b5ab1d3e0049371f1b620d28d262a429923299b4f2626d40d478')
+  elif firmware=='B27':program=program.replace('604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263','4b1c67e73b94b889adc831168040d40ec368083dfbcec7ae747a2f4f86c66f3e').replace('55c54f74aaa427940254a2f16c36771e675a80a002363e4f10b0dfcb604d9c6f','786ba99f5d506d01bbe72d9effa90d1a46f5929370f24ccabf6bab291e5a317f').replace('93a346e7d69024503caf9ad42f14c97e1514dd7d04c7b5ebef4e30473b5d5c64','00a647cb46fa82a78969b3708c1429d91b37ef99c2c00835ac57ca53c126f25d')
   elif firmware=='B04-image':program=program.replace('604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263','c57e063d390983229dfc53aa87380b3d4655ee8daa1c748e1a032ac90cd0df81')
   elif firmware!='B31':program=program.replace('604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263','f'*64)
   for name in ['id','uname','pidof','sleep','stat','sha256sum','readlink','ubus','jsonfilter','mv']:
@@ -94,6 +95,16 @@ test('enable commits one free ADB link and preserves existing links',lambda f:(c
 def rollback(f):
  before={p.name:os.readlink(p) for p in f.config.iterdir()};prepare(f);p=f.apply();p.communicate(timeout=30);ok(p.returncode==73);ok(f.phase()=='rolled-back');ok(before=={p.name:os.readlink(p) for p in f.config.iterdir()});ok(not(f.root/'tmp/zte-imei-app.lock').exists());ok(f.rc.read_bytes()==f.rc_before);ok(f.rc.stat().st_mode&0o777==0o775)
 test('missing host ACK rolls back exact original links and releases owned lock',rollback)
+test('B27 measured tuple commits ADB disable preserving network links',lambda f:(commit(f),ok(not(f.config/'f6').exists()),ok((f.config/'f1').is_symlink())),firmware='B27')
+test('B27 measured tuple commits ADB enable',lambda f:commit(f,'1'),present=False,firmware='B27')
+test('B27 missing host ACK restores original USB and rc.local',rollback,firmware='B27')
+def mixed_b27(f):
+ shim=f.root/'shim/sha256sum'
+ s=shim.read_text().replace('00a647cb46fa82a78969b3708c1429d91b37ef99c2c00835ac57ca53c126f25d','93a346e7d69024503caf9ad42f14c97e1514dd7d04c7b5ebef4e30473b5d5c64')
+ shim.write_text(s)
+ r=f.run('prepare');ok(r.returncode!=0);ok((f.config/'f6').is_symlink());ok(f.rc.read_bytes()==f.rc_before);ok(not(f.root/'tmp/zte-imei-app.lock').exists())
+test('B27 mixed native MDM is refused before USB or startup changes',mixed_b27,firmware='B27')
+
 def hup(f):
  prepare(f);p=f.apply();f.wait('awaiting-ack');os.kill(p.pid,signal.SIGHUP);p.communicate(timeout=30);ok(f.phase()=='rolled-back')
 test('detached worker ignores SSH HUP and restores without host',hup)

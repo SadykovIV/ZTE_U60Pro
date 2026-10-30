@@ -6,8 +6,8 @@ namespace ZteImeiStudio.Windows.Core;
 /// <summary>The same pinned build is installed permanently and used by private desktop RPC.</summary>
 public static class AgentPackage
 {
-    public const string Version = "2.9.0-esim.15";
-    public const string Sha256 = "5bcf685b87439b856a92c7f1e41a4d05c87056c32eefd95b76fec22d828fcc1d";
+    public const string Version = "2.9.0-esim.17";
+    public const string Sha256 = "fd5babee29e63366fb743c76c72f2a29eec47377ccda32659a85ce6e5effd959";
     // Verified app 1.24.3 build 38 and its preserved source/artifact receipt.
     public const string LegacyCardCheckSha256 = "413ba4b0a07540d6901e87e74c9730196eb3373cf35b8914e31a8194bfe5a839";
     public const string LegacyPublicSha256 = "c50ba6b7ac6f77c581c2b657ba769f976d8d20aca0c6b7d08c9254ef2de9d346";
@@ -63,10 +63,12 @@ public static class AgentPackage
         "52324f0c99f13a3445c08431f8b4ed15b468352f5b20709e3304cf4d32577b48",
         "58343b20c918d6a329b60a73e9f2328803ce44008a949799b645a2f95108c20c",
         "59af7b0b45ff2f0d280b6998fb573bd88f2b0d9c28017d8e6f2860b6c29bcbbd",
+        "5bcf685b87439b856a92c7f1e41a4d05c87056c32eefd95b76fec22d828fcc1d",
         "5deb5e93ee7d37403b0a931f0e127c64e4d9b4825855653e5b890572b02848aa",
         "61265282f129109a86bd8f9d39cb0d47fc425ca73a3c5831a9ee3099650eb12c",
         "6168ae6c539bb3ca7136eb40a1d4cae03d75aa18900be105f2ff2d5016da4b5c",
         "66c3fb83f3db5b194a39db563a453d421f6a4f3ccb9228cf360883ce2fed1629",
+        "7603050662473543b01e4cf7529e2ff9e29e7cd615ff1af4be67e77c96d593a6",
         "761da4414bce173edd98712d87470069a32d70c53680da61b5a30e26fa7bd012",
         "7a2d1a517d564a3d66dfe98e6622be6ca2428635aa9cbd83cbf02c179dd7703e",
         "7cdddfbf529a0de70726cafbfacbd56d77286b001feb1efcf123ef323b07d433",

@@ -28,7 +28,7 @@ private final class FakeRunner: ResearchProcessRunning {
     var physicalMismatch = false; var losePhysicalAfterProbe = false
     var physicalDelay: TimeInterval = 0; var probeTimeouts = [TimeInterval]()
     var probeOutcome = "success"; var token: ResearchCancellation?; var cancelAfterFirst = false
-    var remoteCode = 0; var omitFooter = false; var lineEnding = "\n"
+    var remoteCode = 0; var omitFooter = false; var lineEnding = "\n"; var additionalFacts = ""
     func run(_ executable: URL, arguments: [String], timeout: TimeInterval, maxBytes: Int, cancellation: ResearchCancellation) throws -> ResearchCommandResult {
         calls.append(arguments)
         if executable.lastPathComponent == "ssh" { return .init(status: 255, stdout: Data(), stderr: Data(sshFailure.utf8), outcome: sshOutcome, duration: 0.01) }
@@ -52,7 +52,7 @@ private final class FakeRunner: ResearchProcessRunning {
         }
         let outcome = command.contains(FirmwareResearchCollector.bootstrap) ? "success" : probeOutcome
         let footer = !command.contains(FirmwareResearchCollector.bootstrap) && omitFooter ? "" : "\n" + marker + String(command.contains(FirmwareResearchCollector.bootstrap) ? 0 : remoteCode) + "\n"
-        return .init(status: 0, stdout: Data((output + footer).replacingOccurrences(of: "\n", with: lineEnding).utf8), stderr: Data(), outcome: outcome, duration: 0.02)
+        return .init(status: 0, stdout: Data((output + (command.contains(FirmwareResearchCollector.bootstrap) ? "" : additionalFacts) + footer).replacingOccurrences(of: "\n", with: lineEnding).utf8), stderr: Data(), outcome: outcome, duration: 0.02)
     }
 }
 
@@ -67,8 +67,8 @@ private final class FakeRunner: ResearchProcessRunning {
         let key = root.appendingPathComponent("key"), hosts = root.appendingPathComponent("known_hosts")
         try savePrivate(Data("fake".utf8), key); try savePrivate(Data("fake".utf8), hosts)
         let config = Connection(host: "192.168.0.1", port: "2222", keyPath: key.path, knownHostsPath: hosts.path)
-        func collect(_ fake: FakeRunner, mode: ConnectionMode = .automatic, expected: String? = nil) -> FirmwareResearchReport {
-            FirmwareResearchCollector(specification: specification(), connection: config, mode: mode, resources: assets, cancellation: ResearchCancellation(), expectedCID: expected, secrets: ["SUPER-SECRET-WEB"], runner: fake).collect(context: ["appVersion": "test"]) { _, _ in }
+        func collect(_ fake: FakeRunner, mode: ConnectionMode = .automatic, expected: String? = nil, secrets: [String] = ["SUPER-SECRET-WEB"]) -> FirmwareResearchReport {
+            FirmwareResearchCollector(specification: specification(), connection: config, mode: mode, resources: assets, cancellation: ResearchCancellation(), expectedCID: expected, secrets: secrets, runner: fake).collect(context: ["appVersion": "test"]) { _, _ in }
         }
         for eol in ["\n", "\r\n", "\r\r\n"] {
             let fake = FakeRunner(); fake.lineEnding = eol
@@ -89,6 +89,33 @@ private final class FakeRunner: ResearchProcessRunning {
         try check(report.features[0].state == "unknown", "Unknown firmware must never certify writes")
         try check(report.probes.count == 2 && report.probes.allSatisfy { $0.outcome == "success" }, "Successful probe accounting")
         let encoded = String(decoding: try JSONEncoder().encode(report), as: UTF8.self)
+        let permissionFacts = "FR_FACT startup_rc_local_uid=0\nFR_FACT startup_rc_local_gid=0\nFR_FACT startup_rc_local_mode=775\nFR_FACT startup_rc_local_links=1\n"
+        try check(ResearchRedactor(secrets: []).clean(permissionFacts) == permissionFacts, "Startup permission facts were redacted as an address")
+        let metadataRunner = FakeRunner()
+        metadataRunner.additionalFacts = "FR_FACT main_2g_iface=1\nFR_FACT private_key=RAW_PRIVATE_CANARY\n"
+        let metadataCollected = collect(metadataRunner, secrets:["main", "SUPER-SECRET-WEB", "RAW_PRIVATE_CANARY"])
+        try check(metadataCollected.probes.allSatisfy { $0.facts["main_2g_iface"] == "1" && !$0.stdout.contains("main_2g_iface") && !$0.stdout.contains("RAW_PRIVATE_CANARY") && $0.facts["private_key"] != "RAW_PRIVATE_CANARY" }, "Collection preserves exact typed field names while raw credentials remain redacted")
+        let publicMetadata = ["tool_chpasswd":"1", "tmp_private_stage_parent":"1", "private_opkg_present":"not-assessed", "secret_contents_collected":"0",
+                              "component_private_bin_path":"present", "component_private_bin_uid":"0", "component_private_bin_mode":"700", "component_private_bin_links":"2",
+                              "main_2g_iface":"1", "main_5g_iface":"0", "wifi_main_2g_disabled":"0", "wifi_main_5g_disabled":"1",
+                              "wifi_main_2g_device":"wifi0", "wifi_main_5g_device":"wifi1", "wifi_main_2g_network":"lan", "wifi_main_5g_network":"other",
+                              "wifi_guest_2g_guest_remaining":"0", "wifi_guest_5g_guest_remaining":"not-assessed"]
+        var metadataReport = report
+        metadataReport.probes = [.init(id:"metadata", title:title, category:"metadata", command:"", outcome:"success", exitCode:0, stdout:"password=RAW_PRIVATE_CANARY", stderr:"", durationSeconds:0,
+                                      facts:publicMetadata.merging(["private_key":"1", "tmp_private_stage_parent_secret":"RAW_PRIVATE_CANARY", "arbitrary_fact":"RAW_PRIVATE_CANARY"]) { _, new in new })]
+        metadataReport.observations = publicMetadata.sorted { $0.key < $1.key }.enumerated().map { index, fact in
+            .init(id:"metadata-\(index)", title:title, probe:"metadata", fact:fact.key, state:"known", value:fact.value, sourceStatus:"success", sourceExitCode:0, reason:nil)
+        }
+        let metadataPayload = try FirmwareResearchArchive.textPayloads(metadataReport, secrets:["main", "RAW_PRIVATE_CANARY"]).first { $0.path == "report.json" }!.data
+        let exportedMetadata = try JSONDecoder().decode(FirmwareResearchReport.self, from:metadataPayload)
+        for (key, value) in publicMetadata {
+            try check(exportedMetadata.probes[0].facts[key] == value && exportedMetadata.observations?.first { $0.fact == key }?.value == value, "Fixed typed metadata survives export and registered-secret name collisions: " + key)
+        }
+        let metadataText = String(decoding:metadataPayload, as:UTF8.self)
+        try check(!metadataText.contains("RAW_PRIVATE_CANARY") && exportedMetadata.probes[0].facts["private_key"] != "1", "Metadata exception must not preserve credential fields or raw credentials")
+        for (key, value) in [("component_private_bin_mode","888"), ("component_private_bin_uid","4294967296"), ("component_private_bin_links","1\n"), ("tmp_private_stage_parent","password"), ("wifi_main_2g_network","private-network"), ("wifi_guest_2g_guest_remaining","1234567890"), ("private_key","1"), ("unknown_private_metadata","0")] {
+            try check(!ResearchExportMetadata.isPublic(key,value), "Public metadata projection rejects an unknown key or invalid type")
+        }
         try check(!encoded.contains("SUPER-SECRET-WEB") && !encoded.contains("867123456789017") && !encoded.contains("USB-SECRET") && !encoded.contains(cid), "Secrets escaped report")
         let manual = FakeRunner(); let manualReport = collect(manual, mode: .ssh)
         try check(manualReport.transport == "none" && manual.calls.count == 1 && manualReport.probes.allSatisfy { $0.outcome == "skipped" }, "Manual SSH must never fallback or invent probe faults")
@@ -167,7 +194,7 @@ private final class FakeRunner: ResearchProcessRunning {
         try check(unsupported.allSatisfy { $0.state == "blocked" }, "A known firmware profile excluded by current operation is a confirmed blocker")
         let bundledResources = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("Resources")
         let bundled = try ResearchSpecification.load(bundledResources)
-        try check(bundled.probes.count == 58 && bundled.features.count == 19 && bundled.revision == 14 && bundled.observations?.count == 76, "Bundled reviewed specification")
+        try check(bundled.probes.count == 58 && bundled.features.count == 19 && bundled.revision == 15 && bundled.observations?.count == 76, "Bundled reviewed specification")
         var values = [String: [String: String]]()
         for feature in bundled.features { for requirement in feature.requirements where requirement.profiles == nil || requirement.profiles!.contains("b31") { values[requirement.probe, default: [:]][requirement.fact] = requirement.equals } }
         values["boot-protection"]?["restore_readiness"] = "not-assessed"
@@ -187,9 +214,39 @@ private final class FakeRunner: ResearchProcessRunning {
             for requirement in profile.identityRequirements ?? [] { facts[requirement.probe, default: [:]][requirement.fact] = requirement.equals }
             return facts.map { key, value in ResearchProbeResult(id:key, title:title, category:"identity", command:"", outcome:"success", exitCode:0, stdout:"", stderr:"", durationSeconds:0, facts:value) }
         }
-        for id in ["b31", "b28", "b04"] {
+        for id in ["b31", "b28", "b04", "b27"] {
             try check(FirmwareResearchCollector.profile(bundled, results:profileResults(id)) == id, "Measured identity selects " + id)
         }
+        try check(Set(bundled.features.filter { $0.profiles.contains("b27") }.map(\.id)) == Set(["ttl", "vpn", "physical-euicc"]), "B27 identity only selects implemented firmware-dependent adapters")
+        var b27Facts = [String: [String: String]]()
+        for feature in bundled.features { for requirement in feature.requirements where requirement.profiles == nil || requirement.profiles!.contains("b27") { b27Facts[requirement.probe, default: [:]][requirement.fact] = requirement.equals } }
+        for probe in profileResults("b27") { b27Facts[probe.id, default: [:]].merge(probe.facts) { _, measured in measured } }
+        b27Facts["esim-components"]?["native_isdr_access"] = "not-assessed"
+        b27Facts["boot-protection"]?["restore_readiness"] = "not-assessed"
+        let b27Results = bundled.probes.map { probe in ResearchProbeResult(id:probe.id, title:probe.title, category:probe.category, command:"", outcome:"success", exitCode:0, stdout:"", stderr:"", durationSeconds:0, facts:b27Facts[probe.id] ?? [:]) }
+        let b27Features = FirmwareResearchCollector.assess(bundled, results:b27Results, profile:FirmwareResearchCollector.profile(bundled, results:b27Results))
+        try check(b27Features.filter { ["ttl", "vpn", "physical-euicc"].contains($0.id) }.allSatisfy { $0.state == "prerequisites_met" }, "B27 measured prerequisites select TTL, VPN and separately verified physical eUICC")
+        try check(b27Features.filter { ["imei", "modem-backup", "full-backup", "full-restore"].contains($0.id) }.allSatisfy { $0.state == "blocked" }, "B27 adapters do not grant DIAG or raw backup/restore compatibility")
+        try check(b27Features.first { $0.id == "native-esim" }?.state == "unknown", "B27 identity never certifies built-in eSIM")
+        let b27Hashes = b27Results.firstIndex { $0.id == "firmware-hashes" }!
+        let b28 = bundled.profiles.first { $0.id == "b28" }!
+        for (key, foreign) in [("firmware_sha256", b28.firmwareSHA256!), ("router_sha256", b28.routerSHA256), ("mdm_sha256", b28.identityRequirements!.first!.equals)] {
+            for value in [foreign, "not-assessed"] {
+                var mixed = b27Results
+                mixed[b27Hashes] = replacingFact(mixed[b27Hashes], key, value)
+                let profile = FirmwareResearchCollector.profile(bundled, results:mixed)
+                try check(profile == nil, "B27 mixed or unmeasured identity tuple cannot match: " + key)
+                try check(FirmwareResearchCollector.assess(bundled, results:mixed, profile:profile).filter { ["ttl", "vpn", "physical-euicc"].contains($0.id) }.allSatisfy { $0.state == "unknown" }, "Mixed B27 identity cannot certify firmware-dependent adapters")
+            }
+        }
+        var b27Passive = b27Results
+        let b27Card = b27Passive.firstIndex { $0.id == "esim-components" }!
+        b27Passive[b27Card] = replacingFact(b27Passive[b27Card], "physical_euicc_management", "not-assessed")
+        try check(FirmwareResearchCollector.assess(bundled, results:b27Passive, profile:"b27").first { $0.id == "physical-euicc" }?.state == "unknown", "Passive B27 collection cannot certify physical eUICC access")
+        var b27WrongIPA = b27Results
+        let b27IPA = b27WrongIPA.firstIndex { $0.id == "ipa-runtime" }!
+        b27WrongIPA[b27IPA] = replacingFact(b27WrongIPA[b27IPA], "ipacm_sha256", "95385816da7b2edb9a977cee328c091753463fcd4a70a67fa1676e8b335c11c0")
+        try check(FirmwareResearchCollector.assess(bundled, results:b27WrongIPA, profile:"b27").first { $0.id == "ttl" }?.state == "blocked", "B27 TTL rejects a B31 IPA daemon")
         for requirement in bundled.profiles.first(where: { $0.id == "b04" })!.identityRequirements! {
             for value in ["not-assessed", "wrong"] {
                 var results = profileResults("b04")

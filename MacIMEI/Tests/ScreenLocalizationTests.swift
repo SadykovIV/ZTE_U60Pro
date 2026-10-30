@@ -234,6 +234,13 @@ private final class MockScreen: RemoteTransport {
             try check(digest(mock.inputs["zte_topsw_devui"]!) == "0db2294b3e428fb53f4b6b725063ad8ffd9c396e5a27c54452f0ea479fa78f3b", "B04 output wrong")
             try check(digest(mock.inputs["font.patch.json"]!) == ScreenLocalization.resourceHashes["font.patch.b04.json"], "Wrong B04 manifest staged")
         }
+        test("B27 fresh install selects independent patch and preserves six-file payload") {
+            guard let path = ProcessInfo.processInfo.environment["ZTE_B27_STOCK_UI"] else { throw Failure.check("B27 fixture path missing") }
+            let mock = MockScreen(original: try Data(contentsOf: URL(fileURLWithPath: path)))
+            try check(perform(manager(mock), .enable).state == .enabled && mock.inputs.count == 6, "B27 install failed")
+            try check(digest(mock.inputs["zte_topsw_devui"]!) == "83c2623f4a7a87816466ba9e1eeae1da24384b7ff6e8c972e9df836495103c55", "B27 output wrong")
+            try check(digest(mock.inputs["font.patch.json"]!) == ScreenLocalization.resourceHashes["font.patch.b27.json"], "Wrong B27 manifest staged")
+        }
         test("boot drift after install is never reported success") {
             let mock = MockScreen(original: original); mock.bootDriftAt = 4
             try rejects("другой модем") { _ = try perform(manager(mock), .enable) }

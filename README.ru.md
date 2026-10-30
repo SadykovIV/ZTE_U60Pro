@@ -5,19 +5,23 @@
 Управление **ZTE U60 Pro / MU5250**: подготовка доступа, резервные копии, IMEI, TTL,
 русский интерфейс экрана, VPN через отдельный Wi-Fi, физическая eUICC и диагностика.
 
-Версия **1.27.1** (macOS build **68**, Windows FileVersion **1.27.1.0**),
-агент **2.9.0-esim.15**, контроллер VPN **1.5.0**.
-[Скачать macOS ARM64](https://github.com/SadykovIV/ZTE_U60Pro/releases/download/v1.27.1/ZTE-U60Pro-Manager-1.27.1-macOS-arm64.zip) ·
-[Скачать Windows x64](https://github.com/SadykovIV/ZTE_U60Pro/releases/download/v1.27.1/ZTE-U60Pro-Manager-1.27.1-Windows-x64-portable.zip) ·
-[Выпуск и контрольные суммы](https://github.com/SadykovIV/ZTE_U60Pro/releases/tag/v1.27.1).
+Версия **1.27.2** (macOS build **69**, Windows FileVersion **1.27.2.0**),
+агент **2.9.0-esim.17**, контроллер VPN **1.5.1**.
+[Скачать macOS ARM64](https://github.com/SadykovIV/ZTE_U60Pro/releases/download/v1.27.2/ZTE-U60Pro-Manager-1.27.2-macOS-arm64.zip) ·
+[Скачать Windows x64](https://github.com/SadykovIV/ZTE_U60Pro/releases/download/v1.27.2/ZTE-U60Pro-Manager-1.27.2-Windows-x64-portable.zip) ·
+[Выпуск и контрольные суммы](https://github.com/SadykovIV/ZTE_U60Pro/releases/tag/v1.27.2).
 
-## Исправления в 1.27.1
+## Изменения в 1.27.2
 
-Исправлено чтение физических 9eSIM, отвечающих `61xx` после SELECT.
-Программа дочитывает ответ в своём канале; ошибки чтения больше не выдаются
-за ошибки его закрытия. Чтение карты и профилей проверено на модеме B31.
+- Добавлены отдельные адаптеры собранной FLY B27/B11: VPN/IPA, TTL, ADB,
+  русификация, Launcher и операции радио физической eUICC.
+- Существующий сбор прошивки включает зависимости установщика и сохраняет
+  сведения о правах startup-файлов. Добавлено сравнение архивов на компьютере.
+- В веб-агенте можно переименовать профиль eSIM с сохранением имени на карте.
 
-[Изменения и результаты проверок](docs/RELEASE-1.27.1.md#русский).
+Логи B27 подтверждают успешную подготовку и установку агента в 1.27.1.
+Новые адаптеры проверены локально; установка, трафик и экран на самом B27
+ещё требуют проверки. [Подробности выпуска](docs/RELEASE-1.27.2.md#русский).
 
 ## Изменения, добавленные в 1.27
 

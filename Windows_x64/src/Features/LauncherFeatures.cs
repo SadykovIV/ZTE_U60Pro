@@ -61,9 +61,9 @@ public sealed record LauncherStatus(string State, bool Running, bool CanInstall,
 public sealed partial class DeviceFeatureService
 {
     private const string LauncherRoot = "/data/zte-launcher";
-    private const string LauncherManifestHash = "af3df8ee05a3817cc8f22fc6c66e6a8c53c5a7b513c33e5197aae775bcc49799";
+    private const string LauncherManifestHash = "6551190fc125d08e8333e23d368bdbc958ebe4cd0abf0c57f26a602ca5b3c977";
     private static readonly string[] LauncherNames = ["launcher.so", "launcher-run.sh", "launcher-watch.sh", "launcher-service.sh", "launcher-start.sh", "launcher.sha256", "install-launcher.sh"];
-    private static readonly HashSet<string> UiHashes = ["e3914e78a8488cb736770f0ac9fb8ce10e0e5222fa50285f08e9e8be90d7f1e9", "16eb92e27f54b5cf5c6b316a6e7a62b782053a2a609d0d4904a7f08a7bc0afa4", "8d2ebbde880934f52195ad9595815d728f7aa4671bb0633d5a5149b09467ae90", "d6c3cd409705d5aa9c12185c84074513b159088025f005da7dbf01c51e3c3715", "dbe6eadc92d43a0cd7206264f9d75ab242df90e88c02ee2ba3ac65598b58523e", "0db2294b3e428fb53f4b6b725063ad8ffd9c396e5a27c54452f0ea479fa78f3b"];
+    private static readonly HashSet<string> UiHashes = ["e3914e78a8488cb736770f0ac9fb8ce10e0e5222fa50285f08e9e8be90d7f1e9", "16eb92e27f54b5cf5c6b316a6e7a62b782053a2a609d0d4904a7f08a7bc0afa4", "8d2ebbde880934f52195ad9595815d728f7aa4671bb0633d5a5149b09467ae90", "d6c3cd409705d5aa9c12185c84074513b159088025f005da7dbf01c51e3c3715", "dbe6eadc92d43a0cd7206264f9d75ab242df90e88c02ee2ba3ac65598b58523e", "0db2294b3e428fb53f4b6b725063ad8ffd9c396e5a27c54452f0ea479fa78f3b", "d7aab64cafb5d0ec5c9479c3247a2e504c6ab76dd192cf8de997fc12f5d213fe", "83c2623f4a7a87816466ba9e1eeae1da24384b7ff6e8c972e9df836495103c55"];
     private static readonly HashSet<string> InitHashes = ["a30da6481637f1fd94e037373d406e574be7e722937a4965325086740be67e35", "0a462f4021b1306ac5fbf074a674bae9fef952f240436a47468c0126c5d41b50"];
 
     public async Task<LauncherStatus> GetLauncherStatusAsync(CancellationToken ct = default)

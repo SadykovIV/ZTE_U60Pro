@@ -39,6 +39,7 @@ FONTS = {
 COMPONENTS = {'ipacm': '/usr/bin/ipacm', 'ipa_switch': '/sbin/ipacm_switch.sh', 'network_init': '/etc/init.d/network', 'netifd': '/sbin/netifd', 'procd': '/sbin/procd', 'ubusd': '/sbin/ubusd', 'ubus_cli': '/bin/ubus', 'uci_cli': '/sbin/uci', 'lua_cli': '/usr/bin/lua', 'mdm': '/usr/bin/zte_topsw_mdm', 'qcril': '/usr/bin/qcrilNrd', 'diag_router': '/usr/bin/diag-router', 'libdiag': '/usr/lib/libdiag.so.1', 'libzte_sdk': '/usr/lib/libzte_SDKowrt.so', 'libzte_gesture': '/usr/lib/libzte_gesture.so', 'libzte_log': '/usr/lib/libztelog.so', 'libfreetype': '/usr/lib/libfreetype.so.6', 'libpng': '/usr/lib/libpng16.so.16', 'libdrm': '/usr/lib/libdrm.so.2', 'libgcc': '/lib/libgcc_s.so.1', 'libc': '/lib/libc.so', 'libuci': '/lib/libuci.so', 'libubus': '/lib/libubus.so', 'libubox': '/lib/libubox.so', 'libblobmsg_json': '/lib/libblobmsg_json.so', 'libjson_c': '/usr/lib/libjson-c.so.5', 'liblua': '/usr/lib/liblua.so.5.1', 'lua_uci': '/usr/lib/lua/uci.so', 'lua_jsonc': '/usr/lib/lua/luci/jsonc.so'}
 RADIO_COMPONENTS = {'firmware_mdt': '/firmware/image/modem.mdt', 'firmware_b16': '/firmware/image/modem.b16', 'libqcril_nr': '/usr/lib/libqcrilNr.so', 'libqcril_nrril': '/usr/lib/libqcrilNrril.so.1', 'libzte_qmi': '/usr/lib/libzteqmi.so', 'libqmiservices': '/usr/lib/libqmiservices.so', 'libqmi_cci': '/usr/lib/libqmi_cci.so.1', 'libqmi_csi': '/usr/lib/libqmi_csi.so.1', 'libqmi_common': '/usr/lib/libqmi_common_so.so.1', 'libqmi_encdec': '/usr/lib/libqmi_encdec.so.1', 'libqmi_sap': '/usr/lib/libqmi_sap.so.1', 'libqrtr': '/usr/lib/libqrtr.so.1', 'libqsocket': '/usr/lib/libqsocket.so.1', 'libglib': '/usr/lib/libglib-2.0.so.0', 'libgthread': '/usr/lib/libgthread-2.0.so.0', 'liblog': '/usr/lib/liblog.so.0', 'libtime_genoff': '/usr/lib/libtime_genoff.so.1', 'libsqlite3': '/usr/lib/libsqlite3.so'}
 COMPONENTS.update(RADIO_COMPONENTS)
+COMPONENTS.update({'busybox': '/bin/busybox', 'dropbear': '/usr/sbin/dropbear', 'curl': '/usr/bin/curl'})
 FACTS = set("uid os architecture firmware inner openwrt_version target agent_present agent_sha256 agent_running_count agent_mode agent_mapped_matches_disk http_health_status http_capabilities_status http_dashboard_status ui_mounts".split())
 CANARY = "PRIVATE_PASSWORD_CANARY_NEVER_EXPORT"
 SHIM = r'''#!__PYTHON__
@@ -117,7 +118,7 @@ class Fixture:
         self.put("/proc/self/mountinfo", b"1 2 3:4 / /none rw - tmpfs tmpfs rw\n")
         self.put("/data/zte-agent", b"synthetic agent")
         text = SOURCE.read_text()
-        prefixes = r"(?<![A-Za-z0-9_])/(?:usr|lib|etc|data|proc|sbin|firmware|sys)|/bin/ubus|/dev/(?:diag|at_mdm|ffs-diag|socket)"
+        prefixes = r"(?<![A-Za-z0-9_])/(?:usr|lib|etc|data|proc|sbin|firmware|sys)|/bin/(?:ubus|busybox)|/dev/(?:diag|at_mdm|ffs-diag|socket)"
         old = "export PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C"
         assert text.count(old) == 1
         text = text.replace(old, "export PATH='" + str(self.bin) + ":/usr/bin:/bin' LC_ALL=C")
@@ -268,6 +269,21 @@ class HelperTests(unittest.TestCase):
         result = self.fx.stream("lua_cli")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, data)
+
+    def test_install_runtime_inputs_are_binary_only_and_do_not_follow_private_links(self):
+        for name in ['busybox', 'dropbear', 'curl']:
+            with self.subTest(component=name):
+                data = b'\x7fELF\x02\x01\x01\x00runtime\r\n\xff'
+                path = self.fx.put(COMPONENTS[name], data)
+                self.assertEqual(self.fx.stream(name).stdout, data)
+                path.write_bytes(CANARY.encode())
+                self.assertEqual(self.fx.inspect()[1][name][0], 'not_elf')
+                path.unlink()
+                path.symlink_to(self.fx.put('/data/private-' + name, CANARY.encode()))
+                self.assertEqual(self.fx.inspect()[1][name][0], 'symlink')
+                result = self.fx.run('file', name, str(len(CANARY)), hashlib.sha256(CANARY.encode()).hexdigest())
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotIn(CANARY.encode(), result.stdout + result.stderr)
 
     def test_optional_font_bytes_and_receipt(self):
         for name, path in FONTS.items():

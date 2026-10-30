@@ -27,13 +27,16 @@ struct FirmwareSupportResult: Sendable {
 /// Explicit research export over the selected SSH session. Temporary DIAG/QMI
 /// helpers read protocol metadata without exporting values or changing radio/NV state.
 final class FirmwareSupportCollector {
-    static let helperSHA256 = "9c6c2ad48216b7be268fdb777a541e8fac0c3ed83e02c483247163f64e3f13ce"
+    static let helperSHA256 = "5fbde0d35024dad0ea4ca4c4b49ce5ad31fbab98f868e195eb77d4dbfa68c706"
     static let requiredIDs = ["ui", "english", "chinese", "init"]
-    static let componentIDs = ["ipacm", "ipa_switch", "network_init", "netifd", "procd", "ubusd", "ubus_cli", "uci_cli", "lua_cli", "mdm", "qcril", "diag_router", "libdiag", "libzte_sdk", "libzte_gesture", "libzte_log", "libfreetype", "libpng", "libdrm", "libgcc", "libc", "libuci", "libubus", "libubox", "libblobmsg_json", "libjson_c", "liblua", "lua_uci", "lua_jsonc", "firmware_mdt", "firmware_b16", "libqcril_nr", "libqcril_nrril", "libzte_qmi", "libqmiservices", "libqmi_cci", "libqmi_csi", "libqmi_common", "libqmi_encdec", "libqmi_sap", "libqrtr", "libqsocket", "libglib", "libgthread", "liblog", "libtime_genoff", "libsqlite3"]
+    static let componentIDs = ["busybox", "dropbear", "curl", "ipacm", "ipa_switch", "network_init", "netifd", "procd", "ubusd", "ubus_cli", "uci_cli", "lua_cli", "mdm", "qcril", "diag_router", "libdiag", "libzte_sdk", "libzte_gesture", "libzte_log", "libfreetype", "libpng", "libdrm", "libgcc", "libc", "libuci", "libubus", "libubox", "libblobmsg_json", "libjson_c", "liblua", "lua_uci", "lua_jsonc", "firmware_mdt", "firmware_b16", "libqcril_nr", "libqcril_nrril", "libzte_qmi", "libqmiservices", "libqmi_cci", "libqmi_csi", "libqmi_common", "libqmi_encdec", "libqmi_sap", "libqrtr", "libqsocket", "libglib", "libgthread", "liblog", "libtime_genoff", "libsqlite3"]
     static let allIDs = requiredIDs + ["original_ui", "original_english", "original_chinese", "original_init", "font_zhengyuan", "font_roboto", "font_oswald"] + componentIDs
     static let sources = ["ui": "/usr/bin/zte_topsw_devui", "english": "/usr/ui/language/English.ini", "chinese": "/usr/ui/language/Chinese.ini", "init": "/etc/init.d/zte_topsw_devui",
         "original_ui": "/data/zte-imei-screen-ru/backup/zte_topsw_devui", "original_english": "/data/zte-imei-screen-ru/backup/English.ini", "original_chinese": "/data/zte-imei-screen-ru/backup/Chinese.ini", "original_init": "/data/zte-imei-screen-ru/backup/zte_topsw_devui.init",
         "font_zhengyuan": "/usr/ui/fonts/ZTEZhengYuan.ttf", "font_roboto": "/usr/ui/fonts/Roboto.ttf", "font_oswald": "/usr/ui/fonts/Zoswald-Medium-24.ttf",
+        "busybox": "/bin/busybox",
+        "dropbear": "/usr/sbin/dropbear",
+        "curl": "/usr/bin/curl",
         "ipacm": "/usr/bin/ipacm",
         "ipa_switch": "/sbin/ipacm_switch.sh",
         "network_init": "/etc/init.d/network",
@@ -355,7 +358,7 @@ final class FirmwareSupportCollector {
         storage and backups. Partial probes and missing facts remain explicit.
         Available ZTEZhengYuan, Roboto and Zoswald TTF fonts are also included
         for glyph and layout analysis. Their absence is listed as an omission.
-        The component set includes ipacm and its switch script, network init,
+        The component set includes BusyBox, Dropbear, curl, ipacm and its switch script, network init,
         netifd, procd, ubus/uci/Lua, ZTE modem and QCRIL executables, DIAG and
         ZTE SDK/gesture libraries, UI rendering and system library dependencies.
         A source containing " | " lists ordered library aliases. Only ELF files

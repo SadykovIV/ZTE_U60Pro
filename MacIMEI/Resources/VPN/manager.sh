@@ -77,6 +77,15 @@ recover() {
     rm -rf "$ROOT/transaction.done"
     log PROFILE_ROLLED_BACK
 }
+# FLY public B11 / modem B27: measured native components, not the display version.
+b27_profile() {
+    for component in /firmware/image/modem.b16 /usr/bin/zte_topsw_mdm /usr/bin/diag-router; do
+        [ -f "$component" ] && [ ! -L "$component" ] && [ "$(stat -c %u "$component")" = 0 ] || return 1
+    done
+    [ "$(sha256sum /firmware/image/modem.b16 | awk '{print $1}')" = 4b1c67e73b94b889adc831168040d40ec368083dfbcec7ae747a2f4f86c66f3e ] &&
+    [ "$(sha256sum /usr/bin/zte_topsw_mdm | awk '{print $1}')" = 00a647cb46fa82a78969b3708c1429d91b37ef99c2c00835ac57ca53c126f25d ] &&
+    [ "$(sha256sum /usr/bin/diag-router | awk '{print $1}')" = 786ba99f5d506d01bbe72d9effa90d1a46f5929370f24ccabf6bab291e5a317f ]
+}
 # B04 captures include both an unavailable image and this measured modem.b16.
 # Native MDM/router identity remains required; startup needs no vendor RPC.
 b04_profile() {
@@ -96,6 +105,7 @@ ipa_tools() {
     [ "$(ipa_hash /sbin/ipacm_switch.sh)" = 8947eee9c554453dc8eeb77df933cd12899f447c8c03df3505c57c7b526d22b9 ] || return 1
     case "$(ipa_hash /firmware/image/modem.b16):$(ipa_hash /usr/bin/ipacm)" in
         604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263:95385816da7b2edb9a977cee328c091753463fcd4a70a67fa1676e8b335c11c0|5a4489882538b5ab1d3e0049371f1b620d28d262a429923299b4f2626d40d478:a8a90ee631a3e8de3266d1d4231e455c34fd0b0d1ad570e7c4d0dcd09eea1c54) return 0;;
+        4b1c67e73b94b889adc831168040d40ec368083dfbcec7ae747a2f4f86c66f3e:a843789933a0b5747927583021c1480957ea942626cab17cb13ad415d1dfd3ae) b27_profile;;
         *) b04_profile && [ "$(ipa_hash /usr/bin/ipacm)" = 95385816da7b2edb9a977cee328c091753463fcd4a70a67fa1676e8b335c11c0 ];;
     esac
 }
@@ -262,7 +272,7 @@ ipa_failure_restore() {
 prepare() {
     case "$(sha256sum /firmware/image/modem.b16 2>/dev/null | awk '{print $1}')" in
         604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263|5a4489882538b5ab1d3e0049371f1b620d28d262a429923299b4f2626d40d478) ;;
-        *) b04_profile || fail VPN_UNSUPPORTED_FIRMWARE;;
+        *) b04_profile || b27_profile || fail VPN_UNSUPPORTED_FIRMWARE;;
     esac
     [ "$(cat "$ROOT/cid")" = "$(cat /sys/block/mmcblk0/device/cid)" ] || fail VPN_DEVICE_CHANGED
     [ "$(uci -q get wireless.zte_mbb.mesh_onoff)" = 0 ] || fail VPN_MESH_CONFLICT

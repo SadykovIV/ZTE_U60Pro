@@ -52,8 +52,8 @@ public sealed partial class SshTransport : IRemoteShell
         ValidateIpv4(host);
         if (port is < 1 or > 65535) throw new ArgumentOutOfRangeException(nameof(port));
         if (username != "root") throw new ArgumentException("Для управления модемом требуется root SSH.", nameof(username));
-        if (!File.Exists(privateKeyPath)) throw new FileNotFoundException("Приватный SSH-ключ не найден.", privateKeyPath);
-        if (!File.Exists(knownHostsPath)) throw new FileNotFoundException("Закреплённый SSH host key не найден.", knownHostsPath);
+        if (!File.Exists(privateKeyPath)) throw new FileNotFoundException("SSH-ключ не найден. Для нового модема нажмите «Выполнить предварительную подготовку модема»; для ранее настроенного подключения выберите существующий ключ.", privateKeyPath);
+        if (!File.Exists(knownHostsPath)) throw new FileNotFoundException("Ключ SSH-сервера ещё не сохранён. Выполните предварительную подготовку модема или выберите файл known_hosts этого подключения.", knownHostsPath);
         _host = host;
         _port = port;
         _username = username;

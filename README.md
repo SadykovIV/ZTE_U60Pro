@@ -6,20 +6,23 @@ Manage the **ZTE U60 Pro / MU5250**: access preparation, backups, IMEI, TTL,
 Russian screen localization, VPN over a separate Wi-Fi network, removable
 physical eUICC cards, and diagnostics.
 
-Version **1.27.1** (macOS build **68**, Windows FileVersion **1.27.1.0**),
-agent **2.9.0-esim.15**, VPN controller **1.5.0**.
-[Download macOS ARM64](https://github.com/SadykovIV/ZTE_U60Pro/releases/download/v1.27.1/ZTE-U60Pro-Manager-1.27.1-macOS-arm64.zip) ·
-[Download Windows x64](https://github.com/SadykovIV/ZTE_U60Pro/releases/download/v1.27.1/ZTE-U60Pro-Manager-1.27.1-Windows-x64-portable.zip) ·
-[Release and checksums](https://github.com/SadykovIV/ZTE_U60Pro/releases/tag/v1.27.1).
+Version **1.27.2** (macOS build **69**, Windows FileVersion **1.27.2.0**),
+agent **2.9.0-esim.17**, VPN controller **1.5.1**.
+[Download macOS ARM64](https://github.com/SadykovIV/ZTE_U60Pro/releases/download/v1.27.2/ZTE-U60Pro-Manager-1.27.2-macOS-arm64.zip) ·
+[Download Windows x64](https://github.com/SadykovIV/ZTE_U60Pro/releases/download/v1.27.2/ZTE-U60Pro-Manager-1.27.2-Windows-x64-portable.zip) ·
+[Release and checksums](https://github.com/SadykovIV/ZTE_U60Pro/releases/tag/v1.27.2).
 
-## Fixes in 1.27.1
+## Changes in 1.27.2
 
-Removable 9eSIM cards returning `61xx` after SELECT are read correctly.
-The bounded continuation keeps the owned card channel; actual read failures
-retain their cause instead of being reported as cleanup failures. Card and
-profile reads were verified on a B31 modem.
+- Separate adapters for the captured FLY B27/B11 components: VPN/IPA, TTL,
+  ADB, screen localization, Launcher and physical-eUICC radio operations.
+- The existing firmware export includes installation runtime dependencies and
+  preserves startup permissions. An offline tool verifies and compares captures.
+- The web agent can rename eSIM profiles on the card, including Unicode names.
 
-[Release details and verification](docs/RELEASE-1.27.1.md).
+The supplied B27 logs confirm successful preparation and agent installation in
+1.27.1. The new adapters are validated offline; an on-device B27 installation,
+traffic and screen trial is still required. [Release details](docs/RELEASE-1.27.2.md).
 
 ## Changes introduced in 1.27
 

@@ -177,7 +177,8 @@ pub fn route(
         return (
             200,
             json!({"ok":true,"data":{"protocol":1,"version":crate::AGENT_VERSION,
-            "operations":["list","download","enable","delete"],"https_transport":"agent_curl",
+            "operations":super::OPERATIONS,"https_transport":"agent_curl",
+            "nickname_max_characters":64,"nickname_max_utf8_bytes":256,
             "web_download_requires_modem_internet":true,"https_transport_available":web_http::available(),
             "private_rpc_protocol":1,"job_budget_seconds":JOB_BUDGET.as_secs(),
             "enable_radio_cycle":true,"enable_modem_readback":true,
@@ -284,7 +285,8 @@ fn run(request: Request, relay: &mut WebRelay, deadline: Instant) -> Result<supe
     relay.progress("checking_card")?;
     resources::check_device()?;
     let _operation = super::operation_lock::OperationLock::acquire()?;
-    let mut resources = resources::Resources::extract_for(request.operation == super::model::Operation::List)?;
+    let mut resources =
+        resources::Resources::extract_for(request.operation == super::model::Operation::List)?;
     relay.root = Some(resources.gsma_root.clone());
     let mut runtime =
         LocalRuntime::with_deadline(resources.helper.clone(), resources.lpac.clone(), deadline);
@@ -499,6 +501,32 @@ mod tests {
             route(&jobs, &Method::Get, "/api/esim/capabilities", "", &[]).0,
             401
         );
+    }
+    #[test]
+    fn rename_capabilities_and_invalid_names_are_private_and_worker_free() {
+        let jobs = Arc::new(Jobs::default());
+        let capabilities = route(&jobs, &Method::Get, "/api/esim/capabilities", "owner", &[]).1;
+        assert_eq!(capabilities["data"]["operations"], json!(super::super::OPERATIONS));
+        assert!(capabilities["data"]["operations"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("rename")));
+        assert_eq!(capabilities["data"]["nickname_max_characters"], 64);
+        assert_eq!(capabilities["data"]["nickname_max_utf8_bytes"], 256);
+        let before = json!({"ok":true,"eid":"89000000000000000000000000000000","profiles":[]});
+        let body = json!({"request_id":"a".repeat(32),"request":{
+            "protocol":1,"operation":"rename","expected_snapshot":before,
+            "iccid":"890000000000000001","nickname":"PRIVATE_NAME\n"}});
+        let response = route(
+            &jobs,
+            &Method::Post,
+            "/api/esim/jobs",
+            "owner",
+            &serde_json::to_vec(&body).unwrap(),
+        );
+        assert_eq!(response, fail(400, "invalid_nickname"));
+        assert!(!response.1.to_string().contains("PRIVATE_NAME"));
+        assert!(jobs.entries.lock().unwrap().is_empty());
     }
     #[test]
     fn completed_results_expire_active_job_not_evicted() {

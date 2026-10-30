@@ -2,16 +2,18 @@
 
 ## English
 
-In **ZTE U60Pro Manager 1.24.14**, connect through SSH, then open **Modem preparation → Diagnostics → Collect firmware adaptation data** and choose a ZIP destination. One archive contains a **fresh technical survey** and the available fixed firmware files. You do not need a separate research export. The ZIP is saved locally and is not uploaded automatically.
+In **ZTE U60Pro Manager**, connect through SSH, then open **Modem preparation → Diagnostics → Collect firmware adaptation data** and choose a ZIP destination. One archive contains a **fresh technical survey** and the available fixed firmware files. You do not need a separate research export. The ZIP is saved locally and is not uploaded automatically.
 
 ### What the ZIP contains
 
-- **Research specification revision 11: 57 probes.** The survey covers application dependencies, projected runtime state and RPC schemas. Failed, missing and unassessed observations remain distinct. Schemas are read through introspection. Separate probes invoke only selected read methods.
-- **Up to 40 fixed firmware inputs**, copied without changing their bytes:
+- **Research specification revision 15: 58 probes**, plus connection-attempt records. The survey covers application dependencies, projected runtime state and RPC schemas. Failed, missing and unassessed observations remain distinct. Schemas are read through introspection. Separate probes invoke only selected read methods.
+- **Up to 61 fixed firmware inputs**, copied without changing their bytes:
   - Four required files: `/usr/bin/zte_topsw_devui`, `/usr/ui/language/English.ini`, `/usr/ui/language/Chinese.ini`, `/etc/init.d/zte_topsw_devui`.
   - Four optional original copies from a verified backup made by this application's screen localization.
   - Three optional fonts from `/usr/ui/fonts/`: `ZTEZhengYuan.ttf`, `Roboto.ttf`, `Zoswald-Medium-24.ttf`.
-- Twenty-nine additional executable/library/script inputs cover ipacm and its vendor switch, network init, netifd/procd, ubus/uci/Lua, ZTE modem/QCRIL, DIAG, ZTE SDK/gesture/logging, rendering and C runtime dependencies. Known library aliases and unique versioned SONAME files are resolved inside system library directories. Ambiguous, non-ELF or unsafe targets are recorded as omissions. Source paths separated by ` | ` list ordered aliases.
+- Fifty additional executable/library/script inputs cover BusyBox, Dropbear, curl, static modem.mdt/modem.b16 code, QMI/RIL/DIAG dependencies, ipacm and its vendor switch, network init, netifd/procd, ubus/uci/Lua, ZTE modem/QCRIL, DIAG, ZTE SDK/gesture/logging, rendering and C runtime dependencies. Known library aliases and unique versioned SONAME files are resolved inside system library directories. Ambiguous, non-ELF or unsafe targets are recorded as omissions. Source paths separated by ` | ` list ordered aliases.
+- Startup ownership, group, mode and link count are separate numeric facts, so address redaction does not erase them.
+- USB evidence separately records whether the fixed ADB gadget/configuration/link layout matches, the UDC is writable, and a single root-owned `adbd` maps its installed binary and holds all three FunctionFS endpoints. These are projected observations, not permission to detach USB; PIDs and descriptor targets are not exported.
 - Full Firmware/Inner and OpenWrt version fields; file sizes, SHA-256, source paths and timestamps; SSH continuity results; sanitized application activity. Earlier activity may describe a different session or modem.
 
 Current screen files may already be patched or mounted. Unknown bytes are not labelled stock firmware. Missing optional fonts, originals or component binaries are listed as omissions. A complete capture means the available inputs were transferred consistently; it does not mean every feature is adapted. Missing required files or a partial survey produce an **incomplete** archive; changed files/device/session, invalid checksums or interrupted transfers prevent a completed archive. A size omission does not mean incompatible firmware. If CID or boot evidence is unavailable, the manifest records weaker binding rather than claiming full identity verification.
@@ -29,6 +31,33 @@ Current screen files may already be patched or mounted. Unknown bytes are not la
 
 The capture does **not** run eSIM list/SELECT/APDU, switch SIM slots, power-cycle a card, change radio or Wi-Fi settings, start components, acquire/clear their operation locks or grant write permission. Agent environment data is projected to one mode enum; raw environment, startup scripts and credentials are not exported. Raw HTTP responses, user configurations, VPN/APN/SIM profiles, SSH keys, IMEI/NV records and full flash images are excluded. Share the ZIP privately for diagnosis; vendor binaries and fonts are not application assets for redistribution.
 
+### Comparing firmware captures
+
+Reuse the same export on each modem; no additional menu or option is needed.
+For offline comparison on a development computer:
+
+```sh
+python3 tools/compare_firmware_captures.py firmware-a.zip firmware-b.zip > comparison.json
+```
+
+The tool accepts both Windows and macOS archive layouts. It verifies every
+payload against its recorded length and SHA-256, checks captured component
+bytes against the modem-side observations, and compares stable component IDs
+and source paths. Current files and localization backups stay separate.
+`same`, `different`, and `not_comparable` distinguish byte equality, changes,
+and missing/uncaptured inputs. Private logs and card/device identifiers are
+not copied into the comparison. Checksums establish internal consistency of
+an archive, not its authorship or that every function works.
+
+A complete storage image is not required for installer diagnosis. It also
+contains personal configuration, credentials, radio calibration and NV data,
+which do not belong in a shared adaptation report. The export therefore
+collects the relevant static programs and libraries and fresh runtime facts.
+An official factory firmware package can additionally support offline analysis;
+a bootable image still does not reproduce a particular modem's running state.
+Removing a broad firmware-version prohibition does not remove the need to
+validate addresses used by screen hooks or an actual SIM/radio operation.
+
 ### What is known about the supplied B28 build
 
 The examined files identify **Firmware `FLY_CN_MU5250V1.0.0B13` / Inner `BD_FLYMODEMMU5250V1.0.0B28`**. Its Chinese dictionary and screen init match the compared B31 files; its English dictionary lacks four keys, and its screen ELF differs. A font-patch candidate passed **offline checks only**. The supplied fonts match B31 byte for byte. Both exact patch profiles and installer recovery passed local tests. An on-device B28 install/restore/render check is still required.
@@ -37,16 +66,18 @@ The B28 Launcher adapter now has an exact profile for 34 called functions, hook 
 
 ## Русский
 
-В **ZTE U60Pro Manager 1.24.14** подключитесь по SSH, откройте **«Подготовка модема → Диагностика → Собрать данные для адаптации прошивки»** и выберите место для ZIP. В один архив входят **свежее техническое исследование** и доступные файлы прошивки из фиксированного списка. Отдельно экспортировать исследование не нужно. ZIP сохраняется на компьютере и автоматически никуда не отправляется.
+В **ZTE U60Pro Manager** подключитесь по SSH, откройте **«Подготовка модема → Диагностика → Собрать данные для адаптации прошивки»** и выберите место для ZIP. В один архив входят **свежее техническое исследование** и доступные файлы прошивки из фиксированного списка. Отдельно экспортировать исследование не нужно. ZIP сохраняется на компьютере и автоматически никуда не отправляется.
 
 ### Что входит в архив
 
-- **Спецификация исследования revision 11: 57 проверок.** Сбор включает зависимости функций, выбранные признаки текущего состояния и схемы RPC. Ошибка, отсутствие и непроверенный факт различаются. Схемы читаются через introspection; отдельные проверки вызывают только выбранные методы чтения.
-- **До 40 файлов прошивки** с сохранением исходных байтов:
+- **Спецификация исследования revision 15: 58 проверок**, дополнительно — записи попыток подключения. Сбор включает зависимости функций, выбранные признаки текущего состояния и схемы RPC. Ошибка, отсутствие и непроверенный факт различаются. Схемы читаются через introspection; отдельные проверки вызывают только выбранные методы чтения.
+- **До 61 файла прошивки** с сохранением исходных байтов:
   - Четыре обязательных: `/usr/bin/zte_topsw_devui`, `/usr/ui/language/English.ini`, `/usr/ui/language/Chinese.ini`, `/etc/init.d/zte_topsw_devui`.
   - Четыре необязательные исходные копии из проверенного бэкапа нашей русификации.
   - Три необязательных шрифта из `/usr/ui/fonts/`: `ZTEZhengYuan.ttf`, `Roboto.ttf`, `Zoswald-Medium-24.ttf`.
-- Ещё 29 программ, библиотек и сценариев: ipacm и его штатный переключатель, network init, netifd/procd, ubus/uci/Lua, модемные службы ZTE/QCRIL, DIAG, ZTE SDK/жесты/логирование, отрисовка и системные библиотеки. Учитываются библиотечные ссылки и единственный файл SONAME с номером версии. Неоднозначность, неверный формат и ссылка вне системных каталогов явно отмечаются. В поле источника ` | ` разделяет проверяемые имена библиотек.
+- Ещё 50 программ, библиотек и сценариев: BusyBox, Dropbear, curl, статический код modem.mdt/modem.b16, зависимости QMI/RIL/DIAG, ipacm и его штатный переключатель, network init, netifd/procd, ubus/uci/Lua, модемные службы ZTE/QCRIL, DIAG, ZTE SDK/жесты/логирование, отрисовка и системные библиотеки. Учитываются библиотечные ссылки и единственный файл SONAME с номером версии. Неоднозначность, неверный формат и ссылка вне системных каталогов явно отмечаются. В поле источника ` | ` разделяет проверяемые имена библиотек.
+- Владелец, группа, режим доступа и число ссылок startup-файлов выводятся отдельными числами: очистка IP-адресов больше не удаляет эти сведения.
+- Отдельно фиксируется соответствие USB-структуры требованиям ADB, доступность записи UDC, единственный root-процесс `adbd`, совпадение его бинарника и наличие трёх открытых FunctionFS endpoints. Это признаки текущего состояния, а не разрешение отключить USB; PID и пути дескрипторов не экспортируются.
 - Полные Firmware/Inner и версия OpenWrt; размеры, SHA-256, пути источников и время сбора; результаты проверки неизменности SSH-сеанса; очищенный журнал программы. Прежние записи журнала могут относиться к другому сеансу или модему.
 
 Текущие экранные файлы могут быть уже изменены или смонтированы поверх штатных. Неизвестные байты не объявляются заводскими. Отсутствующие шрифты, исходные копии и дополнительные компоненты отмечаются как пропуски. Полный сбор подтверждает передачу доступных данных, а не готовность всех функций. Отсутствие обязательных файлов или неполное исследование дают **неполный архив**. Смена файла, устройства или сеанса, неверный хэш и обрыв передачи не позволяют подтвердить полный архив. Превышение размера не означает несовместимость прошивки. Если CID или boot недоступны, манифест явно указывает ограниченную проверку идентичности.
@@ -63,6 +94,31 @@ The B28 Launcher adapter now has an exact profile for 34 called functions, hook 
 | Физическая SIM/eUICC и встроенная ZTE SIM | Наличие vendor API/символов, хэши компонентов, пассивные сведения QRTR/модулей/устройств и метаданные блокировки карты | Тип карты, выбранный физический маршрут, стандартный ISD-R и управление профилями. Без отдельной операции с картой они остаются неизвестными. |
 
 Сбор **не выполняет** eSIM list/SELECT/APDU, переключение слота, питание карты, изменение радио или Wi-Fi, запуск компонентов, захват/очистку их блокировок и не разрешает запись. Из окружения агента выделяется только режим; полное окружение, startup и учётные данные не экспортируются. Исключены сырые HTTP-ответы, пользовательские конфигурации, VPN/APN/SIM-профили, SSH-ключи, IMEI/NV и полный образ памяти. Передавайте ZIP приватно для диагностики; бинарники и шрифты производителя не предназначены для публикации вместе с программой.
+
+### Сравнение прошивок
+
+На каждом модеме используйте ту же кнопку сбора данных. Новые пункты меню и
+галочки не нужны. Для сравнения на компьютере разработчика:
+
+```sh
+python3 tools/compare_firmware_captures.py firmware-a.zip firmware-b.zip > comparison.json
+```
+
+Инструмент понимает архивы Windows и macOS, проверяет размеры и SHA-256 всех
+файлов и сверяет бинарники с измерениями на модеме. Сравнение идёт по постоянным
+ID компонентов и путям источников; текущие файлы и резервные копии русификации
+учитываются отдельно. `same` означает совпадение байтов, `different` — различие,
+`not_comparable` — отсутствие данных хотя бы с одной стороны. Приватные журналы,
+идентификаторы модема и карты в сравнение не попадают. Проверка хэшей подтверждает
+целостность архива, но не его авторство и не работоспособность всех функций.
+
+Полный образ накопителя для разбора ошибок установщика не нужен. Он также
+содержит настройки пользователя, учётные данные, калибровки радио и NV, которым
+не место в общем отчёте. Поэтому сбор включает нужные статические программы,
+библиотеки и свежие сведения о работе системы. Официальный заводской пакет
+прошивки может дополнить анализ, но сам образ не воспроизводит состояние
+конкретного включённого модема. Отмена общего запрета по версии прошивки не
+заменяет проверку адресов экранных хуков и реальной работы SIM или радио.
 
 ### Что известно о присланной B28
 

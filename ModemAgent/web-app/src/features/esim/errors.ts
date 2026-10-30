@@ -28,6 +28,7 @@ export const safeEsimErrors = new Set([
   "invalid_json",
   "invalid_lpac_message",
   "invalid_lpac_result",
+  "invalid_nickname",
   "invalid_notifications",
   "invalid_output",
   "invalid_request",
@@ -120,6 +121,7 @@ export const safeComponentErrors = new Set([
 export const componentError = (value: unknown): string | undefined => typeof value === 'string' && safeComponentErrors.has(value) ? value : undefined
 export function failureMessage(code: string): string {
   switch (code) {
+    case 'invalid_nickname': return 'Enter a name up to 64 characters, without control or text direction characters.'
     case 'snapshot_failed': return 'Card reading failed. The profile list could not be confirmed. See the operation log for the error code.'
     case 'card_busy': return 'The card is busy with another operation. Wait for it to finish, then read profiles again.'
     case 'card_open_rejected': return 'The modem refused to open the card channel. Wait a moment, then read profiles again. No profile operation was retried.'

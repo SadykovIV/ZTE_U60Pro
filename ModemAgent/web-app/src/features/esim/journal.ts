@@ -2,6 +2,7 @@ import { componentError, safeEsimErrors } from './errors'
 const messages: Record<string, string> = {
   checking_card: 'Checking the SIM card and profiles…', reading_profiles: 'Reading all card profiles…',
   downloading: 'Downloading the profile…', enabling: 'Enabling the selected profile…',
+  renaming_profile: 'Renaming the selected profile…',
   deleting: 'Deleting the profile…', notifications: 'Sending operator notifications…',
   verifying: 'Verifying card state…', cleanup: 'Closing the card channel…',
   radio_offline: 'Entering flight mode to reread the SIM…', radio_online: 'Radio is online; rereading the SIM…',

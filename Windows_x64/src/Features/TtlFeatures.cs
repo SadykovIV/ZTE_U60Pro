@@ -5,8 +5,9 @@ public sealed record TtlStatus(string State, int? Outbound, int? InboundIncremen
 public sealed partial class DeviceFeatureService
 {
     private const string TtlRoot = "/data/zte-imei-ttl";
-    private const string TtlManagerHash = "7e629d347d1dc1777cb6322430de0d4188b442d624108efbaba8ad110f012666";
+    private const string TtlManagerHash = "4d17d08f6ded676cd0f696c4a839c398306bd6cfd916891a43218d56ca48e796";
     private const string TtlPrevious12422ManagerHash = "e4684cb0fa040de0525d0248897da01a5af2c4ee8509a851719afe9c970e9194";
+    private const string TtlPrevious1271ManagerHash = "7e629d347d1dc1777cb6322430de0d4188b442d624108efbaba8ad110f012666";
     private const string TtlPreviousManagerHash = "b6588072c82ddd7678093a29b983ec4417c6807562819e3bda69cd6534637b7c";
     private const string TtlPrevious12420ManagerHash = "a70afc13c3645f64b5fd937162e7d403e133bcfa0a2da0e565d39a693f9ab488";
     private const string TtlPrevious12418ManagerHash = "79d5a2e696613f966fe2dff3fe59a0366455fe16681284c65d8ddb36c5e35b5a";
@@ -42,7 +43,7 @@ public sealed partial class DeviceFeatureService
             if (installed == "installed")
             {
                 var managerHash = await RunTextAsync("test -f /data/zte-imei-ttl/manager.sh && test ! -L /data/zte-imei-ttl/manager.sh && sha256sum /data/zte-imei-ttl/manager.sh | cut -d ' ' -f1", ct: ct);
-                if (managerHash != TtlManagerHash && managerHash is TtlPrevious12422ManagerHash or TtlPrevious12420ManagerHash or TtlPrevious12418ManagerHash or TtlPreviousManagerHash)
+                if (managerHash != TtlManagerHash && managerHash is TtlPrevious1271ManagerHash or TtlPrevious12422ManagerHash or TtlPrevious12420ManagerHash or TtlPrevious12418ManagerHash or TtlPreviousManagerHash)
                 {
                     var files = await LoadResourcesAsync("TTL", TtlNames, ct);
                     var stage = await StageAsync("zte-imei-ttl", files, ct);
@@ -84,7 +85,7 @@ public sealed partial class DeviceFeatureService
     {
         var manager = TtlRoot + "/manager.sh";
         return "set -eu; for dir in /data " + TtlRoot + "; do test -d \"$dir\" && test ! -L \"$dir\" && test \"$(stat -c %u \"$dir\")\" = 0; done; " +
-            "test -f " + manager + " && test ! -L " + manager + "; manager_hash=$(sha256sum " + manager + " | cut -d ' ' -f1); case \"$manager_hash\" in " + Quote(TtlManagerHash) + "|" + Quote(TtlPrevious12422ManagerHash) + "|" + Quote(TtlPreviousManagerHash) + "|" + Quote(TtlPrevious12418ManagerHash) + "|" + Quote(TtlPrevious12420ManagerHash) + ") ;; *) exit 1;; esac; sh " + manager + " " + action + " " + string.Join(" ", args.Select(Quote));
+            "test -f " + manager + " && test ! -L " + manager + "; manager_hash=$(sha256sum " + manager + " | cut -d ' ' -f1); case \"$manager_hash\" in " + Quote(TtlManagerHash) + "|" + Quote(TtlPrevious12422ManagerHash) + "|" + Quote(TtlPrevious1271ManagerHash) + "|" + Quote(TtlPreviousManagerHash) + "|" + Quote(TtlPrevious12418ManagerHash) + "|" + Quote(TtlPrevious12420ManagerHash) + ") ;; *) exit 1;; esac; sh " + manager + " " + action + " " + string.Join(" ", args.Select(Quote));
     }
 
     private static TtlStatus ParseTtlStatus(string output)

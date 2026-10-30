@@ -336,6 +336,60 @@ class ScreenLocalizationTests(unittest.TestCase):
     def b04(self):
         self.captured_profile(EVIDENCE / "b04-20261013/adaptation/files", "font.patch.b04.json")
 
+    def b27(self):
+        folder = Path(os.environ.get("ZTE_B27_SCREEN_FIXTURES", str(EVIDENCE / "b27-localization-20261030")))
+        if not (folder / "zte_topsw_devui").is_file():
+            self.skipTest("No private B27 capture supplied")
+        self.captured_profile(folder, "font.patch.b27.json")
+
+    def test_b27_install_reboot_disable_enable_preserves_exact_originals(self):
+        self.b27()
+        self.assert_success(self.install())
+        for name, data in self.b28_originals.items():
+            self.assertEqual((self.installed/"backup"/name).read_bytes(), data)
+        self.cold_boot_state()
+        self.assert_success(self.boot())
+        self.assertEqual(len(json.loads((self.root/"mounts.json").read_text())), 3)
+        self.assert_success(self.manager("disable"))
+        for name, data in self.b28_originals.items():
+            self.assertEqual((self.root/TARGETS[name].lstrip("/")).read_bytes(), data)
+        self.assert_success(self.manager("enable"))
+
+    def test_b27_failed_start_rolls_back_exact_originals(self):
+        self.b27()
+        result = self.install(MOCK_FAIL_CANDIDATE_START="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(self.installed.exists(), result.stderr)
+        for name, data in self.b28_originals.items():
+            self.assertEqual((self.root/TARGETS[name].lstrip("/")).read_bytes(), data)
+        self.assertEqual(self.language(), "en")
+        self.assertFalse((self.installed/".enabled").exists())
+
+    def test_b27_mixed_dictionary_refused_before_mutation(self):
+        self.b27()
+        self.write(TARGETS["Chinese.ini"], STOCK["Chinese.ini"].read_bytes())
+        result = self.install()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("SCREEN_PROFILE", result.stderr)
+        self.assert_no_device_mutations()
+
+    def test_upgrade_20261013_preserves_b04_originals(self):
+        self.b04()
+        self.prepare_scripts()
+        old_path = EVIDENCE/"b27-localization-20261030/install.20261013.sh"
+        if not old_path.is_file():
+            self.skipTest("No private 20261013 manager fixture supplied")
+        old = old_path.read_text()
+        self.assertEqual(sha(old.encode()), "089b66525207d9dc9fec54112fbb5786196c4a663fb1609b9aa53d8f07bb15ba")
+        (self.stage/"install.sh").write_text(self.redirect(old))
+        self.assert_success(self.run_script(self.stage/"install.sh", "install", self.stage, CID))
+        before = {p.name:p.read_bytes() for p in (self.installed/"backup").iterdir()}
+        self.assert_success(self.install())
+        self.assertEqual(before, {p.name:p.read_bytes() for p in (self.installed/"backup").iterdir()})
+        self.assert_success(self.manager("disable"))
+        for name, data in self.b28_originals.items():
+            self.assertEqual((self.root/TARGETS[name].lstrip("/")).read_bytes(), data)
+
     def test_b04_install_reboot_disable_enable_preserves_exact_originals(self):
         self.b04()
         self.assert_success(self.install())
@@ -452,7 +506,7 @@ class ScreenLocalizationTests(unittest.TestCase):
             (self.stage / name).write_bytes((RES / name).read_bytes())
         result = self.install()
         self.assert_success(result)
-        self.assertIn("revision=20261013", result.stdout)
+        self.assertIn("revision=20261030", result.stdout)
         self.assertEqual(before, {p.name:p.read_bytes() for p in (self.installed / "backup").iterdir()})
         self.assertIn("WiFi с VPN", (self.installed / "Chinese.ini").read_text())
         self.assertEqual(self.language(), "cn")
@@ -473,7 +527,7 @@ class ScreenLocalizationTests(unittest.TestCase):
             (self.stage / name).write_bytes((RES / name).read_bytes())
         result = self.install()
         self.assert_success(result)
-        self.assertIn("revision=20261013", result.stdout)
+        self.assertIn("revision=20261030", result.stdout)
         self.assertIn("WiFi с VPN", (self.installed / "Chinese.ini").read_text())
         self.assertEqual(before, {p.name:p.read_bytes() for p in (self.installed / "backup").iterdir()})
         self.assert_success(self.manager("disable"))

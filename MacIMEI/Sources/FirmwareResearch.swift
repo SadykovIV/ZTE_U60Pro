@@ -10,7 +10,7 @@ struct ResearchObservation: Codable, Sendable { let id: String; let title: Resea
 struct ResearchObservationResult: Codable, Sendable, Identifiable { let id: String; let title: ResearchText; let probe: String; let fact: String; let state: String; let value: String?; var sourceStatus: String? = nil; var sourceExitCode: Int32? = nil; var reason: String? = nil }
 struct ResearchSpecification: Codable, Sendable {
     // Updated only when the reviewed, bundled command allowlist changes.
-    static let expectedSHA256 = "f6d8bf582f2ddb780ea1cb5e53ca1bb4ed74d3bc64689163133f7f95f88dd59d"
+    static let expectedSHA256 = "1cd41ae24c7c8d78408a13af267e907894458600e765bd48df2cf6a3e16f1086"
     let schemaVersion: Int; let revision: Int; let profiles: [ResearchProfile]; let probes: [ResearchProbe]; let features: [ResearchFeature]
     var observations: [ResearchObservation]? = nil
     static func load(_ resources: URL) throws -> Self {
@@ -135,6 +135,29 @@ struct FirmwareResearchReport: Codable, Sendable {
     var bootstrapCommand = FirmwareResearchCollector.bootstrap
     var binding: [String: String] = [:]; var attempts: [ResearchConnectionAttempt] = []; var warnings: [String] = []
     var probes: [ResearchProbeResult] = []; var features: [ResearchFeatureResult] = []; var application: [String: String]
+}
+
+// Fixed, typed probe metadata can share words with credentials (for example
+// "private" directory permissions). Arbitrary values still undergo redaction.
+enum ResearchExportMetadata {
+    static func isPublic(_ key: String, _ value: String) -> Bool {
+        switch key {
+        case "tool_chpasswd", "tmp_private_stage_parent", "private_opkg_present", "secret_contents_collected",
+             "main_2g_iface", "main_5g_iface", "wifi_main_2g_disabled", "wifi_main_5g_disabled":
+            return ["0", "1", "not-assessed"].contains(value)
+        case "component_private_bin_path":
+            return ["present", "missing", "symlink", "not-assessed"].contains(value)
+        case "component_private_bin_uid", "component_private_bin_links":
+            return value == "not-assessed" || (value.range(of: #"\A[0-9]{1,10}\z"#, options: .regularExpression) != nil && UInt32(value) != nil)
+        case "component_private_bin_mode":
+            return value == "not-assessed" || value.range(of: #"\A[0-7]{1,4}\z"#, options: .regularExpression) != nil
+        case "wifi_main_2g_device", "wifi_main_5g_device", "wifi_main_2g_network", "wifi_main_5g_network":
+            return ["lan", "vpn", "br-lan", "br-vpn", "wifi0", "wifi1", "wlan0", "wlan1", "wlan2", "wlan3", "other", "not-assessed"].contains(value)
+        case "wifi_guest_2g_guest_remaining", "wifi_guest_5g_guest_remaining":
+            return value == "not-assessed" || value.range(of: #"\A[0-9]{1,9}\z"#, options: .regularExpression) != nil
+        default: return false
+        }
+    }
 }
 
 struct ResearchRedactor {
@@ -317,7 +340,12 @@ final class FirmwareResearchCollector {
                     if after.outcome != "success" || !Self.sameDevice(original, Self.binding(after.stdout)) { continuityLost = true; throw IMEIError.message("Device identity or boot changed after a probe; that probe's output was discarded and collection stopped.") }
                 }
                 let stdout = redactor.output(value.stdout), stderr = redactor.output(value.stderr)
-                report.probes.append(.init(id: probe.id, title: probe.title, category: probe.category, command: probe.command, outcome: value.outcome, exitCode: value.remoteExitCode, stdout: stdout, stderr: stderr, durationSeconds: value.duration, facts: value.outcome == "success" && value.remoteExitCode == 0 ? Self.facts(stdout) : [:], localExitCode: value.localExitCode, remoteExitCode: value.remoteExitCode))
+                var facts = [String: String]()
+                if value.outcome == "success" && value.remoteExitCode == 0 {
+                    facts = Self.facts(stdout)
+                    for (key, raw) in Self.facts(String(decoding:value.stdout, as:UTF8.self)) where ResearchExportMetadata.isPublic(key,raw) { facts[key] = raw }
+                }
+                report.probes.append(.init(id: probe.id, title: probe.title, category: probe.category, command: probe.command, outcome: value.outcome, exitCode: value.remoteExitCode, stdout: stdout, stderr: stderr, durationSeconds: value.duration, facts: facts, localExitCode: value.localExitCode, remoteExitCode: value.remoteExitCode))
                 progress(report, Double(index + 1) / Double(specification.probes.count))
                 if value.outcome == "cancelled" { report.outcome = "cancelled"; break }
             }
@@ -431,6 +459,18 @@ enum FirmwareResearchArchive {
         func clean(_ value: Any) -> Any {
             if let object = value as? [String: Any] {
                 return object.reduce(into: [String: Any]()) { result, pair in
+                    if pair.key == "facts", let facts = pair.value as? [String: String] {
+                        result[pair.key] = facts.reduce(into: [String: Any]()) { output, fact in
+                            if ResearchExportMetadata.isPublic(fact.key, fact.value) { output[fact.key] = fact.value }
+                            else { output[cleanText(fact.key)] = credential(fact.key) ? "[redacted]" : clean(fact.value) }
+                        }
+                        return
+                    }
+                    if ["fact", "value"].contains(pair.key), let key = object["fact"] as? String, let raw = object["value"] as? String,
+                       ResearchExportMetadata.isPublic(key, raw) {
+                        result[pair.key] = pair.value
+                        return
+                    }
                     let privateObservation = pair.key == "value" && (object["fact"] as? String).map(credential) == true
                     result[cleanText(pair.key)] = credential(pair.key) || privateObservation ? "[redacted]" : clean(pair.value)
                 }
