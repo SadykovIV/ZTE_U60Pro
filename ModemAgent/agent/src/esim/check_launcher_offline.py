@@ -6,7 +6,9 @@ from pathlib import Path
 import signal
 import subprocess
 import sys
+import tempfile
 import time
+import shlex
 
 binary = Path(sys.argv[1]).resolve()
 assert sys.platform == "darwin" and binary.read_bytes()[:4] == b"\xcf\xfa\xed\xfe"
@@ -55,4 +57,27 @@ assert capabilities["ok"] is True and capabilities["offline"] is True
 assert capabilities["target_mode"] == "explicit" and capabilities["protocol"] == 2
 assert set(capabilities["operations"]) == {"discover", "list", "download", "enable", "delete", "rename"}
 count += 1
+assert not Path('/data').exists(), 'Host startup fixtures require no modem /data state'
+with tempfile.TemporaryDirectory(prefix='zte-agent-cli-') as directory:
+    root = Path(directory)
+    marker = root / 'unexpected-device-command'
+    for command in ['ubus', 'uci', 'ip', 'pidof', 'logger', 'sh', 'iw', 'bridge', 'ethtool']:
+        stub = root / command
+        stub.write_text("#!/bin/sh\nprintf '%s\\n' unexpected >> " + shlex.quote(str(marker)) + "\nexit 99\n")
+        stub.chmod(0o700)
+    env = dict(os.environ, PATH=str(root), ZTE_AGENT_BIND='127.0.0.1:0')
+    version = subprocess.run([str(binary), '--version'], capture_output=True, env=env, timeout=5)
+    assert version.returncode == 0 and version.stderr == b''
+    assert version.stdout == (capabilities['version'] + '\n').encode()
+    count += 1
+    for arguments in [['--unknown'], ['unexpected'], ['--version', 'extra'], ['--version', '--version']]:
+        invalid = subprocess.run([str(binary), *arguments], capture_output=True, env=env, timeout=5)
+        assert invalid.returncode == 2 and invalid.stdout == b'' and invalid.stderr == b'invalid_arguments\n'
+        count += 1
+    for flag in ['--esim-launcher', '--esim-launcher-internal']:
+        legacy = subprocess.run([str(binary), flag], input=b'', capture_output=True, env=env, timeout=5)
+        assert legacy.returncode == 1 and legacy.stderr == b''
+        assert json.loads(legacy.stdout)['error'] == 'invalid_arguments'
+        count += 1
+    assert not marker.exists(), 'Early CLI path reached a device command'
 print(json.dumps({"ok":True,"host_only":True,"tests":count,"device_calls":0}))

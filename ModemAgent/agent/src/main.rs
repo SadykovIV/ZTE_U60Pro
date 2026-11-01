@@ -47,6 +47,21 @@ fn main() {
         std::process::exit(code);
     }
 
+    // CLI queries and mistakes must finish before migrations, device access or
+    // background controls. Only an argument-free invocation starts the daemon.
+    let mut arguments = std::env::args_os().skip(1);
+    match (arguments.next(), arguments.next()) {
+        (None, None) => (),
+        (Some(argument), None) if argument == "--version" => {
+            println!("{AGENT_VERSION}");
+            return;
+        }
+        _ => {
+            eprintln!("invalid_arguments");
+            std::process::exit(2);
+        }
+    }
+
     let threads: usize = std::env::var("ZTE_AGENT_THREADS")
         .ok()
         .and_then(|s| s.parse().ok())
