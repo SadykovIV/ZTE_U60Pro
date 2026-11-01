@@ -25,13 +25,30 @@ Agent **2.11.0** · VPN controller **1.5.1**.
 
 ### Проверки
 
-Точные результаты сборки и тестов этого выпуска записываются в `VERIFICATION.json`.
-Исторические аппаратные проверки B31 отделены от новой сборки: в 1.27.1 читалась
-съёмная 9eSIM в слоте 1; в локальной 1.28 подтверждены установка, чтение
-внутренней eUICC, физическая YOTA с HTTPS, правильное имя сети на реальном экране
-и автозапуск после перезагрузки. Интернет через внутреннюю Tele2 в том прогоне
-не подтверждён после неудачных запросов; изменения профилей не выполнялись.
-Эти результаты не доказывают работу нового бинарника 1.29.
+На одном B31 подтверждены установка нового комплекта 1.29 штатными средствами
+приложения, точные хэши компонентов, обнаружение обычной SIM и внутренней eUICC,
+повторное чтение трёх неизменившихся профилей и реальная экранная страница eSIM.
+Физическая YOTA работала в LTE: два HTTPS-адреса дали HTTP 200 в двух проверках
+через мобильный интерфейс. Чтение внутренней eUICC доступно при выбранной
+физической SIM; разрешение на включение профиля появляется после явного выбора
+внутренней карты в штатном меню. Изменения профилей не выполнялись.
+После перезагрузки подтверждены автозапуск агента, работа нового Launcher
+с сохранёнными страницами и повторное обнаружение/чтение тех же профилей
+рабочими реализациями приложения.
+
+После наблюдавшегося перехода внутренней карты на 3G и неактивного WAN одна
+контролируемая перезагрузка восстановила LTE-NSA/ENDC в этом прогоне: семь
+измерений за приблизительно 30 секунд показали ENDC и активный WAN, экран —
+Tele2 5G. Причина прежнего перехода на 3G не установлена; в ходе проверки
+настройки диапазонов и RAT не меняли. Интернет внутренней eUICC **не подтверждён**: HTTPS завершается
+ошибкой TLS, как до обновления, а HTTP перенаправляется на страницу оператора.
+Причина переадресации не установлена.
+
+Локально прошли 229 тестов агента, 90 web-тестов, 7712 проверок взаимодействия
+с Launcher и 42 отрисованных экрана macOS. Точные результаты и ограничения записаны
+в `VERIFICATION.json` и [отчёте проверки 1.29](UNIFIED-SIM-LIVE-20261101.md).
+Исторические прогоны 1.27.1 и 1.28 не заменяют проверки этой сборки; один
+аппаратный прогон не устанавливает надёжность всех конфигураций.
 
 Адаптеры B27/B28/B04 и локальные проверки не означают аппаратной проверки всех
 операций на этих прошивках. Нативный запуск Windows отдельно не подтверждён.
@@ -50,5 +67,16 @@ the original ZTE chip remains unsupported.
 The B31 Launcher displays the registered network name instead of a stored
 Chinese label. Update the bundled agent first, then install/update the eSIM
 screen page. Firmware and radio transitions keep their separate checks.
-Recorded earlier B31 hardware runs do not validate this new build; see the
-release verification report for completed tests and remaining device limits.
+On one B31 unit, the new 1.29 installation, repeated internal-eUICC reads,
+on-screen profile page and physical-SIM LTE/HTTPS were verified. No profile
+mutations were performed. After an observed transition to 3G with WAN down,
+one controlled reboot restored LTE-NSA/ENDC in this run; seven samples over
+about 30 seconds retained ENDC and WAN up, and the screen showed Tele2 5G.
+Post-reboot checks confirmed agent autostart, the new Launcher running with
+preserved pages, and repeated card/profile reads through the production app code.
+The earlier 3G transition remains unexplained; the verification did not change
+band or RAT settings. Internal-eUICC internet remains unverified: HTTPS fails as before the
+update, while HTTP redirects to the operator's page for an undetermined reason.
+See the
+[1.29 hardware report](UNIFIED-SIM-LIVE-20261101.md) and release verification
+report for the exact scope; one unit does not validate all configurations.

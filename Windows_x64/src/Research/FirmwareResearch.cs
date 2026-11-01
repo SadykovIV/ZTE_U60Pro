@@ -18,7 +18,7 @@ public sealed record ResearchObservation(string Id,ResearchText Title,string Pro
 public sealed record ResearchObservationResult(string Id,ResearchText Title,string Probe,string Fact,string Status,string? Value,string SourceStatus,int? ExitCode);
 public sealed record ResearchSpec(int SchemaVersion,int Revision,ResearchProfile[] Profiles,ResearchProbe[] Probes,ResearchFeature[] Features,ResearchObservation[]? Observations=null)
 {
-    public const string ExpectedSpecificationSha256="1cd41ae24c7c8d78408a13af267e907894458600e765bd48df2cf6a3e16f1086";
+    public const string ExpectedSpecificationSha256="983086f40b7d4ea4065b2a1ac097e19d25bfdc9fde9771d9c133f3aa65596404";
     public string? Sha256 { get; private set; }
     public static readonly JsonSerializerOptions Json=new() { PropertyNameCaseInsensitive=true,PropertyNamingPolicy=JsonNamingPolicy.CamelCase,WriteIndented=true };
     public static ResearchSpec Load(string path)

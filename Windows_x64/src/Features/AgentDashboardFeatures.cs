@@ -4,7 +4,7 @@ namespace ZteImeiStudio.Windows.Features;
 
 public sealed partial class DeviceFeatureService
 {
-    private const string DashboardInstallerHash = "66427db47c9554b7c1630731ec2f0990029d7558f1f5eda092996fea8edc19c6";
+    private const string DashboardInstallerHash = "da4b3f27f0cafaeacb733a769c431a5be50be11489bf3bd19e80b6101b8d9dff";
     private static readonly string[] DashboardInstallNames = ["dashboard.sh", "dashboard.tar.gz", "dashboard-uhttpd", "start-dashboard.sh", "dashboard-html.sh", "stop-owned-listener.sh", "update-rc-local.sh", "preserve-dashboard-assets.sh", "payload.sha256"];
 
     // Fresh onboarding preserves an existing custom/legacy agent and does not attach a new UI to it.

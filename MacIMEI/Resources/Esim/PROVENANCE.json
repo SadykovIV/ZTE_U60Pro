@@ -1,10 +1,10 @@
 {
-  "agent_version": "2.10.0-internal.1",
-  "agent_sha256": "2ec45ff1e10ceed0029de9b77740c95185b19b4d068a9153555ade0686babd3e",
+  "agent_version": "2.11.0",
+  "agent_sha256": "10919284afa5c72fd1401fa7514d50e17e246cd3b29b54b899d6453493658c23",
   "lpac_version": "2.3.0 + pinned stdio backports",
   "lpac_commit": "c2fcf5e4b21c712d54e35a11da2ad9ad134fb821",
   "lpac_linux_sha256": "32e7ff567cc38ff3522a02f71c0b9d4df2d5c745dbe664ee94655d737fdef478",
-  "qmi_bridge_sha256": "37bc21f6384a8ef3becd83a31cac4f7d2fbd0c0ebdaf5b944197e63932408e89",
+  "qmi_bridge_sha256": "fffd9896d182fadff2b0f69f073b8b4018be097ea2d048706d1bd8115e06dd1b",
   "qmi_component": {
     "component": "QMI/ES10 transport",
     "license_status": "license_unspecified",
@@ -28,8 +28,8 @@
       },
       {
         "path": "tools/removable-euicc/device/src/qmi/uim.rs",
-        "sha256": "ff72bb5382afebba2f9c1c0140ba93bd41e142f8dd5c5fefe093094a6602698e",
-        "size": 21444
+        "sha256": "aabe4c329abda5c220bc2ef2a1502223430ef163732a187e4efc9afdbb1e384c",
+        "size": 22985
       },
       {
         "path": "tools/removable-euicc/device/src/euicc/bertlv.rs",
@@ -53,7 +53,7 @@
       }
     ]
   },
-  "qmi_component_manifest_sha256": "e9d2567f7b1f9904344a451b9ec8eae0885a4cb18936054825ae80fb3d2156d5",
+  "qmi_component_manifest_sha256": "100cb48db56f939d820fc773df310d94504dd183e9e8ac6e3b51a88dedef44e2",
   "license_status": {
     "qmi_es10": "license_unspecified"
   },
@@ -62,8 +62,8 @@
     "source_ref": "da091fb7e6af804b81d51b913c20eb848303982e",
     "sha256": "29c00a9cc4bd76f5190141be668230acf00ad008871fad72a200e17f40d4883b"
   },
-  "source_archive_files": 520,
-  "source_archive_sha256": "8689d9bdaf4c6109fdc531e9ca17ed060afba71b3f421adb0d16881dceaeac8e",
+  "source_archive_files": 524,
+  "source_archive_sha256": "6d957fb0998fe13bd88ac9e1b81ea9d4194810db4a25b852429f1effe4769782",
   "gsma_pem_sha256": "7364a2ac4d2b5f77c1b83ee7e1c535e8fc806c67ee42e73ad97c35464d203477",
   "gsma_roots": [
     {
@@ -83,8 +83,14 @@
       "production": true
     }
   ],
-  "scope": "replacement internal eUICC; physical2/logical2; MU5250; SSH; hardware unverified",
-  "target": "internal-euicc-slot2",
+  "scope": "MU5250 unified SIM; confirmed eUICC on explicit physical1/logical1 or physical2/logical2; no automatic remap or network selection",
+  "protocol": 2,
+  "target_mode": "explicit",
+  "targets": [
+    "removable-euicc-slot1",
+    "internal-euicc-slot2"
+  ],
+  "built_in_zte_profile_management_supported": false,
   "hardware_tested": false,
   "profile_mutations_hardware_tested_in_desktop_release": false
 }

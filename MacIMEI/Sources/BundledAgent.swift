@@ -3,12 +3,14 @@ import Foundation
 /// Exact agent shipped by automatic setup, the agent installer and VPN updates.
 /// Resource refresh must update these pins before packaging.
 enum BundledAgent {
-    static let version = "2.10.0-internal.1"
-    static let sha256 = "2ec45ff1e10ceed0029de9b77740c95185b19b4d068a9153555ade0686babd3e"
-    static let dashboardInstallerSHA256 = "66427db47c9554b7c1630731ec2f0990029d7558f1f5eda092996fea8edc19c6"
+    static let version = "2.11.0"
+    static let sha256 = "10919284afa5c72fd1401fa7514d50e17e246cd3b29b54b899d6453493658c23"
+    static let dashboardInstallerSHA256 = "da4b3f27f0cafaeacb733a769c431a5be50be11489bf3bd19e80b6101b8d9dff"
     // Exact released hashes verified against release records and the update path.
     // Keep this host check independent of shell source formatting.
     static let supportedUpgradeHashes: Set<String> = [sha256,
+        "b8179aae6ede2c72808f351577aa3fd1cc457f04b18af56c82c30dae4b53d897",
+        "2ec45ff1e10ceed0029de9b77740c95185b19b4d068a9153555ade0686babd3e",
         "fd5babee29e63366fb743c76c72f2a29eec47377ccda32659a85ce6e5effd959",
         "7603050662473543b01e4cf7529e2ff9e29e7cd615ff1af4be67e77c96d593a6",
         "5bcf685b87439b856a92c7f1e41a4d05c87056c32eefd95b76fec22d828fcc1d",

@@ -1,7 +1,7 @@
 {
   "OpenDoas-LICENSE.txt": "293e7f2bc3a06396b200956cd660cd101bdb3c109f31c9ab6f2547f2105b38af",
   "README.md": "676ed1c9ad14f8b6fc84f8dca494ff48656f413dd36e8952934859b375e1b58d",
-  "access-services.sh": "b297cf1b11bc5e47b35d1018fb9f3b7c6aa1499db943d17bef01c0f8797c9863",
+  "access-services.sh": "8283c12c156889fce871e5a10abe49ec19b5be8d6beec177ba14262d08d77321",
   "create-ssh-user.sh": "17d5c5655c333c9264fa413f2ec5a5ee82bbaa2d2be60dadff47ae8319368784",
   "delete-ssh-user.sh": "8a908f129775d0551fd19e449545637ab1b8b72fb02fb8de754c10c04554998b",
   "doas": "f162f2d83476d22559fd844203b6af52c6a74250390cdf08c1d6b99e58c9ec97",

@@ -5,7 +5,7 @@ use std::io::{Read, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
-pub const BRIDGE_HASH: &str = "37bc21f6384a8ef3becd83a31cac4f7d2fbd0c0ebdaf5b944197e63932408e89";
+pub const BRIDGE_HASH: &str = "fffd9896d182fadff2b0f69f073b8b4018be097ea2d048706d1bd8115e06dd1b";
 pub const LPAC_HASH: &str = "32e7ff567cc38ff3522a02f71c0b9d4df2d5c745dbe664ee94655d737fdef478";
 const BRIDGE: &[u8] = include_bytes!("../../resources/esim/bridge");
 const LPAC: &[u8] = include_bytes!("../../resources/esim/lpac");

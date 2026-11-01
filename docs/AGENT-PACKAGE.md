@@ -29,12 +29,16 @@ protocol-2 targets bind operations to the intended card. Enabling a profile
 also requires compatible firmware and an independently verified network-SIM
 selection before the shared radio cycle.
 
-Verify the included `SHA256SUMS` before deployment. Build and prior hardware
-checks are separate: see the release `VERIFICATION.json`. Historical B31 tests
-include external and replacement-internal card reads; they do not validate all
-profile mutations, a new binary, other firmware families or native Windows.
-The local 1.28 trial confirmed physical-SIM HTTPS, but internal-eUICC internet
-requests failed and that connectivity remains unverified.
+Verify the included `SHA256SUMS` before deployment. The 1.29 B31 hardware run
+confirmed installation, replacement-internal EID/profile reads, physical-SIM
+HTTPS, operator-name rendering and startup after reboot. Internal LTE/5G
+registration returned after reboot; HTTP redirected to `unblock.t2.ru` and
+HTTPS remained unsuccessful, also observed before this update. The cause of
+the earlier temporary 3G registration was not established.
+
+See `VERIFICATION.json` and the dated hardware report for the exact scope.
+Profile mutations, other firmware families and native Windows were not
+hardware-tested in this release. This is not a guarantee for all configurations.
 
 [Included 1.29 release notes](RELEASE-1.29.md).
 In the source tree, see `docs/UNIFIED-SIM.md` and `docs/ESIM-APP-CONTRACT.md`.

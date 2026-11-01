@@ -20,10 +20,12 @@ agent **2.11.0**, VPN controller **1.5.1**.
 - On the measured B31 UI/SDK, Launcher shows the registered operator name instead
   of a stored Chinese label. Update the agent first, then the eSIM screen page.
 
-Earlier B31 hardware runs validate specific old binaries and operations:
-[local 1.28 trial](docs/INTERNAL-EUICC-LIVE-20261101.md). They do not validate every
-operation in 1.29, other firmware families or native Windows. Current completed
-build/device checks belong to the release `VERIFICATION.json`.
+The [1.29 B31 hardware run](docs/UNIFIED-SIM-LIVE-20261101.md) verified installation,
+three replacement-eUICC profiles, physical YOTA SIM HTTPS, operator names and
+startup after reboot. Internal LTE/5G registration returned after reboot; HTTP
+redirected to `unblock.t2.ru`, while HTTPS remained unverified. Profile mutations,
+other firmware families and native Windows were not hardware-tested. See the
+release `VERIFICATION.json` for the exact scope and remaining limits.
 
 ## Inherited changes in 1.27.2
 
@@ -101,7 +103,7 @@ The project includes two desktop applications and a standalone modem agent:
 | --- | --- | --- |
 | **ZTE U60Pro Manager** | Apple Silicon Mac, macOS 13+ | Modem preparation, component installation and updates, IMEI, TTL, backups, eSIM, and diagnostics |
 | **ZTE U60Pro Manager Windows** | Windows x64 | Self-contained portable package: prepare SSH through ADB, manage the modem over SSH, Launcher, VPN, applications, Terminal, IMEI, eSIM, and backups |
-| **ZTE Agent** | Linux ARM64 on the modem | RU/EN web dashboard, modem and network status, VPN profile selection and import, and physical eUICC management; downloading a profile requires the modem's internet connection |
+| **ZTE Agent** | Linux ARM64 on the modem | RU/EN web dashboard, modem and network status, VPN profile selection and import, and selected-slot eUICC management; downloading a profile requires the modem's internet connection |
 
 ### Historical tested system before the internal-eUICC modification
 
