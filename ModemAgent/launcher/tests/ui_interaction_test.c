@@ -170,9 +170,10 @@ int main(void){
  /* Both card choices retain their own target; read-only cards cannot open confirmation. */
  sim_fixture=(struct esim_snapshot){.discovered=1,.complete=1,.targets=3,.generation=10};esim_snapshot(&esim_shown);render_esim();
  CHECK(!(widget(esim_target_buttons[0])->flags&HIDDEN)&&!(widget(esim_target_buttons[1])->flags&HIDDEN));
+ CHECK(!strcmp(widget(esim_notice)->caption,"Choose a card above"));
  click(83);CHECK(selected_sim_target==0);click(84);CHECK(selected_sim_target==1);
  sim_fixture.valid=1;sim_fixture.cached=1;sim_fixture.count=1;strcpy(sim_fixture.target,"internal-euicc-slot2");strcpy(sim_fixture.profiles[0].iccid,"8999999999999999991");strcpy(sim_fixture.profiles[0].name,"Synthetic");sim_fixture.generation++;
- esim_snapshot(&esim_shown);render_esim();CHECK(!(widget(esim_cards[0])->flags&CLICKABLE));click(60);CHECK(!esim_selected_id[0]);
+ esim_snapshot(&esim_shown);render_esim();CHECK(strstr(widget(esim_labels[0])->caption,"Disabled"));CHECK(!(widget(esim_cards[0])->flags&CLICKABLE));click(60);CHECK(!esim_selected_id[0]);
  sim_fixture.can_enable=1;esim_snapshot(&esim_shown);render_esim();CHECK(widget(esim_cards[0])->flags&CLICKABLE);click(60);CHECK(!strcmp(esim_selected_id,sim_fixture.profiles[0].iccid));
  click(83);CHECK(!esim_selected_id[0]);
  CHECK(widget(esim_cards[0])->y>=widget(esim_target_buttons[0])->y+widget(esim_target_buttons[0])->height);
