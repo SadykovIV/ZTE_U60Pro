@@ -12,6 +12,7 @@ import UniformTypeIdentifiers
     @StudioState private var matchingID = ""
     @StudioState private var confirmationCode = ""
     @StudioState private var pending: EsimOperation?
+    @StudioState private var pendingTargetKey = ""
     @StudioState private var confirmationText = ""
     @StudioState private var confirmationPresented = false
     @StudioState private var qrBusy = false
@@ -21,8 +22,8 @@ import UniformTypeIdentifiers
     private var preparedCode: String? { manualInput ? EsimValidation.manualCode(address: smdpAddress, matchingID: matchingID) : EsimValidation.activationCode(activationCode) }
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
-            StudioNote(symbol: "simcard", text: "Эта версия управляет eUICC, установленной вместо штатной eSIM ZTE. Карта в физическом SIM-слоте остаётся отдельной.")
-            StudioNote(symbol: "simcard.2", text: "Для мобильной связи через eUICC и переключения её профилей выберите eSIM в штатном меню выбора SIM. Эта программа не переключает слоты автоматически.")
+            StudioNote(symbol: "simcard", text: "Приложение проверяет SIM-карты и показывает доступные eUICC. Профили обычной SIM и штатной закрытой eSIM недоступны.")
+            StudioNote(symbol: "simcard.2", text: "Для включения профиля выберите соответствующую карту в разделе SIM модема и обновите список. Приложение не переключает SIM-карты автоматически.")
             StudioNote(symbol: "simcard", text: model.esimCardStatus)
             if model.activeChannel != .ssh && !model.esimPreview {
                 StudioNote(symbol: "network", text: "Для eSIM требуется SSH. В «Подготовке модема» выберите SSH и проверьте подключение. Web и ADB для этого раздела не используются.")
@@ -34,8 +35,16 @@ import UniformTypeIdentifiers
                         Text(L10n.text(model.hasOrdinarySIM ? "Управление профилями eSIM недоступно" : "Показываются все профили, включая выключенные")).font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
                     }
                     Spacer()
-                    Button { model.performEsim(.list) } label: { Label(L10n.text("Проверить карту и профили"), systemImage: "arrow.clockwise") }
+                    Button { model.performEsim(.discover) } label: { Label(L10n.text("Проверить карту и профили"), systemImage: "arrow.clockwise") }
                         .buttonStyle(StudioButtonStyle()).disabled(!model.canReadEsim || qrBusy)
+                }
+                if model.confirmedEsimTargets.count > 1 || (!model.esimDiscoveryComplete && !model.confirmedEsimTargets.isEmpty) {
+                    Picker(L10n.text("Карта для управления"), selection: Binding(get: { model.esimSelectedTarget }, set: { model.selectEsimTarget($0) })) {
+                        Text(L10n.text("Выберите карту")).tag(nil as EsimTarget?)
+                        ForEach(model.confirmedEsimTargets, id: \.target) { item in Text(L10n.text(item.target.title)).tag(Optional(item.target)) }
+                    }.disabled(blocked)
+                } else if let target = model.esimSelectedTarget {
+                    Text(L10n.text(target.title)).font(.system(size: 13, weight: .semibold))
                 }
                 if let snapshot = model.esimSnapshot {
                     HStack {
@@ -54,12 +63,12 @@ import UniformTypeIdentifiers
                     HStack(spacing: 12) {
                         Button(L10n.text(selected?.enabled == true ? "Перечитать SIM" : "Сделать активным")) {
                             guard let profile = selected, let iccid = profile.iccid else { return }
-                            pending = .enable(iccid); confirmationText = L10n.text(profile.enabled ? "Перечитать SIM для профиля" : "Активировать профиль") + " «" + profile.title + "» (" + profile.maskedICCID + ")? " + L10n.text("Модем временно включит авиарежим, перечитает SIM и вернёт радио в обычный режим. Мобильное подключение прервётся."); confirmationPresented = true
-                        }.buttonStyle(StudioButtonStyle()).disabled(!model.canWriteEsim || blocked || selected == nil || selected?.state == "unknown")
+                            pendingTargetKey = model.esimTargetKey; pending = .enable(iccid); confirmationText = L10n.text(profile.enabled ? "Перечитать SIM для профиля" : "Активировать профиль") + " «" + profile.title + "» (" + profile.maskedICCID + ")? " + L10n.text("Модем временно включит авиарежим, перечитает SIM и вернёт радио в обычный режим. Мобильное подключение прервётся."); confirmationPresented = true
+                        }.buttonStyle(StudioButtonStyle()).disabled(!model.canPerformEsim("enable") || blocked || selected == nil || selected?.state == "unknown")
                         Button(L10n.text("Удалить профиль"), role: .destructive) {
                             guard let profile = selected, let iccid = profile.iccid else { return }
-                            pending = .delete(iccid); confirmationText = L10n.text("Удалить без возможности отмены") + " «" + profile.title + "» (" + profile.maskedICCID + ")? " + L10n.text("Для повторной установки может понадобиться новый код оператора."); confirmationPresented = true
-                        }.buttonStyle(StudioButtonStyle()).disabled(!model.canWriteEsim || blocked || selected?.state != "disabled")
+                            pendingTargetKey = model.esimTargetKey; pending = .delete(iccid); confirmationText = L10n.text("Удалить без возможности отмены") + " «" + profile.title + "» (" + profile.maskedICCID + ")? " + L10n.text("Для повторной установки может понадобиться новый код оператора."); confirmationPresented = true
+                        }.buttonStyle(StudioButtonStyle()).disabled(!model.canPerformEsim("delete") || blocked || selected?.state != "disabled")
                     }
                 } else {
                     Text(L10n.text(model.hasOrdinarySIM ? "Вставлена обычная SIM-карта оператора. Установка профилей eSIM недоступна." : "Нажмите «Проверить карту и профили», чтобы определить доступность eSIM и прочитать профили.")).foregroundStyle(StudioStyle.secondary).padding(.vertical, 14)
@@ -96,8 +105,8 @@ import UniformTypeIdentifiers
                 SecureField(L10n.text("Код подтверждения, если выдан оператором"), text: $confirmationCode).textFieldStyle(.roundedBorder).disabled(blocked)
                 Button(L10n.text("Установить профиль")) {
                     guard let code = preparedCode else { return }
-                    pending = .download(code, confirmationCode); confirmationText = L10n.text("Установить профиль на эту eUICC? Код оператора может быть одноразовым. Профиль останется выключенным."); confirmationPresented = true
-                }.buttonStyle(StudioButtonStyle()).disabled(!model.canWriteEsim || blocked || preparedCode == nil)
+                    pendingTargetKey = model.esimTargetKey; pending = .download(code, confirmationCode); confirmationText = L10n.text("Установить профиль на эту eUICC? Код оператора может быть одноразовым. Профиль останется выключенным."); confirmationPresented = true
+                }.buttonStyle(StudioButtonStyle()).disabled(!model.canPerformEsim("download") || blocked || preparedCode == nil)
                 Text(L10n.text("Код не сохраняется и очищается после отправки. Для записи нужен свежий список профилей.")).font(.system(size: 11)).foregroundStyle(StudioStyle.secondary)
             }
             }
@@ -109,13 +118,16 @@ import UniformTypeIdentifiers
         .alert(L10n.text("Подтверждение операции eSIM"), isPresented: $confirmationPresented) {
             Button(L10n.text("Отмена"), role: .cancel) { pending = nil }
             Button(L10n.text("Подтвердить"), role: pending?.name == "delete" ? .destructive : nil) {
-                if let operation = pending {
+                if let operation = pending, pendingTargetKey == model.esimTargetKey {
                     activationCode = ""; confirmationCode = ""; smdpAddress = ""; matchingID = ""; pending = nil
                     model.performEsim(operation)
                 }
             }
         } message: { Text(confirmationText) }
         .onDisappear { activationCode = ""; confirmationCode = ""; smdpAddress = ""; matchingID = ""; pending = nil }
+        .onChange(of: model.esimTargetKey) { _ in
+            activationCode = ""; confirmationCode = ""; smdpAddress = ""; matchingID = ""; pending = nil; confirmationPresented = false
+        }
         .onChange(of: model.hasOrdinarySIM) { ordinary in
             if ordinary { activationCode = ""; confirmationCode = ""; smdpAddress = ""; matchingID = ""; pending = nil; confirmationPresented = false }
         }
@@ -140,9 +152,10 @@ import UniformTypeIdentifiers
         let panel = NSOpenPanel(); panel.allowedContentTypes = [.image]; panel.allowsMultipleSelection = false
         panel.title = L10n.text("Выберите изображение с одним QR-кодом LPA")
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        let targetKey = model.esimTargetKey
         qrBusy = true; inputError = ""
         Task {
-            do { activationCode = try await Task.detached { try EsimQR.read(url) }.value; manualInput = false }
+            do { let code = try await Task.detached { try EsimQR.read(url) }.value; if model.esimTargetKey == targetKey { activationCode = code; manualInput = false } }
             catch { inputError = "Нужен один QR-код с корректным LPA-кодом. Код не был отправлен." }
             qrBusy = false
         }

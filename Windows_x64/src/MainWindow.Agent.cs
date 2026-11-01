@@ -72,7 +72,7 @@ public sealed partial class MainWindow
         // Backend validates these exact bytes again before staging or mutation.
         try { _ = AgentCandidate.FromSelection(candidate.Path, candidate.Bytes, candidate.Sha256); }
         catch { _customAgent = null; _customAgentContext = null; RenderPage(); throw; }
-        _esimAuthorized = false; _esimSnapshot = null; _esimCard = null; _esimSelected = null;
+        _esimAuthorized = false; _esimTargets = []; _esimSelectedTarget = null; _esimOperations = []; _esimSnapshot = null; _esimCard = null; _esimSelected = null;
         await ExecuteAsync(ModemOperation.InstallCustomAgent, new Dictionary<string,string> {
             ["host"] = Get("host"), ["port"] = _service.GetConnectionSettings().Port.ToString(System.Globalization.CultureInfo.InvariantCulture),
             ["key_path"] = Get("key_path"), ["known_hosts_path"] = Get("known_hosts_path"),

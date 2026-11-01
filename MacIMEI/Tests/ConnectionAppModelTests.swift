@@ -157,9 +157,8 @@ private func snapshot() -> ConnectionOverviewSnapshot {
             try check(!m.busy && m.operationTask == nil && !m.preparationError.isEmpty, "Failed check left operation active")
             try check(m.webPassword == "retained-web-canary" && m.agentPassword == "retained-agent-canary" && m.backupSuffix == "retained-backup-canary", "Read-only check consumed form credentials")
             try check(m.canPrepareModem && m.canVerifyBackupKey, "Next user action requires app restart or credential re-entry")
-            m.forcePreparation = true
             m.preparePreferredSSH(); await m.operationTask?.value
-            try check(!m.busy && m.operationTask == nil && m.forcePreparation && m.webPassword == "retained-web-canary" && m.backupSuffix == "retained-backup-canary", "Failed preparation preflight consumed credentials/force intent or retained busy")
+            try check(!m.busy && m.operationTask == nil && !m.preparationError.isEmpty && m.canPrepareModem && m.webPassword == "retained-web-canary" && m.agentPassword == "retained-agent-canary" && m.backupSuffix == "retained-backup-canary", "Failed preparation preflight consumed credentials, blocked retry or retained busy")
             if let enumerator = FileManager.default.enumerator(at: m.storage, includingPropertiesForKeys: [.isRegularFileKey]) {
                 for case let file as URL in enumerator {
                     guard (try? file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
@@ -287,24 +286,23 @@ private func snapshot() -> ConnectionOverviewSnapshot {
                 try check(m.canPrepareModem && m.preparationUnavailableReason == nil, "Known HTTP failure hides interrupted setup recovery")
             }
         }
-        try test("Clean components is explicit target-bound force intent with cleanup-only recovery") {
+        try test("Existing cleanup and core replacement journals remain recoverable without granting IMEI writes") {
             let m=try model();m.acceptChannelSelection(selection(.ssh))
-            try check(!m.cleanPreparationComponents && !m.forcePreparation, "Cleanup is enabled by default")
-            m.cleanPreparationComponents=true
-            try check(m.forcePreparation && m.canPrepareModem, "Cleanup did not require force preparation")
-            m.setupPending = true; m.cleanPreparationComponents = false; m.forcePreparation = false
-            m.cleanPreparationComponents = true
-            try check(m.cleanPreparationComponents && m.forcePreparation && m.canPrepareModem, "Pending setup hid explicit clean intent before backend validation")
-            m.setupPending = false
-            m.forcePreparation=false
-            try check(!m.cleanPreparationComponents, "Disabling force retained destructive cleanup intent")
-            m.cleanPreparationComponents=true;m.editConnectionHost("192.0.2.15")
-            try check(!m.cleanPreparationComponents && !m.forcePreparation, "Cleanup leaked to changed target")
-            m.acceptChannelSelection(selection(.ssh))
-            try savePrivate(Data("{}".utf8), ComponentCleanup.pendingURL(root:isolatedStorage))
+            try check(!m.componentCleanupPending && !m.coreReplacementPending && !m.setupPending && m.operationTask == nil, "Fresh connection started preparation or created recovery intent")
+            let cleanup = ComponentCleanup.pendingURL(root:isolatedStorage)
+            let replacement = isolatedStorage.appendingPathComponent("core-replacement-pending.json")
+            let original = Data("{\"fixture\":\"existing recovery intent\"}".utf8)
+            try savePrivate(original, cleanup)
             m.refreshBackups()
-            try check(m.componentCleanupPending && m.setupPending && m.canPrepareModem && m.canManage && !m.canApply,
+            try check(m.componentCleanupPending && m.setupPending && !m.componentCleanupCanCancel && m.canPrepareModem && m.canManage && !m.canApply,
                       "Cleanup recovery hides unrelated components or grants IMEI authorization")
+            m.webPassword = "recovery-context-canary"; m.editConnectionHost("192.0.2.15")
+            let unchanged = try Data(contentsOf:cleanup)
+            try check(m.webPassword.isEmpty && !m.connected && !m.canManage && unchanged == original && m.operationTask == nil,
+                      "Target change retained credentials or replayed/rewrote old recovery intent")
+            try FileManager.default.removeItem(at:cleanup); try savePrivate(original,replacement); m.refreshBackups()
+            try check(!m.componentCleanupPending && m.coreReplacementPending && m.setupPending && m.canPrepareModem && !m.canApply && m.operationTask == nil,
+                      "Core replacement recovery is hidden or implicitly dispatched")
         }
         try test("Cleanup cancel is phase gated and observes busy terminal and operation guards") {
             let m=try model();m.componentCleanupPending=true;m.componentCleanupCanCancel=true
@@ -314,16 +312,23 @@ private func snapshot() -> ConnectionOverviewSnapshot {
             m.pendingOperation=true;try check(!m.canCancelComponentCleanup,"Other operation cancel allowed");m.pendingOperation=false
             m.componentCleanupCanCancel=false;try check(!m.canCancelComponentCleanup,"Unknown/dispatched cancel allowed")
         }
-        try test("Explicit force enables preparation on working SSH without bypassing operation guards") {
-            let m=try model();m.acceptChannelSelection(selection(.ssh));m.forcePreparation=true
-            try check(m.canPrepareModem && m.preparationUnavailableReason == nil,"Explicit force cannot prepare working SSH")
-            m.busy=true;try check(!m.canPrepareModem,"Force bypasses busy");m.busy=false
-            m.terminalActive=true;try check(!m.canPrepareModem,"Force bypasses terminal");m.terminalActive=false
-            m.pendingOperation=true;try check(!m.canPrepareModem,"Force bypasses IMEI pending");m.pendingOperation=false
-            m.systemRestorePending=true;try check(!m.canPrepareModem,"Force bypasses restore pending");m.systemRestorePending=false
-            m.adbTogglePending=true;try check(!m.canPrepareModem,"Force bypasses ADB pending");m.adbTogglePending=false
-            m.forcePreparation=false;try check(!m.canPrepareModem,"Ordinary preparation no longer reuses SSH")
-            m.forcePreparation=true;m.editConnectionHost("192.0.2.12");try check(!m.forcePreparation,"Force intent leaked to changed target")
+        try test("Explicit core preparation and recovery respect every concurrent operation guard") {
+            let m=try model();m.acceptChannelSelection(selection(.ssh))
+            try check(m.canPrepareModem && m.preparationUnavailableReason == nil && m.operationTask == nil,"Working SSH cannot offer explicit core preparation or prepared implicitly")
+            for recovery in [false, true] {
+                m.setupPending = recovery
+                for guardName in ["busy", "terminal", "imei", "restore", "diagnostic", "adb"] {
+                    m.busy = guardName == "busy"; m.terminalActive = guardName == "terminal"
+                    m.pendingOperation = guardName == "imei"; m.systemRestorePending = guardName == "restore"
+                    m.diagnosticADBPending = guardName == "diagnostic"; m.adbTogglePending = guardName == "adb"
+                    try check(!m.canPrepareModem,"Preparation bypasses guard: " + guardName)
+                    m.preparePreferredSSH(); try check(m.operationTask == nil,"Blocked preparation dispatched a task: " + guardName)
+                }
+                m.busy=false;m.terminalActive=false;m.pendingOperation=false;m.systemRestorePending=false;m.diagnosticADBPending=false;m.adbTogglePending=false
+                try check(m.canPrepareModem,"Cleared operation guards still block explicit preparation/recovery")
+            }
+            m.setupPending=false;m.editConnectionHost("192.0.2.12")
+            try check(!m.connected && !m.hasSSHForPreparation && !m.canPrepareModem && m.operationTask == nil,"Preparation authorization leaked to changed target")
         }
         try test("Firmware policy cannot change during an operation or active terminal") {
             let m = try model(); m.acceptChannelSelection(selection(.ssh))
@@ -363,33 +368,33 @@ private func snapshot() -> ConnectionOverviewSnapshot {
             m.setFirmwareCheckSkipped(false)
             try check(!m.canInstallEsimDisplay, "Re-enabled firmware policy reuses the previous session")
         }
-        try test("Existing SSH disables new preparation even with firmware override") {
+        try test("Existing SSH permits explicit core replacement without implicit dispatch or legacy Web ADB") {
             let m = try model()
             m.connectionsChecked = true
             m.channelStatuses = [ConnectionChannelStatus(mode: .ssh, state: .available, message: "verified SSH"),
                                  ConnectionChannelStatus(mode: .web, state: .available, message: "verified Web")]
-            try check(!m.canPrepareModem && m.preparationUnavailableReason?.contains("SSH уже доступен") == true, "Existing SSH did not disable redundant preparation")
-            m.preparePreferredSSH()
-            try check(m.operationTask == nil && !m.busy, "Disabled preparation still started")
+            try check(m.canPrepareModem && m.preparationUnavailableReason == nil && m.operationTask == nil && !m.busy, "Existing SSH hid explicit preparation or started it automatically")
             m.setFirmwareCheckSkipped(true)
-            try check(!m.canPrepareModem && !m.canEnableDiagnosticADB && m.connectionsChecked && m.channelStatuses.count == 2, "Override bypassed prepared SSH or disabled diagnostic ADB")
+            try check(m.canPrepareModem && !m.canEnableDiagnosticADB && m.connectionsChecked && m.channelStatuses.count == 2 && m.operationTask == nil, "Override changed SSH preparation availability or enabled legacy Web ADB")
             m.busy = true; try check(!m.canPrepareModem, "Override bypassed busy guard"); m.busy = false
             m.pendingOperation = true; try check(!m.canPrepareModem, "Override bypassed IMEI recovery"); m.pendingOperation = false
             m.systemRestorePending = true; try check(!m.canPrepareModem, "Override bypassed restore recovery"); m.systemRestorePending = false
             m.channelStatuses[1].state = .invalidPassword
-            try check(!m.canPrepareModem, "Override bypassed rejected Web credentials")
+            try check(m.canPrepareModem, "Rejected Web credentials hid the independent verified SSH path")
+            m.channelStatuses[0].state = .unavailable
+            try check(!m.canPrepareModem, "Rejected Web credentials authorized preparation without another verified path")
             m.channelStatuses[0].state = .unavailable; m.channelStatuses[1].state = .available
             m.skipFirmwareCheck = false
             try check(m.canPrepareModem, "Absent SSH blocked normal preparation")
             m.connected = true; m.activeChannel = .ssh; m.accessReady = true
-            try check(!m.canPrepareModem, "Active SSH was ignored when discovery was stale")
+            try check(m.canPrepareModem, "Active SSH was ignored when discovery was stale")
             m.setupPending = true
             try check(m.canPrepareModem, "Verified SSH prevented completing interrupted preparation")
         }
         try test("Diagnostic ADB is independent of agent password and SSH readiness but respects operation guards") {
             let m = try model(); m.webPassword = "fixture-web"; m.agentPassword = ""
             m.acceptChannelSelection(selection(.ssh)); m.channelStatuses.append(ConnectionChannelStatus(mode: .web, state: .notChecked, message: "password changed"))
-            try check(!m.canEnableDiagnosticADB && !m.canChangeADB && !m.canPrepareModem, "Live SSH used legacy Web ADB path or unknown control state")
+            try check(!m.canEnableDiagnosticADB && !m.canChangeADB && m.canPrepareModem && m.operationTask == nil, "Live SSH used legacy Web ADB, unknown control state, or hid explicit core preparation")
             m.terminalActive = true; try check(!m.canEnableDiagnosticADB, "Open terminal did not block automatic USB change"); m.terminalActive = false
             m.busy = true; try check(!m.canEnableDiagnosticADB, "Busy guard bypassed"); m.busy = false
             m.setupPending = true; try check(!m.canEnableDiagnosticADB, "Setup pending bypassed"); m.setupPending = false
@@ -420,7 +425,7 @@ private func snapshot() -> ConnectionOverviewSnapshot {
             try check(m.channelStatuses.first(where: { $0.mode == .web })?.state == .notChecked, "Web password edit retained obsolete rejection")
             try check(m.channelStatuses.first(where: { $0.mode == .web })?.message.contains("Пароль изменён") == true, "Web password edit missing recheck hint")
             try check(m.channelStatuses.first(where: { $0.mode == .agent })?.state == .available, "Web password edit invalidated agent")
-            try check(!m.canPrepareModem && m.preparationUnavailableReason?.contains("SSH уже доступен") == true, "New unchecked password enabled preparation")
+            try check(m.canPrepareModem && m.preparationUnavailableReason == nil && m.operationTask == nil, "Password edit hid the verified SSH preparation path or started preparation")
             m.agentPassword = "corrected-agent-secret"
             try check(m.channelStatuses.first(where: { $0.mode == .agent })?.state == .notChecked, "Agent password edit retained obsolete success")
             try check(m.connected && m.canManage && m.channelSession === chosen.session && m.activeChannel == .ssh, "Password edit disconnected verified SSH")
@@ -772,7 +777,7 @@ private func snapshot() -> ConnectionOverviewSnapshot {
             let m = try model(); m.acceptChannelSelection(selection(.ssh))
             m.esimCard = try JSONDecoder().decode(EsimCardCheck.self, from: Data(#"{"kind":"ordinary_sim","management":"unavailable","reason":"isdr_not_found","cleanup_confirmed":true}"#.utf8))
             m.esimAuthorization = m.esimTargetKey
-            try check(m.hasOrdinarySIM && m.canReadEsim && !m.canWriteEsim && m.esimCardStatus.contains("обычная SIM"), "Ordinary SIM still allows profile writes")
+            try check(m.hasOrdinarySIM && m.canReadEsim && !m.canWriteEsim && m.esimCardStatus.contains("не предоставляет eUICC"), "Ordinary SIM still allows profile writes")
             m.port = "2200"
             try check(!m.hasOrdinarySIM && !m.canWriteEsim && m.esimCardStatus.contains("ещё не проверен"), "Ordinary card result survived target change")
             m.clearEsim()
@@ -780,7 +785,8 @@ private func snapshot() -> ConnectionOverviewSnapshot {
         }
         try test("SIM writes require SSH write access and exclude active recovery, without depending on agent or IMEI") {
             let m = try model(); m.acceptChannelSelection(selection(.ssh))
-            m.esimSnapshot = EsimSnapshot(ok: true, eid: String(repeating: "1", count: 32), profiles: [])
+            m.esimSelectedTarget = .removable
+            m.esimSnapshot = EsimSnapshot(ok: true, target: .removable, eid: String(repeating: "1", count: 32), profiles: [])
             m.esimAuthorization = m.esimTargetKey
             m.pendingOperation = true; m.setupPending = true
             try check(m.canWriteEsim, "Independent IMEI/setup state blocked eSIM with valid SSH")

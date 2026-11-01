@@ -20,7 +20,7 @@ output.mkdir(parents=True, exist_ok=True)
 with tempfile.TemporaryDirectory(prefix='manager-ui-', dir=root / '.build') as directory:
     work = Path(directory)
     source = (root / 'Sources/AppModel.swift').read_text()
-    for old, new in [('Library/Application Support/ZTE U60Pro Internal eUICC', work / 'state')]:
+    for old, new in [('Library/Application Support/ZTE IMEI Studio', work / 'state')]:
         literal = 'FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("' + old + '")'
         assert literal in source, f'Storage isolation needs update: {old}'
         source = source.replace(literal, 'URL(fileURLWithPath: ' + json.dumps(str(new)) + ')')

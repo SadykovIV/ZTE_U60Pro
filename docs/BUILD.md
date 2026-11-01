@@ -1,11 +1,5 @@
-# Сборка альтернативы 1.28 Internal eUICC
+# Сборка ZTE U60Pro Manager 1.29
 
-База зависимостей — проверенный комплект 1.27.2. Альтернатива локальная и не опубликована.
-После упаковки скопируйте её `Build-dependencies-1.28.tar.gz` в `.cache/`,
-затем выполните `python3 tools/fetch_dependencies.py`; скачивание несуществующего релиза отключено.
-Исходники находятся в отдельной ветке; аппаратная проверка перепаянной карты не выполнялась.
-
-# Сборка публичной версии
 
 Сборка не использует приватный рабочий проект, бэкапы или подключённый модем.
 Готовое приложение не требует перечисленных инструментов — они нужны только
@@ -14,7 +8,7 @@
 ## Инструменты
 
 - Для `.app`: macOS 13+, Apple Silicon, Xcode Command Line Tools (`swiftc`, `codesign`, `ditto`).
-- Python 3.10+ для сборочных скриптов, без сторонних Python-пакетов.
+- Python 3.11+ для сборочных скриптов, без сторонних Python-пакетов.
 - Rust через rustup с target `aarch64-unknown-linux-musl`; релиз проверен с Rust 1.98.1.
 - `aarch64-linux-musl-gcc` в PATH (или `ZTE_CROSS_CC` для C-компонентов); Rust linker задаётся в `ModemAgent/.cargo/config.toml`.
 - Node.js `^20.19.0 || >=22.12.0`, npm; CMake и Ninja для lpac. Зависимости закреплены package-lock.json.
@@ -36,13 +30,13 @@ python3 tools/build.py
 разрешённые обычные файлы. Манифест — `tools/dependencies.json`. Это ADB, OpenSSH, Dropbear, OpenDoas, uhttpd, официальный Mihomo,
 диагностические пакеты, изолированный opkg и публичные модемные помощники.
 SSClash в нём нет. Лицензии входят в комплект, соответствующие исходники
-опубликованы отдельно в `Third-party-sources-1.27.2.tar.gz`. Каталоги кэша и сборки
+опубликованы отдельно в `Third-party-sources-1.29.tar.gz`. Каталоги кэша и сборки
 исключены из Git.
 
 `build.py` последовательно собирает runtime eSIM (lpac/bridge), расширение экрана, VPN-контроллер, агент eSIM,
 веб-панель, C-помощники и `zte-timeout`, обновляет зависимые SHA-256 и собирает `.app`/ZIP.
 Пути домашнего каталога в Rust и Swift переназначаются перед компиляцией.
-Результат: `MacIMEI/dist/ZTE-U60Pro-Manager-1.28-arm64.zip` и `build-manifest.json`.
+Результат: `MacIMEI/dist/ZTE-U60Pro-Manager-1.29-arm64.zip` и `build-manifest.json`.
 Rust-рецепт использует offline-сборку после `cargo fetch --locked`; для первой сборки нужен доступ к закреплённым crates. Сборка подписывается ad-hoc; сертификат разработчика и нотарификация не требуются.
 
 Проверка ABI расширения на исходном UI необязательна для повторной сборки:
@@ -60,7 +54,7 @@ python tools/fetch_dependencies.py
 .\Windows_x64\build.cmd
 ```
 
-Результат — `Windows_x64/dist/ZTE-U60Pro-Manager-1.28-Windows-x64-portable.zip`.
+Результат — `Windows_x64/dist/ZTE-U60Pro-Manager-1.29-Windows-x64-portable.zip`.
 Готовому приложению SDK, Python и отдельно установленная .NET не нужны.
 Не удаляйте `Resources` рядом с EXE. Для USB ADB может понадобиться драйвер ZTE.
 EXE не подписан сертификатом. Версии NuGet закреплены lock-файлами.
@@ -131,10 +125,10 @@ macOS/Windows, агент текущей версии, архивы Build-depend
 Third-party-sources, манифесты и `SHA256SUMS`. Версии приложения и агента
 берутся из текущих исходников.
 
-Для готовых сборок 1.27.2:
+Для готовых сборок 1.29:
 
 ```sh
-python3 tools/package_release.py --local-only --output-dir release/1.28-internal --previous-release v1.27.2 --build-source-commit "$(git rev-parse HEAD)"
+python3 tools/package_release.py --output-dir release/1.29 --previous-release v1.27.2 --build-source-commit "$(git rev-parse HEAD)"
 ```
 
 `build-source-commit` — справочная точка Git, а не подтверждение совпадения
@@ -142,7 +136,7 @@ python3 tools/package_release.py --local-only --output-dir release/1.28-internal
 по манифестам обеих сборок; отдельно записывает HEAD и наличие локальных
 изменений. Изменение исходников после сборки требует пересборки. Каталог вывода
 должен быть пустым; предыдущие артефакты не перезаписываются. При упаковке
-macOS ZIP получает имя `ZTE-U60Pro-Manager-1.27.2-macOS-arm64.zip`.
+macOS ZIP получает имя `ZTE-U60Pro-Manager-1.29-macOS-arm64.zip`.
 
 Исходные архивы `mihomo-v1.19.31-source.tar.gz` и `opendoas-6.8.2.tar.xz`
 должны находиться в `.cache`, eSIM-sources.tar.gz и его сведения относятся к eSIM; остальные соответствующие исходники и рецепты —

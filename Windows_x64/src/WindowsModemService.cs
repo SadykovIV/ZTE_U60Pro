@@ -36,7 +36,7 @@ public sealed partial class WindowsModemService : IModemService
     private string KnownHostsPath => _knownHostsPath;
 
     public WindowsModemService() : this(
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ZTE U60Pro Internal eUICC"),
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ZTE IMEI Studio"),
         Path.Combine(AppContext.BaseDirectory, "Resources")) { }
 
     internal WindowsModemService(string storage, string resources, Func<Research.IResearchTransportFactory>? researchFactory = null)

@@ -1,35 +1,24 @@
-# Internal eUICC transport variant
+# eUICC transport for both SIM positions
 
-This directory retains its historical `removable-euicc` path, but the **1.28
-Internal eUICC** variant targets a real eUICC fitted in place of the original
-soldered ZTE eSIM: QMI physical slot **2**, logical slot **2**. It does not
-unlock the original card and does not fall back to the physical SIM slot.
+The historical directory name is retained. Release 1.29 supports explicitly
+selected physical1/logical1 (`removable-euicc-slot1`) and physical2/logical2
+(`internal-euicc-slot2`) routes. The internal route requires a real eUICC fitted
+in place of the original soldered Chinese eSIM; this does not provision the
+original ZTE chip. Ordinary SIMs keep their normal modem functions.
 
-The bridge performs fresh card and route checks, owns its logical channel,
-and confirms cleanup. EID and the complete profile list establish an eUICC;
-a QMI flag alone does not. Only initial SELECT ISD-R `6A82` with confirmed
-channel cleanup identifies an ordinary SIM. Read errors leave the type unknown.
+The protocol-2 agent discovers cards and validates the selected target before
+operations. The bridge accepts no implicit target or automatic fallback, never
+remaps slots and never changes the network subscription. Shared radio changes
+are checked independently by the parent agent. Read/download/rename/delete of a
+disabled profile do not select a SIM for the network. Concurrent active mobile
+connections are not claimed.
 
-Card-only operations are independent of the modem's stock network SIM selection.
-Profile enable also requires the stock selection to be eSIM before ES10c and
-again before the shared radio transition. Those checks belong to the agent;
-the bridge never changes SIM mapping or network selection. The ordinary SIM
-slot remains usable through the stock controls. This is not dual-active support.
+The native desktop clients stage the matched agent over SSH and use the
+computer's HTTPS connection. The permanent dashboard uses the modem's internet.
+See `device/README.md` for the strict private-pipe header and cleanup contract,
+and `docs/UNIFIED-SIM.md` at the repository root for normal use.
 
-Build/test from the repository root:
-
-```sh
-python3 tools/esim-app/build_runtime.py --tests
-```
-
-The `snapshot` and `bridge` protocols are private pipes for the parent agent.
-Use the existing authenticated eSIM menu for normal operations. Card identifiers,
-APDUs and activation secrets must not enter diagnostic logs.
-
-The historical hardware reference is removable 9eSIM V0 in slot 1 on MU5250 B31.
-The replacement eUICC in slot 2 has not been tested on hardware. QMI/ES10 source
-attribution and `license_unspecified` status remain documented in
-`device/component.json` and existing component notices.
-
-[Variant guide](../../docs/INTERNAL-EUICC.md) ·
-[Operation contract](../../docs/ESIM-APP-CONTRACT.md)
+Historical B31 tests include removable 9eSIM reads and the local 1.28 internal
+replacement-card read, physical-SIM data and display trial. They do not validate
+this new binary, every profile mutation or all firmware families. QMI/ES10 source
+license status remains `license_unspecified`; existing notices are retained.

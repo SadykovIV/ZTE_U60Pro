@@ -1,6 +1,6 @@
 [package]
 name = "zte-agent"
-version = "2.10.0-internal.1"
+version = "2.11.0"
 edition = "2021"
 license-file = "../../LICENSE-SCOPE.md"
 

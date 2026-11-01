@@ -28,6 +28,22 @@ import SwiftUI
         precondition(AdministrationSection.allCases.last == .activity)
         model.loadEsimPreview(force: true)
         let previewSnapshot = model.esimSnapshot
+        func targetFixture(_ target: EsimTarget, selected: Bool, operations: [String]) throws -> EsimDiscoveredTarget {
+            var snapshot = previewSnapshot!
+            snapshot.target = target
+            snapshot.eid = String(repeating: target == .removable ? "1" : "2", count: 32)
+            let fields: [String: Any] = ["target": target.rawValue,
+                "card": ["kind": "euicc_confirmed", "management": "available", "reason": "eid_and_profiles_read", "cleanup_confirmed": true],
+                "snapshot": try JSONSerialization.jsonObject(with: JSONEncoder().encode(snapshot)),
+                "network_selected": selected, "operations": operations]
+            let value = try JSONDecoder().decode(EsimDiscoveredTarget.self, from: JSONSerialization.data(withJSONObject: fields))
+            try value.validate()
+            return value
+        }
+        let physicalReadOnly = try targetFixture(.removable, selected: false, operations: ["list"])
+        let internalSelected = try targetFixture(.internalCard, selected: true, operations: ["list", "download", "delete", "rename", "enable"])
+        let twoCards = [physicalReadOnly, internalSelected]
+        precondition(EsimValidation.automaticTarget(twoCards, complete: true) == nil)
         model.agentInstallationStatus = AgentInstallationStatus(hash: BundledAgent.sha256, running: true, startupReady: true)
         model.adbControlStatus = ADBControlStatus(enabled: true, supportsChange: true, descriptorsReady: true)
         let previousAgentHash = "076824a90eec46702744ae0f383872841d3c4704216ae32de4725f906f86a550"
@@ -75,6 +91,8 @@ import SwiftUI
                 ("agent-update", AnyView(ContentView(model: model, verifiedCatalog: catalog, preparationSection: .agent))),
                 ("esim", AnyView(ContentView(model: model, verifiedCatalog: catalog, page: .esim))),
                 ("esim-ordinary", AnyView(ContentView(model: model, verifiedCatalog: catalog, page: .esim))),
+                ("esim-two-cards", AnyView(ContentView(model: model, verifiedCatalog: catalog, page: .esim))),
+                ("esim-internal-selected", AnyView(ContentView(model: model, verifiedCatalog: catalog, page: .esim))),
                 ("launcher-esim", AnyView(ContentView(model: model, verifiedCatalog: catalog, page: .display, launcherSection: .esim))),
                 ("esim-progress", AnyView(ContentView(model: model, verifiedCatalog: catalog, page: .esim))),
                 ("vpn", AnyView(ContentView(model: model, verifiedCatalog: catalog, page: .vpn))),
@@ -90,9 +108,15 @@ import SwiftUI
             ]
             let filter = ProcessInfo.processInfo.environment["ZTE_UI_PREVIEW_FILTER"]
             for (screen, rootView) in screens where filter == nil || screen.hasPrefix(filter!) {
-                model.esimSnapshot = screen == "esim-ordinary" ? nil : previewSnapshot
-                model.esimCard = screen == "esim-ordinary" ? try JSONDecoder().decode(EsimCardCheck.self, from: Data(#"{"kind":"ordinary_sim","management":"unavailable","reason":"isdr_not_found","cleanup_confirmed":true}"#.utf8)) : nil
-                model.esimAuthorization = screen == "esim-ordinary" ? model.esimTargetKey : nil
+                let twoCardScreen = screen == "esim-two-cards" || screen == "esim-internal-selected"
+                model.esimTargets = twoCardScreen ? twoCards : []
+                model.esimDiscoveryComplete = twoCardScreen
+                model.esimSelectedTarget = screen == "esim-two-cards" ? nil : screen == "esim-internal-selected" ? .internalCard : .removable
+                model.esimAllowedOperations = screen == "esim-internal-selected" ? internalSelected.operations : []
+                model.esimNetworkSelected = screen == "esim-internal-selected" ? true : nil
+                model.esimSnapshot = screen == "esim-ordinary" || screen == "esim-two-cards" ? nil : screen == "esim-internal-selected" ? internalSelected.snapshot : previewSnapshot
+                model.esimCard = screen == "esim-ordinary" ? try JSONDecoder().decode(EsimCardCheck.self, from: Data(#"{"kind":"ordinary_sim","management":"unavailable","reason":"isdr_not_found","cleanup_confirmed":true}"#.utf8)) : screen == "esim-internal-selected" ? internalSelected.card : nil
+                model.esimAuthorization = screen == "esim-ordinary" || screen == "esim-internal-selected" ? model.esimTargetKey : nil
                 model.displayPages = ModemLauncherPages(pages: [.esim, .info])
                 model.displaySavedPages = .defaultPages
                 model.displayPagesDraftEdited = true

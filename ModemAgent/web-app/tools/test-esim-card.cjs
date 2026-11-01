@@ -14,23 +14,25 @@ function load(name, imports = {}, extra = {}, extension = 'ts') {
 const model = load('model'), errors = load('errors'), journal = load('journal', { './errors': errors })
 const confirmed = () => ({ kind: 'euicc_confirmed', management: 'available', reason: 'eid_and_profiles_read', cleanup_confirmed: true })
 const unknown = (reason = 'read_failed') => ({ kind: 'unknown', management: 'unknown', reason, cleanup_confirmed: false })
+const targetID = 'internal-euicc-slot2'
+const wire = { target: targetID, card: { kind: 'euicc_confirmed', management: 'available', reason: 'eid_and_profiles_read', cleanup_confirmed: true }, operations: ['list', 'enable', 'download', 'rename', 'delete'], network_selected: true }
 const profile = { iccid: '89000000000000000001', isdp_aid: null, state: 'disabled', enabled: false, nickname: null, name: 'Synthetic', service_provider: null }
-const snapshot = (profiles = []) => ({ ok: true, eid: '9'.repeat(32), profiles })
-const request = { protocol: 1, operation: 'list' }
+const snapshot = (profiles = []) => ({ ok: true, target: targetID, eid: '9'.repeat(32), profiles })
+const request = { protocol: 2, target: targetID, operation: 'list' }
 const failureReasons = ['busy', 'open_rejected', 'cleanup_unknown', 'not_ready', 'unsupported_device', 'read_failed', 'operation_failed']
 function apiFor(req) {
   return load('api', { '../../data/client': { req }, './model': model, './errors': errors, './journal': journal }, {
     window: { crypto: { getRandomValues: bytes => bytes.fill(1) } }, setTimeout, clearTimeout
   })
 }
-test('new and legacy accepted empty inventories confirm eUICC, never ordinary SIM', () => {
-  for (const extra of [{}, { card: confirmed() }]) {
-    const value = model.verifiedCard(request, { ok: true, snapshot: snapshot(), ...extra })
+test('target-bound empty inventories confirm eUICC, never ordinary SIM', () => {
+  for (const extra of [{ card: confirmed() }]) {
+    const value = model.verifiedCard(request, { ...wire, ok: true, snapshot: snapshot(), ...extra })
     assert.equal(value.card.kind, 'euicc_confirmed')
     assert.equal(value.snapshot.profiles.length, 0)
     assert.equal(value.card.cleanup_confirmed, true)
   }
-  for (const value of [{ ok: false, snapshot: snapshot() }, { ok: true }, { ok: true, snapshot: { ...snapshot(), eid: 'bad' } }, { ok: true, snapshot: snapshot(), component_error: 'qmi_open_rejected' }]) {
+  for (const value of [{ ok: false, snapshot: snapshot() }, { ok: true }, { ...wire, ok: true, snapshot: { ...snapshot(), eid: 'bad' } }, { ...wire, ok: true, snapshot: snapshot(), component_error: 'qmi_open_rejected' }]) {
     assert.throws(() => model.verifiedCard(request, value))
   }
 })
@@ -38,15 +40,15 @@ test('present card metadata validates exact keys, enums, boolean and outcome con
   const malformed = [null, [], {}, { ...confirmed(), cleanup_confirmed: 'true' }, { ...confirmed(), cleanup_confirmed: false },
     { ...confirmed(), kind: 'ordinary_sim' }, { ...confirmed(), kind: 'absent' }, { ...confirmed(), kind: 'unavailable' },
     { ...confirmed(), management: 'unknown' }, { ...confirmed(), reason: 'private-reason' }, { ...confirmed(), raw: 'PRIVATE_CANARY' }, unknown()]
-  for (const card of malformed) assert.throws(() => model.verifiedCard(request, { ok: true, snapshot: snapshot(), card }))
+  for (const card of malformed) assert.throws(() => model.verifiedCard(request, { ...wire, ok: true, snapshot: snapshot(), card }))
   for (const reason of failureReasons) assert.equal(model.parsedCard(unknown(reason), false).reason, reason)
-  for (const card of [confirmed(), { ...unknown(), cleanup_confirmed: true }, { ...unknown(), reason: 'PRIVATE_CANARY' }]) assert.throws(() => model.parsedCard(card, false))
+  for (const card of [confirmed(), { ...unknown(), reason: 'PRIVATE_CANARY' }]) assert.throws(() => model.parsedCard(card, false))
 })
 test('metadata does not bypass mutation postconditions or a full inventory', () => {
   const before = snapshot([profile])
-  const mutation = { protocol: 1, operation: 'enable', expected_snapshot: before, iccid: profile.iccid }
-  assert.throws(() => model.verifiedCard(mutation, { ok: true, snapshot: before, changed: true, card: confirmed(), radio_restored: true, modem_verified: true }))
-  assert.throws(() => model.verifiedCard(request, { ok: true, snapshot: { ...before, profiles: [profile, profile] }, card: confirmed() }))
+  const mutation = { protocol: 2, target: targetID, operation: 'enable', expected_snapshot: before, iccid: profile.iccid }
+  assert.throws(() => model.verifiedCard(mutation, { ...wire, ok: true, snapshot: before, changed: true, card: confirmed(), radio_restored: true, modem_verified: true }))
+  assert.throws(() => model.verifiedCard(request, { ...wire, ok: true, snapshot: { ...before, profiles: [profile, profile] }, card: confirmed() }))
 })
 test('failed jobs preserve only typed unknown card metadata and never retry or accept stale snapshots', async () => {
   for (const reason of failureReasons) {
@@ -59,14 +61,14 @@ test('failed jobs preserve only typed unknown card metadata and never retry or a
     assert.equal(calls, 1); assert.doesNotMatch(JSON.stringify(logs), /PRIVATE_CANARY|890000|999999/)
   }
 })
-test('malformed final metadata fails closed, while successful legacy API derives confirmed card', async () => {
-  for (const result of [{ ok: false, error: 'card_busy', card: confirmed() }, { ok: true, snapshot: snapshot(), card: unknown() }, { ok: true, snapshot: snapshot(), card: { ...confirmed(), raw: 'PRIVATE_CANARY' } }]) {
+test('malformed final metadata fails closed, while target-bound API confirms card', async () => {
+  for (const result of [{ ok: false, error: 'card_busy', card: confirmed() }, { ...wire, ok: true, snapshot: snapshot(), card: unknown() }, { ...wire, ok: true, snapshot: snapshot(), card: { ...confirmed(), raw: 'PRIVATE_CANARY' } }]) {
     let calls = 0
     const api = apiFor(async () => { calls++; return { job_id: 'ab'.repeat(16), state: 'complete', result } })
     await assert.rejects(api.runOperation(request, () => {}, new AbortController().signal), /unconfirmed/)
     assert.equal(calls, 1)
   }
-  const api = apiFor(async () => ({ job_id: 'ab'.repeat(16), state: 'complete', result: { ok: true, snapshot: snapshot() } }))
+  const api = apiFor(async () => ({ job_id: 'ab'.repeat(16), state: 'complete', result: { ...wire, ok: true, snapshot: snapshot() } }))
   assert.equal((await api.runOperation(request, () => {}, new AbortController().signal)).card.kind, 'euicc_confirmed')
 })
 test('snapshot read failure preserves the card-status cause without inventing a cleanup failure', async () => {
@@ -110,7 +112,7 @@ test('every type banner is translated and cleanup unconfirmed alone never gives 
 
 // Execute the production page's hooks and event handlers without browser/network.
 // State persists across render calls; the explicit operation uses a controlled promise.
-function pageFixture(advertised = ['list', 'enable', 'download', 'delete', 'rename'], target = 'internal-euicc-slot2') {
+function pageFixture(advertised = ['list', 'enable', 'download', 'delete', 'rename'], mode = 'explicit') {
   let cursor = 0, effects = [], cleanups = [], mounted = false, operationCalls = 0, capabilityCalls = 0, confirmationCalls = 0, resolve, reject
   const state = [], refs = new Set(), listeners = new Map(), requests = []
   function useState(initial) { const i = cursor++; if (!(i in state)) state[i] = initial; return [state[i], value => { state[i] = typeof value === 'function' ? value(state[i]) : value }] }
@@ -120,7 +122,8 @@ function pageFixture(advertised = ['list', 'enable', 'download', 'delete', 'rena
   const module = load('EsimPage', { react: { useState, useRef, useEffect: effect => { if (!mounted) effects.push(effect) } },
     'react/jsx-runtime': { jsx: node, jsxs: node }, '../../i18n': { useI18n: () => ({ t: x => x }) }, '../../ui/controls': ui,
     '../../ui/primitives': { Card: 'card', Chip: 'chip' }, '../../ui/feedback': { confirm: async () => { confirmationCalls++; return true } },
-    './api': { capabilities: async () => { capabilityCalls++; return { protocol: 1, target, operations: advertised } },
+    './api': { capabilities: async () => { capabilityCalls++; return { protocol: 2, target_mode: mode, targets: model.targets, operations: ['discover', ...advertised] } },
+      discover: () => { operationCalls++; requests.push({protocol:2,operation:'discover'}); return new Promise((yes,no) => { resolve=yes; reject=no }) },
       runOperation: request => { operationCalls++; requests.push(request); return new Promise((yes, no) => { resolve = yes; reject = no }) } },
     './model': model, './qr': { decodeImage: async () => { throw Error('not used') } }, './journal': journal, './errors': errors
   }, { window: { addEventListener: (name, fn) => listeners.set(name, fn), removeEventListener: name => listeners.delete(name) } }, 'tsx')
@@ -133,7 +136,10 @@ function pageFixture(advertised = ['list', 'enable', 'download', 'delete', 'rena
   const clickCheck = () => { const button = elements(render()).find(e => e.type === 'button' && e.props.children === 'Check card and profiles'); assert.equal(button.props.disabled, false); button.props.onClick() }
   return { render, elements, clickCheck, requests, get calls() { return operationCalls }, get capabilityCalls() { return capabilityCalls }, get confirmationCalls() { return confirmationCalls },
     mount: () => { render(); cleanups = effects.map(effect => effect()); effects = []; mounted = true },
-    resolve: value => resolve(value), reject: value => reject(value), unmount: () => cleanups.forEach(fn => fn?.()) }
+    resolve: value => resolve(requests.at(-1).operation === 'discover' ? value.targets ? value : { complete: true, targets: [
+      { target: 'removable-euicc-slot1', card: { kind: 'unknown', management: 'unknown', reason: 'not_present', cleanup_confirmed: true }, snapshot: null, operations: [], networkSelected: false },
+      { target: targetID, card: value.card, snapshot: value.snapshot, operations: value.snapshot ? advertised : [], networkSelected: true }
+    ] } : { ...value, operations: advertised }), reject: value => reject(value), unmount: () => cleanups.forEach(fn => fn?.()) }
 }
 const settle = () => new Promise(resolve => setImmediate(resolve))
 test('page checks only on demand and clears accepted profiles and write permissions during failed refresh', async () => {
@@ -161,7 +167,7 @@ test('unmounted page does not accept a late card result or send another operatio
 })
 
 const ordinary = () => ({ kind: 'ordinary_sim', management: 'unavailable', reason: 'isdr_not_found', cleanup_confirmed: true })
-const ordinaryResult = () => ({ ok: true, changed: false, notifications_pending: false, card: ordinary() })
+const ordinaryResult = () => ({ ...wire, ok: true, changed: false, notifications_pending: false, card: ordinary() })
 test('ordinary is successful list only, absent snapshot and exact cleanup proof', () => {
   const value = model.verifiedCard(request, ordinaryResult())
   assert.equal(value.snapshot, null); assert.equal(value.card.kind, 'ordinary_sim')
@@ -173,11 +179,11 @@ test('card change eUICC to ordinary clears profiles and writes; later error rema
   const page = pageFixture(); page.mount(); await settle(); page.clickCheck()
   page.resolve({ snapshot: snapshot([profile]), card: confirmed(), pending: false }); await settle()
   page.clickCheck(); page.resolve({ snapshot: null, card: ordinary(), pending: false }); await settle()
-  let tree = page.render(); assert.match(JSON.stringify(tree), /Ordinary SIM: eSIM management is unavailable/)
+  let tree = page.render(); assert.match(JSON.stringify(tree), /No manageable eUICC was confirmed/)
   assert.doesNotMatch(JSON.stringify(tree), /99999999|89000000000000000001|EID and profiles were read/)
   for (const label of ['Make active', 'Rename profile', 'Delete profile', 'Install profile']) assert.equal(page.elements(tree).find(e => e.type === 'button' && e.props.children === label).props.disabled, true)
   page.clickCheck(); page.reject(new model.EsimOperationError('card_open_rejected', unknown('open_rejected'))); await settle()
-  tree = page.render(); assert.match(JSON.stringify(tree), /Card type is unknown/); assert.doesNotMatch(JSON.stringify(tree), /Ordinary SIM: eSIM management is unavailable/)
+  tree = page.render(); assert.match(JSON.stringify(tree), /Card type is unknown/); assert.doesNotMatch(JSON.stringify(tree), /No manageable eUICC was confirmed/)
   assert.equal(page.calls, 3); page.unmount()
 })
 
@@ -269,7 +275,7 @@ test('a profile with unknown activation state may be renamed without enabling or
   page.unmount()
 })
 
-test('internal dashboard refuses old or wrong-target agents before touching either SIM', async () => {
+test('unified dashboard refuses agents without explicit target mode before touching either SIM', async () => {
   for (const target of [null, '', 'physical-euicc-slot1', 'internal-euicc-slot1']) {
     const page = pageFixture(['list', 'enable', 'download', 'delete', 'rename'], target)
     page.mount(); await settle()
@@ -278,7 +284,56 @@ test('internal dashboard refuses old or wrong-target agents before touching eith
     assert.equal(button.props.disabled, true)
     button.props.onClick(); await settle()
     assert.equal(page.calls, 0)
-    assert.match(JSON.stringify(tree), /Install the Internal eUICC agent/)
+    assert.match(JSON.stringify(tree), /Install the current agent/)
     page.unmount()
   }
+})
+
+test('two eUICCs require explicit selection and route every request to the chosen card', async () => {
+  const page = pageFixture(); page.mount(); await settle(); page.clickCheck()
+  const make = target => ({ target, card: confirmed(), snapshot: { ...snapshot([profile]), target }, operations: ['list', 'rename'], networkSelected: false })
+  page.resolve({ complete: true, targets: [make(model.targets[0]), make(model.targets[1])] }); await settle()
+  assert.equal(button(page, 'Rename profile').props.disabled, true)
+  assert.match(JSON.stringify(page.render()), /Choose the eUICC to manage/)
+  button(page, 'Physical SIM slot').props.onClick()
+  assert.equal(page.requests.at(-1).operation, 'list'); assert.equal(page.requests.at(-1).target, model.targets[0])
+  page.resolve({ snapshot: { ...snapshot([profile]), target: model.targets[0] }, card: confirmed() }); await settle()
+  page.elements(page.render()).find(e => e.type === 'button' && e.props['aria-pressed'] === false).props.onClick()
+  button(page, 'Rename profile').props.onClick(); nameInput(page).props.onChange({ target: { value: 'Route one' } })
+  page.elements(page.render()).find(e => e.type === 'form').props.onSubmit({ preventDefault() {} })
+  assert.equal(page.requests.at(-1).target, model.targets[0]); assert.equal(page.requests.at(-1).expected_snapshot.target, model.targets[0])
+  page.resolve({ snapshot: { ...snapshot([{ ...profile, nickname: 'Route one' }]), target: model.targets[0] }, card: confirmed() }); await settle()
+  button(page, 'Internal eSIM position').props.onClick()
+  assert.equal(nameInput(page), undefined); assert.equal(button(page, 'Rename profile').props.disabled, true)
+  assert.doesNotMatch(JSON.stringify(page.render()), /Route one/)
+  page.unmount()
+})
+test('partial discovery never auto-selects the one confirmed card', async () => {
+  const page = pageFixture(); page.mount(); await settle(); page.clickCheck()
+  page.resolve({ complete: false, targets: [
+    { target: model.targets[0], card: { ...unknown(), cleanup_confirmed: true }, snapshot: null, operations: [], networkSelected: null },
+    { target: model.targets[1], card: confirmed(), snapshot: snapshot([profile]), operations: ['list','rename'], networkSelected: false }
+  ] }); await settle()
+  assert.equal(button(page, 'Rename profile').props.disabled, true)
+  assert.equal(button(page, 'Physical SIM slot').props.disabled, true)
+  button(page, 'Internal eSIM position').props.onClick()
+  assert.equal(page.requests.at(-1).operation, 'list')
+  page.resolve({ snapshot: snapshot([profile]), card: confirmed() }); await settle()
+  assert.match(JSON.stringify(page.render()), /EID and profiles were read/)
+  page.unmount()
+})
+
+test('failed mutation and target reselection require a new card read before writes', async () => {
+  const page = await readyPage()
+  button(page, 'Rename profile').props.onClick(); nameInput(page).props.onChange({ target: { value: 'New' } })
+  page.elements(page.render()).find(e => e.type === 'form').props.onSubmit({ preventDefault() {} })
+  page.reject(new model.EsimOperationError('snapshot_changed')); await settle()
+  assert.equal(button(page, 'Rename profile').props.disabled, true)
+  button(page, 'Internal eSIM position').props.onClick()
+  assert.equal(page.requests.at(-1).operation, 'list'); assert.equal(page.requests.at(-1).target, targetID)
+  assert.equal(button(page, 'Rename profile').props.disabled, true)
+  assert.doesNotMatch(JSON.stringify(page.render()), /EID and profiles were read/)
+  page.resolve({ snapshot: snapshot([profile]), card: confirmed() }); await settle()
+  assert.match(JSON.stringify(page.render()), /EID and profiles were read/)
+  page.unmount()
 })

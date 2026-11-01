@@ -2,16 +2,20 @@ export interface Profile {
   iccid: string; isdp_aid: string | null; state: 'enabled' | 'disabled' | 'unknown'; enabled: boolean
   nickname: string | null; service_provider: string | null; name: string | null
 }
-export interface Snapshot { ok: true; eid: string; profiles: Profile[] }
-export type Operation = 'list' | 'download' | 'enable' | 'delete' | 'rename'
+export const targets = ['removable-euicc-slot1', 'internal-euicc-slot2'] as const
+export type Target = typeof targets[number]
+export const validTarget = (v: unknown): v is Target => typeof v === 'string' && (targets as readonly string[]).includes(v)
+export const targetLabel = (v: Target) => v === 'removable-euicc-slot1' ? 'Physical SIM slot' : 'Internal eSIM position'
+export interface Snapshot { ok: true; target: Target; eid: string; profiles: Profile[] }
+export type Operation = 'discover' | 'list' | 'download' | 'enable' | 'delete' | 'rename'
 export interface EsimRequest {
-  protocol: 1; operation: Operation; expected_snapshot?: Snapshot; activation_code?: string
+  protocol: 2; operation: Operation; target?: Target; expected_snapshot?: Snapshot; activation_code?: string
   confirmation_code?: string; iccid?: string; confirm_delete?: true; nickname?: string
 }
-export type CardReason = 'busy' | 'open_rejected' | 'cleanup_unknown' | 'not_ready' | 'unsupported_device' | 'read_failed' | 'operation_failed'
+export type CardReason = 'busy' | 'open_rejected' | 'cleanup_unknown' | 'not_ready' | 'unsupported_device' | 'read_failed' | 'operation_failed' | 'not_present' | 'route_unavailable'
 export type CardStatus = { kind: 'ordinary_sim'; management: 'unavailable'; reason: 'isdr_not_found'; cleanup_confirmed: true } | { kind: 'euicc_confirmed'; management: 'available'; reason: 'eid_and_profiles_read'; cleanup_confirmed: true } |
-  { kind: 'unknown'; management: 'unknown'; reason: CardReason; cleanup_confirmed: false }
-export interface EsimResult { ok: boolean; snapshot?: Snapshot; changed?: boolean; notifications_pending?: boolean; modem_verified?: boolean; radio_restored?: boolean; error?: string; component_error?: unknown; card?: unknown }
+  { kind: 'unknown'; management: 'unknown'; reason: CardReason; cleanup_confirmed: boolean }
+export interface EsimResult { ok: boolean; target?: unknown; operations?: unknown; network_selected?: unknown; complete?: unknown; targets?: unknown; snapshot?: Snapshot; changed?: boolean; notifications_pending?: boolean; modem_verified?: boolean; radio_restored?: boolean; error?: string; component_error?: unknown; card?: unknown }
 export const unknownCard = (reason: CardReason = 'read_failed'): CardStatus => ({ kind: 'unknown', management: 'unknown', reason, cleanup_confirmed: false })
 export class EsimOperationError extends Error {
   readonly card: CardStatus
@@ -27,14 +31,16 @@ export function parsedCard(value: unknown, successful: boolean): CardStatus | un
     return { kind: 'euicc_confirmed', management: 'available', reason: 'eid_and_profiles_read', cleanup_confirmed: true }
   }
   if (successful && card.kind === 'ordinary_sim' && card.management === 'unavailable' && card.reason === 'isdr_not_found' && card.cleanup_confirmed === true) return { kind: 'ordinary_sim', management: 'unavailable', reason: 'isdr_not_found', cleanup_confirmed: true }
-  if (!successful && card.kind === 'unknown' && card.management === 'unknown' && card.cleanup_confirmed === false &&
-      typeof card.reason === 'string' && ['busy', 'open_rejected', 'cleanup_unknown', 'not_ready', 'unsupported_device', 'read_failed', 'operation_failed'].includes(card.reason)) {
-    return unknownCard(card.reason as CardReason)
+  if (card.kind === 'unknown' && card.management === 'unknown' && typeof card.cleanup_confirmed === 'boolean' &&
+      typeof card.reason === 'string' && (!['not_present', 'route_unavailable'].includes(card.reason) || card.cleanup_confirmed === true) && ['busy', 'open_rejected', 'cleanup_unknown', 'not_ready', 'unsupported_device', 'read_failed', 'operation_failed', 'not_present', 'route_unavailable'].includes(card.reason)) {
+    return { kind: 'unknown', management: 'unknown', reason: card.reason as CardReason, cleanup_confirmed: card.cleanup_confirmed }
   }
   throw new Error('unconfirmed')
 }
 export function verifiedCard(request: EsimRequest, result: EsimResult): { snapshot: Snapshot | null; card: CardStatus } {
+  if (request.protocol !== 2 || !validTarget(request.target) || result.target !== request.target) throw new Error('unconfirmed')
   const card = parsedCard(result.card, result.ok === true)
+  if (!card || card.kind === 'unknown') throw new Error('unconfirmed')
   if (card?.kind === 'ordinary_sim') {
     if (request.operation !== 'list' || result.ok !== true || 'snapshot' in result || 'error' in result || 'component_error' in result || 'modem_verified' in result || 'radio_restored' in result || result.changed !== false || result.notifications_pending !== false) throw new Error('unconfirmed')
     return { snapshot: null, card }
@@ -74,7 +80,7 @@ export function compose(address: string, matchingID: string): string {
 export function validSnapshot(value: unknown): value is Snapshot {
   if (!value || typeof value !== 'object') return false
   const s = value as Snapshot
-  if (s.ok !== true || typeof s.eid !== 'string' || !/^\d{32}$/.test(s.eid) || !Array.isArray(s.profiles) || s.profiles.length > 1024) return false
+  if (s.ok !== true || !validTarget(s.target) || typeof s.eid !== 'string' || !/^\d{32}$/.test(s.eid) || !Array.isArray(s.profiles) || s.profiles.length > 1024) return false
   const ids = new Set<string>(), aids = new Set<string>()
   return s.profiles.every(p => {
     if (!p || typeof p.iccid !== 'string' || !/^\d{18,20}$/.test(p.iccid) || ids.has(p.iccid) || !['enabled', 'disabled', 'unknown'].includes(p.state) || p.enabled !== (p.state === 'enabled')) return false
@@ -100,14 +106,14 @@ export function profileNickname(value: string): string {
 }
 export function renameRequest(snapshot: Snapshot, iccid: string, value: string): EsimRequest {
   if (!validSnapshot(snapshot) || !snapshot.profiles.some(p => p.iccid === iccid)) throw new Error('profile_not_found')
-  return { protocol: 1, operation: 'rename', expected_snapshot: snapshot, iccid, nickname: profileNickname(value) }
+  return { protocol: 2, target: snapshot.target, operation: 'rename', expected_snapshot: snapshot, iccid, nickname: profileNickname(value) }
 }
 export function verifiedResult(request: EsimRequest, result: EsimResult): Snapshot {
-  if (result.ok !== true || result.component_error !== undefined || !validSnapshot(result.snapshot)) throw new Error('unconfirmed')
-  if (parsedCard(result.card, true)?.kind === 'ordinary_sim') throw new Error('unconfirmed')
+  if (request.protocol !== 2 || !validTarget(request.target) || result.target !== request.target || result.ok !== true || result.component_error !== undefined || !validSnapshot(result.snapshot)) throw new Error('unconfirmed')
+  if (parsedCard(result.card, true)?.kind !== 'euicc_confirmed' || result.snapshot.target !== request.target) throw new Error('unconfirmed')
   const after = result.snapshot, before = request.expected_snapshot
   if (request.operation === 'list') return after
-  if (!before || before.eid !== after.eid || typeof result.changed !== 'boolean' || !['enable', 'rename'].includes(request.operation) && !result.changed) throw new Error('unconfirmed')
+  if (!before || before.target !== request.target || before.target !== after.target || before.eid !== after.eid || typeof result.changed !== 'boolean' || !['enable', 'rename'].includes(request.operation) && !result.changed) throw new Error('unconfirmed')
   const identity = (p: Profile) => `${p.iccid}:${(p.isdp_aid ?? '').toLowerCase()}`
   const inventory = (p: Profile) => `${identity(p)}:${p.state}`
   const same = (a: string[], b: string[]) => JSON.stringify(a.sort()) === JSON.stringify(b.sort())
@@ -127,4 +133,32 @@ export function verifiedResult(request: EsimRequest, result: EsimResult): Snapsh
   } else if (!before.profiles.some(p => p.iccid === request.iccid && p.state === 'disabled') || after.profiles.some(p => p.iccid === request.iccid) ||
     !same(before.profiles.filter(p => p.iccid !== request.iccid).map(inventory), after.profiles.map(inventory))) throw new Error('unconfirmed')
   return after
+}
+
+export interface DiscoveredTarget { target: Target; card: CardStatus; snapshot: Snapshot | null; operations: string[]; networkSelected: boolean | null }
+export function allowedOperations(value: unknown): string[] {
+  if (!Array.isArray(value) || value.some(v => typeof v !== 'string' || !['list', 'download', 'enable', 'delete', 'rename'].includes(v)) || new Set(value).size !== value.length) throw new Error('unconfirmed')
+  return value as string[]
+}
+export function verifiedDiscovery(result: EsimResult): { targets: DiscoveredTarget[]; complete: boolean } {
+  if (result.ok !== true || result.changed !== false || result.notifications_pending !== false || result.component_error !== undefined || typeof result.complete !== 'boolean' || !Array.isArray(result.targets) || result.targets.length !== 2) throw new Error('unconfirmed')
+  const seen = new Set<Target>()
+  const found = result.targets.map((entry: unknown): DiscoveredTarget => {
+    if (!entry || typeof entry !== 'object') throw new Error('unconfirmed')
+    const v = entry as EsimResult
+    if (!validTarget(v.target) || seen.has(v.target) || ![true, false, null].includes(v.network_selected as boolean | null)) throw new Error('unconfirmed')
+    seen.add(v.target)
+    const card = parsedCard(v.card, true), operations = allowedOperations(v.operations)
+    if (!card || card.kind === 'unknown' && !card.cleanup_confirmed || card.reason === 'cleanup_unknown' || card.kind !== 'euicc_confirmed' && (operations.length || v.snapshot !== undefined)) throw new Error('unconfirmed')
+    let snapshot: Snapshot | null = null
+    if (card.kind === 'euicc_confirmed') snapshot = verifiedResult({ protocol: 2, operation: 'list', target: v.target }, { ...v, ok: true })
+    if (operations.includes('enable') && v.network_selected !== true) throw new Error('unconfirmed')
+    if (result.complete && card.kind === 'unknown' && (card.reason !== 'not_present' || !card.cleanup_confirmed)) throw new Error('unconfirmed')
+    return { target: v.target, card, snapshot, operations, networkSelected: v.network_selected as boolean | null }
+  })
+  return { targets: found, complete: result.complete }
+}
+export function automaticTarget(discovery: { targets: DiscoveredTarget[]; complete: boolean }): Target | null {
+  const confirmed = discovery.targets.filter(v => v.card.kind === 'euicc_confirmed')
+  return discovery.complete && confirmed.length === 1 ? confirmed[0].target : null
 }

@@ -19,13 +19,15 @@ public sealed record EsimProfile(
 public sealed record EsimSnapshot(
     [property: JsonPropertyName("ok")] bool Ok,
     [property: JsonPropertyName("eid")] string Eid,
-    [property: JsonPropertyName("profiles")] IReadOnlyList<EsimProfile> Profiles)
+    [property: JsonPropertyName("profiles")] IReadOnlyList<EsimProfile> Profiles,
+    [property: JsonPropertyName("target")] string Target)
 {
     public override string ToString() => "eUICC · " + EsimValidation.Mask(Eid);
 }
 public sealed class EsimRequest
 {
-    [JsonPropertyName("protocol")] public int Protocol => 1;
+    [JsonPropertyName("protocol")] public int Protocol => 2;
+    [JsonPropertyName("target"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? Target { get; init; }
     [JsonPropertyName("operation")] public required string Operation { get; init; }
     [JsonPropertyName("expected_snapshot"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public EsimSnapshot? ExpectedSnapshot { get; init; }
     [JsonPropertyName("activation_code"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? ActivationCode { get; init; }
@@ -33,7 +35,41 @@ public sealed class EsimRequest
     [JsonPropertyName("iccid"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? Iccid { get; init; }
     [JsonPropertyName("confirm_delete"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] public bool ConfirmDelete { get; init; }
 }
-public sealed record EsimResult(bool Ok, EsimSnapshot? Snapshot, bool Changed, bool NotificationsPending, string Error = "operation_failed", bool? ModemVerified = null, bool? RadioRestored = null, string? ComponentError = null, EsimCardStatus? Card = null);
+public sealed record EsimResult(bool Ok, EsimSnapshot? Snapshot, bool Changed, bool NotificationsPending, string Error = "operation_failed", bool? ModemVerified = null, bool? RadioRestored = null, string? ComponentError = null, EsimCardStatus? Card = null, string? Target = null, IReadOnlyList<string>? Operations = null, bool? NetworkSelected = null, IReadOnlyList<EsimDiscoveredTarget>? Targets = null, bool? Complete = null);
+
+public static class EsimTargets
+{
+    public const string Removable = "removable-euicc-slot1", Internal = "internal-euicc-slot2";
+    public static bool Valid(string? target) => target is Removable or Internal;
+    public static string Title(string target) => target == Removable ? "SIM-карта" : "Встроенная SIM";
+    public static EsimDiscoveredTarget? Automatic(IReadOnlyList<EsimDiscoveredTarget> targets, bool complete)
+    { var cards = targets.Where(x => x.Confirmed).ToArray(); return complete && cards.Length == 1 ? cards[0] : null; }
+}
+public sealed record EsimDiscoveredTarget(string Target, EsimCardStatus Card, EsimSnapshot? Snapshot, bool? NetworkSelected, IReadOnlyList<string> Operations, string? Error)
+{
+    public bool Confirmed => Card.Kind == "euicc_confirmed" && Snapshot is not null;
+    public bool ConclusivelyRead => Confirmed || Card.Kind == "ordinary_sim" || Card.Kind == "unknown" && Card.CleanupConfirmed && Card.Reason == "not_present" && Error is null;
+    public static EsimDiscoveredTarget Parse(JsonElement value)
+    {
+        var target = value.GetProperty("target").GetString();
+        if (!EsimTargets.Valid(target)) throw new EsimException();
+        var rawCard = value.GetProperty("card");
+        var card = EsimCardStatus.Parse(rawCard, rawCard.GetProperty("kind").GetString() != "unknown");
+        var snapshot = value.TryGetProperty("snapshot", out var raw) ? raw.Deserialize<EsimSnapshot>() ?? throw new EsimException() : null;
+        var selected = value.GetProperty("network_selected");
+        bool? networkSelected = selected.ValueKind == JsonValueKind.Null ? null : selected.GetBoolean();
+        var operations = EsimValidation.ParseOperations(value.GetProperty("operations"), card.Kind == "euicc_confirmed");
+        if (card.Reason == "cleanup_unknown" || card.Kind == "unknown" && !card.CleanupConfirmed || operations.Contains("enable") && networkSelected != true) throw new EsimException();
+        string? error = value.TryGetProperty("error", out var failure) ? EsimDiagnostics.SafeError(failure.GetString()) : null;
+        if (card.Kind == "euicc_confirmed")
+        {
+            if (snapshot is null || snapshot.Target != target || error is not null) throw new EsimException();
+            EsimValidation.Snapshot(snapshot);
+        }
+        else if (snapshot is not null || operations.Count != 0 || card.Kind == "ordinary_sim" && error is not null) throw new EsimException();
+        return new(target!, card, snapshot, networkSelected, operations, error);
+    }
+}
 
 /// <summary>Fixed capability metadata, ordinary means ISD-R was not found in the checked context, never a write grant.</summary>
 public sealed record EsimCardStatus
@@ -60,7 +96,7 @@ public sealed record EsimCardStatus
         bool cleanup = flag.GetBoolean();
         bool valid = success
             ? cleanup && (kind == "euicc_confirmed" && management == "available" && reason == "eid_and_profiles_read" || kind == "ordinary_sim" && management == "unavailable" && reason == "isdr_not_found")
-            : kind == "unknown" && management == "unknown" && FailureReasons.Contains(reason) && !cleanup;
+            : kind == "unknown" && management == "unknown" && (FailureReasons.Contains(reason) || cleanup && reason is "not_present" or "route_unavailable");
         // Reserved absent state requires a future evidence contract.
         if (!valid) throw new EsimException();
         return new(kind, management, reason, cleanup);
@@ -82,8 +118,7 @@ public sealed record EsimCardStatus
             if (card.Kind != "euicc_confirmed" || card.Management != "available" || card.Reason != "eid_and_profiles_read" || !card.CleanupConfirmed) throw new EsimException();
             return card;
         }
-        // Older agents return the same validated EID/inventory without metadata.
-        return new("euicc_confirmed", "available", "eid_and_profiles_read", true);
+        throw new EsimException();
     }
 }
 public sealed class EsimException : Exception
@@ -124,7 +159,7 @@ public static class EsimValidation
     }
     public static void Snapshot(EsimSnapshot value)
     {
-        if (!value.Ok || !Regex.IsMatch(value.Eid ?? "", "^[0-9]{32}$") || value.Profiles is null || value.Profiles.Count > 1024) throw new EsimException();
+        if (!EsimTargets.Valid(value.Target) || !value.Ok || !Regex.IsMatch(value.Eid ?? "", "^[0-9]{32}$") || value.Profiles is null || value.Profiles.Count > 1024) throw new EsimException();
         var ids = new HashSet<string>(StringComparer.Ordinal); var aids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var p in value.Profiles)
         {
@@ -133,15 +168,26 @@ public static class EsimValidation
             if (p.IsdpAid is not null && (!Regex.IsMatch(p.IsdpAid, "^(?:[0-9a-fA-F]{2}){1,32}$") || !aids.Add(p.IsdpAid))) throw new EsimException();
         }
     }
+    public static IReadOnlyList<string> ParseOperations(JsonElement value, bool confirmed)
+    {
+        var values = value.Deserialize<string[]>() ?? throw new EsimException();
+        Operations(values, confirmed); return values;
+    }
+    public static void Operations(IReadOnlyList<string>? values, bool confirmed)
+    {
+        if (values is null || values.Distinct().Count() != values.Count || values.Any(x => x is not ("list" or "download" or "enable" or "delete" or "rename")) || (confirmed ? !values.Contains("list") : values.Count != 0)) throw new EsimException();
+    }
     public static void Request(EsimRequest request)
     {
-        if (request.Operation == "list")
+        if (request.Operation == "discover" ? request.Target is not null : !EsimTargets.Valid(request.Target)) throw new EsimException("target_required");
+        if (request.Operation is "list" or "discover")
         {
             if (request.ExpectedSnapshot is not null || request.ActivationCode is not null || request.ConfirmationCode is not null || request.Iccid is not null || request.ConfirmDelete) throw new EsimException();
             return;
         }
         if (request.Operation is not ("download" or "enable" or "delete") || request.ExpectedSnapshot is null) throw new EsimException();
         Snapshot(request.ExpectedSnapshot);
+        if (request.ExpectedSnapshot.Target != request.Target) throw new EsimException("target_mismatch");
         if (request.Operation == "download")
         {
             if (request.Iccid is not null || request.ConfirmDelete || !ActivationCodeValid(request.ActivationCode) || request.ConfirmationCode is { } c && (c.Length is 0 or > 512 || c.StartsWith('-') || c.Any(char.IsControl) || c.Any(char.IsWhiteSpace))) throw new EsimException();
@@ -155,9 +201,10 @@ public static class EsimValidation
     public static void Postcondition(EsimRequest request, EsimSnapshot snapshot)
     {
         Snapshot(snapshot);
+        if (snapshot.Target != request.Target) throw new EsimException("target_mismatch");
         if (request.Operation == "list") return;
         var previous = request.ExpectedSnapshot!;
-        if (snapshot.Eid != previous.Eid) throw new EsimException();
+        if (snapshot.Target != previous.Target || snapshot.Eid != previous.Eid) throw new EsimException();
         var before = previous.Profiles; var after = snapshot.Profiles;
         bool sameOthers = before.Where(p => p.Iccid != request.Iccid).Select(Inventory).Order().SequenceEqual(after.Where(p => p.Iccid != request.Iccid).Select(Inventory).Order());
         var valid = request.Operation switch

@@ -91,13 +91,38 @@ def main():
                 assert status==503 and body['code']=='VPN_NOT_INSTALLED',(status,body)
                 status,body=call('GET','/api/esim/capabilities',token=token)
                 assert status==200 and body['ok'] is True,(status,body)
-                assert body['data']['target']=='internal-euicc-slot2',body
-                # Cached standard dashboards cannot reserve or dispatch a job.
-                for wrong in [None,'physical-euicc-slot1','internal-euicc-slot2 ']:
-                    payload={'request_id':'a'*32,'request':{'protocol':1,'operation':'list'}}
-                    if wrong is not None:payload['target']=wrong
+                capabilities=body['data']
+                assert capabilities['protocol']==2 and capabilities['private_rpc_protocol']==2,body
+                assert capabilities['target_mode']=='explicit',body
+                assert capabilities['targets']==['removable-euicc-slot1','internal-euicc-slot2'],body
+                assert 'discover' in capabilities['operations'] and 'target' not in capabilities,body
+                # Old protocols and missing/unknown operation targets never reserve a job.
+                invalid_requests=[
+                    {'protocol':1,'operation':'list'},
+                    {'protocol':2,'operation':'list'},
+                    {'protocol':2,'operation':'list','target':'physical-euicc-slot1'},
+                    {'protocol':2,'operation':'list','target':'internal-euicc-slot2 '},
+                    {'protocol':2,'operation':'discover','target':'internal-euicc-slot2'}]
+                for request in invalid_requests:
+                    payload={'request_id':'a'*32,'request':request}
                     status,body=call('POST','/api/esim/jobs',payload,token)
                     assert status==400 and body['ok'] is False,(status,body)
+                # A valid v2 discovery request reaches the asynchronous worker.
+                # On this development host it must fail the platform check before
+                # extraction, QMI or vendor writes; this is not hardware discovery.
+                payload={'request_id':'b'*32,'request':{'protocol':2,'operation':'discover'}}
+                status,body=call('POST','/api/esim/jobs',payload,token)
+                assert status==202 and body['ok'] is True,(status,body)
+                job=body['data']['job_id']
+                for _ in range(40):
+                    status,body=call('GET','/api/esim/jobs/'+job,token=token)
+                    assert status==200 and body['ok'] is True,(status,body)
+                    if body['data']['state']=='complete':break
+                    time.sleep(.05)
+                else:raise AssertionError('Discovery fixture did not complete')
+                result=body['data']['result']
+                assert result['ok'] is False and result['error']=='unsupported_device',result
+                assert result.get('snapshot') is None and result.get('changed') is not True,result
                 # The confirmed command runs only our fake ubus. Its failure
                 # must be returned as the specific backend error.
                 status,_=call('POST','/api/device/reboot',{},confirmed=True)
@@ -115,7 +140,7 @@ def main():
                     'operation_validation_requests':len(validation),'authentication_verified':True,
                     'legacy_mode_ignored':True,'read_vendor_commands':len(commands),
                     'fake_mutation_commands':len(requested),'hardware_commands':0,
-                    'missing_vpn_error':'VPN_NOT_INSTALLED','uninstalled_restart_refused':True,'hardware_tested':False}))
+                    'esim_protocol':2,'discovery_request_dispatched':True,'host_discovery_error':'unsupported_device','missing_vpn_error':'VPN_NOT_INSTALLED','uninstalled_restart_refused':True,'hardware_tested':False}))
             finally:
                 child.terminate()
                 try:child.wait(timeout=3)

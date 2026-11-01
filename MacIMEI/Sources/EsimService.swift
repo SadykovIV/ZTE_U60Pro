@@ -130,14 +130,14 @@ struct EsimService {
             guard child.finish() == 0, !unexpected else { throw EsimFailure.transport }
         } catch { _ = child.finish(); throw EsimFailure.transport }
     }
-    func perform(_ operation: EsimOperation, expected: EsimSnapshot?, journal: @escaping @Sendable (String) -> Void = { _ in }, progress: @escaping @Sendable (String) -> Void) throws -> EsimRPCResult {
+    func perform(_ operation: EsimOperation, expected: EsimSnapshot?, target: EsimTarget?, journal: @escaping @Sendable (String) -> Void = { _ in }, progress: @escaping @Sendable (String) -> Void) throws -> EsimRPCResult {
         let started = ProcessInfo.processInfo.systemUptime
         func log(_ metadata: String) {
             let elapsed = max(0, ProcessInfo.processInfo.systemUptime - started)
             journal("eSIM · " + operation.name + " · +" + String(format: "%.1f", elapsed) + " s · " + metadata)
         }
         log("local_preflight")
-        let request = try operation.request(snapshot: expected)
+        let request = try operation.request(snapshot: expected, target: target)
         let assets = try EsimResources(root: resources)
         let path = "/tmp/zte-desktop-esim-" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
         let cleanup = "rm -f \(path)/agent && rmdir \(path)"
@@ -209,7 +209,7 @@ struct EsimService {
             }
             let exit = child.finish()
             log("ssh_exit code=\(exit)")
-            let completed = try decoder.finish(exitCode: exit, operation: operation, before: expected)
+            let completed = try decoder.finish(exitCode: exit, operation: operation, before: expected, target: target)
             log("postconditions_verified")
             try command(cleanup); removed = true
             log("temporary_files_removed")

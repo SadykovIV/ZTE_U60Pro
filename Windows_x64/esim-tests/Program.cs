@@ -32,18 +32,18 @@ void Check(bool value, string name) { if (!value) { Console.WriteLine("FAIL " + 
 void Reject(Action action, string name) { try { action(); } catch { return; } throw new Exception("accepted " + name); }
 async Task RejectAsync(Func<Task> action, string name) { try { await action(); } catch { return; } throw new Exception("accepted " + name); }
 var before = Fixture.Snapshot;
-var list = new EsimRequest { Operation = "list" };
-var download = new EsimRequest { Operation = "download", ExpectedSnapshot = before, ActivationCode = "LPA:1$example.com$synthetic-test", ConfirmationCode = "1234" };
-var enable = new EsimRequest { Operation = "enable", ExpectedSnapshot = before, Iccid = Fixture.Disabled.Iccid };
-var delete = new EsimRequest { Operation = "delete", ExpectedSnapshot = before, Iccid = Fixture.Disabled.Iccid, ConfirmDelete = true };
+var list = new EsimRequest { Operation = "list", Target=EsimTargets.Removable };
+var download = new EsimRequest { Operation = "download", Target=EsimTargets.Removable, ExpectedSnapshot = before, ActivationCode = "LPA:1$example.com$synthetic-test", ConfirmationCode = "1234" };
+var enable = new EsimRequest { Operation = "enable", Target=EsimTargets.Removable, ExpectedSnapshot = before, Iccid = Fixture.Disabled.Iccid };
+var delete = new EsimRequest { Operation = "delete", Target=EsimTargets.Removable, ExpectedSnapshot = before, Iccid = Fixture.Disabled.Iccid, ConfirmDelete = true };
 foreach (var request in new[] { list, download, enable, delete })
 {
     EsimValidation.Request(request);
     using var doc = JsonDocument.Parse(JsonSerializer.Serialize(request));
     var obj = doc.RootElement;
-    Check(obj.GetProperty("protocol").GetInt32() == 1 && obj.GetProperty("operation").GetString() == request.Operation, "wire operation");
+    Check(obj.GetProperty("protocol").GetInt32() == 2 && obj.GetProperty("operation").GetString() == request.Operation, "wire operation");
     Check(obj.TryGetProperty("confirm_delete", out var value) == (request.Operation == "delete"), "confirm_delete omitted except delete");
-    if (request.Operation == "list") Check(obj.EnumerateObject().Count() == 2, "list has only two keys");
+    if (request.Operation == "list") Check(obj.EnumerateObject().Count() == 3, "list has explicit target");
     else
     {
         var profile = obj.GetProperty("expected_snapshot").GetProperty("profiles")[0];
@@ -54,16 +54,16 @@ foreach (var request in new[] { list, download, enable, delete })
 Pass("four request envelopes match strict backend fields");
 Check(EsimDiagnostics.SafeError("esim_slot_not_selected") == "esim_slot_not_selected", "internal slot refusal remains typed");
 var slotMessage = EsimDiagnostics.FailureMessage("esim_slot_not_selected");
-Check(slotMessage.Contains("выберите eSIM") && slotMessage.Contains("автоматически не переключался"), "internal slot recovery explains explicit SIM selection");
+Check(slotMessage.Contains("выберите соответствующую SIM-карту") && slotMessage.Contains("автоматически не переключалась"), "internal slot recovery explains explicit SIM selection");
 Localization.SetLanguage("en", persist:false);
-Check(Localization.Translate(slotMessage).Contains("select eSIM"), "internal slot recovery translated");
+Check(Localization.Translate(slotMessage).Contains("select the corresponding SIM"), "internal slot recovery translated");
 Localization.SetLanguage("ru", persist:false);
 Pass("internal slot refusal has actionable bilingual recovery");
 
 
 foreach (var code in new[] { "LPA:1$localhost$x", "LPA:1$example.123$x", "LPA:1$127.0.0.1$x", "LPA:1$example.com:443$x", "LPA:1$example.com?$x", "LPA:1$example.com$секрет", "LPA:1$example.com$" }) Check(!EsimValidation.ActivationCodeValid(code), "activation rejects malformed host/input");
-Reject(() => EsimValidation.Request(new() { Operation = "download", ExpectedSnapshot = before, ActivationCode = download.ActivationCode, ConfirmationCode = "-option" }), "confirmation option");
-Reject(() => EsimValidation.Request(new() { Operation = "delete", ExpectedSnapshot = before, Iccid = Fixture.Active.Iccid, ConfirmDelete = true }), "active deletion");
+Reject(() => EsimValidation.Request(new() { Operation = "download", Target=EsimTargets.Removable, ExpectedSnapshot = before, ActivationCode = download.ActivationCode, ConfirmationCode = "-option" }), "confirmation option");
+Reject(() => EsimValidation.Request(new() { Operation = "delete", Target=EsimTargets.Removable, ExpectedSnapshot = before, Iccid = Fixture.Active.Iccid, ConfirmDelete = true }), "active deletion");
 Reject(() => EsimValidation.Snapshot(before with { Profiles = [Fixture.Active, Fixture.Active] }), "duplicate ICCID");
 Reject(() => EsimValidation.Snapshot(before with { Profiles = [Fixture.Active with { Enabled = false }] }), "state mismatch");
 Pass("activation, confirmation and inventory preflight reject malformed values");
@@ -85,7 +85,7 @@ async Task<(EsimResult Result, string Sent, string[] Progress)> Session(EsimRequ
     }, new ImmediateProgress(stages.Add), CancellationToken.None);
     return (EsimProtocol.Completed(result, exit), Encoding.UTF8.GetString(input.ToArray()), stages.ToArray());
 }
-string Final(EsimSnapshot snapshot, bool changed, bool pending = false, bool verified = false) => JsonSerializer.Serialize(new { type = "result", ok = true, snapshot, changed, notifications_pending = pending, modem_verified = verified, radio_restored = verified }) + "\n";
+string Final(EsimSnapshot snapshot, bool changed, bool pending = false, bool verified = false) => JsonSerializer.Serialize(new { type = "result", ok = true, target = snapshot.Target, operations = new[]{"list","download","enable","delete"}, network_selected = true, card = new {kind="euicc_confirmed",management="available",reason="eid_and_profiles_read",cleanup_confirmed=true}, snapshot, changed, notifications_pending = pending, modem_verified = verified, radio_restored = verified }) + "\n";
 string Progress(string stage) => JsonSerializer.Serialize(new { type = "progress", stage }) + "\n";
 string Http(ulong id) => JsonSerializer.Serialize(new { type = "http", id, payload = new { url = "https://example.com/es9plus", tx = "7B7D", headers = new[] { "Content-Type: application/json", "User-Agent: lpac", "X-Admin-Protocol: gsma/rsp/v2.2.0" } } }) + "\n";
 var listed = await Session(list, Progress("reading_profiles") + Final(before, false));
@@ -97,6 +97,33 @@ Check(installed.Result.NotificationsPending, "notification outcome");
 await Session(enable, Progress("enabling") + Http(1) + Final(before with { Profiles = [Fixture.Active with { State = "disabled", Enabled = false }, Fixture.Disabled with { State = "enabled", Enabled = true }] }, true, verified: true));
 await Session(delete, Progress("deleting") + Final(before with { Profiles = [Fixture.Active] }, true));
 Pass("fake RPC list/download/enable/delete, progress and private HTTP flow");
+Reject(() => EsimValidation.Request(new(){Operation="list"}), "missing target on list");
+Reject(() => EsimValidation.Request(new(){Operation="delete",ExpectedSnapshot=before,Iccid=Fixture.Disabled.Iccid,ConfirmDelete=true}), "missing mutation target");
+Reject(() => EsimValidation.Request(new(){Operation="delete",Target=EsimTargets.Internal,ExpectedSnapshot=before,Iccid=Fixture.Disabled.Iccid,ConfirmDelete=true}), "cross-card expected snapshot");
+Reject(() => EsimValidation.Request(new(){Operation="discover",Target=EsimTargets.Removable}), "discovery cannot hide a default target");
+await RejectAsync(() => Session(list, Final(before,false).Replace("\"network_selected\":true", "\"network_selected\":false")), "enable grant needs selected network card");
+await RejectAsync(() => Session(list, Final(before with { Target=EsimTargets.Internal },false)), "same EID and profiles on other slot refused");
+await RejectAsync(() => Session(list, Final(before,false).Replace("\"target\":\"removable-euicc-slot1\",", "")), "legacy unbound result refused");
+object DiscoveryEntry(string target, bool confirmed=true) => new {target,card=new{kind=confirmed?"euicc_confirmed":"ordinary_sim",management=confirmed?"available":"unavailable",reason=confirmed?"eid_and_profiles_read":"isdr_not_found",cleanup_confirmed=true},snapshot=confirmed?before with{Target=target}:null,network_selected=true,operations=confirmed?new[]{"list","download","delete","enable","rename"}:Array.Empty<string>()};
+string Discovery(bool complete,params object[] targets)=>JsonSerializer.Serialize(new{type="result",ok=true,changed=false,notifications_pending=false,complete,targets},new JsonSerializerOptions{DefaultIgnoreCondition=System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull})+"\n";
+var discover=new EsimRequest{Operation="discover"};
+var sole=(await Session(discover,Discovery(true,DiscoveryEntry(EsimTargets.Removable),DiscoveryEntry(EsimTargets.Internal,false)))).Result;
+Check(EsimTargets.Automatic(sole.Targets!,sole.Complete==true)?.Target==EsimTargets.Removable,"sole confirmed card automatic");
+var two=(await Session(discover,Discovery(true,DiscoveryEntry(EsimTargets.Removable),DiscoveryEntry(EsimTargets.Internal)))).Result;
+Check(EsimTargets.Automatic(two.Targets!,true)==null,"same ICCID and EID on two slots still require choice");
+var partial=(await Session(discover,Discovery(false,DiscoveryEntry(EsimTargets.Removable),DiscoveryEntry(EsimTargets.Internal,false)))).Result;
+Check(EsimTargets.Automatic(partial.Targets!,false)==null,"unknown inventory blocks automatic choice");
+await RejectAsync(()=>Session(discover,Discovery(true,DiscoveryEntry(EsimTargets.Removable))),"missing inventory slot cannot claim completeness");
+await RejectAsync(()=>Session(discover,Discovery(true,DiscoveryEntry(EsimTargets.Removable),DiscoveryEntry(EsimTargets.Removable))),"duplicate discovery target");
+await RejectAsync(()=>Session(discover,Http(1)+Discovery(true,DiscoveryEntry(EsimTargets.Removable))),"discovery never relays HTTP");
+object PartialFailure(bool cleanup)=>new{target=EsimTargets.Internal,card=new{kind="unknown",management="unknown",reason="read_failed",cleanup_confirmed=cleanup},network_selected=false,operations=Array.Empty<string>()};
+var cleanedPartial=(await Session(discover,Discovery(false,DiscoveryEntry(EsimTargets.Removable),PartialFailure(true)))).Result;
+Check(!cleanedPartial.Complete!.Value && EsimTargets.Automatic(cleanedPartial.Targets!,false)==null,"positive cleanup receipt permits partial discovery without automatic choice");
+await RejectAsync(()=>Session(discover,Discovery(false,DiscoveryEntry(EsimTargets.Removable),PartialFailure(false))),"missing cleanup receipt invalidates whole discovery");
+await RejectAsync(()=>Session(discover,Discovery(true,DiscoveryEntry(EsimTargets.Removable),PartialFailure(true))),"read failure cannot claim complete inventory");
+await RejectAsync(()=>Session(discover,Discovery(false,DiscoveryEntry(EsimTargets.Removable),new{target=EsimTargets.Internal,card=new{kind="unknown",management="unknown",reason="cleanup_unknown",cleanup_confirmed=true},network_selected=false,operations=Array.Empty<string>()})),"unknown cleanup invalidates whole discovery");
+Pass("protocol 2 target binding, legacy refusal and complete/ambiguous discovery");
+
 
 await RejectAsync(() => Session(list, "{broken\n"), "malformed JSON");
 await RejectAsync(() => Session(list, Final(before, false) + Final(before, false)), "duplicate final");
@@ -163,16 +190,16 @@ await session.Dispatch(() =>
         Check(fake.Requests.Count == 0, "header refresh outside eSIM never checks the card");
         Click(window,"Navigation8"); Check(!Find<Button>(window,"EsimDelete").IsEnabled, "writes require fresh read");
         Check(fake.Requests.Count == 0, "opening the page never issues a background card request");
-        Check(window.Title == "ZTE U60Pro Internal eUICC" && Label(window, "INTERNAL eUICC"), "alternative app identity");
-        Check(Label(window, Localization.Translate("Для мобильной связи через eUICC и переключения её профилей выберите eSIM в штатном меню выбора SIM. Эта программа не переключает слоты автоматически.")), "internal eUICC route guidance");
+        Check(window.Title == "ZTE U60Pro Manager" && Label(window, "MANAGER"), "standard unified app identity");
+        Check(Label(window, Localization.Translate("Для включения профиля выберите соответствующую карту в разделе SIM модема и обновите список. Приложение не переключает SIM-карты автоматически.")), "internal eUICC route guidance");
 
         Check(Find<TextBlock>(window,"EsimCardType").Text == Localization.Translate("Карта ещё не проверена."), "card starts unassessed");
         Check(Find<Button>(window,"EsimRead").Content?.ToString() == Localization.Translate("Проверить карту и профили"), "explicit card-check action");
         Click(window,"RefreshPage");
         Check(fake.Requests.Count == 0 && !Find<Button>(window,"EsimDelete").IsEnabled, "general header on eSIM does not check card or authorize writes");
         Click(window,"EsimRead");
-        Check(fake.Requests.Count == 1 && fake.Requests[0].Operation == "list", "dedicated eSIM button checks card and profiles once");
-        Check(Find<TextBlock>(window,"EsimCardType").Text == Localization.Translate("eUICC на месте eSIM подтверждена: EID и профили прочитаны."), "accepted legacy snapshot confirms type");
+        Check(fake.Requests.Count == 1 && fake.Requests[0].Operation == "discover", "dedicated eSIM button checks card and profiles once");
+        Check(Find<TextBlock>(window,"EsimCardType").Text == Localization.Translate("eUICC подтверждена: EID и профили прочитаны."), "confirmed discovery snapshot confirms type");
         Check(Label(window, Localization.Translate("SIM-карта")), "localized eSIM heading");
         if(language=="en") Check(Label(window,"SIM card"),"English neutral page title");
         var profiles = Find<ListBox>(window,"EsimProfiles");
@@ -232,19 +259,33 @@ await session.Dispatch(() =>
         Click(window,"Navigation8");
         Check(Find<TextBlock>(window,"EsimCardType").Text == Localization.Translate("Карта: тип не определён. Повторите проверку."),"general refresh cannot replace unknown card state");
         Click(window,"EsimRead");
-        Check(fake.Requests.Count == requestsBeforeInformation + 1 && fake.Requests.Last().Operation == "list", "dedicated eSIM read remains available after general refresh");
-        Check(Find<TextBlock>(window,"EsimCardType").Text == Localization.Translate("eUICC на месте eSIM подтверждена: EID и профили прочитаны."),"dedicated eSIM refresh restores confirmed status");
+        Check(fake.Requests.Count == requestsBeforeInformation + 1 && fake.Requests.Last().Operation == "discover", "dedicated eSIM read remains available after general refresh");
+        Check(Find<TextBlock>(window,"EsimCardType").Text == Localization.Translate("eUICC подтверждена: EID и профили прочитаны."),"dedicated eSIM refresh restores confirmed status");
         using(var ordinaryDoc=JsonDocument.Parse("{\"kind\":\"ordinary_sim\",\"management\":\"unavailable\",\"reason\":\"isdr_not_found\",\"cleanup_confirmed\":true}"))
-            fake.Override=new(true,null,false,false,Card:EsimCardStatus.Parse(ordinaryDoc.RootElement,true));
+            fake.Override=new(true,null,false,false,Targets:[new(EsimTargets.Removable,EsimCardStatus.Parse(ordinaryDoc.RootElement,true),null,true,[],null),new(EsimTargets.Internal,EsimCardStatus.Parse(ordinaryDoc.RootElement,true),null,false,[],null)],Complete:true);
         Click(window,"EsimRead");
-        Check(Find<TextBlock>(window,"EsimCardType").Text==Localization.Translate("Карта на месте eSIM не предоставляет eUICC. Управление профилями недоступно."),"ordinary SIM shown as successful checked result");
+        Check(Find<TextBlock>(window,"EsimCardType").Text==Localization.Translate("Карты проверены. Управление профилями eSIM недоступно."),"ordinary SIM shown as successful checked result");
         Check(Find<ListBox>(window,"EsimProfiles").ItemCount==0,"ordinary card clears old profile list");
         Capture(window,language+"-ordinary-sim.png");
         foreach(var name in new[]{"EsimEnable","EsimDelete","EsimDownload"}) Check(!Find<Button>(window,name).IsEnabled,"ordinary denies mutation "+name);
         fake.Override=new(false,null,false,false,"card_open_rejected"); Click(window,"EsimRead");
         Check(Find<TextBlock>(window,"EsimCardType").Text==Localization.Translate("Карта: тип не определён. Повторите проверку."),"error after ordinary returns unknown");
         fake.Override=null; Click(window,"EsimRead");
-        Check(Find<TextBlock>(window,"EsimCardType").Text==Localization.Translate("eUICC на месте eSIM подтверждена: EID и профили прочитаны."),"fresh eUICC replaces ordinary/error status");
+        Check(Find<TextBlock>(window,"EsimCardType").Text==Localization.Translate("eUICC подтверждена: EID и профили прочитаны."),"fresh eUICC replaces ordinary/error status");
+        fake.TwoCards=true; Click(window,"EsimRead");
+        Check(!Find<Button>(window,"EsimEnable").IsEnabled && Find<ListBox>(window,"EsimProfiles").ItemCount==0,"multiple cards never silently retain a write target");
+        var targetPicker=Find<ComboBox>(window,"EsimTargetPicker"); Check(targetPicker.SelectedIndex==0,"multiple cards require explicit selection");
+        var oldTargetSecret=Find<TextBox>(window,"EsimMatchingId"); oldTargetSecret.Text="must-clear-on-card-change";
+        targetPicker.SelectedIndex=2; Pump();
+        Check(fake.Requests.Last().Operation=="list" && fake.Requests.Last().Target==EsimTargets.Internal,"picker reads only chosen internal card");
+        Check(oldTargetSecret.Text=="" && string.IsNullOrEmpty(Find<TextBox>(window,"EsimMatchingId").Text),"target switch clears activation inputs");
+        Find<ListBox>(window,"EsimProfiles").SelectedIndex=1; Pump();
+        Click(window,"EsimDelete"); var staleDialog=window.OwnedWindows.Single();
+        Find<ComboBox>(window,"EsimTargetPicker").SelectedIndex=1; Pump();
+        int beforeStaleConfirmation=fake.Requests.Count;
+        staleDialog.GetLogicalDescendants().OfType<Button>().Single(b=>b.Content?.ToString()==Localization.Translate("Продолжить")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); Pump();
+        Check(fake.Requests.Count==beforeStaleConfirmation && fake.Requests.Last().Target==EsimTargets.Removable,"stale deletion dialog cannot cross cards with identical ICCID");
+        Capture(window,language+"-two-euicc.png");
         var closingAddress=Find<TextBox>(window,"EsimSmdpAddress"); var closingMatching=Find<TextBox>(window,"EsimMatchingId"); var closingConfirmation=Find<TextBox>(window,"EsimConfirmationCode");
         closingAddress.Text="example.com"; closingMatching.Text="unsubmitted-test"; closingConfirmation.Text="confirmation-test";
         window.Close(); Pump();
@@ -269,7 +310,7 @@ static class Fixture
     public static readonly EsimProfile Active=new("8900000000000000001","A0000005591010FFFFFFFF890000000001","enabled",true,null,"Example operator","Travel active");
     public static readonly EsimProfile Disabled=new("8900000000000000002","A0000005591010FFFFFFFF890000000002","disabled",false,null,"Example operator","Travel spare");
     public static readonly EsimProfile Added=new("8900000000000000003","A0000005591010FFFFFFFF890000000003","disabled",false,null,"Example operator","New profile");
-    public static EsimSnapshot Snapshot=>new(true,new string('9',32),[Active,Disabled]);
+    public static EsimSnapshot Snapshot=>new(true,new string('9',32),[Active,Disabled],EsimTargets.Removable);
 }
 sealed class FakeModem : IModemService
 {
@@ -277,15 +318,27 @@ sealed class FakeModem : IModemService
     public EsimResult? Override;
     public List<EsimRequest> Requests=[];
     public bool RefreshSuccess = true;
+    public bool TwoCards;
     public TaskCompletionSource<EsimResult>? Pending;
     public Task<EsimResult> RunEsimAsync(EsimRequest request,IProgress<string>? progress,CancellationToken ct=default)
     {
         Requests.Add(request); progress?.Report("verifying");
         if(Pending is not null)return Pending.Task;
         if(Override is not null)return Task.FromResult(Override);
+        using var cardDoc=JsonDocument.Parse("{\"kind\":\"euicc_confirmed\",\"management\":\"available\",\"reason\":\"eid_and_profiles_read\",\"cleanup_confirmed\":true}");
+        var card=EsimCardStatus.Parse(cardDoc.RootElement,true);
+        string[] operations=["list","download","enable","delete","rename"];
+        using var absentDoc=JsonDocument.Parse("{\"kind\":\"unknown\",\"management\":\"unknown\",\"reason\":\"not_present\",\"cleanup_confirmed\":true}");
+        var absent=EsimCardStatus.Parse(absentDoc.RootElement,false);
+        if(request.Operation=="discover") {
+            var first=Fixture.Snapshot;
+            IReadOnlyList<EsimDiscoveredTarget> targets=TwoCards?[new(first.Target,card,first,true,operations,null),new(EsimTargets.Internal,card,first with{Target=EsimTargets.Internal,Eid=new string('8',32)},true,operations,null)]:[new(Current.Target,card,Current,true,operations,null),new(Current.Target==EsimTargets.Removable?EsimTargets.Internal:EsimTargets.Removable,absent,null,null,[],null)];
+            return Task.FromResult(new EsimResult(true,null,false,false,Targets:targets,Complete:true));
+        }
+        if(request.Operation=="list")Current=Fixture.Snapshot with{Target=request.Target!,Eid=request.Target==EsimTargets.Internal?new string('8',32):new string('9',32)};
         if(request.Operation=="delete")Current=Current with{Profiles=Current.Profiles.Where(p=>p.Iccid!=request.Iccid).ToArray()};
         if(request.Operation=="enable")Current=Current with{Profiles=Current.Profiles.Select(p=>p with{State=p.Iccid==request.Iccid?"enabled":"disabled",Enabled=p.Iccid==request.Iccid}).ToArray()};
-        return Task.FromResult(new EsimResult(true,Current,request.Operation!="list",false, ModemVerified:request.Operation=="enable", RadioRestored:request.Operation=="enable"));
+        return Task.FromResult(new EsimResult(true,Current,request.Operation!="list",false, ModemVerified:request.Operation=="enable", RadioRestored:request.Operation=="enable",Card:card,Target:Current.Target,Operations:operations,NetworkSelected:true));
     }
     public Task<DeviceSnapshot> GetDeviceSnapshotAsync(CancellationToken ct=default)=>Task.FromResult(new DeviceSnapshot(true,"Подключено",Model:"ZTE U60 Pro",Firmware:"MU5250 B31",Serial:"synthetic-device",IpAddress:"192.168.0.1",ConnectionMode:"SSH"));
     public Task<OperationResult> RunAsync(OperationRequest request,CancellationToken ct=default)=>Task.FromResult(new OperationResult(RefreshSuccess,"Состояние обновлено."));

@@ -1,4 +1,4 @@
-//! QMI flight-mode and internal slot2 power cycle after the APDU bridge has closed.
+//! QMI flight-mode and target-bound power cycle after the APDU bridge has closed.
 //! Mode and ICCID are freshly queried, never inferred from no-service.
 use super::{Error, Relay, Result};
 use std::time::{Duration, Instant};
@@ -13,28 +13,31 @@ pub(super) trait Device {
     fn card_power(&mut self, on: bool) -> Result<()>;
     fn pause(&mut self);
 }
-pub(super) struct QmiModem;
+pub(super) struct QmiModem {
+    target: super::target::Target,
+}
 impl Device for QmiModem {
     fn network_selection(&mut self) -> Result<()> {
-        super::target::require_network_selection()
+        super::target::require_network_selection(self.target)
     }
     fn mode(&mut self) -> Result<u8> {
         super::radio_qmi::mode()
     }
     fn iccid(&mut self) -> Result<String> {
-        super::radio_qmi::iccid()
+        super::radio_qmi::iccid(self.target)
     }
     fn card_ready(&mut self, expected: &str, deadline: Instant) -> Result<bool> {
-        super::radio_qmi::card_ready(expected, deadline)
+        super::radio_qmi::card_ready(self.target, expected, deadline)
     }
     fn selection(&mut self) -> Result<()> {
         // A profile may already be enabled while the modem retains the old
         // ICCID. Require the exact slot route, not the new ICCID at this point.
-        super::radio_qmi::selection()
-            .map_err(|_| Error::new("card_reset_failed"))
+        super::radio_qmi::selection(self.target).map_err(|_| Error::new("card_reset_failed"))
     }
     fn card_power(&mut self, on: bool) -> Result<()> {
-        super::radio_qmi::card_power(on)
+        // Recovery owns the original target. Never power a newly remapped card.
+        super::radio_qmi::power_selection(self.target, on)?;
+        super::radio_qmi::card_power(self.target, on)
     }
     fn pause(&mut self) {
         std::thread::sleep(Duration::from_secs(1));
@@ -46,13 +49,13 @@ impl Device for QmiModem {
         Ok(())
     }
 }
-pub fn ready() -> Result<()> {
+pub fn ready(target: super::target::Target) -> Result<()> {
     super::resources::check_radio_device()?;
-    super::target::require_network_selection()?;
+    super::target::require_network_selection(target)?;
     if super::radio_qmi::mode()? != 0 {
         return Err(Error::new("radio_not_online"));
     }
-    super::radio_qmi::selection()
+    super::radio_qmi::selection(target)
 }
 fn wait_mode(device: &mut impl Device, desired: u8) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(20);
@@ -116,9 +119,9 @@ impl<D: Device> Drop for Restore<'_, D> {
         }
     }
 }
-pub fn refresh(expected: &str, relay: &mut dyn Relay) -> Result<()> {
+pub fn refresh(target: super::target::Target, expected: &str, relay: &mut dyn Relay) -> Result<()> {
     super::resources::check_radio_device()?;
-    cycle(&mut QmiModem, expected, relay)
+    cycle(&mut QmiModem { target }, expected, relay)
 }
 fn wait_card_ready(device: &mut impl Device, expected: &str) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -223,9 +226,16 @@ mod tests {
     }
     impl Device for Mock {
         fn network_selection(&mut self) -> Result<()> {
-            if self.fail_network_selection || self.shared_network_selection.as_ref().is_some_and(|slot| slot.get() != 2) {
+            if self.fail_network_selection
+                || self
+                    .shared_network_selection
+                    .as_ref()
+                    .is_some_and(|slot| slot.get() != 2)
+            {
                 Err(Error::new("esim_slot_not_selected"))
-            } else { Ok(()) }
+            } else {
+                Ok(())
+            }
         }
         fn mode(&mut self) -> Result<u8> {
             self.modes.pop_front().unwrap_or(Ok(0))
@@ -428,7 +438,9 @@ mod tests {
     fn selector_change_during_progress_blocks_every_radio_and_power_write() {
         struct SwitchingRelay(std::rc::Rc<std::cell::Cell<u8>>);
         impl Relay for SwitchingRelay {
-            fn http(&mut self, _: &serde_json::Value) -> Result<serde_json::Value> { unreachable!() }
+            fn http(&mut self, _: &serde_json::Value) -> Result<serde_json::Value> {
+                unreachable!()
+            }
             fn progress(&mut self, stage: &'static str) -> Result<()> {
                 assert_eq!(stage, "radio_offline");
                 self.0.set(1);

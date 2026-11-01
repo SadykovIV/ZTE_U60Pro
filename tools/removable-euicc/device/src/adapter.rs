@@ -1,6 +1,7 @@
 //! Local stdio adapter. The LPA runs on the host; this module owns one card channel.
 use crate::euicc::es10;
 use crate::qmi::uim::OpenChannelError;
+use crate::target::Target;
 use serde_json::{json, Value};
 
 pub type Result<T> = std::result::Result<T, &'static str>;
@@ -18,17 +19,38 @@ pub trait CardIo {
 
 pub trait Device {
     type Card: CardIo;
-    fn connect(&mut self) -> Result<Self::Card>;
+    fn connect(&mut self, target: Target) -> Result<Self::Card>;
 }
 
 pub fn valid_eid(value: &str) -> bool {
     value.len() == 32 && value.bytes().all(|b| b.is_ascii_digit())
 }
 
-pub fn expected_eid(header: &Value) -> Result<String> {
+#[derive(Debug, PartialEq, Eq)]
+pub struct Header {
+    pub target: Target,
+    pub expected_eid: Option<String>,
+}
+
+pub fn parse_header(header: &Value, mode: &str) -> Result<Header> {
     let obj = header.as_object().ok_or("invalid_header")?;
-    if obj.len() != 1 {
+    let expected_fields = match mode {
+        "snapshot" => 2,
+        "bridge" => 3,
+        _ => return Err("invalid_header"),
+    };
+    if obj.len() != expected_fields || obj.get("protocol").and_then(Value::as_u64) != Some(2) {
         return Err("invalid_header");
+    }
+    let target = obj
+        .get("target")
+        .and_then(Target::parse)
+        .ok_or("invalid_header")?;
+    if mode == "snapshot" {
+        return Ok(Header {
+            target,
+            expected_eid: None,
+        });
     }
     let value = obj
         .get("expected_eid")
@@ -37,7 +59,10 @@ pub fn expected_eid(header: &Value) -> Result<String> {
     if !valid_eid(value) {
         return Err("invalid_expected_eid");
     }
-    Ok(value.to_owned())
+    Ok(Header {
+        target,
+        expected_eid: Some(value.to_owned()),
+    })
 }
 
 pub fn decode_hex(text: &str) -> Result<Vec<u8>> {
@@ -79,21 +104,30 @@ pub struct Session<D: Device> {
     device: D,
     card: Option<D::Card>,
     channel: Option<u8>,
+    target: Target,
     expected: Option<String>,
     pub cleanup_failed: bool,
     pub operation_failed: bool,
 }
 
 impl<D: Device> Session<D> {
-    pub fn new(device: D, expected: Option<String>) -> Self {
+    pub fn new(device: D, target: Target, expected: Option<String>) -> Self {
         Self {
             device,
             card: None,
             channel: None,
+            target,
             expected,
             cleanup_failed: false,
             operation_failed: false,
         }
+    }
+
+    /// A completed snapshot may fail to read the card but still prove that
+    /// no owned channel or connection remains. Abnormal process termination
+    /// cannot produce this positive receipt.
+    pub fn cleanup_confirmed(&self) -> bool {
+        !self.cleanup_failed && self.channel.is_none() && self.card.is_none()
     }
 
     fn connect(&mut self) -> Result<()> {
@@ -103,10 +137,25 @@ impl<D: Device> Session<D> {
         if self.cleanup_failed || self.operation_failed {
             return Err("session_failed");
         }
-        let mut card = self.device.connect()?;
+        let mut card = self.device.connect(self.target)?;
         card.guard()?;
         self.card = Some(card);
         Ok(())
+    }
+
+    fn guard_route(&mut self) -> Result<()> {
+        if self.cleanup_failed {
+            return Err("card_cleanup_unknown");
+        }
+        let result = self.card.as_mut().ok_or("not_connected")?.guard();
+        if result.is_err() && self.channel.is_some() {
+            // Logical slot numbers alone do not prove physical-card identity.
+            // Once our route is uncertain, even Close could hit another card.
+            self.cleanup_failed = true;
+            eprintln!("{{\"event\":\"error\",\"code\":\"card_cleanup_unknown\"}}");
+            return Err("card_cleanup_unknown");
+        }
+        result
     }
 
     fn open(&mut self) -> Result<u8> {
@@ -116,6 +165,7 @@ impl<D: Device> Session<D> {
         if self.cleanup_failed || self.operation_failed {
             return Err("session_failed");
         }
+        self.guard_route()?;
         let card = self.card.as_mut().ok_or("not_connected")?;
         let channel = match card.open() {
             Ok(channel) => channel,
@@ -145,6 +195,14 @@ impl<D: Device> Session<D> {
     }
 
     pub fn close(&mut self) -> Result<()> {
+        if self.cleanup_failed {
+            // Do not retry an unknown route, even if a later lookup recovers.
+            self.channel = None;
+            return Err("card_cleanup_unknown");
+        }
+        if self.channel.is_some() {
+            self.guard_route()?;
+        }
         if let Some(channel) = self.channel.take() {
             let result = self
                 .card
@@ -174,6 +232,7 @@ impl<D: Device> Session<D> {
 
     fn transmit(&mut self, command: &[u8]) -> Result<Vec<u8>> {
         let channel = self.channel.ok_or("not_open")?;
+        self.guard_route()?;
         self.card
             .as_mut()
             .ok_or("not_connected")?
@@ -297,9 +356,11 @@ impl<D: Device> Session<D> {
                 {
                     return Err("card_not_ready");
                 }
-                self.card.as_mut().ok_or("not_connected")?.guard()?;
-                return Ok(json!({"ok":true,"card":{"kind":"ordinary_sim",
-                    "management":"unavailable","reason":"isdr_not_found","cleanup_confirmed":true}}));
+                self.guard_route()?;
+                return Ok(
+                    json!({"ok":true,"target":self.target.name(),"card":{"kind":"ordinary_sim",
+                    "management":"unavailable","reason":"isdr_not_found","cleanup_confirmed":true}}),
+                );
             }
             let eid = self.read_eid()?;
             let data = self.read_response(
@@ -311,9 +372,9 @@ impl<D: Device> Session<D> {
                 "state": p.state_label(), "enabled": p.is_enabled(),
                 "nickname": p.nickname, "service_provider": p.service_provider, "name": p.name
             })).collect();
-            // Selection cache is checked again before returning private data.
-            self.card.as_mut().ok_or("not_connected")?.guard()?;
-            Ok(json!({"ok": true, "eid": eid, "profiles": rows}))
+            // The actual card route is checked again before returning private data.
+            self.guard_route()?;
+            Ok(json!({"ok": true, "target":self.target.name(), "eid": eid, "profiles": rows}))
         })();
         let cleanup = self.disconnect();
         if result.is_err() {
@@ -358,7 +419,6 @@ impl<D: Device> Session<D> {
                 }
                 // Guard again immediately before opening, and bind this owned
                 // channel to the expected EID before forwarding host APDUs.
-                self.card.as_mut().ok_or("not_connected")?.guard()?;
                 let channel = self.open()?;
                 let identified = (|| {
                     if !self.select_isdr()? {
@@ -423,10 +483,12 @@ mod tests {
     struct Counts {
         guards: usize,
         connects: usize,
+        targets: Vec<Target>,
         opens: usize,
         closes: usize,
         transmissions: usize,
         fail_guard: bool,
+        fail_guard_at: Option<usize>,
         not_ready: bool,
         fail_close: bool,
         fail_open: bool,
@@ -440,8 +502,9 @@ mod tests {
     struct MockCard(Rc<RefCell<Counts>>);
     impl Device for Mock {
         type Card = MockCard;
-        fn connect(&mut self) -> Result<MockCard> {
+        fn connect(&mut self, target: Target) -> Result<MockCard> {
             self.0.borrow_mut().connects += 1;
+            self.0.borrow_mut().targets.push(target);
             Ok(MockCard(self.0.clone()))
         }
     }
@@ -449,7 +512,7 @@ mod tests {
         fn guard(&mut self) -> Result<()> {
             let mut c = self.0.borrow_mut();
             c.guards += 1;
-            if c.fail_guard {
+            if c.fail_guard || c.fail_guard_at == Some(c.guards) {
                 Err("selection_mismatch")
             } else {
                 Ok(())
@@ -507,7 +570,10 @@ mod tests {
     }
     fn setup() -> (Session<Mock>, Rc<RefCell<Counts>>) {
         let c = Rc::new(RefCell::new(Counts::default()));
-        (Session::new(Mock(c.clone()), Some("1".repeat(32))), c)
+        (
+            Session::new(Mock(c.clone()), Target::Internal, Some("1".repeat(32))),
+            c,
+        )
     }
     fn msg(func: &str, param: &str) -> Value {
         json!({"type":"apdu","payload":{"func":func,"param":param}})
@@ -516,19 +582,98 @@ mod tests {
         msg("logic_channel_open", &es10::hex(&es10::ISD_R_AID))
     }
     #[test]
-    fn strict_header_and_hex() {
-        assert!(expected_eid(&json!({"expected_eid":"1".repeat(32)})).is_ok());
-        for value in [
-            json!({"expected_eid":"1".repeat(31)}),
-            json!({"expected_eid":"Ａ".repeat(32)}),
-            json!({"expected_eid":"1".repeat(32),"x":true}),
-        ] {
-            assert!(expected_eid(&value).is_err());
+    fn strict_headers_require_protocol_and_explicit_whitelisted_target() {
+        for target in [Target::Removable, Target::Internal] {
+            assert_eq!(
+                parse_header(&json!({"protocol":2,"target":target.name()}), "snapshot"),
+                Ok(Header {
+                    target,
+                    expected_eid: None
+                })
+            );
+            assert_eq!(
+                parse_header(
+                    &json!({"protocol":2,"target":target.name(),"expected_eid":"1".repeat(32)}),
+                    "bridge"
+                ),
+                Ok(Header {
+                    target,
+                    expected_eid: Some("1".repeat(32))
+                })
+            );
+            for mode in ["snapshot", "bridge"] {
+                for value in [
+                    json!({}),
+                    json!(null),
+                    json!({"expected_eid":"1".repeat(32)}),
+                    json!({"protocol":1,"target":target.name()}),
+                    json!({"protocol":"2","target":target.name()}),
+                    json!({"protocol":2.0,"target":target.name()}),
+                    json!({"protocol":true,"target":target.name()}),
+                    json!({"protocol":2,"target":1}),
+                    json!({"protocol":2,"target":"auto"}),
+                    json!({"protocol":2,"target":"internal-euicc-slot1"}),
+                    json!({"protocol":2,"target":target.name(),"expected_eid":null}),
+                    json!({"protocol":2,"target":target.name(),"expected_eid":"1".repeat(31)}),
+                    json!({"protocol":2,"target":target.name(),"expected_eid":"Ａ".repeat(32)}),
+                    json!({"protocol":2,"target":target.name(),"expected_eid":"1".repeat(32),"extra":true}),
+                ] {
+                    assert!(parse_header(&value, mode).is_err(), "mode={mode}");
+                }
+            }
+            assert!(parse_header(
+                &json!({"protocol":2,"target":target.name(),"expected_eid":"1".repeat(32)}),
+                "snapshot"
+            )
+            .is_err());
+            assert!(parse_header(&json!({"protocol":2,"target":target.name()}), "bridge").is_err());
         }
         assert!(decode_hex("éé").is_err());
         assert!(decode_hex("0").is_err());
         assert!(decode_hex("xx").is_err());
     }
+    #[test]
+    fn snapshot_and_every_reconnect_remain_bound_to_explicit_target() {
+        for target in [Target::Removable, Target::Internal] {
+            let c = Rc::new(RefCell::new(Counts::default()));
+            let mut s = Session::new(Mock(c.clone()), target, Some("1".repeat(32)));
+            assert_eq!(s.snapshot().unwrap()["target"], target.name());
+            for _ in 0..2 {
+                assert_eq!(s.handle(&msg("connect", ""))["payload"]["ecode"], 0);
+                assert_eq!(s.handle(&open_msg())["payload"]["ecode"], 1);
+                assert_eq!(s.handle(&msg("disconnect", ""))["payload"]["ecode"], 0);
+            }
+            assert_eq!(c.borrow().targets, [target; 3]);
+            assert_eq!(c.borrow().closes, 3);
+        }
+    }
+    #[test]
+    fn ordinary_card_result_is_bound_to_requested_target_after_close() {
+        for target in [Target::Removable, Target::Internal] {
+            let c = Rc::new(RefCell::new(Counts::default()));
+            c.borrow_mut().responses.push_back(vec![0x6a, 0x82]);
+            let mut s = Session::new(Mock(c.clone()), target, None);
+            let value = s.snapshot().unwrap();
+            assert_eq!(value["target"], target.name());
+            assert_eq!(value["card"]["kind"], "ordinary_sim");
+            assert_eq!(value["card"]["cleanup_confirmed"], true);
+            assert_eq!(c.borrow().targets, [target]);
+            assert_eq!(c.borrow().closes, 1);
+        }
+    }
+    #[test]
+    fn cleanup_receipt_is_positive_after_read_failure_but_never_unknown_close() {
+        for (fail_close, fail_open) in [(false, false), (true, false), (false, true)] {
+            let (mut s, c) = setup();
+            c.borrow_mut().fail_transmit = true;
+            c.borrow_mut().fail_close = fail_close;
+            c.borrow_mut().fail_open = fail_open;
+            assert!(s.snapshot().is_err());
+            assert_eq!(s.cleanup_confirmed(), !fail_close && !fail_open);
+            assert_eq!(c.borrow().closes, usize::from(!fail_open));
+        }
+    }
+
     #[test]
     fn snapshot_closes_before_return() {
         let (mut s, c) = setup();
@@ -536,7 +681,7 @@ mod tests {
         assert_eq!(v["profiles"], json!([]));
         assert_eq!(v["eid"], "1".repeat(32));
         assert_eq!(c.borrow().closes, 1);
-        assert_eq!(c.borrow().guards, 2);
+        assert_eq!(c.borrow().guards, 7);
         assert!(s.card.is_none());
     }
     #[test]
@@ -554,6 +699,78 @@ mod tests {
         assert!(s.snapshot().is_err());
         assert_eq!(c.borrow().connects, 1);
         assert_eq!(c.borrow().opens, 0);
+    }
+    #[test]
+    fn remap_before_first_open_or_reopen_sends_no_open_and_cleanup_is_known() {
+        for target in [Target::Removable, Target::Internal] {
+            for reopened in [false, true] {
+                let c = Rc::new(RefCell::new(Counts::default()));
+                let mut s = Session::new(Mock(c.clone()), target, Some("1".repeat(32)));
+                s.connect().unwrap();
+                if reopened {
+                    s.open().unwrap();
+                    s.close().unwrap();
+                }
+                let opens = c.borrow().opens;
+                let closes = c.borrow().closes;
+                c.borrow_mut().fail_guard = true;
+                assert_eq!(s.open(), Err("selection_mismatch"));
+                assert_eq!(c.borrow().opens, opens);
+                assert_eq!(c.borrow().transmissions, 0);
+                s.disconnect().unwrap();
+                assert_eq!(c.borrow().closes, closes);
+                assert!(s.cleanup_confirmed());
+            }
+        }
+    }
+    #[test]
+    fn remap_before_apdu_or_close_never_sends_to_another_card_or_claims_cleanup() {
+        for target in [Target::Removable, Target::Internal] {
+            for at_close in [false, true] {
+                let c = Rc::new(RefCell::new(Counts::default()));
+                let mut s = Session::new(Mock(c.clone()), target, Some("1".repeat(32)));
+                s.connect().unwrap();
+                s.open().unwrap();
+                c.borrow_mut().fail_guard = true;
+                let result = if at_close {
+                    s.close()
+                } else {
+                    s.transmit(&[0, 0xa4, 4, 0]).map(|_| ())
+                };
+                assert_eq!(result, Err("card_cleanup_unknown"));
+                assert_eq!(c.borrow().opens, 1);
+                assert_eq!(c.borrow().transmissions, 0);
+                assert_eq!(c.borrow().closes, 0);
+                assert!(!s.cleanup_confirmed());
+                // Restoring the old mapping does not authorize closing a possibly
+                // reused channel. Neither explicit disconnect nor Drop retries.
+                c.borrow_mut().fail_guard = false;
+                assert_eq!(s.disconnect(), Err("card_cleanup_unknown"));
+                assert!(!s.cleanup_confirmed());
+                drop(s);
+                assert_eq!(c.borrow().closes, 0);
+                assert_eq!(c.borrow().transmissions, 0);
+            }
+        }
+    }
+    #[test]
+    fn snapshot_remap_at_each_card_exchange_blocks_later_commands_and_receipt() {
+        // Sequence: connect guard, open guard, SELECT, EID, profiles, final
+        // snapshot guard, Close guard. A one-shot lookup failure must stay sticky.
+        for target in [Target::Removable, Target::Internal] {
+            for (at, transmissions) in [(3, 0), (4, 1), (5, 2), (6, 3), (7, 3)] {
+                let c = Rc::new(RefCell::new(Counts::default()));
+                c.borrow_mut().fail_guard_at = Some(at);
+                let mut s = Session::new(Mock(c.clone()), target, Some("1".repeat(32)));
+                assert_eq!(s.snapshot(), Err("card_cleanup_unknown"));
+                assert_eq!(c.borrow().transmissions, transmissions);
+                assert_eq!(c.borrow().closes, 0);
+                assert!(!s.cleanup_confirmed());
+                assert!(s.card.is_none());
+                drop(s);
+                assert_eq!(c.borrow().closes, 0);
+            }
+        }
     }
     #[test]
     fn duplicate_connect_and_open_never_overwrite_ownership() {
@@ -717,13 +934,32 @@ mod tests {
         );
     }
     #[test]
-    fn channel_rechecks_eid_before_host_transmit() {
-        let (mut s, c) = setup();
-        s.handle(&msg("connect", ""));
-        s.expected = Some("2".repeat(32));
-        assert_eq!(s.handle(&open_msg())["payload"]["ecode"], -1);
-        assert_eq!(c.borrow().transmissions, 2);
-        assert_eq!(c.borrow().closes, 1);
+    fn channel_rechecks_eid_on_every_reopen_for_both_targets() {
+        for target in [Target::Removable, Target::Internal] {
+            let c = Rc::new(RefCell::new(Counts::default()));
+            let mut s = Session::new(Mock(c.clone()), target, Some("1".repeat(32)));
+            assert_eq!(s.handle(&msg("connect", ""))["payload"]["ecode"], 0);
+            assert_eq!(s.handle(&open_msg())["payload"]["ecode"], 1);
+            assert_eq!(
+                s.handle(&msg("logic_channel_close", ""))["payload"]["ecode"],
+                0
+            );
+            // Simulate a different card identity returned on the next owned channel.
+            c.borrow_mut().responses.push_back(vec![0x90, 0]);
+            let mut changed_eid = vec![0xbf, 0x3e, 0x12, 0x5a, 0x10];
+            changed_eid.extend([0x22; 16]);
+            changed_eid.extend([0x90, 0]);
+            c.borrow_mut().responses.push_back(changed_eid);
+            assert_eq!(s.handle(&open_msg())["payload"]["ecode"], -1);
+            assert_eq!(c.borrow().transmissions, 4);
+            assert_eq!(c.borrow().closes, 2);
+            // No host APDU is forwarded after the mismatching card identity.
+            assert_eq!(
+                s.handle(&msg("transmit", "80CA9F7F00"))["payload"]["ecode"],
+                -1
+            );
+            assert_eq!(c.borrow().transmissions, 4);
+        }
     }
     #[test]
     fn ordinary_sim_select_not_found_is_success_without_eid_or_profiles() {
@@ -734,7 +970,7 @@ mod tests {
             .expect("explicit SELECT not found is a normal card result");
         assert_eq!(
             value,
-            json!({"ok":true,"card":{"kind":"ordinary_sim",
+            json!({"ok":true,"target":"internal-euicc-slot2","card":{"kind":"ordinary_sim",
             "management":"unavailable","reason":"isdr_not_found","cleanup_confirmed":true}})
         );
         assert_eq!(c.borrow().transmissions, 1);
@@ -830,11 +1066,8 @@ mod tests {
         for channel in 1..=3 {
             let (mut session, counts) = setup();
             counts.borrow_mut().returned_channel = Some(channel);
-            counts.borrow_mut().responses = VecDeque::from([
-                vec![0x61, 0x21],
-                vec![0x6c, 2],
-                vec![0x62, 0, 0x90, 0],
-            ]);
+            counts.borrow_mut().responses =
+                VecDeque::from([vec![0x61, 0x21], vec![0x6c, 2], vec![0x62, 0, 0x90, 0]]);
             assert!(session.snapshot().unwrap().get("eid").is_some());
             let c = counts.borrow();
             assert_eq!(&c.commands[0][..5], &[channel, 0xa4, 4, 0x0c, 16]);
@@ -849,22 +1082,25 @@ mod tests {
         let (mut session, counts) = setup();
         counts.borrow_mut().responses = VecDeque::from([vec![0x61, 0x21], vec![0x6a, 0x82]]);
         assert_eq!(session.snapshot(), Err("snapshot_card_status_error"));
-        assert_eq!((counts.borrow().transmissions, counts.borrow().closes), (2, 1));
+        assert_eq!(
+            (counts.borrow().transmissions, counts.borrow().closes),
+            (2, 1)
+        );
     }
 
     #[test]
     fn select_continuation_cleanup_failure_never_returns_card_or_retries_close() {
         let (mut session, counts) = setup();
-        counts.borrow_mut().responses = VecDeque::from([
-            vec![0x61, 0x21],
-            vec![0x62, 0, 0x90, 0],
-        ]);
+        counts.borrow_mut().responses = VecDeque::from([vec![0x61, 0x21], vec![0x62, 0, 0x90, 0]]);
         counts.borrow_mut().fail_close = true;
         assert_eq!(session.snapshot(), Err("channel_close_failed"));
         assert!(session.cleanup_failed);
         assert_eq!(session.disconnect(), Err("card_cleanup_unknown"));
         drop(session);
-        assert_eq!((counts.borrow().transmissions, counts.borrow().closes), (4, 1));
+        assert_eq!(
+            (counts.borrow().transmissions, counts.borrow().closes),
+            (4, 1)
+        );
     }
 
     #[test]
@@ -872,7 +1108,10 @@ mod tests {
         let (mut session, counts) = setup();
         counts.borrow_mut().responses = VecDeque::from(vec![vec![0x61, 0]; 32]);
         assert_eq!(session.snapshot(), Err("snapshot_continuation_limit"));
-        assert_eq!((counts.borrow().transmissions, counts.borrow().closes), (32, 1));
+        assert_eq!(
+            (counts.borrow().transmissions, counts.borrow().closes),
+            (32, 1)
+        );
         let (mut session, counts) = setup();
         counts.borrow_mut().responses.push_back(vec![0x6c, 0x21]);
         assert_eq!(session.snapshot(), Err("snapshot_card_status_error"));

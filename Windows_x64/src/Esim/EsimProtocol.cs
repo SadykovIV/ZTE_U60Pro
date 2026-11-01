@@ -44,7 +44,19 @@ public static class EsimProtocol
                     await WriteAsync(input, new { type = "http_response", id, rcode = response.Code, rx = response.Hex }, ct); break;
                 case "result":
                     bool ok = root.GetProperty("ok").GetBoolean();
+                    if (ok && request.Operation == "discover")
+                    {
+                        if (root.TryGetProperty("target", out _) || root.TryGetProperty("snapshot", out _) || root.TryGetProperty("card", out _) || root.TryGetProperty("operations", out _) || root.TryGetProperty("error", out _) || root.TryGetProperty("component_error", out _) || root.TryGetProperty("modem_verified", out _) || root.TryGetProperty("radio_restored", out _) || root.GetProperty("changed").GetBoolean() || root.GetProperty("notifications_pending").GetBoolean()) throw new EsimException();
+                        bool complete = root.GetProperty("complete").GetBoolean();
+                        var targets = root.GetProperty("targets").EnumerateArray().Select(EsimDiscoveredTarget.Parse).ToArray();
+                        if (targets.Length != 2 || targets.Select(x => x.Target).Distinct().Count() != targets.Length || complete && targets.Any(x => !x.ConclusivelyRead)) throw new EsimException();
+                        result = new(true, null, false, false, Targets: targets, Complete: complete);
+                        break;
+                    }
+                    string? target = root.TryGetProperty("target", out var targetField) ? targetField.GetString() : null;
+                    if (ok && (target != request.Target || !EsimTargets.Valid(target) || root.TryGetProperty("targets", out _) || root.TryGetProperty("complete", out _))) throw new EsimException("target_mismatch");
                     var card = root.TryGetProperty("card", out var rawCard) ? EsimCardStatus.Parse(rawCard, ok) : null;
+                    if (!ok && card is { Kind: "unknown", CleanupConfirmed: true }) throw new EsimException();
                     bool hasComponentError = root.TryGetProperty("component_error", out var componentField);
                     var componentError = EsimDiagnostics.SafeComponentError(hasComponentError && componentField.ValueKind == JsonValueKind.String ? componentField.GetString() : null);
                     if (ok && hasComponentError) throw new EsimException();
@@ -56,23 +68,26 @@ public static class EsimProtocol
                         snapshot = raw.Deserialize<EsimSnapshot>() ?? throw new EsimException();
                         EsimValidation.Snapshot(snapshot);
                     }
+                    IReadOnlyList<string>? operations = ok ? EsimValidation.ParseOperations(root.GetProperty("operations"), card?.Kind == "euicc_confirmed") : null;
+                    bool? networkSelected = root.TryGetProperty("network_selected", out var networkField) && networkField.ValueKind != JsonValueKind.Null ? networkField.GetBoolean() : null;
                     if (ok)
                     {
+                        if (!root.TryGetProperty("network_selected", out _) || operations!.Contains("enable") && networkSelected != true) throw new EsimException();
                         if (card?.Kind == "ordinary_sim")
                         {
                             if (root.TryGetProperty("snapshot", out _) || root.TryGetProperty("error", out _) || request.Operation != "list" || modemVerified is not null || radioRestored is not null || root.GetProperty("changed").GetBoolean() || root.GetProperty("notifications_pending").GetBoolean()) throw new EsimException();
-                            result = new(true, null, false, false, Card: card);
+                            result = new(true, null, false, false, Card: card, Target: target, Operations: operations, NetworkSelected: networkSelected);
                             break;
                         }
-                        if (snapshot is null) throw new EsimException();
+                        if (snapshot is null || card?.Kind != "euicc_confirmed") throw new EsimException();
                         EsimValidation.Postcondition(request, snapshot);
                         var changed = root.GetProperty("changed").GetBoolean();
                         bool expectedChange = request.Operation != "list" && (request.Operation != "enable" || request.ExpectedSnapshot!.Profiles.Single(p => p.Iccid == request.Iccid).State != "enabled");
                         if (changed != expectedChange || request.Operation == "enable" && (modemVerified != true || radioRestored != true)) throw new EsimException();
-                        result = new(true, snapshot, changed, root.GetProperty("notifications_pending").GetBoolean(), ModemVerified: modemVerified, RadioRestored: radioRestored, Card: card);
+                        result = new(true, snapshot, changed, root.GetProperty("notifications_pending").GetBoolean(), ModemVerified: modemVerified, RadioRestored: radioRestored, Card: card, Target: target, Operations: operations, NetworkSelected: networkSelected);
                     }
                     else result = new(false, snapshot, false, false,
-                        EsimDiagnostics.SafeError(root.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.String ? error.GetString() : null), modemVerified, radioRestored, componentError, card);
+                        EsimDiagnostics.SafeError(root.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.String ? error.GetString() : null), modemVerified, radioRestored, componentError, card, Target: target);
                     break;
                 default: throw new EsimException();
             }

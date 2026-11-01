@@ -193,4 +193,34 @@ class SupportDependenciesTests(unittest.TestCase):
         with self.assertRaises(SystemExit): self.paths()
 
 
+class UnifiedReleaseMetadataTests(unittest.TestCase):
+    def test_standard_names_are_stable_for_public_desktop_downloads(self):
+        self.assertEqual(NS['desktop_archive_names']('1.29'), {
+            'macOS': 'ZTE-U60Pro-Manager-1.29-macOS-arm64.zip',
+            'Windows': 'ZTE-U60Pro-Manager-1.29-Windows-x64-portable.zip'})
+        for version in ['1.29/internal', '../1.29', '1.29-local', '', 'v1.29']:
+            with self.assertRaises(ValueError): NS['desktop_archive_names'](version)
+
+    def test_both_targets_and_stock_card_limit_are_explicit(self):
+        m = NS['sim_support_metadata']()
+        self.assertEqual(m['protocol'], 2)
+        self.assertEqual(m['targets'], [
+            {'id':'removable-euicc-slot1', 'physicalSlot':1, 'logicalSlot':1},
+            {'id':'internal-euicc-slot2', 'physicalSlot':2, 'logicalSlot':2}])
+        self.assertTrue(m['mutationsRequireExplicitTarget'])
+        for key in ['automaticSlotSwitching', 'simRemapping', 'dualActiveClaimed',
+                    'builtInZteProfileManagementSupported']:
+            self.assertIs(m[key], False)
+
+    def test_previous_live_checks_do_not_become_current_release_validation(self):
+        m = NS['sim_support_metadata']()
+        self.assertIs(m['hardwareTestedInThisRelease'], False)
+        self.assertIs(m['profileMutationsHardwareTestedInThisRelease'], False)
+        internal = m['historicalValidation'][1]
+        self.assertEqual(internal['release'], '1.28-local')
+        self.assertIs(internal['physicalSimDataVerified'], True)
+        self.assertIs(internal['internalEuiccInternetVerified'], False)
+        self.assertIs(internal['profileMutationsVerified'], False)
+
+
 if __name__=='__main__': unittest.main(verbosity=2)

@@ -65,6 +65,9 @@ class BootstrapSnapshotTests(unittest.TestCase):
         project = Path(__file__).resolve().parents[2]
         self.path.write_bytes(self.baseline)
         inputs = ['tools/build.py', 'tools/test_build_pins.py', 'tools/check_cleanup_compatibility.py',
+                  'ModemAgent/launcher/tests/test_esim_model.py', 'ModemAgent/launcher/tests/test_ui_interaction.py',
+                  'ModemAgent/launcher/tests/test_network_name.py', 'tools/removable-euicc/device/src/target.rs',
+                  'tools/removable-euicc/device/tests/stdio_headers.rs', 'docs/UNIFIED-SIM.md',
                   'MacIMEI/Tests/test_agent_absence_proof.py','MacIMEI/Sources/AccessAgentReuse.swift','Windows_x64/src/Core/AccessAgentReusePolicy.cs',
                   'MacIMEI/Tests/test_component_cleanup.py', 'MacIMEI/Tests/test_onboarding_install.py',
                   'MacIMEI/Tests/test_onboarding_startup.py', 'MacIMEI/Tests/agent_installation_test.py',
@@ -124,6 +127,7 @@ class AgentUpgradeRetentionTests(unittest.TestCase):
             self.put(self.win / relative, '\n'.join('const string '+key+' = "'+self.historical+'";' for key in fields))
         vpn_cs = self.win/'src/Features/VpnFeatures.cs'
         vpn_cs.write_text(vpn_cs.read_text() + '\nprivate static readonly FrozenSet<string> SupportedVpnStatusHashes = new[] { VpnHelperHash, \"' + self.first + '\", }.ToFrozenSet(StringComparer.Ordinal);\n')
+        self.put(self.root / 'ModemAgent/agent/Cargo.toml', '[package]\nname = "zte-agent"\nversion = "2.11.0"\n')
         self.put(self.root / 'ModemAgent/target/aarch64-unknown-linux-musl/release/zte-vpnctl', 'synthetic controller')
         self.put(self.root / 'ModemAgent/vpnctl/THIRD-PARTY.txt', 'synthetic license')
         self.put(self.root / 'ModemAgent/web-app/dist/index.html', 'synthetic dashboard')
@@ -185,6 +189,18 @@ class AgentUpgradeRetentionTests(unittest.TestCase):
         script=(self.mac/'SSHAccounts/access-services.sh').read_text()
         body=script.split('# BEGIN_REVIEWED_AGENT_HASHES\n')[1].split('# END_REVIEWED_AGENT_HASHES')[0]
         return set(re.findall(r'[0-9a-f]{64}',body))
+
+    def test_generated_version_and_target_metadata_follow_cargo(self):
+        self.put(self.root / 'ModemAgent/agent/Cargo.toml', '[package]\nname="zte-agent"\nversion="2.12.3-test.4"\n')
+        self.generate(b'synthetic version fixture')
+        self.assertIn('static let version = "2.12.3-test.4"', self.swift.read_text())
+        release = json.loads((self.mac / 'AgentDashboard/release.json').read_text())
+        self.assertEqual(release['version'], '2.12.3-test.4')
+        self.assertEqual(release['esim_protocol'], 2)
+        self.assertEqual(release['esim_targets'], ['removable-euicc-slot1', 'internal-euicc-slot2'])
+        self.assertNotIn('esim_target', release)
+        for app in [self.mac, self.win / 'Resources']:
+            self.assertEqual(json.loads((app / 'Onboarding/provenance.json').read_text())['local_agent_version'], '2.12.3-test.4')
 
     def test_two_generations_retain_source_pins_and_sync_exactly(self):
         second=self.generate(b'synthetic generation two')

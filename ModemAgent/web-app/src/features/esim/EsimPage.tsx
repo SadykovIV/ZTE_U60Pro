@@ -3,14 +3,16 @@ import { useI18n } from '../../i18n'
 import { Button, Field, Input, Select } from '../../ui/controls'
 import { Card, Chip } from '../../ui/primitives'
 import { confirm } from '../../ui/feedback'
-import { capabilities, runOperation } from './api'
-import { activation, cardMessage, compose, EsimOperationError, mask, profileName, profileNickname, renameRequest, unknownCard, type CardStatus, type EsimRequest, type Snapshot } from './model'
+import { capabilities, discover, runOperation } from './api'
+import { activation, automaticTarget, targetLabel, type Target, type DiscoveredTarget, cardMessage, compose, EsimOperationError, mask, profileName, profileNickname, renameRequest, unknownCard, type CardStatus, type EsimRequest, type Snapshot } from './model'
 import { decodeImage } from './qr'
 import { stageMessage } from './journal'
 import { failureMessage, safeEsimErrors } from './errors'
 
 export default function EsimPage() {
   const { t } = useI18n()
+  const [foundTargets, setFoundTargets] = useState<DiscoveredTarget[]>([])
+  const [target, setTarget] = useState<Target | null>(null)
   const [operations, setOperations] = useState<string[]>([])
   const [ready, setReady] = useState(false), [busy, setBusy] = useState(false)
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null), [selected, setSelected] = useState('')
@@ -32,12 +34,12 @@ export default function EsimPage() {
     capabilities().then(value => {
       const operations = value.operations
       if (!controller.signal.aborted) {
-        const supported = value.protocol === 1 && value.target === 'internal-euicc-slot2' && Array.isArray(operations) && operations.includes('list')
-        setOperations(supported ? operations.filter((op: unknown): op is string => typeof op === 'string' && ['list', 'download', 'enable', 'delete', 'rename'].includes(op)) : [])
+        const supported = value.protocol === 2 && value.target_mode === 'explicit' && Array.isArray(operations) && operations.includes('list')
+        setOperations([])
         setReady(supported)
-        if (!supported) { setFailed(true); setMessage('Install the Internal eUICC agent and refresh this page.') }
+        if (!supported) { setFailed(true); setMessage('Install the current agent and refresh this page.') }
       }
-    }).catch(() => { if (!controller.signal.aborted) { setFailed(true); setMessage('Install the Internal eUICC agent and refresh this page.') } })
+    }).catch(() => { if (!controller.signal.aborted) { setFailed(true); setMessage('Install the current agent and refresh this page.') } })
     const leave = (e: BeforeUnloadEvent) => { if (working.current) { e.preventDefault(); e.returnValue = '' } }
     window.addEventListener('beforeunload', leave)
     return () => { controller.abort(); window.removeEventListener('beforeunload', leave) }
@@ -45,7 +47,7 @@ export default function EsimPage() {
   function clearInputs() { inputRevision.current++; setAddress(''); setMatching(''); setLpa(''); setConfirmation('') }
   async function run(request: EsimRequest) {
     if (working.current || !ready || !lifetime.current || lifetime.current.signal.aborted) return
-    working.current = true; setBusy(true); setFailed(false); clearInputs(); setRenaming(false); setNickname(''); setSnapshot(null); setCard(null); setMessage('Checking the SIM card and profiles…')
+    working.current = true; setBusy(true); setFailed(false); clearInputs(); setRenaming(false); setNickname(''); setOperations([]); setSnapshot(null); setCard(null); setMessage('Checking the SIM card and profiles…')
     const started = Date.now()
     const append = (text: string) => setJournal(lines => [...lines, text].slice(-2000))
     append(`${new Date().toISOString()} · ${request.operation} · start`)
@@ -53,18 +55,42 @@ export default function EsimPage() {
       const result = await runOperation(request, (stage, line) => { if (!lifetime.current?.signal.aborted) { setMessage(stageMessage(stage)); if (line) append(line) } }, lifetime.current.signal)
       if (lifetime.current.signal.aborted) return
       setSnapshot(result.snapshot)
+      setOperations(result.operations)
       setCard(result.card)
       append(`${((Date.now()-started)/1000).toFixed(1)}s · ${request.operation} · verified${result.pending ? ' · notifications_pending' : ''}`)
       setSelected(result.snapshot?.profiles.some(p => p.iccid === selected) ? selected : '')
-      setMessage(result.card.kind === 'ordinary_sim' ? 'Ordinary SIM: eSIM management is unavailable.' : result.pending ? 'Profiles verified. Operator notifications are pending; refresh before another operation.' : request.operation === 'list' ? 'Profiles read from the internal eUICC.' : request.operation === 'rename' ? 'The profile name was saved and verified on the card.' : request.operation === 'enable' ? 'The profile is active, the SIM was reread and normal radio mode was verified. Check mobile network registration separately.' : 'The profile change was verified on the card. Check mobile network registration separately.')
+      setMessage(result.card.kind === 'ordinary_sim' ? 'Ordinary SIM: eSIM management is unavailable.' : result.pending ? 'Profiles verified. Operator notifications are pending; refresh before another operation.' : request.operation === 'list' ? 'Profiles read from the selected eUICC.' : request.operation === 'rename' ? 'The profile name was saved and verified on the card.' : request.operation === 'enable' ? 'The profile is active, the SIM was reread and normal radio mode was verified. Check mobile network registration separately.' : 'The profile change was verified on the card. Check mobile network registration separately.')
     } catch (error) {
       if (!lifetime.current?.signal.aborted) {
         const code = error instanceof Error && safeEsimErrors.has(error.message) ? error.message : ''
         append(`${((Date.now()-started)/1000).toFixed(1)}s · ${request.operation} · unconfirmed${code ? ` · error=${code}` : ''}`)
-        setSnapshot(null); setSelected(''); setCard(error instanceof EsimOperationError ? error.card : unknownCard()); setFailed(true)
+        setOperations([]); setSnapshot(null); setSelected(''); setCard(error instanceof EsimOperationError ? error.card : unknownCard()); setFailed(true)
         setMessage(failureMessage(code))
       }
     } finally { working.current = false; if (!lifetime.current?.signal.aborted) setBusy(false) }
+  }
+  async function checkCards() {
+    if (working.current || !ready || !lifetime.current || lifetime.current.signal.aborted) return
+    working.current = true; setBusy(true); setFailed(false); clearInputs(); setRenaming(false); setSnapshot(null); setCard(null); setSelected(''); setOperations([]); setTarget(null); setFoundTargets([]); setMessage('Checking the SIM card and profiles…')
+    try {
+      const result = await discover(stage => setMessage(stageMessage(stage)), lifetime.current.signal)
+      if (lifetime.current.signal.aborted) return
+      setFoundTargets(result.targets)
+      const sole = automaticTarget(result)
+      if (sole) acceptDiscoveredTarget(result.targets.find(v => v.target === sole)!)
+      else setMessage(result.targets.some(v => v.snapshot) ? 'Choose the eUICC to manage.' : 'No manageable eUICC was confirmed. You can continue using the modem SIM normally.')
+    } catch {
+      if (!lifetime.current.signal.aborted) { setFailed(true); setMessage(failureMessage('')); setCard(unknownCard()) }
+    } finally { working.current = false; if (!lifetime.current?.signal.aborted) setBusy(false) }
+  }
+  function acceptDiscoveredTarget(value: DiscoveredTarget) {
+    inputRevision.current++; setTarget(value.target); setSnapshot(value.snapshot); setCard(value.card); setOperations(value.operations); setSelected(''); setRenaming(false); setNickname(''); clearInputs()
+    setMessage(value.snapshot ? 'Profiles read from the selected eUICC.' : cardMessage(value.card, false))
+  }
+  async function chooseTarget(value: Target) {
+    if (working.current || busy || decoding) return
+    clearInputs(); setTarget(value); setOperations([]); setSelected(''); setRenaming(false); setNickname('')
+    await run({ protocol: 2, operation: 'list', target: value })
   }
   function startRename() {
     if (!profile || busy || working.current || decoding || !operations.includes('rename')) return
@@ -79,7 +105,7 @@ export default function EsimPage() {
     const title = operation === 'download' ? t('Install eSIM profile?') : operation === 'enable' ? t(profile?.enabled ? 'Reread the active SIM?' : 'Make this profile active?') : t('Delete this profile?')
     const body = operation === 'download' ? t('The profile will be installed disabled. The modem needs internet access. The code may be single-use.') :
       `${profile ? profileName(profile) + ' · ' + mask(profile.iccid) : ''}\n${operation === 'delete' ? t('Deletion cannot be undone. The operator may require a new activation code.') : t('The modem will enter flight mode, reread the SIM and restore normal radio mode. Mobile connectivity will be interrupted.')}`
-    const request: EsimRequest = { protocol: 1, operation, expected_snapshot: snapshot }
+    const request: EsimRequest = { protocol: 2, target: snapshot.target, operation, expected_snapshot: snapshot }
     if (operation === 'download') { if (!code || !confirmationValid) return; request.activation_code = code; if (confirmation) request.confirmation_code = confirmation }
     else { if (!profile || profile.state === 'unknown' || operation === 'delete' && profile.state !== 'disabled') return; request.iccid = profile.iccid; if (operation === 'delete') request.confirm_delete = true }
     const revision = inputRevision.current
@@ -100,11 +126,15 @@ export default function EsimPage() {
   }
   return <div className="space-y-4">
     <div><h1 className="text-xl font-semibold text-ink">{t('eSIM')}</h1><p className="mt-1 text-sm text-ink2">{t('SIM card and eSIM profiles')}</p></div>
-    <Card title={t('eUICC in the internal eSIM position')}>
-      <p className="text-sm text-ink2">{t('For a replacement eUICC installed in the internal eSIM position. The physical SIM slot remains available. Select eSIM in SIM settings before switching a profile. This hardware modification has not been verified.')}</p>
+    <Card title={t('SIM and eUICC support')}>
+      <p className="text-sm text-ink2">{t('Detects manageable eUICC cards in the physical SIM slot or in place of the internal eSIM. The other SIM remains available. Stock operator eSIM provisioning is not supported.')}</p>
       <p className="mt-2 text-sm text-ink2">{t('Web downloads use the modem internet connection. If the card is empty and the modem is offline, use the macOS or Windows app with computer internet access.')}</p>
     </Card>
-    <Card title={t('Profiles on the card')} action={<Button onClick={() => void run({ protocol: 1, operation: 'list' })} disabled={!ready || busy || decoding} loading={busy}>{t('Check card and profiles')}</Button>}>
+    <Card title={t('Profiles on the card')} action={<Button onClick={() => void checkCards()} disabled={!ready || busy || decoding} loading={busy}>{t('Check card and profiles')}</Button>}>
+      {foundTargets.length > 0 && <div className="mb-3 flex flex-wrap gap-2" aria-label={t('Choose the eUICC to manage.')}>
+        {foundTargets.map(v => <Button key={v.target} variant={target === v.target ? 'primary' : 'subtle'} disabled={busy || decoding || !v.snapshot} onClick={() => void chooseTarget(v.target)}>{t(targetLabel(v.target))}</Button>)}
+      </div>}
+      {snapshot && !operations.includes('enable') && <p className="mb-3 text-sm text-ink2">{t('Profile switching requires this SIM to be selected for mobile service and a supported firmware. Reading profiles remains available.')}</p>}
       <div role="status" className={`mb-3 rounded-lg border p-3 text-sm ${card?.kind === 'euicc_confirmed' && !busy ? 'border-line/10 text-ink' : 'border-line/10 text-ink2'}`}>
         <p>{t(cardMessage(card, busy))}</p>
         {(card?.kind === 'unknown' || !card && !busy) && <p className="mt-2 text-xs">{t('An ordinary operator SIM cannot store downloaded eSIM profiles. A failed check may also mean a busy card, restricted modem access or a communication error.')}</p>}

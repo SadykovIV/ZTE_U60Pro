@@ -103,6 +103,11 @@ import AppKit
     @Published var agentInstallationStatus: AgentInstallationStatus?
     @Published var displayInspection: ModemDisplayInspection?
     @Published var displayError = ""
+    @Published var esimTargets: [EsimDiscoveredTarget] = []
+    @Published var esimSelectedTarget: EsimTarget?
+    @Published var esimAllowedOperations: [String] = []
+    @Published var esimNetworkSelected: Bool?
+    @Published var esimDiscoveryComplete = false
     @Published var esimSnapshot: EsimSnapshot?
     @Published var esimCard: EsimCardCheck?
     @Published var esimSelectedICCID: String?
@@ -191,7 +196,7 @@ import AppKit
     }
     init() {
         let esimFixture = CommandLine.arguments.contains("--esim-ui-fixture")
-        storage = esimFixture ? FileManager.default.temporaryDirectory.appendingPathComponent("zte-esim-ui-preview-" + UUID().uuidString) : FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/ZTE U60Pro Internal eUICC")
+        storage = esimFixture ? FileManager.default.temporaryDirectory.appendingPathComponent("zte-esim-ui-preview-" + UUID().uuidString) : FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/ZTE IMEI Studio")
         resources = Bundle.main.resourceURL ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("MacIMEI/Resources")
         keyPath = storage.appendingPathComponent("SSH/id_ed25519").path
         knownHostsPath = storage.appendingPathComponent("SSH/known_hosts").path

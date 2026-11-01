@@ -7,9 +7,9 @@ private func rejects(_ body: () throws -> Void) throws { do { try body() } catch
 private func profile(_ id: String = "890000000000000001", state: String = "disabled", aid: String? = "A0000000000000000000000000000001") -> EsimProfile {
     EsimProfile(iccid: id, isdpAid: aid, state: state, enabled: state == "enabled", nickname: nil, serviceProvider: "Fixture", name: nil)
 }
-private func snapshot(_ profiles: [EsimProfile] = []) -> EsimSnapshot { EsimSnapshot(ok: true, eid: String(repeating: "1", count: 32), profiles: profiles) }
+private func snapshot(_ profiles: [EsimProfile] = []) -> EsimSnapshot { EsimSnapshot(ok: true, target: .removable, eid: String(repeating: "1", count: 32), profiles: profiles) }
 private func resultLine(_ s: EsimSnapshot, changed: Bool = false, modemVerified: Bool? = nil, radioRestored: Bool? = nil) throws -> Data {
-    var result: [String:Any] = ["type":"result", "ok":true, "snapshot":try JSONSerialization.jsonObject(with: JSONEncoder().encode(s)), "changed":changed, "notifications_pending":false]
+    var result: [String:Any] = ["type":"result", "ok":true, "target":s.target.rawValue, "operations":["list","download","enable","delete"], "network_selected":true, "card":["kind":"euicc_confirmed", "management":"available", "reason":"eid_and_profiles_read", "cleanup_confirmed":true], "snapshot":try JSONSerialization.jsonObject(with: JSONEncoder().encode(s)), "changed":changed, "notifications_pending":false]
     if let modemVerified { result["modem_verified"] = modemVerified }
     if let radioRestored { result["radio_restored"] = radioRestored }
     return try JSONSerialization.data(withJSONObject:result)
@@ -25,6 +25,53 @@ private func resultLine(_ s: EsimSnapshot, changed: Bool = false, modemVerified:
         }
         var passed = 0
         func test(_ name: String, _ body: () throws -> Void) throws { try body(); passed += 1; print("PASS " + name) }
+        try test("protocol 2 never infers a mutation target") {
+            try rejects { _ = try EsimOperation.list.request(snapshot: nil, target: nil) }
+            try rejects { _ = try EsimOperation.delete("890000000000000001").request(snapshot: snapshot([profile()]), target: nil) }
+            try rejects { _ = try EsimOperation.delete("890000000000000001").request(snapshot: snapshot([profile()]), target: .internalCard) }
+            try rejects { _ = try EsimOperation.discover.request(snapshot: nil, target: .removable) }
+            let discover = try JSONSerialization.jsonObject(with: EsimOperation.discover.request(snapshot: nil, target: nil)) as! [String:Any]
+            try check(discover.count == 2 && discover["protocol"] as? Int == 2, "discovery has no implicit target")
+            let list = try JSONSerialization.jsonObject(with: EsimOperation.list.request(snapshot: nil, target: .internalCard)) as! [String:Any]
+            try check(list["target"] as? String == EsimTarget.internalCard.rawValue, "list carries chosen target")
+            var d = EsimRPCDecoder(); _ = try d.consume(resultLine(snapshot()))
+            try rejects { _ = try d.finish(exitCode: 0, operation: .list, before: nil, target: .internalCard) }
+            var wrongGrant = try JSONSerialization.jsonObject(with: resultLine(snapshot())) as! [String:Any]; wrongGrant["network_selected"] = false
+            try rejects { var d = EsimRPCDecoder(); _ = try d.consume(JSONSerialization.data(withJSONObject: wrongGrant)); _ = try d.finish(exitCode: 0, operation: .list, before: nil, target: .removable) }
+            var legacy = try JSONSerialization.jsonObject(with: resultLine(snapshot())) as! [String:Any]; legacy.removeValue(forKey: "target")
+            try rejects { var d = EsimRPCDecoder(); _ = try d.consume(JSONSerialization.data(withJSONObject: legacy)); _ = try d.finish(exitCode: 0, operation: .list, before: nil, target: .removable) }
+        }
+        try test("discovery binds both cards and never chooses an ambiguous inventory") {
+            func entry(_ target: EsimTarget, kind: String = "euicc_confirmed") throws -> [String:Any] {
+                let confirmed = kind == "euicc_confirmed"
+                var value: [String:Any] = ["target":target.rawValue,"card":["kind":kind,"management":confirmed ? "available" : "unavailable","reason":confirmed ? "eid_and_profiles_read" : "isdr_not_found","cleanup_confirmed":true],"network_selected":true,"operations":confirmed ? ["list","download","delete","enable","rename"] : []]
+                if confirmed { var current = snapshot([profile()]); current.target = target; value["snapshot"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(current)) }
+                return value
+            }
+            func parse(_ entries: [[String:Any]], complete: Bool = true) throws -> EsimRPCResult {
+                let wire: [String:Any] = ["type":"result","ok":true,"changed":false,"notifications_pending":false,"complete":complete,"targets":entries]
+                var decoder = EsimRPCDecoder(); _ = try decoder.consume(JSONSerialization.data(withJSONObject: wire))
+                return try decoder.finish(exitCode: 0, operation: .discover, before: nil, target: nil)
+            }
+            let removable = try entry(.removable), internalCard = try entry(.internalCard), ordinary = try entry(.internalCard, kind: "ordinary_sim")
+            let one = try parse([removable, ordinary]); try check(EsimValidation.automaticTarget(one.targets!, complete: one.complete!)?.target == .removable, "sole proven card selected")
+            let two = try parse([removable, internalCard]); try check(EsimValidation.automaticTarget(two.targets!, complete: true) == nil, "two cards require explicit choice even with same ICCID and EID")
+            let partial = try parse([removable, ordinary], complete: false); try check(EsimValidation.automaticTarget(partial.targets!, complete: false) == nil, "partial inventory cannot auto-select")
+            let none = try parse([try entry(.removable, kind: "ordinary_sim"), ordinary]); try check(EsimValidation.automaticTarget(none.targets!, complete: true) == nil, "ordinary SIM cannot grant writes")
+            try rejects { _ = try parse([removable]) }
+            try rejects { _ = try parse([removable, removable]) }
+            var wrong = removable; wrong["target"] = EsimTarget.internalCard.rawValue
+            try rejects { _ = try parse([wrong]) }
+            var unknown = ordinary; unknown["card"] = ["kind":"unknown","management":"unknown","reason":"read_failed","cleanup_confirmed":true]
+            try rejects { _ = try parse([removable, unknown]) }
+            _ = try parse([removable, unknown], complete: false)
+            var missingCleanup = unknown; missingCleanup["card"] = ["kind":"unknown","management":"unknown","reason":"read_failed","cleanup_confirmed":false]
+            try rejects { _ = try parse([removable, missingCleanup], complete: false) }
+            unknown["card"] = ["kind":"unknown","management":"unknown","reason":"cleanup_unknown","cleanup_confirmed":false]
+            try rejects { _ = try parse([removable, unknown], complete: false) }
+            var badPermission = removable; badPermission["network_selected"] = false
+            try rejects { _ = try parse([badPermission, ordinary]) }
+        }
         try test("empty and complete profile inventory") { try snapshot().validate(); try snapshot([profile()]).validate() }
         try test("duplicate ICCID and case folded AID rejected") {
             try rejects { try snapshot([profile(), profile()]).validate() }
@@ -38,19 +85,19 @@ private func resultLine(_ s: EsimSnapshot, changed: Bool = false, modemVerified:
         try test("LPA boundaries and confirmation validation") {
             try check(EsimValidation.activationCode("LPA:1$example.com$fixture") != nil,"valid code")
             for code in ["LPA:1$127.0.0.1$x","LPA:1$example.com$", "LPA:1$example.com$hello world", "LPA:1$example.com$" + String(repeating:"x", count:512)] { try check(EsimValidation.activationCode(code) == nil,"invalid accepted") }
-            for c in ["-x","has space","new\nline",String(repeating:"a",count:513)] { try rejects { _ = try EsimOperation.download("LPA:1$example.com$fixture",c).request(snapshot:snapshot()) } }
+            for c in ["-x","has space","new\nline",String(repeating:"a",count:513)] { try rejects { _ = try EsimOperation.download("LPA:1$example.com$fixture",c).request(snapshot:snapshot(), target: .removable) } }
         }
         try test("writes require fresh snapshot and exact target") {
-            try rejects { _ = try EsimOperation.enable("890000000000000001").request(snapshot:nil) }
-            try rejects { _ = try EsimOperation.enable("890000000000000002").request(snapshot:snapshot([profile()])) }
-            try rejects { _ = try EsimOperation.delete("890000000000000001").request(snapshot:snapshot([profile(state:"unknown")])) }
-            try rejects { _ = try EsimOperation.delete("890000000000000001").request(snapshot:snapshot([profile(state:"enabled")])) }
+            try rejects { _ = try EsimOperation.enable("890000000000000001").request(snapshot:nil, target: .removable) }
+            try rejects { _ = try EsimOperation.enable("890000000000000002").request(snapshot:snapshot([profile()]), target: .removable) }
+            try rejects { _ = try EsimOperation.delete("890000000000000001").request(snapshot:snapshot([profile(state:"unknown")]), target: .removable) }
+            try rejects { _ = try EsimOperation.delete("890000000000000001").request(snapshot:snapshot([profile(state:"enabled")]), target: .removable) }
         }
         try test("manual SM-DP plus Matching ID forms exact request") {
             for address in ["example.com", " HTTPS://example.com/ ".lowercased(), "https://example.com:443/"] {
                 let code=EsimValidation.manualCode(address:address,matchingID:" fixture-ID ")
                 try check(code == "LPA:1$example.com$fixture-ID","manual normalization")
-                let data=try EsimOperation.download(code!,"").request(snapshot:snapshot())
+                let data=try EsimOperation.download(code!,"").request(snapshot:snapshot(), target: .removable)
                 let object=try JSONSerialization.jsonObject(with:data) as! [String:Any]
                 try check(object["activation_code"] as? String == code,"manual code unused")
             }
@@ -64,44 +111,44 @@ private func resultLine(_ s: EsimSnapshot, changed: Bool = false, modemVerified:
             }
         }
         try test("delete carries explicit confirmation") {
-            let data = try EsimOperation.delete("890000000000000001").request(snapshot:snapshot([profile()]))
+            let data = try EsimOperation.delete("890000000000000001").request(snapshot:snapshot([profile()]), target: .removable)
             let o = try JSONSerialization.jsonObject(with:data) as! [String:Any]
             try check(o["confirm_delete"] as? Bool == true,"confirmation omitted")
         }
         try test("RPC success requires final and zero exit") {
-            var d = EsimRPCDecoder(); try rejects { _ = try d.finish(exitCode:0,operation:.list,before:nil) }
-            _ = try d.consume(resultLine(snapshot())); _ = try d.finish(exitCode:0,operation:.list,before:nil)
-            try rejects { _ = try d.finish(exitCode:1,operation:.list,before:nil) }
+            var d = EsimRPCDecoder(); try rejects { _ = try d.finish(exitCode:0,operation:.list,before:nil, target: .removable) }
+            _ = try d.consume(resultLine(snapshot())); _ = try d.finish(exitCode:0,operation:.list,before:nil, target: .removable)
+            try rejects { _ = try d.finish(exitCode:1,operation:.list,before:nil, target: .removable) }
         }
         try test("card evidence requires complete verified eUICC state") {
             let base = try JSONSerialization.jsonObject(with: resultLine(snapshot())) as! [String: Any]
             var complete = base
             complete["card"] = ["kind":"euicc_confirmed", "management":"available", "reason":"eid_and_profiles_read", "cleanup_confirmed":true]
             var decoder = EsimRPCDecoder(); _ = try decoder.consume(JSONSerialization.data(withJSONObject: complete))
-            _ = try decoder.finish(exitCode:0, operation:.list, before:nil)
+            _ = try decoder.finish(exitCode:0, operation:.list, before:nil, target: .removable)
             for card: [String: Any] in [
                 ["kind":"ordinary_sim", "management":"available", "reason":"eid_and_profiles_read", "cleanup_confirmed":true],
                 ["kind":"euicc_confirmed", "management":"available", "reason":"eid_and_profiles_read", "cleanup_confirmed":false],
                 ["kind":"unknown", "management":"unknown", "reason":"read_failed", "cleanup_confirmed":false]
             ] {
                 var invalid = base; invalid["card"] = card
-                try rejects { var d = EsimRPCDecoder(); _ = try d.consume(JSONSerialization.data(withJSONObject: invalid)); _ = try d.finish(exitCode:0, operation:.list, before:nil) }
+                try rejects { var d = EsimRPCDecoder(); _ = try d.consume(JSONSerialization.data(withJSONObject: invalid)); _ = try d.finish(exitCode:0, operation:.list, before:nil, target: .removable) }
             }
         }
         try test("ordinary SIM is a successful read without profiles and never permits mutations") {
-            let ordinary: [String: Any] = ["type":"result", "ok":true, "card":["kind":"ordinary_sim", "management":"unavailable", "reason":"isdr_not_found", "cleanup_confirmed":true], "changed":false, "notifications_pending":false]
+            let ordinary: [String: Any] = ["type":"result", "ok":true, "target":EsimTarget.removable.rawValue, "operations":[], "network_selected":true, "card":["kind":"ordinary_sim", "management":"unavailable", "reason":"isdr_not_found", "cleanup_confirmed":true], "changed":false, "notifications_pending":false]
             let line = try JSONSerialization.data(withJSONObject: ordinary)
             var d = EsimRPCDecoder(); _ = try d.consume(line)
-            let result = try d.finish(exitCode:0, operation:.list, before:nil)
+            let result = try d.finish(exitCode:0, operation:.list, before:nil, target: .removable)
             try check(result.snapshot == nil && result.card?.kind == "ordinary_sim", "ordinary SIM was converted into eUICC")
-            try rejects { _ = try d.finish(exitCode:0, operation:.enable("890000000000000001"), before:snapshot([profile()])) }
+            try rejects { _ = try d.finish(exitCode:0, operation:.enable("890000000000000001"), before:snapshot([profile()]), target: .removable) }
             for (key, value): (String, Any) in [("changed", true), ("notifications_pending", true), ("snapshot", try JSONSerialization.jsonObject(with: JSONEncoder().encode(snapshot()))), ("error", "snapshot_failed"), ("component_error", "unrecognized_private_error"), ("snapshot", NSNull()), ("radio_restored", NSNull()), ("error", NSNull())] {
                 var invalid = ordinary; invalid[key] = value
-                try rejects { var bad = EsimRPCDecoder(); _ = try bad.consume(JSONSerialization.data(withJSONObject: invalid)); _ = try bad.finish(exitCode:0, operation:.list, before:nil) }
+                try rejects { var bad = EsimRPCDecoder(); _ = try bad.consume(JSONSerialization.data(withJSONObject: invalid)); _ = try bad.finish(exitCode:0, operation:.list, before:nil, target: .removable) }
             }
             for (key, value): (String, Any) in [("cleanup_confirmed", false), ("reason", "read_failed"), ("management", "available")] {
                 var invalid = ordinary; var card = invalid["card"] as! [String: Any]; card[key] = value; invalid["card"] = card
-                try rejects { var bad = EsimRPCDecoder(); _ = try bad.consume(JSONSerialization.data(withJSONObject: invalid)); _ = try bad.finish(exitCode:0, operation:.list, before:nil) }
+                try rejects { var bad = EsimRPCDecoder(); _ = try bad.consume(JSONSerialization.data(withJSONObject: invalid)); _ = try bad.finish(exitCode:0, operation:.list, before:nil, target: .removable) }
             }
         }
         try test("card reading has no dependency on operator certificates") {
@@ -127,7 +174,7 @@ private func resultLine(_ s: EsimSnapshot, changed: Bool = false, modemVerified:
         }
         try test("failed final never authorizes writes") {
             var d=EsimRPCDecoder(); _ = try d.consume(Data(#"{"type":"result","ok":false,"error":"private-fixture"}"#.utf8))
-            try rejects { _ = try d.finish(exitCode:0,operation:.list,before:nil) }
+            try rejects { _ = try d.finish(exitCode:0,operation:.list,before:nil, target: .removable) }
         }
         try test("legacy progress and cleanup telemetry sequence") {
             var d = EsimRPCDecoder()
@@ -160,12 +207,12 @@ private func resultLine(_ s: EsimSnapshot, changed: Bool = false, modemVerified:
             for (raw, expected) in [("lpac_failed", "lpac_failed"), ("LPA:1$example.com$synthetic-secret", "unrecognized_backend_error")] {
                 var d = EsimRPCDecoder()
                 _ = try d.consume(JSONSerialization.data(withJSONObject:["type":"result","ok":false,"error":raw]))
-                do { _ = try d.finish(exitCode:0,operation:.list,before:nil); throw TestError.failed("failed result accepted") }
+                do { _ = try d.finish(exitCode:0,operation:.list,before:nil, target: .removable); throw TestError.failed("failed result accepted") }
                 catch let failure as EsimFailure {
                     try check(EsimLog.failureCode(failure) == expected,"unsafe final error")
                     try check(!failure.localizedDescription.contains("synthetic-secret"),"private UI error")
                 }
-                try rejects { _ = try d.finish(exitCode:1,operation:.list,before:nil) }
+                try rejects { _ = try d.finish(exitCode:1,operation:.list,before:nil, target: .removable) }
             }
         }
         try test("HTTP ids unique positive and forbidden during list") {
@@ -175,24 +222,24 @@ private func resultLine(_ s: EsimSnapshot, changed: Bool = false, modemVerified:
             var zero=EsimRPCDecoder();try rejects {_ = try zero.consume(Data(#"{"type":"http","id":0,"payload":{}}"#.utf8))}
         }
         try test("download must add exactly one disabled profile") {
-            var d=EsimRPCDecoder(); _ = try d.consume(resultLine(snapshot([profile()]),changed:true)); _ = try d.finish(exitCode:0,operation:.download("LPA:1$example.com$x",""),before:snapshot())
-            var bad=EsimRPCDecoder(); _ = try bad.consume(resultLine(snapshot([profile(state:"enabled")]),changed:true)); try rejects { _ = try bad.finish(exitCode:0,operation:.download("LPA:1$example.com$x",""),before:snapshot()) }
+            var d=EsimRPCDecoder(); _ = try d.consume(resultLine(snapshot([profile()]),changed:true)); _ = try d.finish(exitCode:0,operation:.download("LPA:1$example.com$x",""),before:snapshot(), target: .removable)
+            var bad=EsimRPCDecoder(); _ = try bad.consume(resultLine(snapshot([profile(state:"enabled")]),changed:true)); try rejects { _ = try bad.finish(exitCode:0,operation:.download("LPA:1$example.com$x",""),before:snapshot(), target: .removable) }
         }
         try test("enable verifies target and preserves inventory") {
             let before=snapshot([profile(),profile("890000000000000002",state:"enabled",aid:nil)])
-            var d=EsimRPCDecoder(); _ = try d.consume(resultLine(snapshot([profile(state:"enabled"),profile("890000000000000002",aid:nil)]),changed:true,modemVerified:true,radioRestored:true)); _ = try d.finish(exitCode:0,operation:.enable("890000000000000001"),before:before)
-            var bad=EsimRPCDecoder(); _ = try bad.consume(resultLine(snapshot([profile(state:"enabled")]),changed:true)); try rejects { _ = try bad.finish(exitCode:0,operation:.enable("890000000000000001"),before:before) }
+            var d=EsimRPCDecoder(); _ = try d.consume(resultLine(snapshot([profile(state:"enabled"),profile("890000000000000002",aid:nil)]),changed:true,modemVerified:true,radioRestored:true)); _ = try d.finish(exitCode:0,operation:.enable("890000000000000001"),before:before, target: .removable)
+            var bad=EsimRPCDecoder(); _ = try bad.consume(resultLine(snapshot([profile(state:"enabled")]),changed:true)); try rejects { _ = try bad.finish(exitCode:0,operation:.enable("890000000000000001"),before:before, target: .removable) }
         }
         try test("enable requires modem readback and restored radio after card activation") {
             let before=snapshot([profile()]), after=snapshot([profile(state:"enabled")])
             for (modem,radio): (Bool?,Bool?) in [(nil,nil),(true,nil),(nil,true),(false,true),(true,false)] {
                 var d=EsimRPCDecoder();_ = try d.consume(resultLine(after,changed:true,modemVerified:modem,radioRestored:radio))
-                try rejects { _ = try d.finish(exitCode:0,operation:.enable("890000000000000001"),before:before) }
+                try rejects { _ = try d.finish(exitCode:0,operation:.enable("890000000000000001"),before:before, target: .removable) }
             }
-            let reread = try JSONSerialization.jsonObject(with: EsimOperation.enable("890000000000000001").request(snapshot: after)) as! [String:Any]
+            let reread = try JSONSerialization.jsonObject(with: EsimOperation.enable("890000000000000001").request(snapshot: after, target: .removable)) as! [String:Any]
             try check(reread["operation"] as? String == "enable" && reread["iccid"] as? String == "890000000000000001" && reread["expected_snapshot"] != nil, "active reread changed operation or lost snapshot")
             var already=EsimRPCDecoder();_ = try already.consume(resultLine(after,changed:false,modemVerified:true,radioRestored:true))
-            _ = try already.finish(exitCode:0,operation:.enable("890000000000000001"),before:after)
+            _ = try already.finish(exitCode:0,operation:.enable("890000000000000001"),before:after, target: .removable)
         }
         try test("radio progress and fixed recovery failure preserve safe diagnostics") {
             for stage in ["radio_offline","radio_online","reading_modem"] {
@@ -208,20 +255,20 @@ private func resultLine(_ s: EsimSnapshot, changed: Bool = false, modemVerified:
             var decoder = EsimRPCDecoder()
             _ = try decoder.consume(JSONSerialization.data(withJSONObject: ["type": "result", "ok": false, "error": "esim_slot_not_selected"]))
             do {
-                _ = try decoder.finish(exitCode: 1, operation: .enable("890000000000000001"), before: snapshot([profile()]))
+                _ = try decoder.finish(exitCode: 1, operation: .enable("890000000000000001"), before: snapshot([profile()]), target: .removable)
                 throw TestError.failed("selection refusal accepted")
             } catch let failure as EsimFailure {
                 guard case .backend("esim_slot_not_selected") = failure else { throw failure }
                 let message = failure.localizedDescription
-                try check(message.contains("выберите eSIM") && message.contains("автоматически не переключался"), "selection recovery omitted")
+                try check(message.contains("выберите соответствующую SIM-карту") && message.contains("автоматически не переключалась"), "selection recovery omitted")
                 UserDefaults.standard.setVolatileDomain([L10n.preferenceKey: "en"], forName: UserDefaults.argumentDomain)
-                try check(L10n.text(message).contains("select eSIM"), "selection recovery is not translated")
+                try check(L10n.text(message).contains("select the corresponding SIM"), "selection recovery is not translated")
                 UserDefaults.standard.removeVolatileDomain(forName: UserDefaults.argumentDomain)
             }
         }
         try test("EID change invalidates mutation result") {
             var after=snapshot([profile()]);after.eid=String(repeating:"2",count:32)
-            var d=EsimRPCDecoder();_ = try d.consume(resultLine(after,changed:true));try rejects {_ = try d.finish(exitCode:0,operation:.download("LPA:1$example.com$x",""),before:snapshot())}
+            var d=EsimRPCDecoder();_ = try d.consume(resultLine(after,changed:true));try rejects {_ = try d.finish(exitCode:0,operation:.download("LPA:1$example.com$x",""),before:snapshot(), target: .removable)}
         }
         try test("HTTPS request restrictions and POST empty body") {
             let good:[String:Any] = ["url":"https://rsp.invigo.com/", "tx":"", "headers":["Content-Type: application/json"]]

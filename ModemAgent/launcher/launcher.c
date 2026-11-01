@@ -128,6 +128,7 @@ static void *profile_cards[VPN_LIST_ROWS],*profile_labels[VPN_LIST_ROWS],*profil
 static void *profiles_above,*profiles_below,*profiles_above_label,*profiles_below_label,*notice,*confirm,*confirm_title,*confirm_name,*confirm_hint,*confirm_yes,*confirm_no;
 static char rendered_profile_ids[MAX_PROFILES][37];
 static int rendered_profile_count=-1,rendered_profile_offset=-1,profile_scroll_bottom;
+static void *esim_target_buttons[2],*esim_target_labels[2];
 static void *esim_scope,*esim_cards[3],*esim_labels[3],*esim_marks[3],*esim_prev,*esim_next,*esim_prev_label,*esim_next_label,*esim_notice,*esim_refresh_label;
 static void *esim_confirm,*esim_confirm_title,*esim_confirm_name,*esim_confirm_hint,*esim_yes,*esim_no;
 static struct esim_snapshot esim_shown;static unsigned esim_generation=(unsigned)-1,esim_selected_generation;
@@ -201,11 +202,12 @@ static void clicked(void *event){
  }
  if(id>=60){
   if(esim_shown.busy)return;
-  if(id>=60&&id<63){int i=esim_offset+id-60;if(esim_shown.valid&&i<esim_shown.count){snprintf(esim_selected_id,sizeof esim_selected_id,"%s",esim_shown.profiles[i].iccid);snprintf(esim_selected_name,sizeof esim_selected_name,"%s",esim_shown.profiles[i].name);esim_selected_generation=esim_shown.generation;}}
+  if(id>=60&&id<63){int i=esim_offset+id-60;if(esim_shown.valid&&esim_shown.can_enable&&i<esim_shown.count){snprintf(esim_selected_id,sizeof esim_selected_id,"%s",esim_shown.profiles[i].iccid);snprintf(esim_selected_name,sizeof esim_selected_name,"%s",esim_shown.profiles[i].name);esim_selected_generation=esim_shown.generation;}}
   else if(id==70){esim_offset-=3;if(esim_offset<0)esim_offset=0;}
   else if(id==71&&esim_offset+3<esim_shown.count)esim_offset+=3;
   else if(id==80&&esim_selected_id[0]){if(!esim_enable(esim_selected_id,esim_selected_generation))esim_refresh();esim_selected_id[0]=0;}
   else if(id==81)esim_selected_id[0]=0;
+  else if(id==83||id==84){esim_selected_id[0]=0;esim_offset=0;esim_select_target((unsigned)(id-83));}
   else if(id==82){esim_selected_id[0]=0;esim_refresh();}
   esim_snapshot(&esim_shown);render();return;
  }
@@ -231,17 +233,23 @@ static const char *esim_stage(void){
 }
 static const char *sim_card_status(const struct esim_snapshot *s,int ru){
  if(s->busy)return ru?"Проверка SIM-карты...":"Checking SIM card...";
- if(s->valid)return ru?"Внутренняя eUICC подтверждена":"Internal eUICC confirmed";
+ if(s->valid)return !strcmp(s->target,"internal-euicc-slot2")?(ru?"Внутренняя eUICC":"Internal eUICC"):(ru?"eUICC в SIM-слоте":"eUICC in SIM slot");
+ if(s->discovered&&!s->error)return s->targets?(ru?"Выберите eUICC":"Choose an eUICC"):(ru?"eUICC не обнаружена":"No eUICC confirmed");
  if(s->error)return ru?"Тип SIM-карты не определён":"SIM card type unknown";
  if(s->ordinary)return ru?"Обычная SIM · eSIM недоступно":"Ordinary SIM · eSIM unavailable";
  return ru?"Проверьте SIM-карту":"Check the SIM card";
 }
 static void render_esim(void){
  text(titles[2],"SIM");text(esim_scope,sim_card_status(&esim_shown,tr_ru()));
+ for(unsigned i=0;i<2;i++){
+  flag(esim_target_buttons[i],HIDDEN,!(esim_shown.targets&(1u<<i)));flag(esim_target_buttons[i],CLICKABLE,!esim_shown.busy);
+  text(esim_target_labels[i],i?tr("Внутренняя","Internal"):tr("SIM-слот","SIM slot"));
+ }
+
  if(esim_offset>=esim_shown.count)esim_offset=0;
  for(int i=0;i<3;i++){
   int idx=esim_offset+i;flag(esim_cards[i],HIDDEN,!esim_shown.cached||idx>=esim_shown.count);
-  flag(esim_cards[i],CLICKABLE,esim_shown.valid&&!esim_shown.busy);
+  flag(esim_cards[i],CLICKABLE,esim_shown.valid&&esim_shown.can_enable&&!esim_shown.busy);
   if(idx<esim_shown.count){char name[1024],caption[1152];struct esim_profile *p=&esim_shown.profiles[idx];const char *tail=p->iccid+strlen(p->iccid)-4;
    display_text_name(p->name,name,sizeof name);
    snprintf(caption,sizeof caption,"%s\n%s · ...%s",name,!esim_shown.valid?tr("Сохранённый список","Saved list"):p->enabled?tr("Активен","Active"):tr("Выбрать","Select"),tail);text(esim_labels[i],caption);flag(esim_marks[i],HIDDEN,!p->enabled||!esim_shown.valid);
@@ -250,10 +258,10 @@ static void render_esim(void){
  flag(esim_prev,HIDDEN,esim_shown.count<=3||!esim_shown.cached);flag(esim_next,HIDDEN,esim_shown.count<=3||!esim_shown.cached);
  text(esim_prev_label,tr("Назад","Previous"));text(esim_next_label,tr("Далее","Next"));
  text(esim_refresh_label,tr("Обновить","Refresh"));
- const char *error_text=!strcmp(esim_shown.error_code,"esim_slot_not_selected")?tr("Выберите eSIM в настройках SIM","Select eSIM in SIM settings"):!strcmp(esim_shown.error_code,"radio_restore_failed")?tr("Радио не включилось.\nПроверьте связь в приложении","Radio did not resume.\nCheck the modem in the app"):!strcmp(esim_shown.error_code,"card_power_restore_failed")?tr("Включение SIM не подтверждено.\nПерезагрузите модем","SIM power was not confirmed.\nRestart the modem"):!strcmp(esim_shown.error_code,"card_reset_failed")?tr("Перезапуск SIM не подтверждён.\nОбновите и проверьте профиль","SIM restart was not confirmed.\nRefresh and check the profile"):!strcmp(esim_shown.error_code,"card_cleanup_unknown")?tr("Состояние SIM неизвестно.\nПерезагрузите модем","SIM channel state unknown.\nRestart the modem"):!strcmp(esim_shown.error_code,"card_busy")?tr("Доступ к SIM заблокирован.\nНет операций — перезапустите","SIM access is locked.\nIf idle, restart the modem"):!strcmp(esim_shown.error_code,"card_not_ready")?tr("SIM ещё не готова.\nПодождите и обновите список","SIM is not ready yet.\nWait and refresh the list"):!strcmp(esim_shown.error_code,"card_open_rejected")?tr("SIM отклонила чтение.\nПодождите и обновите список","SIM rejected the read.\nWait and refresh the list"):esim_shown.mutation_failed?tr("Переключение не подтверждено.\nОбновите и проверьте профиль","Switch was not confirmed.\nRefresh and check the profile"):!strcmp(esim_shown.error_code,"esim_busy")?tr("Карта занята другим запросом.\nОбновите после его завершения","Card busy with another request.\nRefresh after it finishes"):!strcmp(esim_shown.error_code,"snapshot_cleanup_failed")?tr("Чтение карты не завершено.\nНажмите «Обновить»","Card read did not finish.\nTap Refresh"):tr("Не удалось обновить список.\nНажмите «Обновить»","Could not refresh the list.\nTap Refresh");
- text(esim_notice,esim_shown.busy?esim_stage():esim_shown.error?error_text:esim_shown.ordinary?tr("Профили eSIM недоступны","eSIM profiles unavailable"):!esim_shown.valid?tr("Ожидание агента eSIM","Waiting for eSIM agent"):!esim_shown.count?tr("На карте нет профилей","No profiles on card"):esim_shown.verified?tr("SIM перечитана модемом","Modem SIM verified"):tr("Нажмите профиль для выбора","Tap a profile to select"));
+ const char *error_text=!strcmp(esim_shown.error_code,"esim_slot_not_selected")?tr("Выберите эту SIM для сети","Select this SIM for mobile data"):!strcmp(esim_shown.error_code,"radio_restore_failed")?tr("Радио не включилось.\nПроверьте связь в приложении","Radio did not resume.\nCheck the modem in the app"):!strcmp(esim_shown.error_code,"card_power_restore_failed")?tr("Включение SIM не подтверждено.\nПерезагрузите модем","SIM power was not confirmed.\nRestart the modem"):!strcmp(esim_shown.error_code,"card_reset_failed")?tr("Перезапуск SIM не подтверждён.\nОбновите и проверьте профиль","SIM restart was not confirmed.\nRefresh and check the profile"):!strcmp(esim_shown.error_code,"card_cleanup_unknown")?tr("Состояние SIM неизвестно.\nПерезагрузите модем","SIM channel state unknown.\nRestart the modem"):!strcmp(esim_shown.error_code,"card_busy")?tr("Доступ к SIM заблокирован.\nНет операций — перезапустите","SIM access is locked.\nIf idle, restart the modem"):!strcmp(esim_shown.error_code,"card_not_ready")?tr("SIM ещё не готова.\nПодождите и обновите список","SIM is not ready yet.\nWait and refresh the list"):!strcmp(esim_shown.error_code,"card_open_rejected")?tr("SIM отклонила чтение.\nПодождите и обновите список","SIM rejected the read.\nWait and refresh the list"):esim_shown.mutation_failed?tr("Переключение не подтверждено.\nОбновите и проверьте профиль","Switch was not confirmed.\nRefresh and check the profile"):!strcmp(esim_shown.error_code,"esim_busy")?tr("Карта занята другим запросом.\nОбновите после его завершения","Card busy with another request.\nRefresh after it finishes"):!strcmp(esim_shown.error_code,"snapshot_cleanup_failed")?tr("Чтение карты не завершено.\nНажмите «Обновить»","Card read did not finish.\nTap Refresh"):tr("Не удалось обновить список.\nНажмите «Обновить»","Could not refresh the list.\nTap Refresh");
+ text(esim_notice,esim_shown.busy?esim_stage():esim_shown.error?error_text:esim_shown.ordinary?tr("Профили eSIM недоступны","eSIM profiles unavailable"):!esim_shown.valid?tr("Ожидание агента eSIM","Waiting for eSIM agent"):!esim_shown.count?tr("На карте нет профилей","No profiles on card"):esim_shown.verified?tr("SIM перечитана модемом","Modem SIM verified"):esim_shown.can_enable?tr("Нажмите профиль для выбора","Tap a profile to select"):tr("Для смены выберите эту SIM\nдля сети; нужна поддержка ПО","Switching needs this SIM selected\nfor data and supported firmware"));
  int active=0;for(int i=0;i<esim_shown.count;i++)if(!strcmp(esim_shown.profiles[i].iccid,esim_selected_id))active=esim_shown.profiles[i].enabled;
- flag(esim_confirm,HIDDEN,!esim_shown.valid||!esim_selected_id[0]);text(esim_confirm_title,active?tr("Перечитать SIM?","Reread this SIM?"):tr("Выбрать профиль?","Select this profile?"));
+ flag(esim_confirm,HIDDEN,!esim_shown.valid||!esim_shown.can_enable||!esim_selected_id[0]);text(esim_confirm_title,active?tr("Перечитать SIM?","Reread this SIM?"):tr("Выбрать профиль?","Select this profile?"));
  char selected_name_text[1024];display_text_name(esim_selected_name,selected_name_text,sizeof selected_name_text);
  text(esim_confirm_name,selected_name_text);text(esim_confirm_hint,tr("Связь прервётся: автономный\nрежим, затем радио включится","Mobile data will pause: flight\nmode, then radio resumes"));
  text(esim_yes,active?tr("Перечитать","Reread"):tr("Выбрать","Select"));text(esim_no,tr("Отмена","Cancel"));esim_generation=esim_shown.generation;
@@ -363,8 +371,9 @@ static void create(void *form){
  confirm=panel(pages[1],8,126,304,247,0);confirm_title=label(confirm,8,14,288,32,22,"");confirm_name=label(confirm,8,57,288,70,20,"");confirm_hint=label(confirm,8,130,288,44,14,"");
  F(0x52f73c,void,void*,int)(confirm_name,1);
  button(confirm,6,186,146,48,30,&confirm_yes);button(confirm,158,186,140,48,31,&confirm_no);
- titles[2]=label(pages[2],16,12,144,34,24,"SIM");button(pages[2],178,8,128,38,82,&esim_refresh_label);esim_scope=label(pages[2],16,52,288,40,16,"");
- for(int i=0;i<3;i++){esim_cards[i]=button(pages[2],14,104+70*i,292,62,60+i,&esim_labels[i]);pos(esim_labels[i],16,5);size(esim_labels[i],264,54);F(0x52fa04,void,void*,int)(esim_labels[i],16);F(0x52f73c,void,void*,int)(esim_labels[i],1);esim_marks[i]=panel(esim_cards[i],0,8,5,46,0);color(esim_marks[i],100,0);}
+ titles[2]=label(pages[2],16,12,144,34,24,"SIM");button(pages[2],178,8,128,38,82,&esim_refresh_label);esim_scope=label(pages[2],16,49,288,26,16,"");
+ for(unsigned i=0;i<2;i++){esim_target_buttons[i]=button(pages[2],14+152*i,76,140,34,83+i,&esim_target_labels[i]);pos(esim_target_labels[i],8,5);size(esim_target_labels[i],124,24);F(0x52fa04,void,void*,int)(esim_target_labels[i],16);}
+ for(int i=0;i<3;i++){esim_cards[i]=button(pages[2],14,116+66*i,292,60,60+i,&esim_labels[i]);pos(esim_labels[i],16,5);size(esim_labels[i],264,54);F(0x52fa04,void,void*,int)(esim_labels[i],16);F(0x52f73c,void,void*,int)(esim_labels[i],1);esim_marks[i]=panel(esim_cards[i],0,8,5,46,0);color(esim_marks[i],100,0);}
  esim_prev=button(pages[2],14,320,140,40,70,&esim_prev_label);esim_next=button(pages[2],166,320,140,40,71,&esim_next_label);esim_notice=label(pages[2],16,371,288,58,16,"");
  esim_confirm=panel(pages[2],8,99,304,260,0);esim_confirm_title=label(esim_confirm,8,14,288,32,22,"");esim_confirm_name=label(esim_confirm,8,56,288,60,20,"");esim_confirm_hint=label(esim_confirm,8,125,288,55,16,"");
  F(0x52f73c,void,void*,int)(esim_confirm_name,1);

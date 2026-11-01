@@ -1,4 +1,17 @@
 export const ruEsim: Record<string, string> = {
+  'Select this SIM for mobile service before switching a profile. The agent does not select a network SIM automatically.': 'Перед переключением профиля выберите эту SIM для мобильной сети. Агент не меняет выбранную сетевую SIM автоматически.',
+  'The selected eUICC route could not be verified. Read the cards again and select the required eUICC.': 'Маршрут выбранной eUICC не подтверждён. Прочитайте карты повторно и выберите нужную eUICC.',
+
+  "Install the current agent and refresh this page.": "Установите текущую версию агента и обновите страницу.",
+  "SIM and eUICC support": "SIM и eUICC",
+  "Detects manageable eUICC cards in the physical SIM slot or in place of the internal eSIM. The other SIM remains available. Stock operator eSIM provisioning is not supported.": "Управление eUICC в физическом SIM-слоте или вместо внутренней eSIM. Другая SIM остаётся доступной. Загрузка своих профилей на штатную операторскую eSIM не поддерживается.",
+  "Choose the eUICC to manage.": "Выберите eUICC для управления.",
+  "Physical SIM slot": "Физический SIM-слот",
+  "Internal eSIM position": "Внутренняя eSIM",
+  "Profiles read from the selected eUICC.": "Профили прочитаны с выбранной eUICC.",
+  "No manageable eUICC was confirmed. You can continue using the modem SIM normally.": "Управляемая eUICC не обнаружена. Обычную SIM можно использовать штатно.",
+  "Profile switching requires this SIM to be selected for mobile service and a supported firmware. Reading profiles remains available.": "Для переключения профиля выберите эту SIM для мобильной сети. Также требуется поддерживаемая прошивка. Чтение профилей остаётся доступным.",
+
   'Select eSIM in SIM settings before switching a profile. The physical SIM remains available; no automatic SIM selection was made.': 'Перед переключением профиля выберите eSIM в разделе SIM. Физическая SIM остаётся доступна; автоматического выбора SIM не было.',
   'The internal eUICC route could not be verified. Read the card again and check the eSIM connection.': 'Маршрут внутренней eUICC не подтверждён. Повторите чтение карты и проверьте подключение eSIM.',
   'Rename profile': 'Переименовать',

@@ -32,7 +32,7 @@ enum EsimFailure: Error, LocalizedError {
         case .invalidSnapshot: return "Карта вернула некорректный список профилей. Обновите список."
         case .targetChanged: return "Карта или выбранное подключение изменились. Обновите список профилей."
         case .backend(let code):
-            if code == "esim_slot_not_selected" { return "Для переключения профиля выберите eSIM в штатном меню выбора SIM модема, затем перечитайте профили. Физический SIM-слот автоматически не переключался." }
+            if code == "esim_slot_not_selected" { return "Для переключения профиля выберите соответствующую SIM-карту в разделе SIM модема, затем перечитайте профили. Карта для мобильной связи автоматически не переключалась." }
             if code == "card_not_euicc" { return "Карта не поддерживает управление eSIM. Проверьте карту заново." }
             if code == "radio_restore_failed" { return "Включение радио после авиарежима не подтверждено. Проверьте авиарежим на модеме и обновите список профилей. Автоматического повтора не было." }
             if let message = EsimLog.cardMessage(code) { return message }
@@ -59,8 +59,49 @@ struct EsimProfile: Codable, Equatable, Sendable {
     var inventoryKey: String { (iccid ?? "") + ":" + (isdpAid ?? "").lowercased() + ":" + state }
 }
 
+enum EsimTarget: String, Codable, CaseIterable, Sendable {
+    case removable = "removable-euicc-slot1"
+    case internalCard = "internal-euicc-slot2"
+    var title: String { self == .removable ? "SIM-карта" : "Встроенная SIM" }
+}
+
+struct EsimDiscoveredTarget: Decodable, Sendable {
+    let target: EsimTarget
+    let card: EsimCardCheck
+    let snapshot: EsimSnapshot?
+    let networkSelected: Bool?
+    let operations: [String]
+    let error: String?
+    enum CodingKeys: String, CodingKey { case target, card, snapshot, operations, error, networkSelected = "network_selected" }
+    var confirmed: Bool { card.kind == "euicc_confirmed" && snapshot != nil }
+    init(from decoder: Decoder) throws {
+        let fields = try decoder.container(keyedBy: CodingKeys.self)
+        target = try fields.decode(EsimTarget.self, forKey: .target)
+        card = try fields.decode(EsimCardCheck.self, forKey: .card)
+        snapshot = try fields.decodeIfPresent(EsimSnapshot.self, forKey: .snapshot)
+        guard fields.contains(.networkSelected) else { throw EsimFailure.protocolError }
+        networkSelected = try fields.decodeIfPresent(Bool.self, forKey: .networkSelected)
+        operations = try fields.decode([String].self, forKey: .operations)
+        error = try fields.decodeIfPresent(String.self, forKey: .error)
+    }
+    func validate() throws {
+        guard card.reason != "cleanup_unknown", card.kind != "unknown" || card.cleanupConfirmed, !operations.contains("enable") || networkSelected == true else { throw EsimFailure.protocolError }
+        try EsimValidation.operations(operations, confirmed: confirmed)
+        if confirmed {
+            guard let snapshot, snapshot.target == target, error == nil else { throw EsimFailure.protocolError }
+            try snapshot.validate()
+        } else {
+            guard snapshot == nil, operations.isEmpty else { throw EsimFailure.protocolError }
+        }
+        if card.kind == "euicc_confirmed" && !confirmed { throw EsimFailure.protocolError }
+        if card.kind == "ordinary_sim" && error != nil { throw EsimFailure.protocolError }
+    }
+    var conclusivelyRead: Bool { confirmed || card.kind == "ordinary_sim" || card.kind == "unknown" && card.cleanupConfirmed && card.reason == "not_present" && error == nil }
+}
+
 struct EsimSnapshot: Codable, Equatable, Sendable {
     var ok: Bool
+    var target: EsimTarget
     var eid: String
     var profiles: [EsimProfile]
     func validate() throws {
@@ -82,21 +123,29 @@ struct EsimSnapshot: Codable, Equatable, Sendable {
 }
 
 enum EsimOperation: Sendable {
+    case discover
     case list
     case download(String, String)
     case enable(String)
     case delete(String)
-    var name: String { switch self { case .list: return "list"; case .download: return "download"; case .enable: return "enable"; case .delete: return "delete" } }
-    var mutates: Bool { name != "list" }
-    func request(snapshot: EsimSnapshot?) throws -> Data {
-        var object: [String: Any] = ["protocol": 1, "operation": name]
+    var name: String { switch self { case .discover: return "discover"; case .list: return "list"; case .download: return "download"; case .enable: return "enable"; case .delete: return "delete" } }
+    var mutates: Bool { !["list", "discover"].contains(name) }
+    func request(snapshot: EsimSnapshot?, target: EsimTarget?) throws -> Data {
+        var object: [String: Any] = ["protocol": 2, "operation": name]
+        if case .discover = self {
+            guard target == nil, snapshot == nil else { throw EsimFailure.invalidInput }
+        } else {
+            guard let target else { throw EsimFailure.invalidInput }
+            object["target"] = target.rawValue
+            if let snapshot { guard snapshot.target == target else { throw EsimFailure.targetChanged } }
+        }
         if mutates {
             guard let snapshot, snapshot.writeReady else { throw EsimFailure.invalidSnapshot }
             try snapshot.validate()
             object["expected_snapshot"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(snapshot))
         }
         switch self {
-        case .list: break
+        case .discover, .list: break
         case .download(let code, let confirmation):
             guard EsimValidation.activationCode(code) == code, confirmation.utf8.count <= 512, !confirmation.hasPrefix("-"),
                   !confirmation.unicodeScalars.contains(where: { CharacterSet.whitespacesAndNewlines.contains($0) || CharacterSet.controlCharacters.contains($0) }) else { throw EsimFailure.invalidInput }
@@ -131,7 +180,7 @@ struct EsimCardCheck: Decodable, Sendable {
         switch kind {
         case "euicc_confirmed": valid = management == "available" && reason == "eid_and_profiles_read" && cleanupConfirmed
         case "ordinary_sim": valid = management == "unavailable" && reason == "isdr_not_found" && cleanupConfirmed
-        case "unknown": valid = management == "unknown" && !cleanupConfirmed && ["busy", "open_rejected", "cleanup_unknown", "not_ready", "unsupported_device", "read_failed", "operation_failed"].contains(reason)
+        case "unknown": valid = management == "unknown" && (["busy", "open_rejected", "cleanup_unknown", "not_ready", "unsupported_device", "read_failed", "operation_failed"].contains(reason) || cleanupConfirmed && ["not_present", "route_unavailable"].contains(reason))
         default: valid = false
         }
         guard valid else { throw EsimFailure.protocolError }
@@ -141,6 +190,11 @@ struct EsimCardCheck: Decodable, Sendable {
 struct EsimRPCResult: Decodable, Sendable {
     var type: String
     var ok: Bool
+    var target: EsimTarget?
+    var targets: [EsimDiscoveredTarget]?
+    var complete: Bool?
+    var operations: [String]?
+    var networkSelected: Bool?
     var card: EsimCardCheck?
     var snapshot: EsimSnapshot?
     var changed: Bool?
@@ -149,12 +203,19 @@ struct EsimRPCResult: Decodable, Sendable {
     var radioRestored: Bool?
     var error: String?
     var componentError: String?
-    enum CodingKeys: String, CodingKey { case type, ok, card, snapshot, changed, notificationsPending = "notifications_pending", modemVerified = "modem_verified", radioRestored = "radio_restored", error, componentError = "component_error" }
+    enum CodingKeys: String, CodingKey { case type, ok, target, targets, complete, operations, networkSelected = "network_selected", card, snapshot, changed, notificationsPending = "notifications_pending", modemVerified = "modem_verified", radioRestored = "radio_restored", error, componentError = "component_error" }
     init(from decoder: Decoder) throws {
         let fields = try decoder.container(keyedBy: CodingKeys.self)
         type = try fields.decode(String.self, forKey: .type)
         ok = try fields.decode(Bool.self, forKey: .ok)
+        target = try fields.decodeIfPresent(EsimTarget.self, forKey: .target)
+        targets = try fields.decodeIfPresent([EsimDiscoveredTarget].self, forKey: .targets)
+        complete = try fields.decodeIfPresent(Bool.self, forKey: .complete)
+        operations = try fields.decodeIfPresent([String].self, forKey: .operations)
+        if ok && target != nil && !fields.contains(.networkSelected) { throw EsimFailure.protocolError }
+        networkSelected = try fields.decodeIfPresent(Bool.self, forKey: .networkSelected)
         card = try fields.decodeIfPresent(EsimCardCheck.self, forKey: .card)
+        if !ok && card?.kind == "unknown" && card?.cleanupConfirmed == true { throw EsimFailure.protocolError }
         snapshot = try fields.decodeIfPresent(EsimSnapshot.self, forKey: .snapshot)
         changed = try fields.decodeIfPresent(Bool.self, forKey: .changed)
         notificationsPending = try fields.decodeIfPresent(Bool.self, forKey: .notificationsPending)
@@ -169,22 +230,35 @@ struct EsimRPCResult: Decodable, Sendable {
             guard ![CodingKeys.snapshot, .modemVerified, .radioRestored, .componentError, .error].contains(where: fields.contains) else { throw EsimFailure.protocolError }
         }
     }
-    func accepted(for operation: EsimOperation, before: EsimSnapshot?) throws -> EsimSnapshot? {
+    func accepted(for operation: EsimOperation, before: EsimSnapshot?, target requestedTarget: EsimTarget?) throws -> EsimSnapshot? {
         guard type == "result" else { throw EsimFailure.protocolError }
         guard ok else { throw EsimFailure.backend(EsimLog.backendError(error)) }
         guard componentError == nil else { throw EsimFailure.protocolError }
+        if case .discover = operation {
+            guard requestedTarget == nil, target == nil, snapshot == nil, card == nil, operations == nil,
+                  let targets, targets.count == 2, let complete, changed == false, notificationsPending == false,
+                  modemVerified == nil, radioRestored == nil, error == nil,
+                  Set(targets.map(\.target)).count == targets.count else { throw EsimFailure.protocolError }
+            for item in targets { try item.validate() }
+            if complete && !targets.allSatisfy(\.conclusivelyRead) { throw EsimFailure.protocolError }
+            return nil
+        }
+        guard let requestedTarget, target == requestedTarget, targets == nil, complete == nil,
+              let operations else { throw EsimFailure.protocolError }
+        try EsimValidation.operations(operations, confirmed: card?.kind == "euicc_confirmed")
+        guard !operations.contains("enable") || networkSelected == true else { throw EsimFailure.protocolError }
         if card?.kind == "ordinary_sim" {
             guard !operation.mutates, snapshot == nil, changed == false, notificationsPending == false,
                   error == nil, modemVerified == nil, radioRestored == nil else { throw EsimFailure.protocolError }
             return nil
         }
-        guard let current = snapshot, let changed, notificationsPending != nil else { throw EsimFailure.protocolError }
+        guard let current = snapshot, current.target == requestedTarget, card?.kind == "euicc_confirmed", let changed, notificationsPending != nil else { throw EsimFailure.protocolError }
         try current.validate()
         if let card { guard card.kind == "euicc_confirmed", card.management == "available", card.cleanupConfirmed else { throw EsimFailure.protocolError } }
         if !operation.mutates { guard !changed else { throw EsimFailure.protocolError }; return current }
-        guard let before, current.eid == before.eid, current.writeReady else { throw EsimFailure.targetChanged }
+        guard let before, before.target == requestedTarget, current.eid == before.eid, current.writeReady else { throw EsimFailure.targetChanged }
         switch operation {
-        case .list: break
+        case .discover, .list: break
         case .download:
             let old = Set(before.profiles.compactMap(\.iccid))
             let added = current.profiles.filter { !old.contains($0.iccid ?? "") }
@@ -216,6 +290,15 @@ enum EsimPrivacy {
 }
 
 enum EsimValidation {
+    static func operations(_ values: [String], confirmed: Bool) throws {
+        guard Set(values).count == values.count,
+              values.allSatisfy({ ["list", "download", "enable", "delete", "rename"].contains($0) }),
+              confirmed ? values.contains("list") : values.isEmpty else { throw EsimFailure.protocolError }
+    }
+    static func automaticTarget(_ targets: [EsimDiscoveredTarget], complete: Bool) -> EsimDiscoveredTarget? {
+        let cards = targets.filter(\.confirmed)
+        return complete && cards.count == 1 ? cards[0] : nil
+    }
     static func digits(_ value: String, count: ClosedRange<Int>) -> Bool { count.contains(value.utf8.count) && value.utf8.allSatisfy { (48...57).contains($0) } }
     static func domain(_ value: String) -> Bool {
         let labels = value.split(separator: ".", omittingEmptySubsequences: false)
@@ -299,11 +382,11 @@ struct EsimRPCDecoder {
         default: throw EsimFailure.protocolError
         }
     }
-    func finish(exitCode: Int32, operation: EsimOperation, before: EsimSnapshot?) throws -> EsimRPCResult {
+    func finish(exitCode: Int32, operation: EsimOperation, before: EsimSnapshot?, target: EsimTarget?) throws -> EsimRPCResult {
         guard let result else { throw EsimFailure.transport }
         if exitCode == 1 && !result.ok { throw EsimFailure.backend(EsimLog.backendError(result.error)) }
         guard exitCode == 0 else { throw EsimFailure.transport }
-        _ = try result.accepted(for: operation, before: before)
+        _ = try result.accepted(for: operation, before: before, target: target)
         return result
     }
 }
@@ -343,7 +426,7 @@ enum EsimLog {
     static let backendErrors: Set<String> = [
         "card_busy", "card_open_rejected", "card_cleanup_unknown", "card_not_ready", "card_not_euicc",
         "card_reset_failed", "card_power_restore_failed",
-        "operation_lock_failed", "launcher_operation_refused", "radio_read_failed", "radio_not_online", "radio_set_failed", "radio_offline_failed", "radio_restore_failed", "modem_readback_failed", "modem_slot_mismatch", "esim_slot_not_selected", "modem_iccid_mismatch", "esim_busy",
+        "operation_lock_failed", "launcher_operation_refused", "radio_read_failed", "radio_not_online", "radio_set_failed", "radio_offline_failed", "radio_restore_failed", "modem_readback_failed", "modem_slot_mismatch", "esim_slot_not_selected", "target_required", "invalid_target", "target_mismatch", "target_unavailable", "target_selection_unknown", "unsupported_protocol", "modem_iccid_mismatch", "esim_busy",
         "bridge_already_open",
         "bridge_cleanup_failed",
         "bridge_missing",

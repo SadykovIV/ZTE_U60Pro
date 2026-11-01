@@ -15,7 +15,7 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate {
     @NSApplicationDelegateAdaptor(ApplicationDelegate.self) var delegate
     @StateObject var model = AppModel()
     var body: some Scene {
-        WindowGroup("ZTE U60Pro Internal eUICC") {
+        WindowGroup("ZTE U60Pro Manager") {
             ContentView(model: model).onAppear { ApplicationDelegate.model = model }
         }.windowStyle(.hiddenTitleBar).defaultSize(width: 1100, height: 780)
         .commands { CommandGroup(replacing: .newItem) {} }

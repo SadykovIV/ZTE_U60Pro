@@ -70,6 +70,8 @@ void backend_start(void){}
 void backend_refresh(void){refreshes++;}
 void backend_snapshot(struct snapshot *out){*out=fixture;}
 int backend_action(int enable,const char *id){CHECK(enable==-1&&id);actions++;snprintf(action_id,sizeof action_id,"%s",id);return 1;}
+static unsigned selected_sim_target;
+int esim_select_target(unsigned index){selected_sim_target=index;return index<2;}
 void esim_start(void){}
 void esim_refresh(void){sim_refreshes++;}
 void esim_snapshot(struct esim_snapshot *out){*out=sim_fixture;}
@@ -165,6 +167,16 @@ int main(void){
  scroll_release(form);CHECK(current==4&&*(uint32_t*)(input_device+36)==123);
  direction=0;scroll_object=P(profile_scroll,8);scroll_release(form);CHECK(current==4&&*(uint32_t*)(input_device+36)==123);
  scroll_object=P(parent,8);carousel_x=4*320;scroll_release(form);CHECK(current==5&&*(uint32_t*)(input_device+36)==0);
+ /* Both card choices retain their own target; read-only cards cannot open confirmation. */
+ sim_fixture=(struct esim_snapshot){.discovered=1,.complete=1,.targets=3,.generation=10};esim_snapshot(&esim_shown);render_esim();
+ CHECK(!(widget(esim_target_buttons[0])->flags&HIDDEN)&&!(widget(esim_target_buttons[1])->flags&HIDDEN));
+ click(83);CHECK(selected_sim_target==0);click(84);CHECK(selected_sim_target==1);
+ sim_fixture.valid=1;sim_fixture.cached=1;sim_fixture.count=1;strcpy(sim_fixture.target,"internal-euicc-slot2");strcpy(sim_fixture.profiles[0].iccid,"8999999999999999991");strcpy(sim_fixture.profiles[0].name,"Synthetic");sim_fixture.generation++;
+ esim_snapshot(&esim_shown);render_esim();CHECK(!(widget(esim_cards[0])->flags&CLICKABLE));click(60);CHECK(!esim_selected_id[0]);
+ sim_fixture.can_enable=1;esim_snapshot(&esim_shown);render_esim();CHECK(widget(esim_cards[0])->flags&CLICKABLE);click(60);CHECK(!strcmp(esim_selected_id,sim_fixture.profiles[0].iccid));
+ click(83);CHECK(!esim_selected_id[0]);
+ CHECK(widget(esim_cards[0])->y>=widget(esim_target_buttons[0])->y+widget(esim_target_buttons[0])->height);
+ CHECK(widget(esim_cards[2])->y+widget(esim_cards[2])->height<=widget(esim_next)->y);
  for(int i=0;i<nalloc;i++)free(allocs[i]);free(parent);free(dot0);free(dot1);free(form);
  printf("Launcher UI callbacks: %u checks PASS; 1024 UUID touch selections, polling, layout, Unicode, disabled states and gestures\n",assertions);
  return 0;

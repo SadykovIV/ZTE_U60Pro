@@ -17,6 +17,18 @@ pub(super) struct Status {
 }
 
 impl Status {
+    pub fn unavailable(reason: &'static str) -> Self {
+        Self {
+            kind: "unknown",
+            management: "unknown",
+            reason,
+            cleanup_confirmed: true,
+        }
+    }
+    pub fn cleanup_unknown(&self) -> bool {
+        self.reason == "cleanup_unknown"
+    }
+
     /// Called only for a validated final snapshot after operation cleanup.
     pub(super) fn confirmed() -> Self {
         Self {
@@ -87,7 +99,7 @@ impl Status {
             reason,
             // Error paths do not carry a separate positive channel-cleanup
             // receipt. False means unconfirmed, not proof of a leaked channel.
-            cleanup_confirmed: false,
+            cleanup_confirmed: error.cleanup_confirmed && reason != "cleanup_unknown",
         }
     }
 }

@@ -1,5 +1,18 @@
 # История версий
 
+## 1.29
+
+- Unified app and agent for single-SIM, stock physical-SIM/Chinese-eSIM and
+  replacement-internal-eUICC configurations; explicit protocol-2 card targets.
+- Управление eUICC SIM-картой, перепаянной вместо штатной внутренней китайской
+  eSIM, через существующее меню; физический слот остаётся доступен для другой SIM.
+- Fresh card discovery, separate card/network selection and matched Launcher
+  protocol; measured B31 registered-network display fix inherited from local 1.28.
+- Standard Manager package names restored. Earlier B31 hardware checks and current
+  release verification remain separate. Original ZTE custom QR provisioning and
+  simultaneous dual-active data are not claimed. See [release notes](docs/RELEASE-1.29.md).
+
+
 ## 1.26.1 — исправление чистой переустановки
 
 - Исправлена несовместимость очистки с VPN-компонентами собственного комплекта.

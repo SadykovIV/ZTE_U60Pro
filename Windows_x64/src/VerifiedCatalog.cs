@@ -138,7 +138,7 @@ public sealed class VerifiedCatalogStore
     public VerifiedCatalogStore(string? cachePath = null, Func<HttpMessageHandler>? handlerFactory = null)
     {
         _handlerFactory = handlerFactory;
-        _cachePath = cachePath ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ZTE U60Pro Internal eUICC", "Catalog", "verified-envelope.json");
+        _cachePath = cachePath ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ZTE IMEI Studio", "Catalog", "verified-envelope.json");
         _payload = Convert.FromBase64String(VerifiedCatalogPolicy.BaselinePayload);
         _signature = Convert.FromBase64String(VerifiedCatalogPolicy.BaselineSignature);
         // Baseline validity must not depend on an inaccurate local clock.

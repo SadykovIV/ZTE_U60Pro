@@ -11,7 +11,7 @@ import time
 binary = Path(sys.argv[1]).resolve()
 assert sys.platform == "darwin" and binary.read_bytes()[:4] == b"\xcf\xfa\xed\xfe"
 count = 0
-for mode in ["--esim-launcher-internal", "--esim-rpc"]:
+for mode in ["--esim-launcher-v2", "--esim-rpc"]:
     child = subprocess.Popen([str(binary), mode], stdin=subprocess.PIPE,
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
@@ -19,7 +19,7 @@ for mode in ["--esim-launcher-internal", "--esim-rpc"]:
         child.send_signal(signal.SIGHUP)
         time.sleep(0.05)
         assert child.poll() is None, "SIGHUP terminated private RPC before EOF cleanup"
-        out, err = child.communicate(b'{"protocol":1,"operation":"list"}\n', timeout=5)
+        out, err = child.communicate(b'{"protocol":2,"target":"internal-euicc-slot2","operation":"list"}\n', timeout=5)
         rows = [json.loads(row) for row in out.splitlines()]
         final = [row for row in rows if row.get("type") == "result"]
         assert child.returncode == 1 and len(final) == 1 and final[0]["error"] == "unsupported_device"
@@ -30,10 +30,10 @@ for mode in ["--esim-launcher-internal", "--esim-rpc"]:
             child.kill()  # Host fixture only; never an SSH/QMI child.
             child.communicate()
 for request in [
-    {"protocol":1,"operation":"list","token":"SYNTHETIC_PRIVATE"},
-    {"protocol":1,"operation":"enable","iccid":"SYNTHETIC_PRIVATE"},
+    {"protocol":2,"target":"internal-euicc-slot2","operation":"list","token":"SYNTHETIC_PRIVATE"},
+    {"protocol":2,"target":"internal-euicc-slot2","operation":"enable","iccid":"SYNTHETIC_PRIVATE"},
 ]:
-    result=subprocess.run([str(binary),"--esim-launcher-internal"],
+    result=subprocess.run([str(binary),"--esim-launcher-v2"],
         input=(json.dumps(request)+"\n").encode(),capture_output=True,timeout=5)
     assert result.returncode==1 and b"SYNTHETIC_PRIVATE" not in result.stdout+result.stderr
     rows=[json.loads(row) for row in result.stdout.splitlines()]
@@ -41,17 +41,18 @@ for request in [
     count+=1
 # Mixed installations fail closed in the reverse direction too: a standard
 # Launcher may not use the internal-slot agent through its old entry point.
-legacy = subprocess.run([str(binary), "--esim-launcher"],
-    input=b'{"protocol":1,"operation":"list"}\n', capture_output=True, timeout=5)
-assert legacy.returncode == 1 and legacy.stderr == b""
-rows = [json.loads(row) for row in legacy.stdout.splitlines()]
-assert len(rows) == 1 and rows[0]["error"] == "invalid_arguments"
-count += 1
+for flag in ["--esim-launcher", "--esim-launcher-internal"]:
+    legacy = subprocess.run([str(binary), flag],
+        input=b'{"protocol":2,"target":"internal-euicc-slot2","operation":"list"}\n', capture_output=True, timeout=5)
+    assert legacy.returncode == 1 and legacy.stderr == b""
+    rows = [json.loads(row) for row in legacy.stdout.splitlines()]
+    assert len(rows) == 1 and rows[0]["error"] == "invalid_arguments"
+    count += 1
 check = subprocess.run([str(binary), "--esim-check"], capture_output=True, timeout=5)
 assert check.returncode == 0 and check.stderr == b""
 capabilities = json.loads(check.stdout)
 assert capabilities["ok"] is True and capabilities["offline"] is True
-assert capabilities["target"] == "internal-euicc-slot2" and capabilities["protocol"] == 1
-assert set(capabilities["operations"]) == {"list", "download", "enable", "delete", "rename"}
+assert capabilities["target_mode"] == "explicit" and capabilities["protocol"] == 2
+assert set(capabilities["operations"]) == {"discover", "list", "download", "enable", "delete", "rename"}
 count += 1
 print(json.dumps({"ok":True,"host_only":True,"tests":count,"device_calls":0}))

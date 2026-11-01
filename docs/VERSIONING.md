@@ -1,29 +1,22 @@
 # Release numbering
 
-The current alternative development release is **1.28 Internal eUICC**, based
-on standard **1.27.2**. It uses macOS build **70**, Windows FileVersion
-**1.28.0.0** and agent **2.10.0-internal.1**. The standard release and its
-archives remain separate. This version is not a claim of hardware verification.
+Current release: **1.29**, macOS build **71**, Windows FileVersion **1.29.0.0**,
+agent **2.11.0**, VPN controller **1.5.1**. It unifies standard 1.27.2 and the
+local Internal eUICC 1.28 variant. Earlier archives remain unchanged.
 
-- Substantial feature or architecture changes advance the second number:
-  `1.25`, `1.26`, `1.27`.
-- Small fixes within that release add a patch number:
-  `1.25.1`, `1.25.2`.
-- macOS and Windows use the same public version. macOS build numbers and
-  Windows four-part assembly/file versions are internal identifiers; for
-  example, public `1.25` uses Windows `1.25.0.0`.
-- Each handed-off build receives a new version. Keep earlier release archives
-  and their verification reports unchanged.
-- Agent and modem component versions remain separate. Change their version
-  when their implementation changes, and package matching resource hashes.
+Substantial changes advance the second number; small fixes add a patch number.
+macOS and Windows use the same public release version. Their internal build
+numbers do not replace that version. Agent and modem component versions remain
+separate and their exact hashes must match the packaged resources.
+
+Each handed-off build receives a new version. Keep previous artifacts, manifests
+and verification reports. A version number does not establish hardware testing:
+record source identity, build checks, native execution and device operations
+separately. The historical local 1.28 hardware report remains a dated prior run.
 
 ## Нумерация выпусков
 
-Текущая альтернатива — **1.28 Internal eUICC**, база — стандартная **1.27.2**.
-macOS build **70**, Windows FileVersion **1.28.0.0**, агент **2.10.0-internal.1**.
-Ранее переданные стандартные сборки не заменяются.
-
-Крупные обновления: **1.25 → 1.26 → 1.27**.
-Небольшие исправления: **1.25.1 → 1.25.2**.
-Версия программы одинакова на macOS и Windows. Ранее переданные сборки
-сохраняются вместе с контрольными суммами и результатами проверок.
+Текущий единый выпуск — **1.29**, macOS build **71**, Windows **1.29.0.0**,
+агент **2.11.0**. Предыдущий опубликованный выпуск — **1.27.2**; локальная
+альтернатива **1.28** сохранена отдельно. Большие изменения: `1.27 → 1.29`,
+исправления внутри выпуска: `1.29.1`. Старые комплекты не перезаписываются.

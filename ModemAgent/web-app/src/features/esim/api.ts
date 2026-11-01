@@ -1,16 +1,16 @@
 import { req } from '../../data/client'
-import { EsimOperationError, parsedCard, unknownCard, verifiedCard, type CardStatus, type EsimRequest, type EsimResult, type Snapshot } from './model'
+import { EsimOperationError, parsedCard, unknownCard, verifiedCard, verifiedDiscovery, allowedOperations, type DiscoveredTarget, type CardStatus, type EsimRequest, type EsimResult, type Snapshot } from './model'
 import { journalEntry, resultDiagnostic } from './journal'
 import { safeEsimErrors } from './errors'
 
 interface Job { job_id: string; state: 'running' | 'complete'; stage?: string; result?: EsimResult | null; logs?: unknown[] }
 export const capabilities = () => req('GET', '/api/esim/capabilities')
-export async function runOperation(request: EsimRequest, progress: (stage: string, safeLog?: string) => void, signal: AbortSignal): Promise<{ snapshot: Snapshot | null; card: CardStatus; pending: boolean }> {
+async function runJob(request: EsimRequest, progress: (stage: string, safeLog?: string) => void, signal: AbortSignal): Promise<EsimResult> {
   // Never retry POST after an ambiguous network outcome.
   const bytes = new Uint8Array(16)
   window.crypto.getRandomValues(bytes)
   const request_id = Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('')
-  let job = await req('POST', '/api/esim/jobs', { target: 'internal-euicc-slot2', request_id, request }) as unknown as Job
+  let job = await req('POST', '/api/esim/jobs', { request_id, request }) as unknown as Job
   if (!/^[a-f0-9]{32}$/.test(job.job_id)) throw new Error('invalid_job')
   const jobID = job.job_id, deadline = Date.now() + 20 * 60_000
   let sequence = -1
@@ -43,5 +43,15 @@ export async function runOperation(request: EsimRequest, progress: (stage: strin
     const code = typeof job.result.error === 'string' && safeEsimErrors.has(job.result.error) ? job.result.error : 'unconfirmed'
     throw new EsimOperationError(code, card)
   }
-  return { ...verifiedCard(request, job.result), pending: job.result.notifications_pending === true }
+  return job.result
+}
+
+export async function discover(progress: (stage: string, safeLog?: string) => void, signal: AbortSignal): Promise<{ targets: DiscoveredTarget[]; complete: boolean }> {
+  return verifiedDiscovery(await runJob({ protocol: 2, operation: 'discover' }, progress, signal))
+}
+export async function runOperation(request: EsimRequest, progress: (stage: string, safeLog?: string) => void, signal: AbortSignal): Promise<{ snapshot: Snapshot | null; card: CardStatus; pending: boolean; operations: string[] }> {
+  const result = await runJob(request, progress, signal)
+  const operations = allowedOperations(result.operations)
+  if (operations.includes('enable') && result.network_selected !== true) throw new Error('unconfirmed')
+  return { ...verifiedCard(request, result), pending: result.notifications_pending === true, operations }
 }

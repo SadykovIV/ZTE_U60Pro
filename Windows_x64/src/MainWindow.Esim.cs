@@ -10,6 +10,11 @@ namespace ZteImeiStudio.Windows;
 public sealed partial class MainWindow
 {
     private EsimSnapshot? _esimSnapshot;
+    private IReadOnlyList<EsimDiscoveredTarget> _esimTargets = [];
+    private string? _esimSelectedTarget;
+    private IReadOnlyList<string> _esimOperations = [];
+    private bool _esimDiscoveryComplete;
+    private ComboBox? _esimTargetPicker;
     private bool _esimAuthorized;
     private string? _esimSelected;
     private TextBox? _esimCode, _esimConfirmation, _esimAddress, _esimMatchingId;
@@ -22,27 +27,48 @@ public sealed partial class MainWindow
     private bool _esimCardChecked, _esimChecking;
     private EsimCardStatus? _esimCard;
     private string? _esimCardTarget;
-    private string EsimTarget() => $"{_snapshot?.IpAddress}|{_snapshot?.Serial}|{_snapshot?.ConnectionMode}|{_snapshot?.IsConnected}";
+    private string EsimTarget() => $"{_snapshot?.IpAddress}|{_snapshot?.Serial}|{_snapshot?.ConnectionMode}|{_snapshot?.IsConnected}|{_esimSelectedTarget}|{_esimSnapshot?.Eid}";
     private string _esimStatus = "Прочитайте профили, чтобы разрешить изменения.";
 
     private void BuildEsim()
     {
-        AddCard("SIM-карта", "eUICC, установленная вместо штатной eSIM ZTE. Карта в физическом SIM-слоте остаётся отдельной.", panel =>
+        AddCard("SIM-карта", "Приложение проверяет SIM-карты и показывает доступные eUICC. Профили обычной SIM и штатной закрытой eSIM недоступны.", panel =>
         {
             panel.Children.Add(Muted("Карта подтверждается чтением EID и профилей. Загрузка использует интернет компьютера."));
-            panel.Children.Add(Muted("Для мобильной связи через eUICC и переключения её профилей выберите eSIM в штатном меню выбора SIM. Эта программа не переключает слоты автоматически."));
+            panel.Children.Add(Muted("Для включения профиля выберите соответствующую карту в разделе SIM модема и обновите список. Приложение не переключает SIM-карты автоматически."));
             _esimCardStatus = Muted(EsimCardLabel()); _esimCardStatus.Name = "EsimCardType"; panel.Children.Add(_esimCardStatus);
             _esimInstall = ActionButton("Установить агент и веб-панель", () => ExecuteAsync(ModemOperation.InstallAgent, (string[]?)null), false);
             _esimInstall.Name = "EsimInstallPermanentAgent"; panel.Children.Add(_esimInstall);
             _esimInstallPage = ActionButton("Установить / обновить страницу eSIM на модеме", InstallEsimLauncherPageAsync, false);
             _esimInstallPage.Name = "EsimInstallLauncherPage"; panel.Children.Add(_esimInstallPage);
             panel.Children.Add(Muted("Сначала установите или обновите комплектный агент в разделе «Агент». Эта кнопка обновляет Launcher. Другие страницы, настройки дисплея и профили eSIM сохраняются."));
-            _esimRead = ActionButton("Проверить карту и профили", () => RunEsimUiAsync(new EsimRequest { Operation = "list" }), true);
+            _esimRead = ActionButton("Проверить карту и профили", () => RunEsimUiAsync(new EsimRequest { Operation = "discover" }), true);
             _esimRead.Name = "EsimRead";
             var reads = new WrapPanel(); reads.Children.Add(_esimRead);
             // This local journal remains available while the card operation is running.
             var journal = new Button { Name = "EsimJournal", Content = Localization.Translate("Журнал eSIM"), Background = Elevated, Foreground = Foreground, CornerRadius = new CornerRadius(8), BorderThickness = new Thickness(0), Padding = new Thickness(13, 8), Margin = new Thickness(0, 0, 8, 7) };
             journal.Click += async (_, _) => await ShowEsimJournalAsync(); reads.Children.Add(journal); panel.Children.Add(reads);
+            var choices = _esimTargets.Where(x => x.Confirmed).ToArray();
+            _esimTargetPicker = null;
+            if (choices.Length > 1 || (!_esimDiscoveryComplete && choices.Length > 0))
+            {
+                panel.Children.Add(Muted("Карта для управления"));
+                _esimTargetPicker = new ComboBox { Name = "EsimTargetPicker", ItemsSource = new[] { Localization.Translate("Выберите карту") }.Concat(choices.Select(x => Localization.Translate(EsimTargets.Title(x.Target)))).ToArray(), SelectedIndex = Array.FindIndex(choices, x => x.Target == _esimSelectedTarget) + 1, HorizontalAlignment = HorizontalAlignment.Stretch };
+                _esimTargetPicker.SelectionChanged += async (_, _) =>
+                {
+                    int index = _esimTargetPicker.SelectedIndex - 1;
+                    if (_busy || index >= choices.Length) return;
+                    if (index < 0) {
+                        _esimSelectedTarget = null; _esimSnapshot = null; _esimCard = null; _esimSelected = null; _esimAuthorized = false; _esimOperations = [];
+                        ClearEsimSecrets(); RenderPage(); return;
+                    }
+                    _esimSelectedTarget = choices[index].Target; _esimSnapshot = null; _esimCard = null; _esimSelected = null; _esimAuthorized = false; _esimOperations = [];
+                    ClearEsimSecrets();
+                    await RunEsimUiAsync(new EsimRequest { Operation = "list", Target = _esimSelectedTarget });
+                };
+                panel.Children.Add(_esimTargetPicker);
+            }
+            else if (_esimSelectedTarget is not null) panel.Children.Add(Muted(EsimTargets.Title(_esimSelectedTarget)));
             if (_esimSnapshot is not null) panel.Children.Add(Muted("EID · " + EsimValidation.Mask(_esimSnapshot.Eid)));
             if (_esimSnapshot is { Profiles.Count: 0 }) panel.Children.Add(Muted("На карте пока нет профилей."));
             _esimProfiles = new ListBox { Name = "EsimProfiles", MinHeight = 88, MaxHeight = 270, Background = Elevated, Foreground = Foreground };
@@ -107,19 +133,20 @@ public sealed partial class MainWindow
         if (_page != 8) return;
         bool connected = _snapshot?.IsConnected == true && _snapshot.ConnectionMode == "SSH" && SelectedConnectionMatches();
         bool available = !_busy && connected && _terminal?.IsConnected != true && !_terminalOpening;
-        bool writes = available && _esimAuthorized && _esimSnapshot is not null;
+        bool writes = available && _esimAuthorized && _esimSnapshot is not null && _esimSelectedTarget == _esimSnapshot.Target && _esimCardTarget == EsimTarget();
         if (_esimCardStatus is not null) _esimCardStatus.Text = Localization.Translate(EsimCardLabel());
         var selected = _esimSnapshot?.Profiles.SingleOrDefault(p => p.Iccid == _esimSelected);
+        if (_esimTargetPicker is not null) _esimTargetPicker.IsEnabled = available;
         if (_esimRead is not null) _esimRead.IsEnabled = available;
         if (_esimInstall is not null) _esimInstall.IsEnabled = available;
         if (_esimInstallPage is not null) _esimInstallPage.IsEnabled = available;
         if (_esimEnable is not null)
         {
-            _esimEnable.IsEnabled = writes && selected?.State is "disabled" or "enabled";
+            _esimEnable.IsEnabled = writes && _esimOperations.Contains("enable") && selected?.State is "disabled" or "enabled";
             _esimEnable.Content = Localization.Translate(selected?.State == "enabled" ? "Перечитать активную SIM" : "Сделать активным");
         }
-        if (_esimDelete is not null) _esimDelete.IsEnabled = writes && selected?.State == "disabled";
-        if (_esimDownload is not null) _esimDownload.IsEnabled = writes && EsimValidation.ActivationCodeValid(EsimActivationInput());
+        if (_esimDelete is not null) _esimDelete.IsEnabled = writes && _esimOperations.Contains("delete") && selected?.State == "disabled";
+        if (_esimDownload is not null) _esimDownload.IsEnabled = writes && _esimOperations.Contains("download") && EsimValidation.ActivationCodeValid(EsimActivationInput());
         if (_esimQr is not null) { _esimQr.IsEnabled = !_busy; _esimQr.IsVisible = !_esimManual; }
         if (_esimProfiles is not null) _esimProfiles.IsEnabled = !_busy;
         if (_esimCode is not null) { _esimCode.IsEnabled = !_busy; _esimCode.IsVisible = !_esimManual; }
@@ -129,8 +156,10 @@ public sealed partial class MainWindow
         if (_esimConfirmation is not null) _esimConfirmation.IsEnabled = !_busy;
     }
     private string EsimCardLabel() => _esimChecking ? "Карта: проверка…"
-        : _esimAuthorized && _esimSnapshot is not null ? "eUICC на месте eSIM подтверждена: EID и профили прочитаны."
-        : _esimCardTarget == EsimTarget() && _esimCard?.Kind == "ordinary_sim" ? "Карта на месте eSIM не предоставляет eUICC. Управление профилями недоступно."
+        : _esimAuthorized && _esimSnapshot is not null ? "eUICC подтверждена: EID и профили прочитаны."
+        : _esimCardTarget == EsimTarget() && _esimCard?.Kind == "ordinary_sim" ? "Карта не предоставляет eUICC. Управление профилями недоступно."
+        : _esimTargets.Count(x => x.Confirmed) > 1 && _esimSelectedTarget is null ? "Найдено несколько eUICC. Выберите карту для управления профилями."
+        : _esimTargets.Count > 0 && _esimSelectedTarget is null ? _esimDiscoveryComplete ? "Карты проверены. Управление профилями eSIM недоступно." : "Не все карты удалось проверить. Повторите проверку или выберите подтверждённую eUICC."
         : _esimCardChecked ? "Карта: тип не определён. Повторите проверку."
         : "Карта ещё не проверена.";
     private string? EsimActivationInput() => _esimManual ? EsimValidation.ComposeManual(_esimAddress?.Text, _esimMatchingId?.Text) : _esimCode?.Text?.Trim();
@@ -157,7 +186,7 @@ public sealed partial class MainWindow
     private async Task SubmitEsimDownloadAsync()
     {
         if (_busy || !_esimAuthorized || _esimSnapshot is null) return;
-        var request = new EsimRequest { Operation = "download", ExpectedSnapshot = _esimSnapshot, ActivationCode = EsimActivationInput(), ConfirmationCode = string.IsNullOrEmpty(_esimConfirmation?.Text) ? null : _esimConfirmation.Text };
+        var request = new EsimRequest { Operation = "download", Target = _esimSelectedTarget, ExpectedSnapshot = _esimSnapshot, ActivationCode = EsimActivationInput(), ConfirmationCode = string.IsNullOrEmpty(_esimConfirmation?.Text) ? null : _esimConfirmation.Text };
         ClearEsimSecrets(); await RunEsimUiAsync(request);
     }
     private async Task RunSelectedEsimAsync(bool delete)
@@ -165,12 +194,16 @@ public sealed partial class MainWindow
         if (_busy || !_esimAuthorized || _esimSnapshot is null) return;
         var selected = _esimSnapshot.Profiles.SingleOrDefault(p => p.Iccid == _esimSelected);
         if (selected is null || (delete ? selected.State != "disabled" : selected.State is not ("disabled" or "enabled"))) return;
+        var expected = _esimSnapshot; var target = _esimSelectedTarget; var binding = EsimTarget();
         if (delete && !await ConfirmAsync("Удалить профиль eSIM без возможности отмены?", selected.DisplayName + "\nICCID · " + EsimValidation.Mask(selected.Iccid))) return;
-        await RunEsimUiAsync(new EsimRequest { Operation = delete ? "delete" : "enable", ExpectedSnapshot = _esimSnapshot, Iccid = selected.Iccid, ConfirmDelete = delete });
+        if (_busy || !_esimAuthorized || EsimTarget() != binding || !ReferenceEquals(expected, _esimSnapshot)) return;
+        await RunEsimUiAsync(new EsimRequest { Operation = delete ? "delete" : "enable", Target = target, ExpectedSnapshot = expected, Iccid = selected.Iccid, ConfirmDelete = delete });
     }
     private async Task RunEsimUiAsync(EsimRequest request)
     {
         if (_busy || !RequireSelectedConnection()) return;
+        if (request.Operation is "download" or "enable" or "delete" && (!_esimAuthorized || !_esimOperations.Contains(request.Operation) || request.Target != _esimSelectedTarget || _esimCardTarget != EsimTarget())) return;
+        var binding = EsimTarget();
         _esimAuthorized = false; _esimCard = null; _esimCardChecked = true; _esimChecking = true;
         ClearEsimSecrets(); SetBusy(true);
         _esimStatus = "Проверка карты…";
@@ -185,20 +218,33 @@ public sealed partial class MainWindow
             }));
             var result = await _service.RunEsimAsync(request, progress, _lifetime.Token);
             if (!result.Ok) throw new EsimException(result.Error, result.ComponentError);
-            var card = EsimCardStatus.FromAcceptedResult(result, request.Operation);
-            if (result.Snapshot is not null) EsimValidation.Postcondition(request, result.Snapshot);
-            if (request.Operation == "enable" && (result.ModemVerified != true || result.RadioRestored != true)) throw new EsimException("postcondition_failed");
-            _esimSnapshot = result.Snapshot;
-            _esimCard = card; _esimCardTarget = EsimTarget();
-            _esimAuthorized = result.Snapshot is not null;
-            if (_esimSnapshot is null) _esimSelected = null;
+            if (EsimTarget() != binding) throw new EsimException("identity_changed");
+            if (request.Operation == "discover")
+            {
+                if (result.Target is not null || result.Snapshot is not null || result.Targets is null || result.Complete is null) throw new EsimException();
+                _esimTargets = result.Targets; _esimDiscoveryComplete = result.Complete == true;
+                var automatic = EsimTargets.Automatic(_esimTargets, _esimDiscoveryComplete);
+                _esimSelectedTarget = automatic?.Target; _esimSnapshot = automatic?.Snapshot; _esimCard = automatic?.Card;
+                _esimOperations = automatic?.Operations ?? [];
+            }
+            else
+            {
+                if (result.Target != request.Target) throw new EsimException("target_mismatch");
+                var card = EsimCardStatus.FromAcceptedResult(result, request.Operation);
+                if (result.Snapshot is not null) EsimValidation.Postcondition(request, result.Snapshot);
+                if (request.Operation == "enable" && (result.ModemVerified != true || result.RadioRestored != true)) throw new EsimException("postcondition_failed");
+                EsimValidation.Operations(result.Operations, card.Kind == "euicc_confirmed");
+                _esimSnapshot = result.Snapshot; _esimCard = card; _esimOperations = result.Operations!;
+            }
+            _esimCardTarget = EsimTarget(); _esimAuthorized = _esimSnapshot is not null;
+            if (_esimSnapshot?.Profiles.Any(p => p.Iccid == _esimSelected) != true) _esimSelected = null;
             succeeded = true;
-            _esimStatus = card.Kind == "ordinary_sim" ? "Карта на месте eSIM не предоставляет eUICC. Управление профилями недоступно." : request.Operation switch { "download" => "Профиль установлен отключённым. Выберите его для включения.", "enable" => "Профиль активен, модем перечитал SIM и восстановил мобильное радио. Регистрация в сети ещё не проверена.", "delete" => "Профиль удалён с карты.", _ => "Профили прочитаны. Можно выбрать профиль или загрузить новый." };
+            _esimStatus = _esimSnapshot is null ? EsimCardLabel() : request.Operation switch { "download" => "Профиль установлен отключённым. Выберите его для включения.", "enable" => "Профиль активен, модем перечитал SIM и восстановил мобильное радио. Регистрация в сети ещё не проверена.", "delete" => "Профиль удалён с карты.", _ => "Профили прочитаны. Можно выбрать профиль или загрузить новый." };
             if (result.NotificationsPending) _esimStatus += " " + Localization.Translate("Уведомления оператору остались в очереди карты.");
         }
         catch (Exception error)
         {
-            _esimAuthorized = false; _esimCard = null; _esimSnapshot = null; _esimSelected = null;
+            _esimAuthorized = false; _esimTargets = []; _esimSelectedTarget = null; _esimDiscoveryComplete = false; _esimOperations = []; _esimCard = null; _esimSnapshot = null; _esimSelected = null;
             var code = error is EsimException esim ? esim.Code : "operation_failed";
             _esimStatus = Localization.Translate(EsimDiagnostics.FailureMessage(code)) + " " + Localization.Translate("Код: {code}. Подробности — в журнале eSIM.").Replace("{code}", code, StringComparison.Ordinal);
         }

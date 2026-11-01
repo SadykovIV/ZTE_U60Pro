@@ -7,6 +7,7 @@
 //! card is already in, changes no persistent state, and is the only way to make
 //! the modem re-read a card whose enabled profile has changed underneath it.
 
+use crate::target::Target;
 use std::time::Duration;
 
 use super::qrtr::{QrtrClient, SERVICE_UIM};
@@ -19,12 +20,6 @@ const MSG_CLOSE_LOGICAL_CHANNEL: u16 = 0x003F;
 const MSG_OPEN_LOGICAL_CHANNEL: u16 = 0x0042;
 const MSG_POWER_OFF_SIM: u16 = 0x0030;
 const MSG_POWER_ON_SIM: u16 = 0x0031;
-
-/// Fixed topology for the internal-eUICC alternative. The replacement card is
-/// wired to the former embedded-eSIM contacts (physical2/logical2). Never fall
-/// back to the independently usable external SIM slot or remap either slot.
-const PHYSICAL_SLOT: u8 = 2;
-const LOGICAL_SLOT: u8 = 2;
 
 /// UIM operations are slow (an ES10 exchange is several APDUs) but must not
 /// wedge a request thread forever.
@@ -117,20 +112,27 @@ fn checked_result(values: &[Tlv]) -> Result<(), String> {
     }
     Ok(())
 }
-fn open_request() -> [Tlv; 1] {
-    [tlv::u8_tlv(0x01, LOGICAL_SLOT)]
+fn open_request(target: Target) -> [Tlv; 1] {
+    [tlv::u8_tlv(0x01, target.logical_slot())]
 }
-fn close_request(channel: u8) -> [Tlv; 2] {
-    [tlv::u8_tlv(0x01, LOGICAL_SLOT), tlv::u8_tlv(0x11, channel)]
+fn close_request(target: Target, channel: u8) -> [Tlv; 2] {
+    [
+        tlv::u8_tlv(0x01, target.logical_slot()),
+        tlv::u8_tlv(0x11, channel),
+    ]
 }
-fn apdu_request(channel: u8, command: &[u8]) -> [Tlv; 3] {
-    [tlv::u8_tlv(0x10, channel), tlv::seq16_tlv(0x02, command), tlv::u8_tlv(0x01, LOGICAL_SLOT)]
+fn apdu_request(target: Target, channel: u8, command: &[u8]) -> [Tlv; 3] {
+    [
+        tlv::u8_tlv(0x10, channel),
+        tlv::seq16_tlv(0x02, command),
+        tlv::u8_tlv(0x01, target.logical_slot()),
+    ]
 }
-fn power_request() -> [Tlv; 1] {
-    [tlv::u8_tlv(0x01, LOGICAL_SLOT)]
+fn power_request(target: Target) -> [Tlv; 1] {
+    [tlv::u8_tlv(0x01, target.logical_slot())]
 }
 
-fn selected_target_slot(data: &[u8]) -> Result<(), String> {
+fn selected_target_slot(target: Target, data: &[u8]) -> Result<(), String> {
     let count = *data.first().ok_or("slot status empty")?;
     if !(1..=8).contains(&count) {
         return Err("slot count invalid".into());
@@ -152,9 +154,9 @@ fn selected_target_slot(data: &[u8]) -> Result<(), String> {
         if card > 2 || active > 1 || logical > 8 {
             return Err("slot status invalid".into());
         }
-        if physical == PHYSICAL_SLOT {
-            matched = card == 2 && active == 1 && logical == LOGICAL_SLOT;
-        } else if active == 1 && logical == LOGICAL_SLOT {
+        if physical == target.physical_slot() {
+            matched = card == 2 && active == 1 && logical == target.logical_slot();
+        } else if active == 1 && logical == target.logical_slot() {
             return Err("alternate slot selected".into());
         }
     }
@@ -166,6 +168,7 @@ fn selected_target_slot(data: &[u8]) -> Result<(), String> {
 
 pub struct UimClient {
     qmi: QrtrClient,
+    target: Target,
 }
 
 /// One application reported inside a card's status.
@@ -190,16 +193,23 @@ impl Card {
     }
 }
 
-fn target_card_ready(cards: &[Card]) -> bool {
-    cards.get(usize::from(LOGICAL_SLOT - 1)).is_some_and(|card| {
-        card.is_present() && card.applications.iter().any(|app| matches!(app.app_type, 1 | 2) && app.state == 7)
-    })
+fn target_card_ready(target: Target, cards: &[Card]) -> bool {
+    cards
+        .get(usize::from(target.logical_slot() - 1))
+        .is_some_and(|card| {
+            card.is_present()
+                && card
+                    .applications
+                    .iter()
+                    .any(|app| matches!(app.app_type, 1 | 2) && app.state == 7)
+        })
 }
 
 impl UimClient {
-    pub fn connect() -> Result<Self, String> {
+    pub fn connect(target: Target) -> Result<Self, String> {
         Ok(Self {
             qmi: QrtrClient::connect(SERVICE_UIM, DEFAULT_TIMEOUT)?,
+            target,
         })
     }
 
@@ -215,12 +225,12 @@ impl UimClient {
     pub fn selected_physical_target(&mut self) -> Result<(), String> {
         let response = self.qmi.request_exact(MSG_GET_SLOT_STATUS, &[])?;
         checked_result(&response)?;
-        selected_target_slot(unique_field(&response, 0x10)?)
+        selected_target_slot(self.target, unique_field(&response, 0x10)?)
     }
 
     pub fn target_ready(&mut self) -> Result<bool, String> {
         let cards = self.card_status()?;
-        Ok(target_card_ready(&cards))
+        Ok(target_card_ready(self.target, &cards))
     }
 
     /// `UIM_OPEN_LOGICAL_CHANNEL` with omitted AID allocates an owned channel
@@ -234,7 +244,7 @@ impl UimClient {
     pub fn open_logical_channel(&mut self) -> Result<u8, OpenChannelError> {
         let tlvs = self
             .qmi
-            .request_exact(MSG_OPEN_LOGICAL_CHANNEL, &open_request())
+            .request_exact(MSG_OPEN_LOGICAL_CHANNEL, &open_request(self.target))
             .map_err(|_| OpenChannelError::unknown())?;
         parse_open_response(&tlvs)
     }
@@ -243,7 +253,7 @@ impl UimClient {
     pub fn close_logical_channel(&mut self, channel: u8) -> Result<(), String> {
         let tlvs = self.qmi.request_exact(
             MSG_CLOSE_LOGICAL_CHANNEL,
-            &close_request(channel),
+            &close_request(self.target, channel),
         )?;
         checked_result(&tlvs)
     }
@@ -256,7 +266,7 @@ impl UimClient {
     pub fn power_off_card(&mut self) -> Result<(), String> {
         let tlvs = self
             .qmi
-            .request(MSG_POWER_OFF_SIM, &power_request())?;
+            .request(MSG_POWER_OFF_SIM, &power_request(self.target))?;
         tlv::check_result(&tlvs)
     }
 
@@ -268,16 +278,15 @@ impl UimClient {
     pub fn power_on_card(&mut self) -> Result<(), String> {
         let tlvs = self
             .qmi
-            .request(MSG_POWER_ON_SIM, &power_request())?;
+            .request(MSG_POWER_ON_SIM, &power_request(self.target))?;
         tlv::check_result(&tlvs)
     }
 
     /// `UIM_SEND_APDU` — returns the raw response including SW1/SW2.
     pub fn send_apdu(&mut self, channel: u8, command: &[u8]) -> Result<Vec<u8>, String> {
-        let tlvs = self.qmi.request_exact(
-            MSG_SEND_APDU,
-            &apdu_request(channel, command),
-        )?;
+        let tlvs = self
+            .qmi
+            .request_exact(MSG_SEND_APDU, &apdu_request(self.target, channel, command))?;
         checked_result(&tlvs)?;
         let value = unique_field(&tlvs, 0x10)?;
         let bytes = tlv::read_seq16(value)?;
@@ -545,10 +554,6 @@ mod tests {
     fn rejects_empty_card_status() {
         assert!(parse_card_status(&[]).is_err());
     }
-    #[test]
-    fn open_has_only_slot_no_empty_aid_or_fci() {
-        assert_eq!(tlv::encode(&open_request()), vec![1, 1, 0, 2]);
-    }
     fn slot_rows(rows: &[(u32, u32, u8)]) -> Vec<u8> {
         let mut data = vec![rows.len() as u8];
         for (present, active, logical) in rows {
@@ -559,46 +564,87 @@ mod tests {
         data
     }
     #[test]
-    fn physical_route_requires_exact_slot2_and_preserves_the_external_slot() {
-        // Both cards can be present and routed; no remapping is necessary.
-        for other in [(2, 1, 1), (1, 0, 0), (0, 0, 0)] {
-            assert!(selected_target_slot(&slot_rows(&[other, (2, 1, 2)])).is_ok());
+    fn exact_requested_route_is_required_without_fallback_or_remapping() {
+        for target in [Target::Removable, Target::Internal] {
+            let slot = target.logical_slot();
+            let index = usize::from(target.physical_slot() - 1);
+            for other in [(2, 1, 3 - slot), (1, 0, 0), (0, 0, 0)] {
+                let mut rows = vec![other; 2];
+                rows[index] = (2, 1, slot);
+                assert!(selected_target_slot(target, &slot_rows(&rows)).is_ok());
+            }
+            let good = slot_rows(&[(2, 1, 1), (2, 1, 2)]);
+            for bad_target in [
+                (2, 0, slot),
+                (1, 1, slot),
+                (2, 1, 3 - slot),
+                (9, 1, slot),
+                (2, 9, slot),
+                (2, 1, 9),
+            ] {
+                let mut rows = vec![(2, 1, 1), (2, 1, 2)];
+                rows[index] = bad_target;
+                assert!(selected_target_slot(target, &slot_rows(&rows)).is_err());
+            }
+            let mut conflict = vec![(2, 1, 1), (2, 1, 2)];
+            conflict[1 - index] = (2, 1, slot);
+            assert!(selected_target_slot(target, &slot_rows(&conflict)).is_err());
+            assert!(selected_target_slot(target, &slot_rows(&[(2, 1, 2), (2, 1, 1)])).is_err());
+            for end in 0..good.len() {
+                assert!(selected_target_slot(target, &good[..end]).is_err());
+            }
+            let mut trailing = good.clone();
+            trailing.push(0);
+            assert!(selected_target_slot(target, &trailing).is_err());
         }
-        let good = slot_rows(&[(2, 1, 1), (2, 1, 2)]);
-        for rows in [
-            vec![(2, 1, 1)], // Never fall back to a card in the external slot.
-            vec![(2, 1, 1), (2, 0, 2)],
-            vec![(2, 1, 1), (1, 1, 2)],
-            vec![(2, 1, 1), (2, 1, 1)],
-            vec![(2, 1, 2), (2, 1, 2)],
-            vec![(2, 1, 2), (2, 1, 1)], // Remapped slots are not this variant.
-            vec![(9, 1, 1), (2, 1, 2)],
-            vec![(2, 1, 1), (9, 1, 2)],
-        ] {
-            assert!(selected_target_slot(&slot_rows(&rows)).is_err());
-        }
-        for end in 0..good.len() {
-            assert!(selected_target_slot(&good[..end]).is_err());
-        }
-        let mut trailing = good.clone();
-        trailing.push(0);
-        assert!(selected_target_slot(&trailing).is_err());
+        let single = slot_rows(&[(2, 1, 1)]);
+        assert!(selected_target_slot(Target::Removable, &single).is_ok());
+        assert!(selected_target_slot(Target::Internal, &single).is_err());
     }
     #[test]
-    fn every_card_command_addresses_only_logical_slot2() {
-        assert_eq!(tlv::encode(&open_request()), [1, 1, 0, 2]);
-        assert_eq!(tlv::encode(&close_request(3)), [1, 1, 0, 2, 0x11, 1, 0, 3]);
-        assert_eq!(tlv::encode(&power_request()), [1, 1, 0, 2]);
-        assert_eq!(tlv::encode(&apdu_request(3, &[0, 0xa4])), [0x10, 1, 0, 3, 2, 4, 0, 2, 0, 0, 0xa4, 1, 1, 0, 2]);
+    fn every_card_command_addresses_only_the_requested_logical_slot() {
+        for target in [Target::Removable, Target::Internal] {
+            let slot = target.logical_slot();
+            // Open omits AID and FCI rather than sending ambiguous empty fields.
+            assert_eq!(tlv::encode(&open_request(target)), [1, 1, 0, slot]);
+            assert_eq!(
+                tlv::encode(&close_request(target, 3)),
+                [1, 1, 0, slot, 0x11, 1, 0, 3]
+            );
+            assert_eq!(tlv::encode(&power_request(target)), [1, 1, 0, slot]);
+            assert_eq!(
+                tlv::encode(&apdu_request(target, 3, &[0, 0xa4])),
+                [0x10, 1, 0, 3, 2, 4, 0, 2, 0, 0, 0xa4, 1, 1, 0, slot]
+            );
+        }
     }
     #[test]
-    fn ordinary_card_readiness_uses_internal_card_index_only() {
-        let ready = Card { state: 1, error: 0, applications: vec![CardApplication { app_type: 2, state: 7, aid: vec![] }] };
-        let absent = Card { state: 0, error: 0, applications: vec![] };
-        assert!(!target_card_ready(&[ready.clone()]));
-        assert!(!target_card_ready(&[ready.clone(), absent.clone()]));
-        assert!(target_card_ready(&[absent, ready.clone()]));
-        assert!(target_card_ready(&[ready.clone(), ready]));
+    fn ordinary_card_readiness_uses_only_the_requested_index() {
+        let ready = Card {
+            state: 1,
+            error: 0,
+            applications: vec![CardApplication {
+                app_type: 2,
+                state: 7,
+                aid: vec![],
+            }],
+        };
+        let absent = Card {
+            state: 0,
+            error: 0,
+            applications: vec![],
+        };
+        for target in [Target::Removable, Target::Internal] {
+            let index = usize::from(target.logical_slot() - 1);
+            let mut cards = vec![absent.clone(); 2];
+            cards[1 - index] = ready.clone();
+            assert!(!target_card_ready(target, &cards));
+            cards[index] = ready.clone();
+            assert!(target_card_ready(target, &cards));
+            assert!(!target_card_ready(target, &[]));
+        }
+        assert!(target_card_ready(Target::Removable, &[ready.clone()]));
+        assert!(!target_card_ready(Target::Internal, &[ready]));
     }
     #[test]
     fn result_and_payload_duplicates_are_not_capability_proof() {

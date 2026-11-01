@@ -14,8 +14,10 @@ function load(name, imports = {}, extra = {}) {
 const model = load('model')
 const errors = load('errors')
 const journal = load('journal', { './errors': errors })
+const targetID = 'internal-euicc-slot2'
+const wire = { target: targetID, card: { kind: 'euicc_confirmed', management: 'available', reason: 'eid_and_profiles_read', cleanup_confirmed: true }, operations: ['list', 'enable', 'download', 'rename', 'delete'], network_selected: true }
 const profile = (suffix, enabled = false) => ({ iccid: '8900000000000000' + suffix, isdp_aid: null, state: enabled ? 'enabled' : 'disabled', enabled, nickname: null, name: 'Synthetic', service_provider: 'Example' })
-const snapshot = profiles => ({ ok: true, eid: '9'.repeat(32), profiles })
+const snapshot = profiles => ({ ok: true, target: targetID, eid: '9'.repeat(32), profiles })
 test('eSIM manual input composes the exact wire code and rejects ambiguous address/Matching ID', () => {
   assert.equal(model.compose('https://Example.com:443/', 'matching-123'), 'LPA:1$example.com$matching-123')
   for (const address of ['http://example.com', 'https://u:p@example.com/', 'https://example.com/path', 'https://example.com/?x=y', 'example.com:443', 'localhost', '192.168.0.1', 'a.123', '-a.com']) assert.throws(() => model.compose(address, 'test'), address)
@@ -29,7 +31,7 @@ test('eSIM snapshots reject duplicate IDs, invalid state, false success and iden
 })
 test('all eSIM mutation postconditions must match the exact prior card and selected profile', () => {
   const before = snapshot([profile('01'), profile('02', true)])
-  const check = (operation, after, iccid = before.profiles[0].iccid) => model.verifiedResult({ protocol: 1, operation, expected_snapshot: before, iccid }, { ok: true, changed: true, snapshot: after, modem_verified: true, radio_restored: true })
+  const check = (operation, after, iccid = before.profiles[0].iccid) => model.verifiedResult({ protocol: 2, target: targetID, operation, expected_snapshot: before, iccid }, { ...wire, ok: true, changed: true, snapshot: after, modem_verified: true, radio_restored: true })
   assert.equal(check('enable', snapshot([profile('01', true), profile('02')])).profiles[0].enabled, true)
   assert.throws(() => check('enable', before))
   assert.throws(() => check('enable', snapshot([profile('01', true), profile('02', true)])))
@@ -38,16 +40,16 @@ test('all eSIM mutation postconditions must match the exact prior card and selec
   assert.equal(check('download', snapshot([...before.profiles, profile('03')])).profiles.length, 3)
   assert.throws(() => check('download', snapshot([...before.profiles, profile('03', true)])))
   assert.throws(() => check('download', { ...before, eid: '8'.repeat(32) }))
-  assert.throws(() => model.verifiedResult({ protocol: 1, operation: 'list' }, { ok: false, snapshot: before }))
+  assert.throws(() => model.verifiedResult({ protocol: 2, target: targetID, operation: 'list' }, { ok: false, snapshot: before }))
 })
 test('enable success requires both modem readback and restored radio; refresh permits unchanged active card', () => {
   const before = snapshot([profile('01')]), after = snapshot([profile('01', true)])
-  const request = { protocol: 1, operation: 'enable', expected_snapshot: before, iccid: before.profiles[0].iccid }
+  const request = { protocol: 2, target: targetID, operation: 'enable', expected_snapshot: before, iccid: before.profiles[0].iccid }
   for (const fields of [{}, { modem_verified: true }, { radio_restored: true }, { modem_verified: false, radio_restored: true }, { modem_verified: true, radio_restored: false }, { modem_verified: 'true', radio_restored: true }]) {
-    assert.throws(() => model.verifiedResult(request, { ok: true, changed: true, snapshot: after, ...fields }))
+    assert.throws(() => model.verifiedResult(request, { ...wire, ok: true, changed: true, snapshot: after, ...fields }))
   }
-  assert.equal(model.verifiedResult({ ...request, expected_snapshot: after }, { ok: true, changed: false, snapshot: after, modem_verified: true, radio_restored: true }).profiles[0].enabled, true)
-  assert.throws(() => model.verifiedResult(request, { ok: true, changed: false, snapshot: after, modem_verified: true, radio_restored: true }))
+  assert.equal(model.verifiedResult({ ...request, expected_snapshot: after }, { ...wire, ok: true, changed: false, snapshot: after, modem_verified: true, radio_restored: true }).profiles[0].enabled, true)
+  assert.throws(() => model.verifiedResult(request, { ...wire, ok: true, changed: false, snapshot: after, modem_verified: true, radio_restored: true }))
 })
 test('rename validates 64 Unicode characters and produces a trimmed card-bound request', () => {
   const before = snapshot([profile('01'), profile('02', true)])
@@ -65,7 +67,7 @@ test('rename confirms only the requested nickname and preserves every profile an
   for (const selected of before.profiles) {
     const request = model.renameRequest(before, selected.iccid, 'Работа')
     const after = snapshot(before.profiles.map(p => p === selected ? { ...p, nickname: 'Работа' } : { ...p }))
-    assert.equal(model.verifiedResult(request, { ok: true, changed: true, snapshot: after }), after)
+    assert.equal(model.verifiedResult(request, { ...wire, ok: true, changed: true, snapshot: after }), after)
     const corruptions = [
       { ...after, eid: '8'.repeat(32) },
       snapshot(after.profiles.slice(0, 1)),
@@ -75,12 +77,12 @@ test('rename confirms only the requested nickname and preserves every profile an
       ...['name', 'service_provider', 'isdp_aid'].map(key => snapshot(after.profiles.map(p => p.iccid === selected.iccid ? { ...p, [key]: key === 'isdp_aid' ? 'A001' : 'changed' } : p))),
       snapshot(after.profiles.map(p => ({ ...p, enabled: !p.enabled, state: p.enabled ? 'disabled' : 'enabled' })))
     ]
-    for (const value of corruptions) assert.throws(() => model.verifiedResult(request, { ok: true, changed: true, snapshot: value }), /unconfirmed/)
-    for (const changed of [false, undefined, 'true']) assert.throws(() => model.verifiedResult(request, { ok: true, changed, snapshot: after }), /unconfirmed/)
-    for (const nickname of [undefined, '', '  Работа  ']) assert.throws(() => model.verifiedResult({ ...request, nickname }, { ok: true, changed: true, snapshot: after }))
+    for (const value of corruptions) assert.throws(() => model.verifiedResult(request, { ...wire, ok: true, changed: true, snapshot: value }), /unconfirmed/)
+    for (const changed of [false, undefined, 'true']) assert.throws(() => model.verifiedResult(request, { ...wire, ok: true, changed, snapshot: after }), /unconfirmed/)
+    for (const nickname of [undefined, '', '  Работа  ']) assert.throws(() => model.verifiedResult({ ...request, nickname }, { ...wire, ok: true, changed: true, snapshot: after }))
     const unchanged = model.renameRequest(after, selected.iccid, 'Работа')
-    assert.equal(model.verifiedResult(unchanged, { ok: true, changed: false, snapshot: after }), after)
-    assert.throws(() => model.verifiedResult(unchanged, { ok: true, changed: true, snapshot: after }), /unconfirmed/)
+    assert.equal(model.verifiedResult(unchanged, { ...wire, ok: true, changed: false, snapshot: after }), after)
+    assert.throws(() => model.verifiedResult(unchanged, { ...wire, ok: true, changed: true, snapshot: after }), /unconfirmed/)
   }
 })
 test('rename journal exposes stage and fixed error without names or card identifiers', () => {
@@ -104,16 +106,16 @@ test('job client posts once, follows only its ID and verifies a completed result
   const calls = [], snap = snapshot([profile('01')]), id = 'ab'.repeat(16)
   const req = async (method, url, body) => {
     calls.push({ method, url, body })
-    return method === 'POST' ? { job_id: id, state: 'running' } : { job_id: id, state: 'complete', result: { ok: true, snapshot: snap } }
+    return method === 'POST' ? { job_id: id, state: 'running' } : { job_id: id, state: 'complete', result: { ...wire, ok: true, snapshot: snap } }
   }
   const api = load('api', { '../../data/client': { req }, './model': model, './journal': journal, './errors': errors }, {
     window: { crypto: { getRandomValues: bytes => bytes.fill(0xab) } }, setTimeout, clearTimeout
   })
-  const value = await api.runOperation({ protocol: 1, operation: 'list' }, () => {}, new AbortController().signal)
+  const value = await api.runOperation({ protocol: 2, target: targetID, operation: 'list' }, () => {}, new AbortController().signal)
   assert.equal(value.snapshot.eid, snap.eid); assert.equal(calls.filter(c => c.method === 'POST').length, 1)
   assert.equal(calls[1].url, '/api/esim/jobs/' + id)
   assert.equal(calls[0].body.request_id, id)
-  assert.equal(calls[0].body.target, 'internal-euicc-slot2')
+  assert.equal(calls[0].body.request.target, targetID); assert.equal(calls[0].body.target, undefined)
 })
 test('lost start response, mismatched job and false result never become a successful operation or an automatic retry', async () => {
   for (const failure of ['lost', 'foreign', 'false-result']) {
@@ -123,7 +125,7 @@ test('lost start response, mismatched job and false result never become a succes
       return { job_id: (failure === 'foreign' ? 'cd' : 'ab').repeat(16), state: 'complete', result: { ok: false, snapshot: snapshot([]) } }
     }
     const api = load('api', { '../../data/client': { req }, './model': model, './journal': journal, './errors': errors }, { window: { crypto: { getRandomValues: b => b.fill(1) } }, setTimeout, clearTimeout })
-    await assert.rejects(api.runOperation({ protocol: 1, operation: 'list' }, () => {}, new AbortController().signal))
+    await assert.rejects(api.runOperation({ protocol: 2, target: targetID, operation: 'list' }, () => {}, new AbortController().signal))
     assert.equal(posts, 1)
   }
 })
@@ -148,7 +150,7 @@ test('radio stages and recovery diagnostics are fixed and no card identifiers en
 test('radio recovery failure remains a fixed failure and is never retried', async () => {
   let posts = 0
   const api = load('api', { '../../data/client': { req: async () => { posts++; return { job_id: 'ab'.repeat(16), state: 'complete', result: { ok: false, error: 'radio_restore_failed', modem_verified: false, radio_restored: false } } } }, './model': model, './journal': journal, './errors': errors }, { window: { crypto: { getRandomValues: b => b.fill(1) } }, setTimeout, clearTimeout })
-  await assert.rejects(api.runOperation({ protocol: 1, operation: 'enable', expected_snapshot: snapshot([profile('01')]), iccid: profile('01').iccid }, () => {}, new AbortController().signal), /radio_restore_failed/)
+  await assert.rejects(api.runOperation({ protocol: 2, target: targetID, operation: 'enable', expected_snapshot: snapshot([profile('01')]), iccid: profile('01').iccid }, () => {}, new AbortController().signal), /radio_restore_failed/)
   assert.equal(posts, 1)
 })
 
@@ -163,7 +165,7 @@ test('final journal keeps fixed component cause and never copies unknown diagnos
   const line = journal.resultDiagnostic({ ok: false, error: 'card_open_rejected', component_error: 'qmi_open_rejected', stderr: 'SECRET-RAW', iccid: '89000000000000000001' })
   assert.match(line, /error=card_open_rejected.*component_error=qmi_open_rejected/)
   assert.doesNotMatch(line, /SECRET|890000/)
-  assert.equal(journal.resultDiagnostic({ ok: true, component_error: 'qmi_open_rejected' }), null)
+  assert.equal(journal.resultDiagnostic({ ...wire, ok: true, component_error: 'qmi_open_rejected' }), null)
   assert.equal(journal.resultDiagnostic({ ok: false, error: 'SECRET', component_error: 'SECRET' }), 'result · error=unconfirmed')
 })
 test('card recovery instructions distinguish restart, wait and channel rejection in both languages', () => {
@@ -185,9 +187,54 @@ test('fixed card failure and component cause are logged once with no automatic j
   for (const code of ['esim_slot_not_selected', 'modem_slot_mismatch', 'card_busy', 'card_open_rejected', 'card_cleanup_unknown', 'card_not_ready', 'card_reset_failed', 'card_power_restore_failed']) {
     let posts = 0; const logs = []
     const api = load('api', { '../../data/client': { req: async () => { posts++; return { job_id: 'ab'.repeat(16), state: 'complete', result: { ok: false, error: code, component_error: 'qmi_open_rejected', raw: 'SECRET' } } } }, './model': model, './journal': journal, './errors': errors }, { window: { crypto: { getRandomValues: b => b.fill(1) } }, setTimeout, clearTimeout })
-    await assert.rejects(api.runOperation({ protocol: 1, operation: 'list' }, (_, line) => logs.push(line), new AbortController().signal), new RegExp(code))
+    await assert.rejects(api.runOperation({ protocol: 2, target: targetID, operation: 'list' }, (_, line) => logs.push(line), new AbortController().signal), new RegExp(code))
     assert.equal(posts, 1); assert.equal(logs.length, 1)
     assert.match(logs[0], /component_error=qmi_open_rejected/); assert.doesNotMatch(logs[0], /SECRET/)
   }
-  assert.throws(() => model.verifiedResult({ protocol: 1, operation: 'list' }, { ok: true, snapshot: snapshot([]), component_error: 'qmi_open_rejected' }))
+  assert.throws(() => model.verifiedResult({ protocol: 2, target: targetID, operation: 'list' }, { ...wire, ok: true, snapshot: snapshot([]), component_error: 'qmi_open_rejected' }))
+})
+
+test('discovery distinguishes sole, dual, ordinary, absent and partial card inventories', () => {
+  const ordinary = { kind: 'ordinary_sim', management: 'unavailable', reason: 'isdr_not_found', cleanup_confirmed: true }
+  const absent = { kind: 'unknown', management: 'unknown', reason: 'not_present', cleanup_confirmed: true }
+  const entry = (target, card, snap) => ({ target, card, ...(snap ? { snapshot: { ...snap, target } } : {}), operations: snap ? ['list', 'rename'] : [], network_selected: false })
+  const second = entry(targetID, wire.card, snapshot([]))
+  const result = first => ({ ok: true, complete: true, changed: false, notifications_pending: false, targets: [first, second] })
+  for (const card of [ordinary, absent]) assert.equal(model.automaticTarget(model.verifiedDiscovery(result(entry(model.targets[0], card)))), targetID)
+  const dual = model.verifiedDiscovery(result(entry(model.targets[0], wire.card, snapshot([]))))
+  assert.equal(model.automaticTarget(dual), null)
+  const partial = result(entry(model.targets[0], { ...absent, reason: 'read_failed', cleanup_confirmed: true }))
+  assert.throws(() => model.verifiedDiscovery(partial))
+  assert.equal(model.automaticTarget(model.verifiedDiscovery({ ...partial, complete: false })), null)
+  for (const corrupt of [
+    { ...result(entry(model.targets[0], ordinary)), targets: [second, second] },
+    { ...result(entry(model.targets[0], ordinary)), targets: [second] },
+    result(entry('invalid-slot', ordinary)),
+    result(entry(model.targets[0], { ...absent, reason: 'cleanup_unknown', cleanup_confirmed: false })),
+    { ...result(entry(model.targets[0], ordinary)), changed: true }
+  ]) assert.throws(() => model.verifiedDiscovery(corrupt))
+})
+test('same EID and profiles in another slot never authorize a result or mutation', () => {
+  const before = snapshot([profile('01')]), request = model.renameRequest(before, profile('01').iccid, 'New')
+  const after = { ...before, profiles: [{ ...before.profiles[0], nickname: 'New' }] }
+  const result = { ...wire, ok: true, changed: true, snapshot: after }
+  assert.equal(model.verifiedResult(request, result), after)
+  for (const [req, res] of [
+    [{ ...request, target: model.targets[0] }, result],
+    [request, { ...result, target: model.targets[0] }],
+    [request, { ...result, snapshot: { ...after, target: model.targets[0] } }],
+    [{ ...request, expected_snapshot: { ...before, target: model.targets[0] } }, result],
+    [{ ...request, protocol: 1 }, result],
+    [{ ...request, target: undefined }, result],
+    [request, { ...result, card: undefined }]
+  ]) assert.throws(() => model.verifiedResult(req, res))
+})
+
+test('contradictory absence or cleanup metadata never authorizes automatic target choice', () => {
+  const result = { ok: true, complete: true, changed: false, notifications_pending: false, targets: [
+    { target: model.targets[0], card: { kind: 'unknown', management: 'unknown', reason: 'not_present', cleanup_confirmed: false }, operations: [], network_selected: null },
+    { ...wire, snapshot: snapshot([]) }
+  ] }
+  assert.throws(() => model.verifiedDiscovery(result))
+  result.complete = false; result.targets[0].card.reason = 'read_failed'; assert.throws(() => model.verifiedDiscovery(result))
 })

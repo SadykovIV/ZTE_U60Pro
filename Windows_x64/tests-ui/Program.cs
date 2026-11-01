@@ -118,7 +118,7 @@ await session.Dispatch(()=> {
     Check(task.IsCompletedSuccessfully&&policyModem.Requests.Count==beforeDispatch,language+" changed "+key+" cannot dispatch "+operation+" through old SSH");
    }
    var beforeEsim=policyModem.EsimCalls;var beforeTerminal=policyModem.TerminalCalls;
-   var esimTask=(Task)typeof(MainWindow).GetMethod("RunEsimUiAsync",BindingFlags.NonPublic|BindingFlags.Instance)!.Invoke(policyWindow,[new ZteImeiStudio.Windows.Esim.EsimRequest { Operation="list" }])!;Pump();
+   var esimTask=(Task)typeof(MainWindow).GetMethod("RunEsimUiAsync",BindingFlags.NonPublic|BindingFlags.Instance)!.Invoke(policyWindow,[new ZteImeiStudio.Windows.Esim.EsimRequest { Operation="discover" }])!;Pump();
    var terminalTask=(Task)typeof(MainWindow).GetMethod("OpenTerminalAsync",BindingFlags.NonPublic|BindingFlags.Instance)!.Invoke(policyWindow,[])!;Pump();
    Check(esimTask.IsCompletedSuccessfully&&terminalTask.IsCompletedSuccessfully&&policyModem.EsimCalls==beforeEsim&&policyModem.TerminalCalls==beforeTerminal,language+" changed "+key+" also blocks eSIM and terminal dispatch through old SSH");
    var beforeAdaptation=policyModem.Requests.Count;

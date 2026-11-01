@@ -8,6 +8,8 @@ from pathlib import Path
 import shutil
 import subprocess
 import tarfile
+import tomllib
+import re
 
 ROOT = Path(__file__).resolve().parents[2]
 LPAC = ROOT / 'third_party/lpac'
@@ -19,6 +21,15 @@ BASELINE_DEPENDENCIES_SHA = '29c00a9cc4bd76f5190141be668230acf00ad008871fad72a20
 
 def sha(data):
     return hashlib.sha256(data).hexdigest()
+
+
+def agent_version(root):
+    """Cargo is the version authority for every generated agent payload."""
+    package = tomllib.loads((Path(root) / 'ModemAgent/agent/Cargo.toml').read_text())['package']
+    version = package.get('version')
+    if package.get('name') != 'zte-agent' or not isinstance(version, str) or re.fullmatch(r'\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?', version) is None:
+        raise ValueError('Invalid agent package/version')
+    return version
 
 
 def baseline_dependencies():
@@ -37,7 +48,7 @@ def source_archive():
     """Deterministic corresponding source with no evidence, caches or build paths."""
     items = {}
     selected = ['third_party/lpac', 'third_party/lpac-build', 'tools/removable-euicc/certs',
-        'tools/removable-euicc/device/src', 'tools/removable-euicc/device/Cargo.toml',
+        'tools/removable-euicc/device/src', 'tools/removable-euicc/device/tests', 'tools/removable-euicc/device/Cargo.toml',
         'tools/removable-euicc/device/Cargo.lock', 'tools/removable-euicc/device/component.json',
         'tools/removable-euicc/device/COMPONENT-NOTICE.txt',
         'tools/removable-euicc/device/.cargo', 'tools/removable-euicc/device/README.md',
@@ -59,7 +70,7 @@ def source_archive():
         'MacIMEI/Sources/FirmwareRadioSupport.swift','Windows_x64/src/Diagnostics/FirmwareRadioSupport.cs',
         'Windows_x64/Resources/Onboarding/provenance.json',
         'Windows_x64/sync_public_resources.py',
-        'docs/ESIM-APP-CONTRACT.md','docs/ESIM-DESKTOP.md','docs/DEVICE-DISCOVERY-CONTRACT.md','third_party/ESIM-SOURCES.md','LICENSE-SCOPE.md']
+        'docs/UNIFIED-SIM.md','docs/ESIM-APP-CONTRACT.md','docs/ESIM-DESKTOP.md','docs/DEVICE-DISCOVERY-CONTRACT.md','third_party/ESIM-SOURCES.md','LICENSE-SCOPE.md']
     # Include local installation recipes and manifests. Pinned baseline binaries
     # are obtained with tools/fetch_dependencies.py before the modem build.
     for group in ['VPN','AgentInstallation','Onboarding','SSHAccounts','TTL','DeviceBackups','SystemBackups']:
@@ -97,64 +108,58 @@ def main():
     if sha(CERT.read_bytes()) != CERT_SHA:
         raise SystemExit('GSMA certificate identity mismatch')
     sources, count = source_archive()
-    readme = '''# Internal eUICC — карта на месте штатной eSIM
+    version = agent_version(ROOT)
+    readme = f'''# eUICC — два явных маршрута карты
 
-Версия агента: 2.10.0-internal.1. Приложения: ZTE U60Pro Internal eUICC 1.28.
+Версия агента: {version}. Программа: ZTE U60Pro Manager, протокол eSIM 2.
 
-Сборка предназначена для настоящей eUICC, установленной вместо штатной eSIM.
-Маршрут фиксирован: physical2 / logical2. Физический SIM-слот 1 остаётся
-доступен для другой SIM через штатный переключатель. Агент не меняет
-маршрутизацию слотов и не выбирает SIM автоматически. Заводская карта ZTE
-не получает поддержку consumer eSIM от установки этой версии.
-Новая аппаратная конфигурация ещё не проверена: успешное чтение требует
-реальных EID и полного списка профилей. Перед включением профиля или
-перечитыванием SIM выберите eSIM в штатном разделе SIM. Агент проверяет
-оба штатных getter и точные компоненты радио до изменения карты.
+Единый комплект работает с одной SIM, штатной связкой физической SIM и
+китайской eSIM, а также с настоящей eUICC SIM-картой, перепаянной вместо
+штатной внутренней китайской eSIM. Свои профили на оригинальном чипе ZTE
+не поддерживаются. Обычная SIM сохраняет штатные функции модема.
 
-Откройте eSIM в левом меню, подключитесь по SSH и запросите профили.
-Для установки вставьте LPA-код, выберите изображение QR или переключитесь
-на отдельные поля SM-DP+ Address и Activation code (Matching ID).
-Если оператор выдал отдельный код подтверждения, введите его ниже.
-Установка сохраняет новый профиль выключенным. Активный профиль выбирается
-отдельной кнопкой. Удаление требует подтверждения; активный профиль удалить
-нельзя. Повторное использование QR зависит от оператора.
+Меню eSIM обнаруживает карты и привязывает операции к явной цели:
+removable-euicc-slot1 (physical1/logical1) либо internal-euicc-slot2
+(physical2/logical2). При двух eUICC нужную карту выбирает пользователь.
+Ошибка не запускает обращение к соседнему слоту. Автоматического сетевого
+переключения SIM, переназначения слотов и dual-active нет.
 
-HTTPS выполняет компьютер, поэтому нужен его доступ к интернету.
-eSIM-агент передаётся в приватный временный каталог модема на время операции.
-Кнопка установки штатного агента теперь устанавливает постоянную сборку
-zte-agent-esim вместе с веб-панелью eSIM. --esim-check показывает версию,
---esim-rpc обслуживает программы. Веб-панель использует интернет модема;
-для пустой карты без интернета модема используйте программу на компьютере.
-Запуск без параметров запускает обычный сервер агента; не запускайте его
-параллельно с другим сервером на том же порту.
+Откройте eSIM, подключитесь по SSH и прочитайте профили выбранной карты.
+Для загрузки используйте LPA-код, QR либо поля SM-DP+ Address и Activation code.
+Новый профиль сохраняется выключенным. Переименование хранится на карте;
+удалить можно только выключенный профиль с подтверждением.
 
-Проверка TLS включена. Ко всем допустимым адресам eSIM применяется общий
-закреплённый набор production-корней GSMA вместе с системными корнями.
-Имя, срок и цепочка проверяются; системное хранилище не изменяется.
-Ограничения оператора и доверие внутри eUICC остаются в силе.
-Приложения не сохраняют коды активации и содержимое протокола в диагностике.
-При потере связи запросите профили заново перед повторной попыткой.
-Переключение подтверждается только после автономного режима, возврата радио
-и совпадения свежего ICCID модема с выбранным профилем. В автономном режиме
-агент выключает и включает питание SIM-слота 2, затем ждёт готовность USIM. Нажатие на уже активный
-профиль повторно читает SIM без повторной команды включения профиля.
-Регистрацию в сети и доступ к интернету проверяйте отдельно.
+Перед включением профиля выберите соответствующую SIM в штатном меню модема.
+Для заменённой внутренней карты это eSIM. Агент отдельно проверяет маршрут,
+сетевой выбор и совместимость радио до изменения профиля и общего радио.
+На других известных прошивках неоднозначная конфигурация двух карт не даёт
+разрешения на радиопереход; пустая единственная карта может получить первый
+профиль после строгой проверки отсутствия других карт/подписок.
+После перехода проверяются свежий ICCID и готовность USIM выбранного слота.
+Регистрация и доступ в интернет проверяются отдельно.
 
-Кнопка «Страница eSIM на экране модема» добавляет страницу в лаунчер.
-Она сохраняет выбранные страницы, их порядок и текущую раскладку показателей.
-В разделе Launcher можно выбрать страницы галочками и задать их порядок.
-На экране модема доступны список, выбор профиля и перечитывание активной SIM.
-Установку по QR и удаление выполняйте в программе или веб-панели агента.
+Desktop временно запускает закреплённый агент по SSH и использует интернет
+компьютера; постоянная установка для этих операций не требуется.
+Веб-панель использует интернет модема и соответствующий постоянный агент.
+TLS, имя сервера и production-корни GSMA проверяются; системное хранилище
+доверия не меняется. Коды активации и APDU не сохраняются в диагностике.
+После неизвестного результата сначала прочитайте профили заново.
+
+Для экранного меню сначала обновите комплектный агент в разделе Агент,
+затем нажмите Установить / обновить страницу eSIM. Второй шаг обновляет
+Launcher, но не агент; согласованный entrypoint — --esim-launcher-v2.
+Обновление сохраняет состав и порядок страниц. Старые пары отклоняются.
+
+Предыдущие B31 проверки съёмной карты и локальной внутренней eUICC не
+подтверждают новый бинарник, все изменения профилей или другие прошивки.
+Текущие завершённые проверки указаны в VERIFICATION.json релиза.
 
 Третьи стороны: lpac v2.3.0, commit c2fcf5e4b21c712d54e35a11da2ad9ad134fb821,
-с двумя закреплёнными исправлениями stdio; адаптированный QMI/ES10-компонент
-и защищённый bridge. Статус лицензии QMI/ES10: license_unspecified.
-MIT-лицензия базового агента не предоставляет прав на этот компонент.
-Уведомление NOTICE-QMI-ES10.txt не является лицензией или заявлением
-единоличного авторства. Лицензии других компонентов сохранены отдельно.
-Исходники, изменения и сборочные скрипты находятся в eSIM-sources.tar.gz;
-текущие хэши компонента — в device/component.json внутри архива.
-PROVENANCE.json и LICENSE-SCOPE.md уточняют состав и сферу лицензирования.
+с закреплёнными исправлениями stdio; адаптированный QMI/ES10 и bridge.
+Статус лицензии QMI/ES10: license_unspecified. MIT-лицензия базового агента
+не предоставляет прав на этот компонент; существующие уведомления сохранены.
+Исходники и сборочные скрипты — eSIM-sources.tar.gz; состав и лицензии —
+PROVENANCE.json, LICENSE-SCOPE.md, NOTICE-QMI-ES10.txt и LICENSE-*.
 '''
     payloads = {
         'zte-agent-esim': agent,
@@ -169,7 +174,7 @@ PROVENANCE.json и LICENSE-SCOPE.md уточняют состав и сферу 
         'LICENSE-SCOPE.md': (ROOT / 'LICENSE-SCOPE.md').read_bytes(),
     }
     provenance = {
-        'agent_version': '2.10.0-internal.1', 'agent_sha256': sha(agent),
+        'agent_version': version, 'agent_sha256': sha(agent),
         'lpac_version': '2.3.0 + pinned stdio backports',
         'lpac_commit': 'c2fcf5e4b21c712d54e35a11da2ad9ad134fb821',
         'lpac_linux_sha256': sha((ROOT/'ModemAgent/agent/resources/esim/lpac').read_bytes()),
@@ -181,8 +186,10 @@ PROVENANCE.json и LICENSE-SCOPE.md уточняют состав и сферу 
         'source_archive_files': count, 'source_archive_sha256': sha(sources),
         'gsma_pem_sha256': CERT_SHA,
         'gsma_roots': json.loads((CERT.parent / 'gsma-rsp-roots.json').read_text()),
-        'scope': 'replacement internal eUICC; physical2/logical2; MU5250; SSH; hardware unverified',
-        'target': 'internal-euicc-slot2',
+        'scope': 'MU5250 unified SIM; confirmed eUICC on explicit physical1/logical1 or physical2/logical2; no automatic remap or network selection',
+        'protocol': 2, 'target_mode': 'explicit',
+        'targets': ['removable-euicc-slot1', 'internal-euicc-slot2'],
+        'built_in_zte_profile_management_supported': False,
         'hardware_tested': False,
         'profile_mutations_hardware_tested_in_desktop_release': False,
     }

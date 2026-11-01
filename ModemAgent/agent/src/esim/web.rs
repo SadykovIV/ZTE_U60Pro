@@ -17,7 +17,6 @@ const MAX_JOBS: usize = 16;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Start {
-    target: String,
     request_id: String,
     request: Request,
 }
@@ -177,11 +176,11 @@ pub fn route(
     if *method == Method::Get && path == "/api/esim/capabilities" {
         return (
             200,
-            json!({"ok":true,"data":{"protocol":1,"version":crate::AGENT_VERSION,
-            "target":super::target::NAME,"operations":super::OPERATIONS,"https_transport":"agent_curl",
+            json!({"ok":true,"data":{"protocol":2,"version":crate::AGENT_VERSION,
+            "target_mode":"explicit","targets":super::target::TARGETS,"operations":super::OPERATIONS,"https_transport":"agent_curl",
             "nickname_max_characters":64,"nickname_max_utf8_bytes":256,
             "web_download_requires_modem_internet":true,"https_transport_available":web_http::available(),
-            "private_rpc_protocol":1,"job_budget_seconds":JOB_BUDGET.as_secs(),
+            "private_rpc_protocol":2,"job_budget_seconds":JOB_BUDGET.as_secs(),
             "enable_radio_cycle":true,"enable_modem_readback":true,
             "result_retention_seconds":RETENTION.as_secs(),"cleanup":"graceful_eof_no_channel_kill"}}),
         );
@@ -206,9 +205,6 @@ pub fn route(
         Ok(v) => v,
         Err(_) => return fail(400, "invalid_request"),
     };
-    if start.target != super::target::NAME {
-        return fail(400, "invalid_request");
-    }
     if !token(&start.request_id) {
         return fail(400, "invalid_request_id");
     }
@@ -289,8 +285,10 @@ fn run(request: Request, relay: &mut WebRelay, deadline: Instant) -> Result<supe
     relay.progress("checking_card")?;
     resources::check_device()?;
     let _operation = super::operation_lock::OperationLock::acquire()?;
-    let mut resources =
-        resources::Resources::extract_for(request.operation == super::model::Operation::List)?;
+    let mut resources = resources::Resources::extract_for(matches!(
+        request.operation,
+        super::model::Operation::List | super::model::Operation::Discover
+    ))?;
     relay.root = Some(resources.gsma_root.clone());
     let mut runtime =
         LocalRuntime::with_deadline(resources.helper.clone(), resources.lpac.clone(), deadline);
@@ -363,7 +361,7 @@ pub fn read_check() -> Value {
         Err(_) => return json!({"ok":false,"error":"job_start_failed"}),
     };
     let (_, capabilities) = route(&jobs, &Method::Get, "/api/esim/capabilities", &owner, &[]);
-    let body = json!({"target":crate::esim::target::NAME,"request_id":owner,"request":{"protocol":1,"operation":"list"}});
+    let body = json!({"request_id":owner,"request":{"protocol":2,"operation":"discover"}});
     let (status, start) = route(
         &jobs,
         &Method::Post,
@@ -485,27 +483,47 @@ mod tests {
     #[test]
     fn missing_or_wrong_variant_is_rejected_before_job_or_card_access() {
         let jobs = Arc::new(Jobs::default());
-        let base = json!({"request_id":"a".repeat(32),"request":{"protocol":1,"operation":"list"}});
-        let mut requests = vec![base.clone()];
-        for target in [json!("physical-euicc-slot1"), json!("internal-euicc-slot2 "), json!(""), json!(null), json!(2)] {
+        let base = json!({"request_id":"a".repeat(32),"request":{"protocol":2,"operation":"list"}});
+        let mut requests = vec![(base.clone(), "target_required")];
+        for target in [
+            json!("physical-euicc-slot1"),
+            json!("internal-euicc-slot2 "),
+            json!(""),
+            json!(2),
+        ] {
             let mut body = base.clone();
-            body["target"] = target;
-            requests.push(body);
+            body["request"]["target"] = target;
+            requests.push((body, "invalid_request"));
         }
-        crate::process::with_commands(|_| panic!("variant rejection must not invoke device commands"), || {
-            for body in requests {
-                assert_eq!(route(&jobs, &Method::Post, "/api/esim/jobs", "owner", &serde_json::to_vec(&body).unwrap()), fail(400, "invalid_request"));
-                assert!(jobs.entries.lock().unwrap().is_empty());
-            }
-        });
+        let mut old = base.clone();
+        old["request"]["protocol"] = json!(1);
+        requests.push((old, "unsupported_protocol"));
+        crate::process::with_commands(
+            |_| panic!("variant rejection must not invoke device commands"),
+            || {
+                for (body, error) in requests {
+                    assert_eq!(
+                        route(
+                            &jobs,
+                            &Method::Post,
+                            "/api/esim/jobs",
+                            "owner",
+                            &serde_json::to_vec(&body).unwrap()
+                        ),
+                        fail(400, error)
+                    );
+                    assert!(jobs.entries.lock().unwrap().is_empty());
+                }
+            },
+        );
     }
     #[test]
     fn rejects_unknown_fields_without_worker() {
         let jobs = Arc::new(Jobs::default());
         for body in [
-            json!({"target":crate::esim::target::NAME,"request_id":"a".repeat(32),"request":{"protocol":1,"operation":"list"},"unknown":1}),
-            json!({"target":crate::esim::target::NAME,"request_id":"a".repeat(32),"request":{"protocol":1,"operation":"list","secret":"never-log"}}),
-            json!({"target":crate::esim::target::NAME,"request_id":"bad","request":{"protocol":1,"operation":"list"}}),
+            json!({"request_id":"a".repeat(32),"request":{"protocol":2,"target":"internal-euicc-slot2","operation":"list"},"unknown":1}),
+            json!({"request_id":"a".repeat(32),"request":{"protocol":2,"target":"internal-euicc-slot2","operation":"list","secret":"never-log"}}),
+            json!({"request_id":"bad","request":{"protocol":2,"target":"internal-euicc-slot2","operation":"list"}}),
         ] {
             let response = route(
                 &jobs,
@@ -527,17 +545,21 @@ mod tests {
     fn rename_capabilities_and_invalid_names_are_private_and_worker_free() {
         let jobs = Arc::new(Jobs::default());
         let capabilities = route(&jobs, &Method::Get, "/api/esim/capabilities", "owner", &[]).1;
-        assert_eq!(capabilities["data"]["target"], "internal-euicc-slot2");
-        assert_eq!(capabilities["data"]["operations"], json!(super::super::OPERATIONS));
+        assert_eq!(capabilities["data"]["target_mode"], "explicit");
+        assert_eq!(capabilities["data"]["protocol"], 2);
+        assert_eq!(
+            capabilities["data"]["operations"],
+            json!(super::super::OPERATIONS)
+        );
         assert!(capabilities["data"]["operations"]
             .as_array()
             .unwrap()
             .contains(&json!("rename")));
         assert_eq!(capabilities["data"]["nickname_max_characters"], 64);
         assert_eq!(capabilities["data"]["nickname_max_utf8_bytes"], 256);
-        let before = json!({"ok":true,"eid":"89000000000000000000000000000000","profiles":[]});
-        let body = json!({"target":crate::esim::target::NAME,"request_id":"a".repeat(32),"request":{
-            "protocol":1,"operation":"rename","expected_snapshot":before,
+        let before = json!({"ok":true,"target":"internal-euicc-slot2","eid":"89000000000000000000000000000000","profiles":[]});
+        let body = json!({"request_id":"a".repeat(32),"request":{
+            "protocol":2,"target":"internal-euicc-slot2","operation":"rename","expected_snapshot":before,
             "iccid":"890000000000000001","nickname":"PRIVATE_NAME\n"}});
         let response = route(
             &jobs,

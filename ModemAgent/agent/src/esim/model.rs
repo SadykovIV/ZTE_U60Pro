@@ -19,6 +19,7 @@ pub struct Profile {
 #[serde(deny_unknown_fields)]
 pub struct Snapshot {
     pub ok: bool,
+    pub target: super::target::Target,
     pub eid: String,
     pub profiles: Vec<Profile>,
 }
@@ -32,7 +33,9 @@ pub enum Inspection {
 impl Inspection {
     pub fn parse(value: Value) -> Result<Self> {
         if value.get("card").is_some() {
-            let expected = serde_json::json!({"ok":true,"card":{
+            let target: super::target::Target = serde_json::from_value(value["target"].clone())
+                .map_err(|_| Error::new("invalid_snapshot"))?;
+            let expected = serde_json::json!({"ok":true,"target":target,"card":{
                 "kind":"ordinary_sim","management":"unavailable",
                 "reason":"isdr_not_found","cleanup_confirmed":true}});
             if value != expected {
@@ -104,7 +107,9 @@ impl Snapshot {
             .collect()
     }
     pub fn matches(&self, other: &Self) -> bool {
-        self.eid == other.eid && self.inventory() == other.inventory()
+        self.target == other.target
+            && self.eid == other.eid
+            && self.inventory() == other.inventory()
     }
     /// A nickname write also owns the displayed metadata, so a stale editor
     /// cannot overwrite a name changed since the user read the card.
@@ -127,6 +132,7 @@ impl Snapshot {
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum Operation {
+    Discover,
     List,
     Download,
     Enable,
@@ -139,6 +145,7 @@ pub enum Operation {
 pub struct Request {
     pub protocol: u8,
     pub operation: Operation,
+    pub target: Option<super::target::Target>,
     pub expected_snapshot: Option<Snapshot>,
     pub activation_code: Option<String>,
     pub confirmation_code: Option<String>,
@@ -171,10 +178,17 @@ pub fn domain(host: &str) -> bool {
 
 impl Request {
     pub fn validate(&self) -> Result<()> {
-        if self.protocol != 1 {
+        if self.protocol != 2 {
             return Err(Error::new("unsupported_protocol"));
         }
-        if self.operation == Operation::List {
+        if self.operation == Operation::Discover {
+            if self.target.is_some() {
+                return Err(Error::new("invalid_request"));
+            }
+        } else if self.target.is_none() {
+            return Err(Error::new("target_required"));
+        }
+        if matches!(self.operation, Operation::List | Operation::Discover) {
             if self.expected_snapshot.is_some()
                 || self.activation_code.is_some()
                 || self.confirmation_code.is_some()
@@ -190,6 +204,13 @@ impl Request {
             .as_ref()
             .ok_or(Error::new("snapshot_required"))?
             .validate()?;
+        if self
+            .expected_snapshot
+            .as_ref()
+            .is_some_and(|s| Some(s.target) != self.target)
+        {
+            return Err(Error::new("target_mismatch"));
+        }
         match self.operation {
             Operation::Download => {
                 let code = self
@@ -261,11 +282,18 @@ impl Request {
                     return Err(Error::new("invalid_nickname"));
                 }
             }
-            Operation::List => unreachable!(),
+            Operation::List | Operation::Discover => unreachable!(),
         }
         Ok(())
     }
     pub fn arguments(&self, before: &Snapshot) -> Result<Vec<String>> {
+        if self
+            .expected_snapshot
+            .as_ref()
+            .is_some_and(|s| Some(s.target) != self.target)
+        {
+            return Err(Error::new("target_mismatch"));
+        }
         match self.operation {
             Operation::Download => {
                 let mut a = vec![
@@ -319,15 +347,22 @@ impl Request {
                     self.nickname.clone().unwrap(),
                 ])
             }
-            Operation::List => Err(Error::new("invalid_request")),
+            Operation::List | Operation::Discover => Err(Error::new("invalid_request")),
         }
     }
     pub fn postcondition(&self, before: &Snapshot, after: &Snapshot) -> bool {
-        if before.eid != after.eid {
+        if before.target != after.target || before.eid != after.eid {
             return false;
         }
         let b = before.inventory();
         let a = after.inventory();
+        if self
+            .expected_snapshot
+            .as_ref()
+            .is_some_and(|s| Some(s.target) != self.target)
+        {
+            return false;
+        }
         match self.operation {
             Operation::Download => {
                 let added: Vec<_> = a.difference(&b).collect();
@@ -370,6 +405,7 @@ impl Request {
                 expected.metadata_matches(after)
             }
             Operation::List => before.matches(after),
+            Operation::Discover => false,
         }
     }
 }

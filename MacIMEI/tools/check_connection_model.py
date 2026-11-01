@@ -4,8 +4,12 @@ from pathlib import Path
 import json
 import subprocess
 import tempfile
+import sys
 
 root = Path(__file__).resolve().parents[1]
+name = sys.argv[1] if len(sys.argv) == 2 else 'ConnectionAppModelTests'
+if name not in ['ConnectionAppModelTests', 'EsimAppModelTests']:
+    raise SystemExit('Unknown model test')
 (root / '.build').mkdir(exist_ok=True)
 with tempfile.TemporaryDirectory(prefix='connection-model-', dir=root / '.build') as directory:
     work = Path(directory)
@@ -20,14 +24,14 @@ with tempfile.TemporaryDirectory(prefix='connection-model-', dir=root / '.build'
     model = work / 'AppModel.swift'
     model.write_text(source)
     sources = [str(p) for p in sorted((root / 'Sources').glob('*.swift')) if p.name not in ['AppModel.swift', 'Main.swift']]
-    binary = work / 'ConnectionAppModelTests'
+    binary = work / name
     command = ['/usr/bin/swiftc', '-module-cache-path', str(root / '.build/module-cache'), '-swift-version', '5',
                '-parse-as-library', '-target', 'arm64-apple-macosx13.0', *sources, str(model),
-               str(root / 'Tests/ConnectionAppModelTests.swift'), '-o', str(binary)]
+               str(root / 'Tests' / (name + '.swift')), '-o', str(binary)]
     result = subprocess.run(command, cwd=root, capture_output=True, text=True)
     if result.returncode == 0:
         result = subprocess.run([str(binary)], cwd=root, capture_output=True, text=True)
-    log = root / '.build/verification/ConnectionAppModelTests.log'
+    log = root / '.build/verification' / (name + '.log')
     log.parent.mkdir(parents=True, exist_ok=True)
     log.write_text(result.stdout + result.stderr)
     print(result.stdout + result.stderr, end='')

@@ -154,6 +154,36 @@ def tar_gz(path, entries):
                     tar.addfile(info, stream)
 
 
+def desktop_archive_names(version):
+    if re.fullmatch(r'\d+\.\d+(?:\.\d+)?', version) is None:
+        raise ValueError('Invalid release version')
+    return {'macOS': f'ZTE-U60Pro-Manager-{version}-macOS-arm64.zip',
+            'Windows': f'ZTE-U60Pro-Manager-{version}-Windows-x64-portable.zip'}
+
+
+def sim_support_metadata():
+    # Capability is not a record of a successful operation on this release.
+    return {'protocol': 2, 'targets': [
+                {'id': 'removable-euicc-slot1', 'physicalSlot': 1, 'logicalSlot': 1},
+                {'id': 'internal-euicc-slot2', 'physicalSlot': 2, 'logicalSlot': 2}],
+            'configurations': ['single-physical-sim', 'physical-sim-and-stock-chinese-esim',
+                               'physical-sim-and-replacement-internal-euicc'],
+            'requiresFreshCardDetection': True, 'mutationsRequireExplicitTarget': True,
+            'automaticSlotSwitching': False, 'simRemapping': False, 'dualActiveClaimed': False,
+            'builtInZteProfileManagementSupported': False,
+            'radioAdapterFamilies': ['B31', 'FLY B27', 'FLY B28', 'XCBZ HK B04'],
+            'historicalValidation': [
+                {'release': '1.27.1', 'firmware': 'B31', 'target': 'removable-euicc-slot1',
+                 'scope': '9eSIM V0 EID/profile read; two profiles, one active'},
+                {'release': '1.28-local', 'firmware': 'B31', 'target': 'internal-euicc-slot2',
+                 'scope': 'replacement eUICC read with physical SIM selected and after reboot; three profiles, one active',
+                 'physicalSimDataVerified': True, 'internalEuiccInternetVerified': False,
+                 'profileMutationsVerified': False}],
+            'hardwareTestedInThisRelease': False,
+            'profileMutationsHardwareTestedInThisRelease': False,
+            'qmiEs10LicenseStatus': 'unspecified'}
+
+
 def copy_artifact(source, name):
     target = OUT / name
     if target.exists():
@@ -200,10 +230,11 @@ build_source_identity = desktop_build_identity(ROOT, VERSION, controller_metadat
 support_paths = support_dependency_paths(ROOT)
 
 artifacts = []
+desktop_names = desktop_archive_names(VERSION)
 artifacts.append(copy_artifact(ROOT / f'MacIMEI/dist/ZTE-U60Pro-Manager-{VERSION}-arm64.zip',
-                               f'ZTE-U60Pro-Internal-eUICC-{VERSION}-macOS-arm64.zip'))
+                               desktop_names['macOS']))
 artifacts.append(copy_artifact(ROOT / f'Windows_x64/dist/ZTE-U60Pro-Manager-{VERSION}-Windows-x64-portable.zip',
-                               f'ZTE-U60Pro-Internal-eUICC-{VERSION}-Windows-x64-portable.zip'))
+                               desktop_names['Windows']))
 agent = copy_artifact(RES / 'Onboarding/zte-agent', f'zte-agent-{AGENT_VERSION}-aarch64-linux-musl')
 agent.chmod(0o755)
 artifacts.append(agent)
@@ -298,10 +329,8 @@ release_manifest.write_text(json.dumps({'version': VERSION, 'previousRelease': a
                                       'hardwareTestedInThisRelease': False,
                                       'windowsNativeRuntimeVerified': False, 'b27HardwareVerified': False,
                                       'b28HardwareVerified': False, 'b04HardwareVerified': False,
-                                      'vpnctlVersion': controller_metadata['version'], 'vpnctl': controller_metadata, 'esim': {'card': 'replacement eUICC in internal eSIM position', 'target': 'internal-euicc-slot2', 'physicalSlot': 2, 'logicalSlot': 2, 'automaticSlotSwitching': False,
-                                      'historicallyTestedCard': '9eSIM V0 in external slot1 only; replacement slot2 untested', 'testedFirmware': 'CN_ZTE_MU5250V1.0.0B31',
-                                      'profileMutationsHardwareTestedInThisRelease': False,
-                                      'builtInZteSupported': False, 'qmiEs10LicenseStatus': 'unspecified'},
+                                      'vpnctlVersion': controller_metadata['version'], 'vpnctl': controller_metadata,
+                                      'esim': sim_support_metadata(),
                                       'artifacts': {path.name: {'bytes': path.stat().st_size, 'sha256': sha(path)}
                                                     for path in sorted(artifacts)}}, indent=2) + '\n')
 artifacts.append(release_manifest)

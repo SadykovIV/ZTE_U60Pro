@@ -4,8 +4,9 @@ mod adapter;
 mod euicc;
 mod platform;
 mod qmi;
+mod target;
 
-use adapter::{expected_eid, Result, Session, MAX_LINE};
+use adapter::{parse_header, Result, Session, MAX_LINE};
 use platform::{CardLock, RealDevice};
 use serde_json::{json, Value};
 use std::io::{self, BufRead, Write};
@@ -66,18 +67,16 @@ fn run(mode: &str) -> Result<()> {
     let stdout = io::stdout();
     let mut output = stdout.lock();
     // Invalid header is rejected before lock, selection commands or QRTR.
-    let expected = if mode == "bridge" {
-        Some(expected_eid(
-            &read_line(&mut input)?.ok_or("missing_header")?,
-        )?)
-    } else {
-        None
-    };
+    let header = parse_header(&read_line(&mut input)?.ok_or("missing_header")?, mode)?;
     let _lock = CardLock::acquire()?;
-    let mut session = Session::new(RealDevice, expected);
+    let mut session = Session::new(RealDevice, header.target, header.expected_eid);
     if mode == "snapshot" {
         // snapshot() closes before returning either card classification.
-        return session.snapshot().and_then(|v| emit(&mut output, &v));
+        let result = session.snapshot();
+        if session.cleanup_confirmed() {
+            eprintln!("{{\"event\":\"cleanup_confirmed\"}}");
+        }
+        return result.and_then(|v| emit(&mut output, &v));
     }
     let result = bridge(&mut input, &mut output, &mut session);
     // EOF, protocol errors and broken stdout reach one explicit bridge close.
@@ -99,7 +98,7 @@ fn main() {
             return;
         }
         [one] if one == "--help" || one == "--check" => {
-            println!("{{\"ok\":true,\"offline\":true,\"modes\":[\"snapshot\",\"bridge\"]}}");
+            println!("{{\"ok\":true,\"offline\":true,\"protocol\":2,\"modes\":[\"snapshot\",\"bridge\"],\"targets\":[\"removable-euicc-slot1\",\"internal-euicc-slot2\"]}}");
             return;
         }
         [one] if one == "snapshot" || one == "bridge" => one,

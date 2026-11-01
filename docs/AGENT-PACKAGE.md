@@ -1,68 +1,40 @@
-# ZTE Agent 2.10.0-internal.1
+# ZTE Agent 2.11.0
 
-This local alternative runs on the **ZTE U60 Pro / MU5250 modem**, Linux ARM64,
-and matches **ZTE U60Pro Internal eUICC 1.28**. It manages a real eUICC wired in
-place of the original soldered ZTE eSIM: QMI physical slot **2**, logical slot
-**2**. The stock ZTE eSIM is not unlocked. This modified hardware has not been
-tested; earlier removable-card checks on slot 1 do not validate this route.
+This package runs on the **ZTE U60 Pro / MU5250 modem**, Linux ARM64, and matches
+**ZTE U60Pro Manager 1.29**. It includes the agent, web dashboard, eUICC runtime,
+installation resources, licenses and SHA-256 checksums.
 
-Install the permanent agent and matching dashboard using the desktop app's
-existing installation action. This **replaces the same `/data/zte-agent`
-service installation**; it does not add a second permanent agent beside the
-standard version. Existing installation checks, previous-file preservation and
-user-setting retention remain in place. The separate archive is intended for
-prepared devices and developers; it is not a firmware image or a factory-reset
-installer.
+It supports the existing modem controls with a single SIM, the stock dual-SIM
+configuration, or a real eUICC soldered in place of the original Chinese eSIM.
+Confirmed eUICCs are addressed explicitly as `removable-euicc-slot1`
+(physical1/logical1) or `internal-euicc-slot2` (physical2/logical2).
+There is no automatic SIM remapping, network-SIM switching or fallback to a
+different card. Custom profile provisioning on the original ZTE chip is not
+implemented; an ordinary SIM does not store downloadable eSIM profiles.
 
-## Contents
+Use the matching desktop app's **Agent** page to install/update the permanent
+agent and dashboard. The existing service location `/data/zte-agent` is updated;
+this is not a second parallel service. Previous files and validated interrupted
+installation state are handled by the standard installer.
 
-- `zte-agent`: the Internal eUICC agent with its matching embedded runtime.
-- `dashboard/`: the corresponding Russian/English web dashboard.
-- `dashboard-install/` and `agent-install/`: desktop installation resources.
-- `esim/`: runtime, certificates, corresponding sources and component notices.
-- `LICENSE`, `LICENSE-SCOPE.md`, `THIRD_PARTY_NOTICES.md`, `licenses/` and `SHA256SUMS`.
+For the modem-screen eSIM page, first update the bundled agent, then use
+**eSIM → Install/update eSIM page**. The second action updates Launcher and checks
+the installed agent; it does not install the agent itself. Launcher uses
+`--esim-launcher-v2`. Do not mix an old Launcher or dashboard with this agent.
 
-The agent API uses port **9090**; the installed dashboard uses **8080**.
-The owner sets the password during installation. VPN/TTL and Launcher components
-remain separate desktop installation actions. Do not mix this dashboard with
-an older standard agent: the eSIM page requires target `internal-euicc-slot2`.
+Desktop card operations stage the bundled agent over SSH and do not require a
+permanent installation. Desktop downloads use the computer's internet; web
+operations use the modem's connection. Fresh card/route checks and explicit
+protocol-2 targets bind operations to the intended card. Enabling a profile
+also requires compatible firmware and an independently verified network-SIM
+selection before the shared radio cycle.
 
-For the modem-screen eSIM menu, first install/update the bundled **Internal
-agent** on the **Agent** page of the alternative app. Then open **eSIM** and
-choose **Install/update the eSIM page**. This second action updates **Launcher**
-and checks the already installed agent; it does not update the agent itself.
-Updating the permanent agent alone does not update Launcher either. Launcher
-uses `--esim-launcher-internal`; new Launcher/old agent and old Launcher/new
-agent combinations are rejected so they cannot silently operate on another slot.
+Verify the included `SHA256SUMS` before deployment. Build and prior hardware
+checks are separate: see the release `VERIFICATION.json`. Historical B31 tests
+include external and replacement-internal card reads; they do not validate all
+profile mutations, a new binary, other firmware families or native Windows.
+The local 1.28 trial confirmed physical-SIM HTTPS, but internal-eUICC internet
+requests failed and that connectivity remains unverified.
 
-## Desktop and SIM selection
-
-The desktop app stages and runs its bundled agent over SSH for eSIM operations;
-it does **not** require the permanent agent to be installed. The alternative
-desktop app keeps separate local settings. For an already prepared modem,
-manually choose the existing SSH key in the app's connection settings; the key
-is not automatically copied from the standard app.
-
-Read, download, rename and disabled-profile deletion target the replacement
-eUICC without changing the selected network SIM. Before enabling or rereading
-an active profile, choose **eSIM** in the existing **SIM** selection menu.
-The agent verifies both stock selection getters before ES10c and again before
-the shared radio transition. A valid different selection yields
-`esim_slot_not_selected`; unreadable or malformed state yields
-`radio_read_failed`. No automatic selection, slot remap or slot-1 fallback is
-performed. The physical SIM remains available through stock selection; two
-simultaneously active mobile connections are not claimed.
-
-Web profile downloads use the modem's internet connection. Desktop downloads
-use the computer's internet connection. Card identity, complete profile reads,
-session cleanup and post-operation checks remain required.
-
-The local unpublished bundle is kept in `Releases/Local/1.28-internal-euicc`.
-Authenticated read-only B31 network/screen diagnostics were performed, but
-the new build and display fix were not deployed. There are no screenshots of
-the corrected physical screen. This candidate has no replacement-card APDU
-operation, corrected-screen runtime check or native Windows execution claim. See its `VERIFICATION.json` for recorded local
-build/test results; historical standard-release results are separate.
-
-[Included 1.28 release notes](RELEASE-1.28.md).
-In the source tree, see `docs/INTERNAL-EUICC.md` and `docs/ESIM-APP-CONTRACT.md`.
+[Included 1.29 release notes](RELEASE-1.29.md).
+In the source tree, see `docs/UNIFIED-SIM.md` and `docs/ESIM-APP-CONTRACT.md`.

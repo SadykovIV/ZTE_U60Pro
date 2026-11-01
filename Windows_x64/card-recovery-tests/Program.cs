@@ -11,7 +11,7 @@ void Check(bool value, string name) { if (!value) throw new Exception(name); che
 async Task<EsimResult> Parse(string frames)
 {
     using var output = new MemoryStream(Encoding.UTF8.GetBytes(frames)); using var input = new MemoryStream();
-    return await EsimProtocol.ExchangeAsync(output, input, new() { Operation = "list" }, (_, _) => throw new Exception("Unexpected HTTP"), null, CancellationToken.None);
+    return await EsimProtocol.ExchangeAsync(output, input, new() { Operation = "list", Target=EsimTargets.Removable }, (_, _) => throw new Exception("Unexpected HTTP"), null, CancellationToken.None);
 }
 string Failure(string code, object? cause) => JsonSerializer.Serialize(new { type = "result", ok = false, error = code, component_error = cause, raw_stderr = "PRIVATE-STDERR", iccid = "89000000000000000001" }) + "\n";
 Check(catalog.Length == 51, "fixed catalog count");
@@ -95,28 +95,30 @@ Check(!string.Join("\n", fabricatedLines).Contains("PRIVATE"), "journal sanitize
 try { EsimProtocol.Completed(new(true, null, false, false), 1); throw new Exception("Accepted false success"); }
 catch (EsimException error) { Check(error.Code == "agent_exit_failed", "nonzero exit cannot confirm success"); }
 
-var emptyCard = new EsimSnapshot(true, new string('9', 32), []);
+var emptyCard = new EsimSnapshot(true, new string('9', 32), [], EsimTargets.Removable);
 var confirmedCard = new { kind = "euicc_confirmed", management = "available", reason = "eid_and_profiles_read", cleanup_confirmed = true };
 string CardFrame(bool success, object? card, EsimSnapshot? snapshot = null, bool includeCard = true)
 {
     var value = new Dictionary<string, object?> { ["type"] = "result", ["ok"] = success,
-        ["changed"] = false, ["notifications_pending"] = false };
+        ["target"] = EsimTargets.Removable, ["network_selected"] = true, ["operations"] = snapshot is null ? Array.Empty<string>() : new[]{"list","download","enable","delete"}, ["changed"] = false, ["notifications_pending"] = false };
     if (snapshot is not null) value["snapshot"] = snapshot;
     if (!success) value["error"] = "card_open_rejected";
     if (includeCard) value["card"] = card;
     return JsonSerializer.Serialize(value) + "\n";
 }
-foreach (bool withMetadata in new[] { true, false })
+foreach (bool withMetadata in new[] { true })
 {
     var result = EsimProtocol.Completed(await Parse(CardFrame(true, confirmedCard, emptyCard, withMetadata)), 0);
     var capability = EsimCardStatus.FromAcceptedResult(result);
-    Check(capability.Kind == "euicc_confirmed" && capability.Management == "available" && capability.CleanupConfirmed, "empty eUICC confirmed with current or legacy agent");
+    Check(capability.Kind == "euicc_confirmed" && capability.Management == "available" && capability.CleanupConfirmed, "empty eUICC confirmed with explicit target and card evidence");
     Check(result.Snapshot!.Profiles.Count == 0, "empty inventory remains valid");
     try { EsimProtocol.Completed(result, 1); throw new Exception("Metadata authorized nonzero exit"); }
     catch (EsimException e) { Check(e.Code == "agent_exit_failed", "metadata cannot replace exit proof"); }
     var lines = new List<string>(); new EsimJournal("list", (_, text) => lines.Add(text)).BackendResult(result);
     Check(!string.Join('\n', lines).Contains(emptyCard.Eid), "card evidence never logs EID");
 }
+bool legacyAccepted=false; try { await Parse(CardFrame(true, confirmedCard, emptyCard, false)); legacyAccepted=true; } catch { }
+Check(!legacyAccepted,"legacy result without explicit card evidence rejected");
 foreach (var reason in new[] { "busy", "open_rejected", "cleanup_unknown", "not_ready", "unsupported_device", "read_failed", "operation_failed" })
 {
     var result = await Parse(CardFrame(false, new { kind = "unknown", management = "unknown", reason, cleanup_confirmed = false }));

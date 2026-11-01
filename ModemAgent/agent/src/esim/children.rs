@@ -14,6 +14,7 @@ const MAX_DIAGNOSTIC_LINE: usize = 1024;
 struct HelperDiagnostics {
     first_error: Option<&'static str>,
     cleanup_unknown: bool,
+    cleanup_confirmed: bool,
     lock_retained: bool,
     read_failed: bool,
 }
@@ -30,6 +31,9 @@ impl HelperDiagnostics {
             return;
         };
         match value.get("event").and_then(Value::as_str) {
+            Some("cleanup_confirmed") if value.as_object().is_some_and(|o| o.len() == 1) => {
+                self.cleanup_confirmed = true
+            }
             Some("qmi_open_result") => match value.get("outcome").and_then(Value::as_str) {
                 Some("rejected") => self.remember("qmi_open_rejected"),
                 Some("unknown") => {
@@ -345,6 +349,7 @@ pub struct LocalRuntime {
     pub helper: PathBuf,
     pub lpac: PathBuf,
     bridge: Option<ChildPipe>,
+    target: Option<super::target::Target>,
     deadline: Option<std::time::Instant>,
     trace: Option<super::trace::Trace>,
     bridge_started: Option<std::time::Instant>,
@@ -355,6 +360,7 @@ impl LocalRuntime {
             helper,
             lpac,
             bridge: None,
+            target: None,
             deadline: None,
             trace: None,
             bridge_started: None,
@@ -365,6 +371,7 @@ impl LocalRuntime {
             helper,
             lpac,
             bridge: None,
+            target: None,
             deadline: Some(deadline),
             trace: None,
             bridge_started: None,
@@ -372,6 +379,9 @@ impl LocalRuntime {
     }
     pub fn set_trace(&mut self, trace: super::trace::Trace) {
         self.trace = Some(trace);
+    }
+    fn target(&self) -> Result<super::target::Target> {
+        self.target.ok_or(Error::new("target_required"))
     }
     fn event(&self, event: super::trace::Event) {
         if let Some(trace) = &self.trace {
@@ -391,25 +401,53 @@ impl LocalRuntime {
 }
 
 impl super::Runtime for LocalRuntime {
+    fn bind_target(&mut self, target: super::target::Target) -> Result<()> {
+        self.check_deadline()?;
+        if self.bridge.is_some() {
+            return Err(Error::new("bridge_already_open"));
+        }
+        self.target = Some(target);
+        Ok(())
+    }
+    fn inventory(&mut self) -> Result<Vec<(super::target::Target, super::target::Availability)>> {
+        self.check_deadline()?;
+        super::radio_qmi::inventory()
+    }
+    fn access(&mut self, confirmed: bool) -> super::target::Access {
+        let mut access = super::target::Access::card_only(confirmed);
+        if let Ok(target) = self.target() {
+            access.network_selected = super::target::network_selected(target).ok();
+            if confirmed && super::resources::verify().is_err() {
+                access.operations = vec!["list"];
+            } else if confirmed
+                && access.network_selected == Some(true)
+                && super::radio::ready(target).is_ok()
+            {
+                access.operations.push("enable");
+            }
+        }
+        access
+    }
+
     fn confirm_enable_selection(&mut self) -> Result<()> {
         self.check_deadline()?;
         // A read-only stock selector query is allowed while our APDU bridge
         // owns a channel; radio changes remain forbidden until it is closed.
-        super::target::require_network_selection()
+        super::target::require_network_selection(self.target()?)
     }
     fn radio_ready(&mut self) -> Result<()> {
         self.check_deadline()?;
         if self.bridge.is_some() {
             return Err(Error::new("bridge_already_open"));
         }
-        super::radio::ready()
+        super::radio::ready(self.target()?)
     }
     fn refresh_modem(&mut self, expected_iccid: &str, relay: &mut dyn super::Relay) -> Result<()> {
         self.check_deadline()?;
         if self.bridge.is_some() {
             return Err(Error::new("bridge_already_open"));
         }
-        super::radio::refresh(expected_iccid, relay)
+        super::radio::refresh(self.target()?, expected_iccid, relay)
     }
     fn snapshot(&mut self) -> Result<super::model::Snapshot> {
         self.inspect()?.require_euicc()
@@ -420,30 +458,42 @@ impl super::Runtime for LocalRuntime {
         self.event(super::trace::Event::ComponentStart(
             super::trace::Component::Snapshot,
         ));
+        let target = self.target()?;
         let mut child = ChildPipe::spawn(&self.helper, &["snapshot".into()], false)?;
         let result = (|| {
-            let value = child.read()?.ok_or(Error::new("snapshot_missing"))?;
+            let value = child.exchange(&serde_json::json!({"protocol":2,"target":target}))?;
+            if value["target"] != serde_json::to_value(target).unwrap() {
+                return Err(Error::new("target_mismatch"));
+            }
             let snapshot = super::model::Inspection::parse(value)?;
             if child.read()?.is_some() {
                 return Err(Error::new("unexpected_component_output"));
             }
             Ok(snapshot)
         })();
-        // A non-zero helper exit may be a read/APDU failure after a normal
-        // Close. Only explicit cleanup diagnostics imply unknown ownership.
+        // A non-zero helper exit may follow a normal Close or an abrupt crash.
+        // Only the terminal receipt proves cleanup after a failed snapshot.
         let closed = child.finish_helper("snapshot_failed");
         self.event(super::trace::Event::ComponentExit(
             super::trace::Component::Snapshot,
             result.is_ok() && closed.is_ok(),
             super::trace::millis(started),
         ));
-        closed?;
-        result
+        let confirmed = child.diagnostics.cleanup_confirmed
+            && !child.diagnostics.cleanup_unknown
+            && !child.diagnostics.lock_retained
+            && !child.diagnostics.read_failed;
+        closed.map_err(|error| error.cleanup(confirmed))?;
+        result.map_err(|error| error.cleanup(confirmed))
     }
     fn begin(&mut self, expected: &super::model::Snapshot, strict_metadata: bool) -> Result<()> {
         self.check_deadline()?;
         if self.bridge.is_some() {
             return Err(Error::new("bridge_already_open"));
+        }
+        let target = self.target()?;
+        if expected.target != target {
+            return Err(Error::new("target_mismatch"));
         }
         let started = std::time::Instant::now();
         self.event(super::trace::Event::ComponentStart(
@@ -451,7 +501,9 @@ impl super::Runtime for LocalRuntime {
         ));
         let mut child = ChildPipe::spawn(&self.helper, &["bridge".into()], false)?;
         let result = (|| {
-            let v = child.exchange(&serde_json::json!({"expected_eid": expected.eid}))?;
+            let v = child.exchange(
+                &serde_json::json!({"protocol":2,"target":target,"expected_eid": expected.eid}),
+            )?;
             let actual = super::model::Snapshot::parse(v)?;
             if !expected.matches(&actual)
                 || (strict_metadata && !expected.metadata_matches(&actual))
@@ -782,7 +834,7 @@ mod diagnostic_tests {
     #[test]
     fn rename_bridge_rechecks_metadata_under_held_helper_session_and_waits_for_close() {
         let before = super::super::model::Snapshot::parse(serde_json::json!({
-            "ok":true,"eid":"89000000000000000000000000000000","profiles":[{
+            "ok":true,"target":"internal-euicc-slot2","eid":"89000000000000000000000000000000","profiles":[{
                 "iccid":"890000000000000001","isdp_aid":null,"state":"enabled","enabled":true,
                 "nickname":"Original","name":null,"service_provider":null}]}))
         .unwrap();
@@ -795,6 +847,7 @@ mod diagnostic_tests {
             "IFS= read -r header\nprintf '%s\\n' '{encoded}'\nwhile IFS= read -r line; do :; done\nprintf closed > '{}'",
             marker.0.display()));
         let mut runtime = LocalRuntime::new(bridge.0.clone(), PathBuf::from("never-run-lpac"));
+        runtime.target = Some(super::super::target::Target::Internal);
         let error = runtime.begin(&before, true).unwrap_err();
         assert_eq!(error.code, "snapshot_changed");
         assert!(runtime.bridge.is_none());
@@ -822,12 +875,12 @@ mod diagnostic_tests {
             }
         }
         let before = super::super::model::Snapshot::parse(serde_json::json!({
-            "ok":true,"eid":"89000000000000000000000000000000","profiles":[{
+            "ok":true,"target":"internal-euicc-slot2","eid":"89000000000000000000000000000000","profiles":[{
                 "iccid":"890000000000000001","isdp_aid":"00112233445566778899AABBCCDDEEFF",
                 "state":"enabled","enabled":true,"nickname":null,"name":null,"service_provider":null}]})).unwrap();
         let nickname = "--delete 'quoted' $(printf EXPLOITED); & |";
         let request: Request = serde_json::from_value(serde_json::json!({
-            "protocol":1,"operation":"rename","expected_snapshot":before,
+            "protocol":2,"target":"internal-euicc-slot2","operation":"rename","expected_snapshot":before,
             "iccid":"890000000000000001","nickname":nickname}))
         .unwrap();
         request.validate().unwrap();
@@ -846,6 +899,7 @@ mod diagnostic_tests {
             Ok(())
         }));
         let mut runtime = LocalRuntime::new(bridge.0.clone(), lpac.0.clone());
+        runtime.target = Some(super::super::target::Target::Internal);
         runtime.set_trace(trace);
         runtime.begin(&before, true).unwrap();
         let arguments = request.arguments(&before).unwrap();
@@ -879,6 +933,7 @@ mod diagnostic_tests {
                 "printf '%s\\n' '{{\"event\":\"error\",\"code\":\"{code}\"}}' >&2\nexit 1"
             ));
             let mut runtime = LocalRuntime::new(script.0.clone(), PathBuf::from("unused"));
+            runtime.target = Some(super::super::target::Target::Internal);
             let error = runtime.snapshot().unwrap_err();
             assert_eq!(error.code, expected);
             let (wire, exit) = crate::esim::final_value(Err(error));
@@ -904,6 +959,7 @@ mod diagnostic_tests {
             "exit 1"
         ));
         let mut runtime = LocalRuntime::new(script.0.clone(), PathBuf::from("unused"));
+        runtime.target = Some(super::super::target::Target::Internal);
         let error = runtime.snapshot().unwrap_err();
         assert_eq!(error.code, "card_cleanup_unknown");
         assert_eq!(error.component_error, Some("snapshot_card_status_error"));
@@ -914,16 +970,17 @@ mod diagnostic_tests {
     #[test]
     fn successful_stdout_and_exit_cannot_override_retained_lock_event() {
         let script = Script::new(concat!(
-            "printf '%s\\n' '{\"ok\":true,\"eid\":\"11111111111111111111111111111111\",\"profiles\":[]}'\n",
+            "printf '%s\\n' '{\"ok\":true,\"target\":\"internal-euicc-slot2\",\"eid\":\"11111111111111111111111111111111\",\"profiles\":[]}'\n",
             "printf '%s\\n' '{\"event\":\"lock_retained\",\"reason\":\"channel_cleanup_unknown\"}' >&2\n",
             "exit 0"
         ));
         let mut runtime = LocalRuntime::new(script.0.clone(), PathBuf::from("unused"));
+        runtime.target = Some(super::super::target::Target::Internal);
         assert_eq!(runtime.snapshot().unwrap_err().code, "card_cleanup_unknown");
     }
     #[test]
     fn ordinary_result_requires_clean_exit_and_no_cleanup_failure() {
-        let wire="{\"ok\":true,\"card\":{\"kind\":\"ordinary_sim\",\"management\":\"unavailable\",\"reason\":\"isdr_not_found\",\"cleanup_confirmed\":true}}";
+        let wire="{\"ok\":true,\"target\":\"internal-euicc-slot2\",\"card\":{\"kind\":\"ordinary_sim\",\"management\":\"unavailable\",\"reason\":\"isdr_not_found\",\"cleanup_confirmed\":true}}";
         for (status, marker) in [
             (0, ""),
             (1, ""),
@@ -936,6 +993,7 @@ mod diagnostic_tests {
                 "printf '%s\\n' '{wire}'\nprintf '%s\\n' '{marker}' >&2\nexit {status}"
             ));
             let mut runtime = LocalRuntime::new(script.0.clone(), PathBuf::from("never-run-lpac"));
+            runtime.target = Some(super::super::target::Target::Internal);
             let inspected = runtime.inspect();
             assert_eq!(inspected.is_ok(), status == 0 && marker.is_empty());
             if let Ok(value) = inspected {

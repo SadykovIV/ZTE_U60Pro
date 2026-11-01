@@ -6,10 +6,10 @@ mod operation_lock;
 mod radio;
 mod radio_qmi;
 mod resources;
+mod target;
 #[cfg(test)]
 mod tests;
 mod trace;
-mod target;
 pub mod web;
 mod web_http;
 
@@ -19,10 +19,11 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::io::{BufRead, Write};
+use target::{Access, Availability, Target};
 
 pub const MAX_LINE: usize = 9 * 1024 * 1024;
 pub const MAX_BODY: usize = 4 * 1024 * 1024;
-const OPERATIONS: [&str; 5] = ["list", "download", "enable", "delete", "rename"];
+const OPERATIONS: [&str; 6] = ["discover", "list", "download", "enable", "delete", "rename"];
 
 pub struct Error {
     code: &'static str,
@@ -30,6 +31,7 @@ pub struct Error {
     snapshot: Option<Snapshot>,
     radio_restored: Option<bool>,
     modem_verified: Option<bool>,
+    cleanup_confirmed: bool,
 }
 impl std::fmt::Debug for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -44,7 +46,12 @@ impl Error {
             snapshot: None,
             radio_restored: None,
             modem_verified: None,
+            cleanup_confirmed: false,
         }
+    }
+    fn cleanup(mut self, confirmed: bool) -> Self {
+        self.cleanup_confirmed = confirmed;
+        self
     }
     fn component(mut self, code: Option<&'static str>) -> Self {
         self.component_error = code;
@@ -67,6 +74,16 @@ pub trait Relay {
     fn progress(&mut self, stage: &'static str) -> Result<()>;
 }
 pub trait Runtime {
+    fn bind_target(&mut self, _target: Target) -> Result<()> {
+        Ok(())
+    }
+    fn inventory(&mut self) -> Result<Vec<(Target, Availability)>> {
+        Err(Error::new("target_unavailable"))
+    }
+    fn access(&mut self, confirmed: bool) -> Access {
+        Access::card_only(confirmed)
+    }
+
     fn snapshot(&mut self) -> Result<Snapshot>;
     fn inspect(&mut self) -> Result<Inspection> {
         self.snapshot().map(Inspection::Euicc)
@@ -156,7 +173,14 @@ impl<R: BufRead, W: Write> Relay for Rpc<'_, R, W> {
     }
 }
 
+struct Discovery {
+    targets: Vec<Value>,
+    complete: bool,
+}
 struct Outcome {
+    target: Option<Target>,
+    access: Access,
+    discovery: Option<Discovery>,
     snapshot: Option<Snapshot>,
     changed: bool,
     notifications_pending: bool,
@@ -170,7 +194,10 @@ fn args(words: &[&str]) -> Vec<String> {
 fn launcher_request(value: Value) -> Result<Request> {
     let r: Request = serde_json::from_value(value).map_err(|_| Error::new("invalid_request"))?;
     r.validate()?;
-    if !matches!(r.operation, Operation::List | Operation::Enable) {
+    if !matches!(
+        r.operation,
+        Operation::Discover | Operation::List | Operation::Enable
+    ) {
         return Err(Error::new("launcher_operation_refused"));
     }
     Ok(r)
@@ -208,19 +235,92 @@ impl Relay for CardOnlyRelay<'_> {
     }
 }
 
+fn discover(runtime: &mut impl Runtime, rpc: &mut dyn Relay) -> Result<Outcome> {
+    let inventory = runtime.inventory()?;
+    if inventory.len() != 2
+        || inventory.iter().map(|(t, _)| *t).collect::<Vec<_>>() != target::TARGETS
+    {
+        return Err(Error::new("modem_readback_failed"));
+    }
+    let mut complete = true;
+    let mut targets = Vec::new();
+    for (target, available) in inventory {
+        if available != Availability::Available {
+            let reason = if available == Availability::Absent {
+                "not_present"
+            } else {
+                complete = false;
+                "route_unavailable"
+            };
+            targets.push(json!({"target":target,"card":card::Status::unavailable(reason),"operations":[],"network_selected":null}));
+            continue;
+        }
+        runtime.bind_target(target)?;
+        rpc.progress("reading_profiles")?;
+        match runtime.inspect() {
+            Ok(inspection) => {
+                let confirmed = matches!(inspection, Inspection::Euicc(_));
+                let access = runtime.access(confirmed);
+                let mut entry = json!({"target":target,"card":if confirmed {card::Status::confirmed()} else {card::Status::ordinary()},
+                    "operations":access.operations,"network_selected":access.network_selected});
+                if let Inspection::Euicc(snapshot) = inspection {
+                    snapshot.validate()?;
+                    if snapshot.target != target {
+                        return Err(Error::new("target_mismatch"));
+                    }
+                    entry["snapshot"] = json!(snapshot);
+                }
+                targets.push(entry);
+            }
+            Err(error) => {
+                let card = card::Status::failed(&error);
+                if card.cleanup_unknown() {
+                    return Err(error);
+                }
+                if !error.cleanup_confirmed {
+                    return Err(Error::new("card_cleanup_unknown").component(error.component_error));
+                }
+                complete = false;
+                targets.push(json!({"target":target,"card":card,"error":error.code,"operations":[],"network_selected":null}));
+            }
+        }
+    }
+    Ok(Outcome {
+        target: None,
+        access: Access::card_only(false),
+        discovery: Some(Discovery { targets, complete }),
+        snapshot: None,
+        changed: false,
+        notifications_pending: false,
+        modem_verified: None,
+    })
+}
+
 fn perform(request: &Request, runtime: &mut impl Runtime, rpc: &mut dyn Relay) -> Result<Outcome> {
     request.validate()?;
+    if request.operation == Operation::Discover {
+        return discover(runtime, rpc);
+    }
+    let target = request.target.ok_or(Error::new("target_required"))?;
+    runtime.bind_target(target)?;
     rpc.progress("reading_profiles")?;
     let inspection = runtime.inspect()?;
     if request.operation == Operation::List {
         let snapshot = match inspection {
             Inspection::Euicc(snapshot) => {
                 snapshot.validate()?;
+                if snapshot.target != target {
+                    return Err(Error::new("target_mismatch"));
+                }
                 Some(snapshot)
             }
             Inspection::Ordinary => None,
         };
+        let access = runtime.access(snapshot.is_some());
         return Ok(Outcome {
+            target: Some(target),
+            access,
+            discovery: None,
             snapshot,
             changed: false,
             notifications_pending: false,
@@ -229,6 +329,9 @@ fn perform(request: &Request, runtime: &mut impl Runtime, rpc: &mut dyn Relay) -
     }
     let before = inspection.require_euicc()?;
     before.validate()?;
+    if before.target != target {
+        return Err(Error::new("target_mismatch"));
+    }
     let expected = request
         .expected_snapshot
         .as_ref()
@@ -241,6 +344,9 @@ fn perform(request: &Request, runtime: &mut impl Runtime, rpc: &mut dyn Relay) -
     let arguments = request.arguments(&before)?;
     if request.operation == Operation::Rename && request.postcondition(&before, &before) {
         return Ok(Outcome {
+            target: Some(target),
+            access: runtime.access(true),
+            discovery: None,
             snapshot: Some(before),
             changed: false,
             notifications_pending: false,
@@ -263,6 +369,9 @@ fn perform(request: &Request, runtime: &mut impl Runtime, rpc: &mut dyn Relay) -
                 .radio(true));
         }
         return Ok(Outcome {
+            target: Some(target),
+            access: runtime.access(true),
+            discovery: None,
             snapshot: Some(after),
             changed: false,
             notifications_pending: false,
@@ -285,7 +394,7 @@ fn perform(request: &Request, runtime: &mut impl Runtime, rpc: &mut dyn Relay) -
             Operation::Enable => "enabling",
             Operation::Delete => "deleting",
             Operation::Rename => "renaming_profile",
-            Operation::List => unreachable!(),
+            Operation::List | Operation::Discover => unreachable!(),
         })?;
         if request.operation == Operation::Enable {
             // Client progress delivery can block. Recheck the stock selector
@@ -304,7 +413,7 @@ fn perform(request: &Request, runtime: &mut impl Runtime, rpc: &mut dyn Relay) -
     rpc.progress("verifying")?;
     let mut after = runtime.snapshot()?;
     after.validate()?;
-    if before.eid != after.eid {
+    if before.target != after.target || before.eid != after.eid {
         return Err(Error::new("card_changed"));
     }
     if let Err(error) = result {
@@ -315,6 +424,9 @@ fn perform(request: &Request, runtime: &mut impl Runtime, rpc: &mut dyn Relay) -
     }
     if request.operation == Operation::Rename {
         return Ok(Outcome {
+            target: Some(target),
+            access: runtime.access(true),
+            discovery: None,
             snapshot: Some(after),
             changed: true,
             notifications_pending: false,
@@ -362,6 +474,9 @@ fn perform(request: &Request, runtime: &mut impl Runtime, rpc: &mut dyn Relay) -
         }
     }
     Ok(Outcome {
+        target: Some(target),
+        access: runtime.access(true),
+        discovery: None,
         snapshot: Some(after),
         changed: true,
         notifications_pending: pending,
@@ -406,8 +521,10 @@ fn run_rpc(input: &mut impl BufRead, output: &mut (impl Write + Send)) -> Result
             rpc.progress("checking_card")?;
             resources::check_device()?;
             let _operation = operation_lock::OperationLock::acquire()?;
-            let mut resources =
-                resources::Resources::extract_for(request.operation == Operation::List)?;
+            let mut resources = resources::Resources::extract_for(matches!(
+                request.operation,
+                Operation::List | Operation::Discover
+            ))?;
             let mut runtime = LocalRuntime::new(resources.helper.clone(), resources.lpac.clone());
             runtime.set_trace(trace.clone());
             let result = perform(&request, &mut runtime, &mut rpc);
@@ -442,6 +559,20 @@ fn run_rpc(input: &mut impl BufRead, output: &mut (impl Write + Send)) -> Result
 fn final_value(result: Result<Outcome>) -> (Value, i32) {
     match result {
         Ok(outcome) => {
+            if let Some(discovery) = outcome.discovery {
+                return (
+                    json!({"type":"result","ok":true,"changed":false,"notifications_pending":false,"complete":discovery.complete,"targets":discovery.targets}),
+                    0,
+                );
+            }
+            if outcome.target.is_none()
+                || outcome
+                    .snapshot
+                    .as_ref()
+                    .is_some_and(|s| Some(s.target) != outcome.target)
+            {
+                return final_value(Err(Error::new("invalid_snapshot")));
+            }
             let status = if let Some(snapshot) = &outcome.snapshot {
                 if let Err(error) = snapshot.validate() {
                     return final_value(Err(error));
@@ -458,7 +589,7 @@ fn final_value(result: Result<Outcome>) -> (Value, i32) {
             };
             let mut value = json!({"type":"result","ok":true,
                 "changed":outcome.changed,"notifications_pending":outcome.notifications_pending,
-                "card":status});
+                "card":status,"target":outcome.target,"operations":outcome.access.operations,"network_selected":outcome.access.network_selected});
             if let Some(snapshot) = outcome.snapshot {
                 value["snapshot"] = json!(snapshot);
             }
@@ -489,7 +620,7 @@ fn final_value(result: Result<Outcome>) -> (Value, i32) {
 }
 
 fn launcher_mode(arguments: &[String]) -> bool {
-    arguments == ["--esim-launcher-internal"]
+    arguments == ["--esim-launcher-v2"]
 }
 
 pub fn early_entry() -> Option<i32> {
@@ -511,8 +642,8 @@ pub fn early_entry() -> Option<i32> {
     }
     if arguments == ["--esim-check"] {
         let valid = resources::verify().is_ok();
-        let value = json!({"ok":valid,"offline":true,"protocol":1,"version":crate::AGENT_VERSION,
-            "target":target::NAME,"helper_sha256":resources::BRIDGE_HASH,"lpac_sha256":resources::LPAC_HASH,
+        let value = json!({"ok":valid,"offline":true,"protocol":2,"version":crate::AGENT_VERSION,
+            "target_mode":"explicit","targets":target::TARGETS,"helper_sha256":resources::BRIDGE_HASH,"lpac_sha256":resources::LPAC_HASH,
             "operations":OPERATIONS});
         return Some(if emit(&mut output, &value).is_ok() && valid {
             0
@@ -525,8 +656,8 @@ pub fn early_entry() -> Option<i32> {
             resources::check_device()?;
             let _operation = operation_lock::OperationLock::acquire()?;
             let mode = radio_qmi::mode()?;
-            let _private_iccid = radio_qmi::iccid()?;
-            Ok::<_, Error>(json!({"ok":true,"read_only":true,"mode":mode,"target":target::NAME,"slot2_iccid_valid":true}))
+            let inventory = radio_qmi::inventory()?.into_iter().map(|(target, state)| json!({"target":target,"available":state == Availability::Available})).collect::<Vec<_>>();
+            Ok::<_, Error>(json!({"ok":true,"read_only":true,"mode":mode,"targets":inventory}))
         })();
         let value = match checked {
             Ok(v) => v,

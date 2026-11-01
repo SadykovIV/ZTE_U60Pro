@@ -3,14 +3,14 @@ use std::collections::VecDeque;
 use std::io::Cursor;
 
 fn snapshot(rows: &[(&str, &str)]) -> Snapshot {
-    Snapshot::parse(json!({"ok":true,"eid":"89000000000000000000000000000000","profiles":rows.iter().map(|(id,state)|
+    Snapshot::parse(json!({"ok":true,"target":"internal-euicc-slot2","eid":"89000000000000000000000000000000","profiles":rows.iter().map(|(id,state)|
         json!({"iccid":id,"isdp_aid":null,"state":state,"enabled":*state=="enabled",
             "nickname":null,"service_provider":"Synthetic fixture","name":null})).collect::<Vec<_>>()})).unwrap()
 }
 const ONE: &str = "890000000000000001";
 const TWO: &str = "890000000000000002";
 fn request(op: &str, before: &Snapshot) -> Request {
-    let mut v = json!({"protocol":1,"operation":op,"expected_snapshot":before});
+    let mut v = json!({"protocol":2,"target":"internal-euicc-slot2","operation":op,"expected_snapshot":before});
     match op {
         "download" => v["activation_code"] = json!("LPA:1$smdp.example$SYNTHETIC"),
         "enable" | "delete" | "rename" => v["iccid"] = json!(ONE),
@@ -38,7 +38,10 @@ fn rejects_ambiguous_inventory_and_mismatched_state() {
     let mut s = snapshot(&[(ONE, "unknown")]);
     s.profiles[0].enabled = true;
     assert!(s.validate().is_err());
-    assert!(Snapshot::parse(json!({"ok":true,"eid":"8900","profiles":[]})).is_err());
+    assert!(Snapshot::parse(
+        json!({"ok":true,"target":"internal-euicc-slot2","eid":"8900","profiles":[]})
+    )
+    .is_err());
 }
 
 #[test]
@@ -61,24 +64,27 @@ fn request_validation_before_any_device_action() {
     r.confirm_delete = Some(false);
     assert!(r.validate().is_err());
     r.confirm_delete = Some(true);
-    r.protocol = 2;
+    r.protocol = 1;
     assert!(r.validate().is_err());
 }
 
 #[test]
 fn launcher_surface_excludes_download_delete_and_auth_material() {
-    assert!(launcher_request(json!({"protocol":1,"operation":"list"})).is_ok());
+    assert!(launcher_request(
+        json!({"protocol":2,"target":"internal-euicc-slot2","operation":"list"})
+    )
+    .is_ok());
     let s = snapshot(&[(ONE, "disabled")]);
     assert!(launcher_request(
-        json!({"protocol":1,"operation":"enable","expected_snapshot":s,"iccid":ONE})
+        json!({"protocol":2,"target":"internal-euicc-slot2","operation":"enable","expected_snapshot":s,"iccid":ONE})
     )
     .is_ok());
     for v in [
-        json!({"protocol":1,"operation":"list","password":"SYNTHETIC_SECRET"}),
-        json!({"protocol":1,"operation":"list","token":"SYNTHETIC_SECRET"}),
-        json!({"protocol":1,"operation":"enable","iccid":ONE}),
-        json!({"protocol":1,"operation":"delete","expected_snapshot":s,"iccid":ONE,"confirm_delete":true}),
-        json!({"protocol":1,"operation":"download","expected_snapshot":s,"activation_code":"LPA:1$smdp.example$SYNTHETIC_SECRET"}),
+        json!({"protocol":2,"target":"internal-euicc-slot2","operation":"list","password":"SYNTHETIC_SECRET"}),
+        json!({"protocol":2,"target":"internal-euicc-slot2","operation":"list","token":"SYNTHETIC_SECRET"}),
+        json!({"protocol":2,"target":"internal-euicc-slot2","operation":"enable","iccid":ONE}),
+        json!({"protocol":2,"target":"internal-euicc-slot2","operation":"delete","expected_snapshot":s,"iccid":ONE,"confirm_delete":true}),
+        json!({"protocol":2,"target":"internal-euicc-slot2","operation":"download","expected_snapshot":s,"activation_code":"LPA:1$smdp.example$SYNTHETIC_SECRET"}),
     ] {
         let error = launcher_request(v).err().unwrap();
         assert!(!format!("{error:?}").contains("SYNTHETIC_SECRET"));
@@ -209,7 +215,7 @@ fn rename_rejects_empty_untrimmed_control_and_overlong_names_before_device_io() 
     let mut r = request("rename", &before);
     r.nickname = None;
     assert_eq!(r.validate().unwrap_err().code, "invalid_nickname");
-    let invalid_unicode = br#"{"protocol":1,"operation":"rename","nickname":"\ud800"}"#;
+    let invalid_unicode = br#"{"protocol":2,"target":"internal-euicc-slot2","operation":"rename","nickname":"\ud800"}"#;
     assert!(serde_json::from_slice::<Request>(invalid_unicode).is_err());
 }
 
@@ -217,7 +223,7 @@ fn rename_rejects_empty_untrimmed_control_and_overlong_names_before_device_io() 
 fn rename_request_fields_do_not_leak_into_other_operations() {
     let before = snapshot(&[(ONE, "disabled")]);
     for field in ["activation_code", "confirmation_code", "confirm_delete"] {
-        let mut value = json!({"protocol":1,"operation":"rename","expected_snapshot":before,
+        let mut value = json!({"protocol":2,"target":"internal-euicc-slot2","operation":"rename","expected_snapshot":before,
             "iccid":ONE,"nickname":"Private nickname"});
         value[field] = if field == "confirm_delete" {
             json!(true)
@@ -229,7 +235,10 @@ fn rename_request_fields_do_not_leak_into_other_operations() {
     }
     for operation in ["list", "download", "enable", "delete"] {
         let mut r = if operation == "list" {
-            serde_json::from_value(json!({"protocol":1,"operation":"list"})).unwrap()
+            serde_json::from_value(
+                json!({"protocol":2,"target":"internal-euicc-slot2","operation":"list"}),
+            )
+            .unwrap()
         } else {
             request(operation, &before)
         };
@@ -237,7 +246,7 @@ fn rename_request_fields_do_not_leak_into_other_operations() {
         assert!(r.validate().is_err());
     }
     let error = launcher_request(
-        json!({"protocol":1,"operation":"rename", "expected_snapshot":before,
+        json!({"protocol":2,"target":"internal-euicc-slot2","operation":"rename", "expected_snapshot":before,
         "iccid":ONE, "nickname":"Private nickname"}),
     )
     .err()
@@ -617,7 +626,12 @@ impl Runtime for FakeRuntime {
         }
     }
     fn confirm_enable_selection(&mut self) -> Result<()> {
-        if self.external_sim_selected || self.shared_network_selection.as_ref().is_some_and(|slot| slot.get() != 2) {
+        if self.external_sim_selected
+            || self
+                .shared_network_selection
+                .as_ref()
+                .is_some_and(|slot| slot.get() != 2)
+        {
             return Err(Error::new("esim_slot_not_selected"));
         }
         Ok(())
@@ -649,13 +663,21 @@ fn ok() -> Result<Value> {
 
 #[test]
 fn internal_launcher_flag_is_exact_and_uses_the_restricted_launcher_contract() {
-    assert!(launcher_mode(&["--esim-launcher-internal".into()]));
+    assert!(launcher_mode(&["--esim-launcher-v2".into()]));
     assert!(!launcher_mode(&["--esim-launcher".into()]));
-    for arguments in [vec![], vec!["--esim-launcher-internal".into(), "extra".into()], vec!["--esim-rpc".into()], vec!["--esim-launcher-internal=1".into()]] {
+    for arguments in [
+        vec![],
+        vec!["--esim-launcher-v2".into(), "extra".into()],
+        vec!["--esim-rpc".into()],
+        vec!["--esim-launcher-v2=1".into()],
+    ] {
         assert!(!launcher_mode(&arguments));
     }
-    assert!(launcher_request(json!({"protocol":1,"operation":"list"})).is_ok());
-    assert!(launcher_request(json!({"protocol":1,"operation":"download","activation_code":"LPA:1$operator.example$synthetic"})).is_err());
+    assert!(launcher_request(
+        json!({"protocol":2,"target":"internal-euicc-slot2","operation":"list"})
+    )
+    .is_ok());
+    assert!(launcher_request(json!({"protocol":2,"target":"internal-euicc-slot2","operation":"download","activation_code":"LPA:1$operator.example$synthetic"})).is_err());
 }
 fn queue(ids: &[u32]) -> Result<Value> {
     Ok(json!({"code":0,"data":ids.iter().map(|n|json!({"seqNumber":n})).collect::<Vec<_>>()}))
@@ -759,9 +781,13 @@ fn already_enabled_refreshes_modem_without_profile_command() {
 fn selector_change_during_enable_progress_closes_bridge_without_mutation() {
     struct SwitchingRelay(std::rc::Rc<std::cell::Cell<u8>>);
     impl Relay for SwitchingRelay {
-        fn http(&mut self, _: &Value) -> Result<Value> { unreachable!() }
+        fn http(&mut self, _: &Value) -> Result<Value> {
+            unreachable!()
+        }
         fn progress(&mut self, stage: &'static str) -> Result<()> {
-            if stage == "enabling" { self.0.set(1); }
+            if stage == "enabling" {
+                self.0.set(1);
+            }
             Ok(())
         }
     }
@@ -770,7 +796,9 @@ fn selector_change_during_enable_progress_closes_bridge_without_mutation() {
     let selector = std::rc::Rc::new(std::cell::Cell::new(2));
     let mut rt = FakeRuntime::new(before.clone(), before.clone(), vec![queue(&[])]);
     rt.shared_network_selection = Some(selector.clone());
-    let error = perform(&r, &mut rt, &mut SwitchingRelay(selector)).err().unwrap();
+    let error = perform(&r, &mut rt, &mut SwitchingRelay(selector))
+        .err()
+        .unwrap();
     assert_eq!(error.code, "esim_slot_not_selected");
     assert!(error.snapshot.unwrap().matches(&before));
     assert_eq!(rt.begins, 1);
@@ -786,7 +814,13 @@ fn external_sim_selection_blocks_enable_before_any_profile_mutation() {
         let r = request("enable", &before);
         let mut rt = FakeRuntime::new(before.clone(), before, vec![]);
         rt.external_sim_selected = true;
-        assert_eq!(perform(&r, &mut rt, &mut FakeRelay::default()).err().unwrap().code, "esim_slot_not_selected");
+        assert_eq!(
+            perform(&r, &mut rt, &mut FakeRelay::default())
+                .err()
+                .unwrap()
+                .code,
+            "esim_slot_not_selected"
+        );
         assert_eq!(rt.begins, 0);
         assert_eq!(rt.ends, 0);
         assert_eq!(rt.radio_calls, 0);
@@ -799,7 +833,10 @@ fn external_sim_selection_does_not_block_reading_the_internal_card() {
     let before = snapshot(&[(ONE, "disabled")]);
     let mut rt = FakeRuntime::new(before.clone(), before.clone(), vec![]);
     rt.external_sim_selected = true;
-    let r: Request = serde_json::from_value(json!({"protocol":1,"operation":"list"})).unwrap();
+    let r: Request = serde_json::from_value(
+        json!({"protocol":2,"target":"internal-euicc-slot2","operation":"list"}),
+    )
+    .unwrap();
     let outcome = perform(&r, &mut rt, &mut FakeRelay::default()).unwrap();
     assert!(outcome.snapshot.unwrap().matches(&before));
     assert_eq!(rt.radio_calls, 0);
@@ -942,7 +979,10 @@ fn line_boundaries_and_fixed_error_output() {
 #[test]
 fn card_check_empty_euicc_is_confirmed_without_extra_card_operations() {
     let before = snapshot(&[]);
-    let r: Request = serde_json::from_value(json!({"protocol":1,"operation":"list"})).unwrap();
+    let r: Request = serde_json::from_value(
+        json!({"protocol":2,"target":"internal-euicc-slot2","operation":"list"}),
+    )
+    .unwrap();
     let mut runtime = FakeRuntime::new(before.clone(), before.clone(), vec![]);
     let result = perform(&r, &mut runtime, &mut FakeRelay::default()).unwrap();
     let (value, exit) = final_value(Ok(result));
@@ -1039,6 +1079,9 @@ fn card_check_invalid_success_snapshot_is_not_a_positive_detection() {
     let mut malformed = snapshot(&[]);
     malformed.eid = "INVALID_EID".into();
     let (value, exit) = final_value(Ok(Outcome {
+        target: Some(Target::Internal),
+        access: Access::card_only(true),
+        discovery: None,
         snapshot: Some(malformed),
         changed: false,
         notifications_pending: false,
@@ -1103,6 +1146,8 @@ fn actual_lpac_relay_waits_past_result_and_rejects_boolean_success() {
         std::fs::write(&lpa,format!("#!/bin/sh\nprintf '%s\\n' '{{\"type\":\"apdu\",\"payload\":{{\"func\":\"connect\",\"param\":null}}}}'\nIFS= read -r reply\nprintf '%s\\n' '{{\"type\":\"lpa\",\"payload\":{{\"code\":{code}}}}}'\nprintf '%s\\n' '{{\"type\":\"apdu\",\"payload\":{{\"func\":\"disconnect\",\"param\":null}}}}'\nIFS= read -r reply\nexit 0\n")).unwrap();
         std::fs::set_permissions(&lpa, std::fs::Permissions::from_mode(0o700)).unwrap();
         let mut runtime = LocalRuntime::new(bridge.clone(), lpa.clone());
+        runtime.bind_target(Target::Internal).unwrap();
+        runtime.bind_target(Target::Internal).unwrap();
         runtime.begin(&before, false).unwrap();
         assert_eq!(
             runtime
@@ -1143,6 +1188,7 @@ fn web_deadline_refuses_late_apdu_and_still_closes_owned_bridge() {
         lpa.clone(),
         Instant::now() + Duration::from_millis(100),
     );
+    runtime.bind_target(Target::Internal).unwrap();
     runtime.begin(&before, false).unwrap();
     assert_eq!(
         runtime
@@ -1231,13 +1277,15 @@ fn ordinary_list_success_has_no_snapshot_and_never_starts_lpac_or_radio() {
     let before = snapshot(&[]);
     let mut rt = FakeRuntime::new(before.clone(), before, vec![]);
     rt.ordinary = true;
-    let request: Request =
-        serde_json::from_value(json!({"protocol":1,"operation":"list"})).unwrap();
+    let request: Request = serde_json::from_value(
+        json!({"protocol":2,"target":"internal-euicc-slot2","operation":"list"}),
+    )
+    .unwrap();
     let (value, exit) = final_value(perform(&request, &mut rt, &mut FakeRelay::default()));
     assert_eq!(exit, 0);
     assert_eq!(
         value,
-        json!({"type":"result","ok":true,"changed":false,"notifications_pending":false,
+        json!({"type":"result","ok":true,"target":"internal-euicc-slot2","network_selected":null,"operations":[],"changed":false,"notifications_pending":false,
         "card":{"kind":"ordinary_sim","management":"unavailable","reason":"isdr_not_found","cleanup_confirmed":true}})
     );
     assert_eq!((rt.begins, rt.ends, rt.radio_calls), (0, 0, 0));
@@ -1264,7 +1312,7 @@ fn ordinary_fresh_read_refuses_every_mutation_before_lpac_and_radio() {
 }
 #[test]
 fn ordinary_helper_shape_is_exact_and_cannot_authorize_a_mutation() {
-    let good = json!({"ok":true,"card":{"kind":"ordinary_sim","management":"unavailable","reason":"isdr_not_found","cleanup_confirmed":true}});
+    let good = json!({"ok":true,"target":"internal-euicc-slot2","card":{"kind":"ordinary_sim","management":"unavailable","reason":"isdr_not_found","cleanup_confirmed":true}});
     assert_eq!(
         Inspection::parse(good.clone()).unwrap(),
         Inspection::Ordinary
@@ -1285,6 +1333,9 @@ fn ordinary_helper_shape_is_exact_and_cannot_authorize_a_mutation() {
         assert!(Inspection::parse(bad).is_err());
     }
     let (bad, exit) = final_value(Ok(Outcome {
+        target: Some(Target::Internal),
+        access: Access::card_only(true),
+        discovery: None,
         snapshot: None,
         changed: true,
         notifications_pending: false,
@@ -1304,4 +1355,233 @@ fn read_only_resources_extract_only_bridge_no_lpac_or_ca() {
     assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
     resources.cleanup().unwrap();
     assert!(!directory.exists());
+}
+
+struct DiscoveryRuntime {
+    inventory: Vec<(Target, Availability)>,
+    inspections: VecDeque<Result<Inspection>>,
+    bound: Vec<Target>,
+}
+impl Runtime for DiscoveryRuntime {
+    fn bind_target(&mut self, target: Target) -> Result<()> {
+        self.bound.push(target);
+        Ok(())
+    }
+    fn inventory(&mut self) -> Result<Vec<(Target, Availability)>> {
+        Ok(self.inventory.clone())
+    }
+    fn inspect(&mut self) -> Result<Inspection> {
+        self.inspections.pop_front().expect("unexpected card read")
+    }
+    fn snapshot(&mut self) -> Result<Snapshot> {
+        self.inspect()?.require_euicc()
+    }
+    fn begin(&mut self, _: &Snapshot, _: bool) -> Result<()> {
+        panic!("discovery must not open a mutation bridge")
+    }
+    fn command(&mut self, _: &[String], _: &mut dyn Relay) -> Result<Value> {
+        panic!("discovery must not run lpac")
+    }
+    fn end(&mut self) -> Result<()> {
+        Ok(())
+    }
+    fn radio_ready(&mut self) -> Result<()> {
+        panic!("discovery must not change radio")
+    }
+    fn confirm_enable_selection(&mut self) -> Result<()> {
+        panic!("discovery must not enable")
+    }
+    fn refresh_modem(&mut self, _: &str, _: &mut dyn Relay) -> Result<()> {
+        panic!("discovery must not change radio")
+    }
+}
+fn target_snapshot(target: Target) -> Snapshot {
+    let mut s = snapshot(&[(ONE, "enabled"), (TWO, "disabled")]);
+    s.target = target;
+    s
+}
+fn discovery_request() -> Request {
+    serde_json::from_value(json!({"protocol":2,"operation":"discover"})).unwrap()
+}
+#[test]
+fn discover_reads_each_explicit_target_and_never_auto_mutates_two_euiccs() {
+    let mut rt = DiscoveryRuntime {
+        inventory: target::TARGETS
+            .into_iter()
+            .map(|t| (t, Availability::Available))
+            .collect(),
+        inspections: target::TARGETS
+            .into_iter()
+            .map(|t| Ok(Inspection::Euicc(target_snapshot(t))))
+            .collect(),
+        bound: vec![],
+    };
+    let (value, code) = final_value(perform(
+        &discovery_request(),
+        &mut rt,
+        &mut FakeRelay::default(),
+    ));
+    assert_eq!(code, 0);
+    assert_eq!(value["complete"], true);
+    assert!(value.get("snapshot").is_none());
+    assert_eq!(rt.bound, target::TARGETS);
+    for (i, t) in target::TARGETS.into_iter().enumerate() {
+        let row = &value["targets"][i];
+        assert_eq!(row["target"], json!(t));
+        assert_eq!(row["snapshot"]["target"], json!(t));
+        assert_eq!(row["card"]["kind"], "euicc_confirmed");
+        assert!(!row["operations"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("enable")));
+    }
+}
+#[test]
+fn discovery_distinguishes_absence_ordinary_and_unknown_without_fallback() {
+    for (state, inspection, expected_complete, expected_reason) in [
+        (Availability::Absent, None, true, "not_present"),
+        (Availability::Unavailable, None, false, "route_unavailable"),
+        (
+            Availability::Available,
+            Some(Ok(Inspection::Ordinary)),
+            true,
+            "isdr_not_found",
+        ),
+        (
+            Availability::Available,
+            Some(Err(Error::new("snapshot_failed").cleanup(true))),
+            false,
+            "read_failed",
+        ),
+    ] {
+        let mut inspections = VecDeque::new();
+        if let Some(v) = inspection {
+            inspections.push_back(v);
+        }
+        inspections.push_back(Ok(Inspection::Euicc(target_snapshot(Target::Internal))));
+        let mut rt = DiscoveryRuntime {
+            inventory: vec![
+                (Target::Removable, state),
+                (Target::Internal, Availability::Available),
+            ],
+            inspections,
+            bound: vec![],
+        };
+        let (v, code) = final_value(perform(
+            &discovery_request(),
+            &mut rt,
+            &mut FakeRelay::default(),
+        ));
+        assert_eq!(code, 0);
+        assert_eq!(v["complete"], expected_complete);
+        assert_eq!(v["targets"][0]["card"]["reason"], expected_reason);
+        assert!(v["targets"][0].get("snapshot").is_none());
+        assert_eq!(
+            v["targets"][1]["snapshot"]["target"],
+            json!(Target::Internal)
+        );
+        assert_eq!(rt.bound.last(), Some(&Target::Internal));
+    }
+}
+#[test]
+fn unknown_cleanup_aborts_discovery_before_the_other_card() {
+    let mut rt = DiscoveryRuntime {
+        inventory: target::TARGETS
+            .into_iter()
+            .map(|t| (t, Availability::Available))
+            .collect(),
+        inspections: VecDeque::from([Err(Error::new("card_cleanup_unknown"))]),
+        bound: vec![],
+    };
+    let e = perform(&discovery_request(), &mut rt, &mut FakeRelay::default())
+        .err()
+        .unwrap();
+    assert_eq!(e.code, "card_cleanup_unknown");
+    assert_eq!(rt.bound, [Target::Removable]);
+}
+#[test]
+fn target_is_required_before_device_and_cannot_be_changed_through_snapshot() {
+    let before = target_snapshot(Target::Internal);
+    let mut requests = vec![
+        json!({"protocol":2,"operation":"list"}),
+        json!({"protocol":1,"operation":"list"}),
+        json!({"protocol":2,"operation":"discover","target":Target::Internal}),
+    ];
+    let mut wrong = serde_json::to_value(&before).unwrap();
+    wrong["target"] = json!(Target::Removable);
+    requests.push(json!({"protocol":2,"operation":"enable","target":Target::Internal,"expected_snapshot":wrong,"iccid":ONE}));
+    for value in requests {
+        let req: Request = serde_json::from_value(value).unwrap();
+        let mut rt = DiscoveryRuntime {
+            inventory: vec![],
+            inspections: VecDeque::new(),
+            bound: vec![],
+        };
+        assert!(perform(&req, &mut rt, &mut FakeRelay::default()).is_err());
+        assert!(rt.bound.is_empty());
+    }
+    let other = target_snapshot(Target::Removable);
+    assert_eq!(other.eid, before.eid);
+    assert!(!before.matches(&other));
+    assert!(!request("enable", &before).postcondition(&before, &other));
+}
+#[test]
+fn explicit_list_never_searches_other_target_and_rejects_wrong_binding() {
+    let req: Request =
+        serde_json::from_value(json!({"protocol":2,"operation":"list","target":Target::Removable}))
+            .unwrap();
+    let mut rt = DiscoveryRuntime {
+        inventory: vec![],
+        inspections: VecDeque::from([Ok(Inspection::Euicc(target_snapshot(Target::Internal)))]),
+        bound: vec![],
+    };
+    assert_eq!(
+        perform(&req, &mut rt, &mut FakeRelay::default())
+            .err()
+            .unwrap()
+            .code,
+        "target_mismatch"
+    );
+    assert_eq!(rt.bound, [Target::Removable]);
+}
+
+#[test]
+fn a_crashed_or_unproven_snapshot_never_continues_discovery() {
+    for code in ["snapshot_failed", "component_eof", "target_mismatch"] {
+        let mut rt = DiscoveryRuntime {
+            inventory: target::TARGETS
+                .into_iter()
+                .map(|t| (t, Availability::Available))
+                .collect(),
+            inspections: VecDeque::from([Err(Error::new(code))]),
+            bound: vec![],
+        };
+        let error = perform(&discovery_request(), &mut rt, &mut FakeRelay::default())
+            .err()
+            .unwrap();
+        assert_eq!(error.code, "card_cleanup_unknown");
+        assert_eq!(rt.bound, [Target::Removable]);
+    }
+}
+#[test]
+fn helper_snapshot_failure_requires_a_positive_cleanup_receipt() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join(format!("esim-snapshot-receipt-{}", std::process::id()));
+    std::fs::create_dir(&dir).unwrap();
+    let helper = dir.join("helper");
+    for (marker,confirmed) in [
+        ("", false),
+        ("{\"event\":\"cleanup_confirmed\"}", true),
+        ("{\"event\":\"cleanup_confirmed\",\"extra\":true}", false),
+        ("{\"event\":\"cleanup_confirmed\"}\n{\"event\":\"cleanup_failed\",\"stage\":\"channel_close\"}", false),
+    ] {
+        std::fs::write(&helper,format!("#!/bin/sh\nIFS= read -r header\nprintf '%s\\n' '{{\"event\":\"error\",\"code\":\"qmi_transmit_error\"}}' >&2\nprintf '%s\\n' '{marker}' >&2\nexit 1\n")).unwrap();
+        std::fs::set_permissions(&helper,std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut runtime=LocalRuntime::new(helper.clone(),dir.join("must-not-run"));runtime.bind_target(Target::Removable).unwrap();
+        let error=runtime.inspect().unwrap_err();
+        assert_eq!(error.code, if marker.contains("cleanup_failed") { "card_cleanup_unknown" } else { "snapshot_failed" });
+        assert_eq!(error.cleanup_confirmed,confirmed);
+    }
+    std::fs::remove_file(helper).unwrap();
+    std::fs::remove_dir(dir).unwrap();
 }

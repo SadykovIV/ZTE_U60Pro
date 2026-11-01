@@ -2,7 +2,7 @@
 set -eu
 cd "${0:A:h}"
 python3 ../tools/check_cleanup_compatibility.py
-APP="$PWD/dist/ZTE U60Pro Internal eUICC.app"
+APP="$PWD/dist/ZTE U60Pro Manager.app"
 if [[ -e "$APP" ]]; then rm -rf "$APP"; fi
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$PWD/.build/module-cache"
 python3 - <<'PIN_CHECK'
@@ -65,7 +65,7 @@ python3 - "$APP" <<'PY'
 import hashlib,json,pathlib,plistlib,sys
 app=pathlib.Path(sys.argv[1]); res=app/'Contents/Resources'
 (res/'helpers.json').write_text(json.dumps({n:hashlib.sha256((res/n).read_bytes()).hexdigest() for n in ['zte_nv','zte_config','zte_config_read']},indent=2)+'\n')
-info={'CFBundleName':'ZTE U60Pro Internal eUICC','CFBundleDisplayName':'ZTE U60Pro Internal eUICC','CFBundleIdentifier':'local.zte.internal-euicc','CFBundleVersion':'70','CFBundleShortVersionString':'1.28','CFBundleExecutable':'ZTEU60ProManager','CFBundlePackageType':'APPL','LSMinimumSystemVersion':'13.0','LSArchitecturePriority':['arm64'],'NSHighResolutionCapable':True,'NSAppTransportSecurity':{'NSAllowsArbitraryLoads':True},'NSPrincipalClass':'NSApplication','NSLocalNetworkUsageDescription':'Подключение к вашему модему для чтения, резервного копирования и настройки устройства.','CFBundleIconFile':'AppIcon'}
+info={'CFBundleName':'ZTE U60Pro Manager','CFBundleDisplayName':'ZTE U60Pro Manager','CFBundleIdentifier':'local.zte.imei-studio','CFBundleVersion':'71','CFBundleShortVersionString':'1.29','CFBundleExecutable':'ZTEU60ProManager','CFBundlePackageType':'APPL','LSMinimumSystemVersion':'13.0','LSArchitecturePriority':['arm64'],'NSHighResolutionCapable':True,'NSAppTransportSecurity':{'NSAllowsArbitraryLoads':True},'NSPrincipalClass':'NSApplication','NSLocalNetworkUsageDescription':'Подключение к вашему модему для чтения, резервного копирования и настройки устройства.','CFBundleIconFile':'AppIcon'}
 (app/'Contents/Info.plist').write_bytes(plistlib.dumps(info))
 setup=res/'Onboarding'
 setup_manifest = json.loads((setup/'SHA256.json').read_text())
@@ -74,8 +74,8 @@ PY
 if [[ -f Resources/AppIcon.icns ]]; then cp Resources/AppIcon.icns "$APP/Contents/Resources/"; fi
 /usr/bin/codesign --force --sign - "$APP"
 /usr/bin/codesign --verify --deep --strict "$APP"
-/usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP" "$PWD/dist/ZTE-U60Pro-Manager-1.28-arm64.zip"
-(cd dist && /usr/bin/shasum -a 256 "ZTE-U60Pro-Manager-1.28-arm64.zip") > "$PWD/dist/SHA256SUMS"
+/usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP" "$PWD/dist/ZTE-U60Pro-Manager-1.29-arm64.zip"
+(cd dist && /usr/bin/shasum -a 256 "ZTE-U60Pro-Manager-1.29-arm64.zip") > "$PWD/dist/SHA256SUMS"
 python3 - "$APP" <<'PY'
 import datetime, hashlib, json, pathlib, plistlib, re, sys
 app = pathlib.Path(sys.argv[1]); root = pathlib.Path.cwd(); res = app/'Contents/Resources'
@@ -96,7 +96,7 @@ if sha(res/'Onboarding/zte-agent') != agent_hash or sha(res/'Esim/zte-agent-esim
     raise SystemExit('Onboarding and eSIM agent must match the compiled release pin')
 data = {'checked_at': datetime.datetime.now().astimezone().isoformat(), 'version': version,
         'build_number': info['CFBundleVersion'], 'build_script_sha256': sha(root/'build.sh'),
-        'bundle': 'dist/ZTE U60Pro Internal eUICC.app', 'zip': str(archive.relative_to(root)),
+        'bundle': 'dist/ZTE U60Pro Manager.app', 'zip': str(archive.relative_to(root)),
         'zip_sha256': sha(archive), 'zip_size': archive.stat().st_size,
         'executable_sha256': sha(app/'Contents/MacOS/ZTEU60ProManager'), 'architecture': 'arm64', 'minimum_macos': '13.0',
         'signature': 'ad-hoc; codesign --verify --deep --strict passed', 'resource_manifests_match': True,

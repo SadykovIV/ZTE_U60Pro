@@ -1,5 +1,6 @@
 use crate::adapter::{CardIo, Device, Result};
 use crate::qmi::uim::{OpenChannelError, UimClient};
+use crate::target::Target;
 use std::fs::{File, OpenOptions};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
@@ -8,8 +9,8 @@ use std::path::Path;
 pub struct RealDevice;
 impl Device for RealDevice {
     type Card = UimClient;
-    fn connect(&mut self) -> Result<UimClient> {
-        UimClient::connect().map_err(|_| "qmi_connect_error")
+    fn connect(&mut self, target: Target) -> Result<UimClient> {
+        UimClient::connect(target).map_err(|_| "qmi_connect_error")
     }
 }
 impl CardIo for UimClient {
