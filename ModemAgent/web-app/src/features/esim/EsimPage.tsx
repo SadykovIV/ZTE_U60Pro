@@ -32,12 +32,12 @@ export default function EsimPage() {
     capabilities().then(value => {
       const operations = value.operations
       if (!controller.signal.aborted) {
-        const supported = value.protocol === 1 && Array.isArray(operations) && operations.includes('list')
+        const supported = value.protocol === 1 && value.target === 'internal-euicc-slot2' && Array.isArray(operations) && operations.includes('list')
         setOperations(supported ? operations.filter((op: unknown): op is string => typeof op === 'string' && ['list', 'download', 'enable', 'delete', 'rename'].includes(op)) : [])
         setReady(supported)
-        if (!supported) { setFailed(true); setMessage('Install the eSIM agent and refresh this page.') }
+        if (!supported) { setFailed(true); setMessage('Install the Internal eUICC agent and refresh this page.') }
       }
-    }).catch(() => { if (!controller.signal.aborted) { setFailed(true); setMessage('Install the eSIM agent and refresh this page.') } })
+    }).catch(() => { if (!controller.signal.aborted) { setFailed(true); setMessage('Install the Internal eUICC agent and refresh this page.') } })
     const leave = (e: BeforeUnloadEvent) => { if (working.current) { e.preventDefault(); e.returnValue = '' } }
     window.addEventListener('beforeunload', leave)
     return () => { controller.abort(); window.removeEventListener('beforeunload', leave) }
@@ -56,7 +56,7 @@ export default function EsimPage() {
       setCard(result.card)
       append(`${((Date.now()-started)/1000).toFixed(1)}s · ${request.operation} · verified${result.pending ? ' · notifications_pending' : ''}`)
       setSelected(result.snapshot?.profiles.some(p => p.iccid === selected) ? selected : '')
-      setMessage(result.card.kind === 'ordinary_sim' ? 'Ordinary SIM: eSIM management is unavailable.' : result.pending ? 'Profiles verified. Operator notifications are pending; refresh before another operation.' : request.operation === 'list' ? 'Profiles read from the physical eUICC.' : request.operation === 'rename' ? 'The profile name was saved and verified on the card.' : request.operation === 'enable' ? 'The profile is active, the SIM was reread and normal radio mode was verified. Check mobile network registration separately.' : 'The profile change was verified on the card. Check mobile network registration separately.')
+      setMessage(result.card.kind === 'ordinary_sim' ? 'Ordinary SIM: eSIM management is unavailable.' : result.pending ? 'Profiles verified. Operator notifications are pending; refresh before another operation.' : request.operation === 'list' ? 'Profiles read from the internal eUICC.' : request.operation === 'rename' ? 'The profile name was saved and verified on the card.' : request.operation === 'enable' ? 'The profile is active, the SIM was reread and normal radio mode was verified. Check mobile network registration separately.' : 'The profile change was verified on the card. Check mobile network registration separately.')
     } catch (error) {
       if (!lifetime.current?.signal.aborted) {
         const code = error instanceof Error && safeEsimErrors.has(error.message) ? error.message : ''
@@ -100,8 +100,8 @@ export default function EsimPage() {
   }
   return <div className="space-y-4">
     <div><h1 className="text-xl font-semibold text-ink">{t('eSIM')}</h1><p className="mt-1 text-sm text-ink2">{t('SIM card and eSIM profiles')}</p></div>
-    <Card title={t('Physical eUICC only')}>
-      <p className="text-sm text-ink2">{t('Requires a removable eUICC in the physical SIM slot. Tested: 9eSIM V0 on MU5250 B31. Ordinary SIM cards and built-in ZTE eSIM are not supported.')}</p>
+    <Card title={t('eUICC in the internal eSIM position')}>
+      <p className="text-sm text-ink2">{t('For a replacement eUICC installed in the internal eSIM position. The physical SIM slot remains available. Select eSIM in SIM settings before switching a profile. This hardware modification has not been verified.')}</p>
       <p className="mt-2 text-sm text-ink2">{t('Web downloads use the modem internet connection. If the card is empty and the modem is offline, use the macOS or Windows app with computer internet access.')}</p>
     </Card>
     <Card title={t('Profiles on the card')} action={<Button onClick={() => void run({ protocol: 1, operation: 'list' })} disabled={!ready || busy || decoding} loading={busy}>{t('Check card and profiles')}</Button>}>

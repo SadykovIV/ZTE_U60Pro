@@ -2,7 +2,7 @@
 export const safeEsimErrors = new Set([
   "card_not_euicc", "card_busy", "card_open_rejected", "card_cleanup_unknown", "card_not_ready",
   "card_reset_failed", "card_power_restore_failed",
-  "operation_lock_failed", "launcher_operation_refused", "radio_read_failed", "radio_not_online", "radio_set_failed", "radio_offline_failed", "radio_restore_failed", "modem_readback_failed", "modem_slot_mismatch", "modem_iccid_mismatch", "esim_busy",
+  "operation_lock_failed", "launcher_operation_refused", "radio_read_failed", "radio_not_online", "radio_set_failed", "radio_offline_failed", "radio_restore_failed", "modem_readback_failed", "modem_slot_mismatch", "esim_slot_not_selected", "modem_iccid_mismatch", "esim_busy",
   "bridge_already_open",
   "bridge_cleanup_failed",
   "bridge_missing",
@@ -121,6 +121,8 @@ export const safeComponentErrors = new Set([
 export const componentError = (value: unknown): string | undefined => typeof value === 'string' && safeComponentErrors.has(value) ? value : undefined
 export function failureMessage(code: string): string {
   switch (code) {
+    case 'esim_slot_not_selected': return 'Select eSIM in SIM settings before switching a profile. The physical SIM remains available; no automatic SIM selection was made.'
+    case 'modem_slot_mismatch': return 'The internal eUICC route could not be verified. Read the card again and check the eSIM connection.'
     case 'invalid_nickname': return 'Enter a name up to 64 characters, without control or text direction characters.'
     case 'snapshot_failed': return 'Card reading failed. The profile list could not be confirmed. See the operation log for the error code.'
     case 'card_busy': return 'The card is busy with another operation. Wait for it to finish, then read profiles again.'

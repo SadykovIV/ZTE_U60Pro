@@ -1,7 +1,7 @@
 {
   "source_release": "https://github.com/dklasens/MU5250-OpenUI/releases/tag/v2.4",
   "source_tree": "fabaf8b53678dc50e3c3fa2fa3de8b51061967cc",
-  "agent_sha256": "fd5babee29e63366fb743c76c72f2a29eec47377ccda32659a85ce6e5effd959",
+  "agent_sha256": "2ec45ff1e10ceed0029de9b77740c95185b19b4d068a9153555ade0686babd3e",
   "dropbear_package_url": "https://downloads.openwrt.org/releases/23.05.4/targets/armsr/armv8/packages/dropbear_2022.82-6_aarch64_generic.ipk",
   "dropbear_package_sha256": "4fadd1b8529f22fb5d64ee27159d11f4feb68224657953d298a1acf85a83a5c0",
   "files": {
@@ -15,20 +15,21 @@
     "dropbear-libtommath-LICENSE.txt": "2fa64b163659f41965c9815882a8296d3d03ff546b76153e11445f9bdecf955a",
     "setup-agent.sh": "3f24677e43515a33645546ca372aa2582950e829b46c2beeb154f41932960553",
     "start_zte_imei_studio.sh": "81bd888f9eef0bb02f294b185f99029fbc54f5e29bd2a8f8c6ea0357f8884659",
-    "zte-agent": "fd5babee29e63366fb743c76c72f2a29eec47377ccda32659a85ce6e5effd959",
+    "zte-agent": "2ec45ff1e10ceed0029de9b77740c95185b19b4d068a9153555ade0686babd3e",
     "adb-stream.sh": "0692a6b053b7cadae5d4a754684e94062ecaa94067f8f103913c1191e9dc6a1c",
     "clean-components.sh": "f588089dde77f3a6cd69aa45cd41ae043f397fd0d6ca92c467f30927f21a021d",
     "adb-toggle.sh": "1ab9a52c4a5bf062e0863dba043e5f5da08d7397dde2d0fb1856e7955eb9e363"
   },
-  "local_agent_version": "2.9.0-esim.17",
-  "local_agent_release": "ModemAgent/releases/2.9.0-esim.17",
+  "local_agent_version": "2.10.0-internal.1",
+  "local_agent_release": "ModemAgent/releases/2.10.0-internal.1",
   "local_changes": [
     "Authenticated TTL schema 2 adapter for the shared pinned modem TTL manager",
     "Legacy start_ttl.sh execution and conflicting TTL/HL handlers removed",
     "Russian/English dashboard is separate static resources; not embedded in the agent",
     "Authenticated shared VPN profile controller with VLESS imports and guarded Wi-Fi; Russian/English dashboard VPN settings",
     "Physical eUICC profile management over private SSH RPC and authenticated web API; separate eSIM dashboard.",
-    "Private component cleanup after verified agent and SSH preparation; local byte-verified backup before removing owned components; resumable SSH operations."
+    "Private component cleanup after verified agent and SSH preparation; local byte-verified backup before removing owned components; resumable SSH operations.",
+    "Internal replacement eUICC on physical2/logical2; independent physical SIM selection; hardware unverified."
   ],
   "agent_build": {
     "rust": "1.98.1",

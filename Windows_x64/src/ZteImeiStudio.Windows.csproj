@@ -4,8 +4,8 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <AssemblyName>ZTE U60Pro Manager</AssemblyName>
-    <Product>ZTE U60Pro Manager</Product>
+    <AssemblyName>ZTE U60Pro Internal eUICC</AssemblyName>
+    <Product>ZTE U60Pro Internal eUICC</Product>
     <ApplicationIcon Condition="Exists('../Resources/Branding/AppIcon.ico')">../Resources/Branding/AppIcon.ico</ApplicationIcon>
     <RootNamespace>ZteImeiStudio.Windows</RootNamespace>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
@@ -15,9 +15,9 @@
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
     <DebugType>embedded</DebugType>
     <SatelliteResourceLanguages>ru;en</SatelliteResourceLanguages>
-    <Version>1.27.2</Version>
-    <FileVersion>1.27.2.0</FileVersion>
-    <AssemblyVersion>1.27.2.0</AssemblyVersion>
+    <Version>1.28</Version>
+    <FileVersion>1.28.0.0</FileVersion>
+    <AssemblyVersion>1.28.0.0</AssemblyVersion>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <UsedAvaloniaProducts></UsedAvaloniaProducts>
   </PropertyGroup>

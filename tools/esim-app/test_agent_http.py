@@ -63,7 +63,7 @@ def main():
                         assert status==503 and body['ok'] is False,(path,status,body)
                     read_statuses[path]=status
                 commands=[json.loads(line) for line in marker.read_text().splitlines()]
-                safe_ubus={('zwrt_bsp.charger','list'),('zwrt_bsp.battery','list'),('zwrt_bsp.thermal','get_cpu_temp'),
+                safe_ubus={('zwrt_web','device_info'),('zwrt_bsp.charger','list'),('zwrt_bsp.battery','list'),('zwrt_bsp.thermal','get_cpu_temp'),
                     ('network.interface.zte_wan','status'),('network.interface.zte_wan6','status'),
                     ('zte_nwinfo_api','nwinfo_get_netinfo'),('zwrt_data','get_wwandst'),('zwrt_data','get_wwandst_clearday'),
                     ('zwrt_wlan','report'),('zwrt_zte_mdm.api','get_sim_info'),('zwrt_zte_mdm.api','get_imei'),
@@ -91,6 +91,13 @@ def main():
                 assert status==503 and body['code']=='VPN_NOT_INSTALLED',(status,body)
                 status,body=call('GET','/api/esim/capabilities',token=token)
                 assert status==200 and body['ok'] is True,(status,body)
+                assert body['data']['target']=='internal-euicc-slot2',body
+                # Cached standard dashboards cannot reserve or dispatch a job.
+                for wrong in [None,'physical-euicc-slot1','internal-euicc-slot2 ']:
+                    payload={'request_id':'a'*32,'request':{'protocol':1,'operation':'list'}}
+                    if wrong is not None:payload['target']=wrong
+                    status,body=call('POST','/api/esim/jobs',payload,token)
+                    assert status==400 and body['ok'] is False,(status,body)
                 # The confirmed command runs only our fake ubus. Its failure
                 # must be returned as the specific backend error.
                 status,_=call('POST','/api/device/reboot',{},confirmed=True)

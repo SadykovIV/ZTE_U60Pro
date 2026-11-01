@@ -1,4 +1,4 @@
-//! QMI flight-mode and slot1 power cycle after the APDU bridge has closed.
+//! QMI flight-mode and internal slot2 power cycle after the APDU bridge has closed.
 //! Mode and ICCID are freshly queried, never inferred from no-service.
 use super::{Error, Relay, Result};
 use std::time::{Duration, Instant};
@@ -9,11 +9,15 @@ pub(super) trait Device {
     fn iccid(&mut self) -> Result<String>;
     fn card_ready(&mut self, expected: &str, deadline: Instant) -> Result<bool>;
     fn selection(&mut self) -> Result<()>;
+    fn network_selection(&mut self) -> Result<()>;
     fn card_power(&mut self, on: bool) -> Result<()>;
     fn pause(&mut self);
 }
 pub(super) struct QmiModem;
 impl Device for QmiModem {
+    fn network_selection(&mut self) -> Result<()> {
+        super::target::require_network_selection()
+    }
     fn mode(&mut self) -> Result<u8> {
         super::radio_qmi::mode()
     }
@@ -44,6 +48,7 @@ impl Device for QmiModem {
 }
 pub fn ready() -> Result<()> {
     super::resources::check_radio_device()?;
+    super::target::require_network_selection()?;
     if super::radio_qmi::mode()? != 0 {
         return Err(Error::new("radio_not_online"));
     }
@@ -141,6 +146,9 @@ fn cycle(device: &mut impl Device, expected: &str, relay: &mut dyn Relay) -> Res
         return Err(Error::new("radio_not_online"));
     }
     relay.progress("radio_offline")?;
+    // Progress delivery can block on the client. Recheck after it returns,
+    // immediately before any global radio write, with no intervening callback.
+    device.network_selection()?;
     let mut recovery = Restore {
         device,
         needed: true,
@@ -208,10 +216,17 @@ mod tests {
         power_sets: Vec<bool>,
         actions: Vec<&'static str>,
         fail_selection: bool,
+        fail_network_selection: bool,
+        shared_network_selection: Option<std::rc::Rc<std::cell::Cell<u8>>>,
         fail_power_off: bool,
         fail_power_on: bool,
     }
     impl Device for Mock {
+        fn network_selection(&mut self) -> Result<()> {
+            if self.fail_network_selection || self.shared_network_selection.as_ref().is_some_and(|slot| slot.get() != 2) {
+                Err(Error::new("esim_slot_not_selected"))
+            } else { Ok(()) }
+        }
         fn mode(&mut self) -> Result<u8> {
             self.modes.pop_front().unwrap_or(Ok(0))
         }
@@ -285,6 +300,8 @@ mod tests {
             power_sets: vec![],
             actions: vec![],
             fail_selection: false,
+            fail_network_selection: false,
+            shared_network_selection: None,
             fail_power_off: false,
             fail_power_on: false,
         }
@@ -406,6 +423,39 @@ mod tests {
         assert_eq!(m.readiness_calls, 15);
         assert_eq!(m.sets, [false, true]);
         assert_eq!(m.power_sets, [false, true]);
+    }
+    #[test]
+    fn selector_change_during_progress_blocks_every_radio_and_power_write() {
+        struct SwitchingRelay(std::rc::Rc<std::cell::Cell<u8>>);
+        impl Relay for SwitchingRelay {
+            fn http(&mut self, _: &serde_json::Value) -> Result<serde_json::Value> { unreachable!() }
+            fn progress(&mut self, stage: &'static str) -> Result<()> {
+                assert_eq!(stage, "radio_offline");
+                self.0.set(1);
+                Ok(())
+            }
+        }
+        let selector = std::rc::Rc::new(std::cell::Cell::new(2));
+        let mut m = mock();
+        m.shared_network_selection = Some(selector.clone());
+        let error = cycle(&mut m, "expected", &mut SwitchingRelay(selector)).unwrap_err();
+        assert_eq!(error.code, "esim_slot_not_selected");
+        assert!(m.actions.is_empty());
+        assert!(m.sets.is_empty());
+        assert!(m.power_sets.is_empty());
+        assert_eq!(m.readiness_calls, 0);
+    }
+    #[test]
+    fn external_network_selection_blocks_global_radio_and_card_power() {
+        let mut m = mock();
+        m.fail_network_selection = true;
+        let error = cycle(&mut m, "expected", &mut RelayMock { fail_online: false }).unwrap_err();
+        assert_eq!(error.code, "esim_slot_not_selected");
+        assert!(m.actions.is_empty());
+        assert!(m.sets.is_empty());
+        assert!(m.power_sets.is_empty());
+        assert_eq!(m.readiness_calls, 0);
+        assert_eq!(error.radio_restored, None);
     }
     #[test]
     fn slot_guard_failure_restores_radio_without_powering_any_card() {

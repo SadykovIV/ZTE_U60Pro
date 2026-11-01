@@ -9,6 +9,7 @@ mod resources;
 #[cfg(test)]
 mod tests;
 mod trace;
+mod target;
 pub mod web;
 mod web_http;
 
@@ -74,6 +75,7 @@ pub trait Runtime {
     fn command(&mut self, arguments: &[String], http: &mut dyn Relay) -> Result<Value>;
     fn end(&mut self) -> Result<()>;
     fn radio_ready(&mut self) -> Result<()>;
+    fn confirm_enable_selection(&mut self) -> Result<()>;
     fn refresh_modem(&mut self, expected_iccid: &str, relay: &mut dyn Relay) -> Result<()>;
 }
 
@@ -285,6 +287,11 @@ fn perform(request: &Request, runtime: &mut impl Runtime, rpc: &mut dyn Relay) -
             Operation::Rename => "renaming_profile",
             Operation::List => unreachable!(),
         })?;
+        if request.operation == Operation::Enable {
+            // Client progress delivery can block. Recheck the stock selector
+            // after it returns, while retaining owned-bridge cleanup on error.
+            runtime.confirm_enable_selection()?;
+        }
         // Exactly one mutation call. Never retry on a transport or card failure.
         if request.operation == Operation::Rename {
             runtime.command(&arguments, &mut CardOnlyRelay(rpc))
@@ -481,6 +488,10 @@ fn final_value(result: Result<Outcome>) -> (Value, i32) {
     }
 }
 
+fn launcher_mode(arguments: &[String]) -> bool {
+    arguments == ["--esim-launcher-internal"]
+}
+
 pub fn early_entry() -> Option<i32> {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
     if !arguments.iter().any(|s| s.starts_with("--esim")) {
@@ -489,7 +500,7 @@ pub fn early_entry() -> Option<i32> {
     // Dependency panics must not expose request/card values in the SSH stderr.
     std::panic::set_hook(Box::new(|_| eprintln!("{{\"event\":\"esim_panic\"}}")));
     let mut output = std::io::stdout();
-    if arguments == ["--esim-rpc"] || arguments == ["--esim-launcher"] {
+    if arguments == ["--esim-rpc"] || launcher_mode(&arguments) {
         // SSH channel loss becomes EOF/EPIPE, allowing owned card cleanup and
         // radio recovery. Normal permanent-server signal behavior is unchanged.
         if unsafe { libc::signal(libc::SIGHUP, libc::SIG_IGN) } == libc::SIG_ERR {
@@ -501,7 +512,7 @@ pub fn early_entry() -> Option<i32> {
     if arguments == ["--esim-check"] {
         let valid = resources::verify().is_ok();
         let value = json!({"ok":valid,"offline":true,"protocol":1,"version":crate::AGENT_VERSION,
-            "helper_sha256":resources::BRIDGE_HASH,"lpac_sha256":resources::LPAC_HASH,
+            "target":target::NAME,"helper_sha256":resources::BRIDGE_HASH,"lpac_sha256":resources::LPAC_HASH,
             "operations":OPERATIONS});
         return Some(if emit(&mut output, &value).is_ok() && valid {
             0
@@ -515,7 +526,7 @@ pub fn early_entry() -> Option<i32> {
             let _operation = operation_lock::OperationLock::acquire()?;
             let mode = radio_qmi::mode()?;
             let _private_iccid = radio_qmi::iccid()?;
-            Ok::<_, Error>(json!({"ok":true,"read_only":true,"mode":mode,"slot1_iccid_valid":true}))
+            Ok::<_, Error>(json!({"ok":true,"read_only":true,"mode":mode,"target":target::NAME,"slot2_iccid_valid":true}))
         })();
         let value = match checked {
             Ok(v) => v,
@@ -580,7 +591,7 @@ pub fn early_entry() -> Option<i32> {
             1
         });
     }
-    let result = if arguments == ["--esim-launcher"] {
+    let result = if launcher_mode(&arguments) {
         let mut input = std::io::stdin().lock();
         read_json(&mut input)
             .and_then(|v| launcher_request(v.ok_or(Error::new("request_missing"))?))

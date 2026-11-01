@@ -391,6 +391,12 @@ impl LocalRuntime {
 }
 
 impl super::Runtime for LocalRuntime {
+    fn confirm_enable_selection(&mut self) -> Result<()> {
+        self.check_deadline()?;
+        // A read-only stock selector query is allowed while our APDU bridge
+        // owns a channel; radio changes remain forbidden until it is closed.
+        super::target::require_network_selection()
+    }
     fn radio_ready(&mut self) -> Result<()> {
         self.check_deadline()?;
         if self.bridge.is_some() {

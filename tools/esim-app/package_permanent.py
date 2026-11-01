@@ -41,7 +41,7 @@ def main():
     helper=ROOT/'ModemAgent/target/aarch64-unknown-linux-musl/release/zte-vpnctl'
     vpn_path=ROOT/'MacIMEI/Sources/VPNSettings.swift'
     vpn_source=retain_previous_hash(vpn_path.read_text(),sha(helper),'helperHash','supportedStatusHashes')
-    version='2.9.0-esim.17';mac=ROOT/'MacIMEI/Resources';win=ROOT/'Windows_x64/Resources';dist=ROOT/'ModemAgent/web-app/dist'
+    version='2.10.0-internal.1';mac=ROOT/'MacIMEI/Resources';win=ROOT/'Windows_x64/Resources';dist=ROOT/'ModemAgent/web-app/dist'
     if not (dist/'index.html').is_file():raise SystemExit('Build dashboard first')
     helper=ROOT/'ModemAgent/target/aarch64-unknown-linux-musl/release/zte-vpnctl'
     shutil.copy2(helper,mac/'VPN/vpnctl')
@@ -58,7 +58,7 @@ def main():
     p.write_text(s)
     license_source=ROOT/'ModemAgent/web-app/node_modules/jsqr/LICENSE'
     shutil.copyfile(license_source,dist/'LICENSE-jsQR-Apache-2.0.txt')
-    (dist/'release.json').write_text(json.dumps({'version':version,'agent_sha256':args.sha256,'esim':True,'web_download_requires_modem_internet':True},indent=2)+'\n')
+    (dist/'release.json').write_text(json.dumps({'version':version,'agent_sha256':args.sha256,'esim':True,'esim_target':'internal-euicc-slot2','web_download_requires_modem_internet':True},indent=2)+'\n')
     (dist/'THIRD-PARTY.md').write_text('QR images are decoded locally with jsQR 1.4.0 (Apache-2.0).\nSource: https://github.com/cozmo/jsQR\nExact npm integrity is recorded in the included source package-lock.json.\n')
     if (mac/'AgentDashboard').exists():shutil.rmtree(mac/'AgentDashboard')
     shutil.copytree(dist,mac/'AgentDashboard')
@@ -90,7 +90,7 @@ def main():
     for app in [mac,win]:
         shutil.copy2(args.agent,app/'Onboarding/zte-agent')
         p=app/'Onboarding/provenance.json';d=json.loads(p.read_text());d.update(agent_sha256=args.sha256,local_agent_version=version,local_agent_release='ModemAgent/releases/'+version);d['files']['zte-agent']=args.sha256
-        change='Physical eUICC profile management over private SSH RPC and authenticated web API; separate eSIM dashboard.'
+        change='Internal replacement eUICC on physical2/logical2; independent physical SIM selection; hardware unverified.'
         if change not in d['local_changes']:d['local_changes'].append(change)
         p.write_text(json.dumps(d,indent=2,ensure_ascii=False)+'\n');manifest(app/'Onboarding')
     for group in ['AgentDashboard','AgentDashboardInstall','AgentInstallation','VPN']:

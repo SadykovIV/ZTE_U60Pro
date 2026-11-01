@@ -31,7 +31,7 @@ public sealed partial class DeviceFeatureService
     {
         _shell = shell ?? throw new ArgumentNullException(nameof(shell));
         _resourcesRoot = resourcesRoot ?? Path.Combine(AppContext.BaseDirectory, "Resources");
-        _storageRoot = storageRoot ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ZTE IMEI Studio");
+        _storageRoot = storageRoot ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ZTE U60Pro Internal eUICC");
     }
 
     private void CheckLocalPending()

@@ -82,8 +82,25 @@ static void synthetic_catalog(int count){
  strcpy(fixture.ssid,"Fixture [SSID]");info_layout_default(&fixture.layout);
  for(int i=0;i<count;i++){snprintf(fixture.profiles[i].id,37,"%08x-89ab-cdef-0123-456789abcdef",i);snprintf(fixture.profiles[i].name,257,"🇩🇪 Тестовый профиль %d 🚀",i);}
 }
+static int current_registered_name(char *out,int capacity){snprintf(out,(size_t)capacity,"Tele2");return 0;}
+static void test_network_name_callback_and_hook(void){
+ struct {uint32_t before,out[256],after;} guarded;
+ memset(&guarded,0xa5,sizeof guarded);network_full=current_registered_name;
+ CHECK(registered_network_name(NULL,guarded.out)==1);
+ CHECK(guarded.before==0xa5a5a5a5&&guarded.after==0xa5a5a5a5);
+ CHECK(guarded.out[0]=='T'&&guarded.out[4]=='2'&&guarded.out[5]==0);
+ CHECK(guarded.out[128]==0xa5a5a5a5); /* OEM caller owns the RAT suffix. */
+ void *page=mmap(NULL,4096,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+ CHECK(page!=MAP_FAILED);*(uintptr_t*)page=0x1234;
+ CHECK(hook((uintptr_t)page,0x9999,registered_network_name)==-1);
+ CHECK(*(uintptr_t*)page==0x1234);
+ CHECK(hook((uintptr_t)page,0x1234,registered_network_name)==0);
+ CHECK(*(uintptr_t*)page==(uintptr_t)registered_network_name);
+ CHECK(munmap(page,4096)==0);
+}
 int main(void){
  if(0)init(); /* Compile constructor body; do not hook or inspect any process. */
+ test_network_name_callback_and_hook();
  static struct launcher_abi test_abi;test_abi.language=(uintptr_t)&language;test_abi.modal=(uintptr_t)&modal;test_abi.palette=(uintptr_t)palette;abi=&test_abi;
  void *form=calloc(1,900),*parent=calloc(1,48),*dot0=calloc(1,80),*dot1=calloc(1,80);assert(form&&parent&&dot0&&dot1);
  construct(parent,NULL);construct(dot0,form);construct(dot1,form);P(form,88)=parent;P(form,848)=dot0;P(form,856)=dot1;

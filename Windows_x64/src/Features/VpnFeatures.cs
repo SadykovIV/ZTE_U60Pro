@@ -22,7 +22,7 @@ public enum VpnPasswordMode { Main, Custom, Preserve }
 public sealed partial class DeviceFeatureService
 {
     private const string VpnRoot = "/data/zte-vpn";
-    private const string VpnHelperHash = "dbf07f7551415816a66ac18148d45c582649c76529282902533d154f5299c58e";
+    private const string VpnHelperHash = "cbcdb1ce6b5a94f7a5868c81f1dd920831e68074fcf3c1588148b5d33b954ba8";
     private const string Legacy12422VpnHelperHash = "b5f581427afd423be3931473db2ce4b496a387b685ab3c48adf26cc597000f9a";
     private const string Legacy12421VpnHelperHash = "82a8b6655ff6cd43938ffe3735e8841599ef6116bf33079d8d203db9415ca3f2";
     private const string Legacy12420VpnHelperHash = "fe1f6d535ccee6ec0f9333c01108b00f35006209850ed641023dbb937dd30b48";
@@ -38,8 +38,8 @@ public sealed partial class DeviceFeatureService
     // Public 1.24.4 build 42 controller. It may only serve a status request.
     private const string LegacyCardStatusVpnHelperHash = "7a8b84c3502e711c6b66c943f883a984dd9ed82da41455fc083ed0cc7d44b6fb";
     private const string VpnAgentHash = AgentPackage.Sha256;
-    private const string DashboardHash = "7cf016704c40a75ca35bddc3979703fbaa08f6362c3ef7024f2f9d026d4cc82f";
-    private const string LauncherHash = "543e15fd4bb2d07bcabbe6b51a5516b01384376b53d5c48453e0196c53b4ce99";
+    private const string DashboardHash = "83ededf247c1c913d671a8068907e04f351f248613627d13aec28e0de6fd3faf";
+    private const string LauncherHash = "d805fbcf509709456deb6134b1dc9e072f235078ee22c32d968d4f80940243b6";
     private static readonly string[] VpnInstallNames = ["install.sh", "manager.sh", "firewall.sh", "configure.lua", "nft-guard.nft", "dnsmasq.conf", "service.sh", "ikev2.sh", "ikev2-updown.sh", "nft-ikev2-guard.nft", "vpnctl", "mihomo"];
     private static readonly string[] VpnUpgradeNames = ["upgrade-controller.sh", "vpnctl", "manager.sh", "firewall.sh", "configure.lua", "nft-guard.nft", "dnsmasq.conf", "service.sh", "ikev2.sh", "ikev2-updown.sh", "nft-ikev2-guard.nft"];
     private static readonly FrozenSet<string> SupportedVpnStatusHashes = new[]
@@ -67,6 +67,7 @@ public sealed partial class DeviceFeatureService
         "b5f581427afd423be3931473db2ce4b496a387b685ab3c48adf26cc597000f9a",
         "cdb01d27775d61bcb3ae14a8d124ccbab683f940f1dcfd2adffa43a6b7b462f0",
         "cf15a6290316dd6832873e35972831a590d70cf0734eb93dbcd96aab87fab6f1",
+        "dbf07f7551415816a66ac18148d45c582649c76529282902533d154f5299c58e",
         "e00749ed2a6273c95a4b0563212313c81e54928f6564fdbd8f9616d12a4df6ba",
         "f5e1c9e627e3e978ff535de79b95ff920d7318e7ea3ce713e5b174efe313ca0c",
         "f620dab27f951c7de2de77a89376975b51c79f57f8a8a24cec95392c9c61eea4",

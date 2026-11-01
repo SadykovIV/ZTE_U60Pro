@@ -161,7 +161,7 @@ private final class CatalogHTTPPolicy: NSObject, URLSessionTaskDelegate, @unchec
     init(cacheURL: URL? = nil, fetch: ((URL, Int) async throws -> Data)? = nil) {
         self.fetchOverride = fetch
         let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("ZTE U60Pro Manager/Catalog", isDirectory: true)
+            .appendingPathComponent("ZTE U60Pro Internal eUICC/Catalog", isDirectory: true)
         self.cacheURL = cacheURL ?? directory.appendingPathComponent("verified-envelope.json")
         payload = Data(base64Encoded: VerifiedCatalogPolicy.baselinePayload)!
         signature = Data(base64Encoded: VerifiedCatalogPolicy.baselineSignature)!

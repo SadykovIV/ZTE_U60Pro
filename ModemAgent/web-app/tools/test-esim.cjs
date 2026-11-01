@@ -113,6 +113,7 @@ test('job client posts once, follows only its ID and verifies a completed result
   assert.equal(value.snapshot.eid, snap.eid); assert.equal(calls.filter(c => c.method === 'POST').length, 1)
   assert.equal(calls[1].url, '/api/esim/jobs/' + id)
   assert.equal(calls[0].body.request_id, id)
+  assert.equal(calls[0].body.target, 'internal-euicc-slot2')
 })
 test('lost start response, mismatched job and false result never become a successful operation or an automatic retry', async () => {
   for (const failure of ['lost', 'foreign', 'false-result']) {
@@ -169,7 +170,7 @@ test('card recovery instructions distinguish restart, wait and channel rejection
   const source = fs.readFileSync(path.join(__dirname, '../src/locales/ru-esim.ts'), 'utf8')
   const localized = {}
   vm.runInNewContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText, { exports: localized })
-  for (const code of ['card_busy', 'card_open_rejected', 'card_cleanup_unknown', 'card_not_ready', 'card_reset_failed', 'card_power_restore_failed']) {
+  for (const code of ['esim_slot_not_selected', 'modem_slot_mismatch', 'card_busy', 'card_open_rejected', 'card_cleanup_unknown', 'card_not_ready', 'card_reset_failed', 'card_power_restore_failed']) {
     assert.equal(errors.safeEsimErrors.has(code), true)
     assert.ok(localized.ruEsim[errors.failureMessage(code)])
   }
@@ -181,7 +182,7 @@ test('card recovery instructions distinguish restart, wait and channel rejection
   assert.doesNotMatch(errors.failureMessage('private-error'), /private-error/)
 })
 test('fixed card failure and component cause are logged once with no automatic job retry', async () => {
-  for (const code of ['card_busy', 'card_open_rejected', 'card_cleanup_unknown', 'card_not_ready', 'card_reset_failed', 'card_power_restore_failed']) {
+  for (const code of ['esim_slot_not_selected', 'modem_slot_mismatch', 'card_busy', 'card_open_rejected', 'card_cleanup_unknown', 'card_not_ready', 'card_reset_failed', 'card_power_restore_failed']) {
     let posts = 0; const logs = []
     const api = load('api', { '../../data/client': { req: async () => { posts++; return { job_id: 'ab'.repeat(16), state: 'complete', result: { ok: false, error: code, component_error: 'qmi_open_rejected', raw: 'SECRET' } } } }, './model': model, './journal': journal, './errors': errors }, { window: { crypto: { getRandomValues: b => b.fill(1) } }, setTimeout, clearTimeout })
     await assert.rejects(api.runOperation({ protocol: 1, operation: 'list' }, (_, line) => logs.push(line), new AbortController().signal), new RegExp(code))

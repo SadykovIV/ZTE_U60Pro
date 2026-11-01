@@ -199,10 +199,25 @@ private func resultLine(_ s: EsimSnapshot, changed: Bool = false, modemVerified:
                 var d=EsimRPCDecoder();_ = try d.consume(JSONSerialization.data(withJSONObject:["type":"progress","stage":stage]))
                 try check(EsimService.stages[stage] != nil,"radio stage has no UI label")
             }
-            for code in ["radio_restore_failed","modem_iccid_mismatch","modem_slot_mismatch","launcher_operation_refused"] {
+            for code in ["radio_restore_failed","modem_iccid_mismatch","modem_slot_mismatch","esim_slot_not_selected","launcher_operation_refused"] {
                 try check(EsimLog.backendError(code) == code,"new fixed backend error hidden")
             }
             try check(EsimFailure.backend("radio_restore_failed").localizedDescription.contains("Включение радио"),"radio recovery warning missing")
+        }
+        try test("internal eUICC selection refusal remains actionable and cannot authorize a write") {
+            var decoder = EsimRPCDecoder()
+            _ = try decoder.consume(JSONSerialization.data(withJSONObject: ["type": "result", "ok": false, "error": "esim_slot_not_selected"]))
+            do {
+                _ = try decoder.finish(exitCode: 1, operation: .enable("890000000000000001"), before: snapshot([profile()]))
+                throw TestError.failed("selection refusal accepted")
+            } catch let failure as EsimFailure {
+                guard case .backend("esim_slot_not_selected") = failure else { throw failure }
+                let message = failure.localizedDescription
+                try check(message.contains("выберите eSIM") && message.contains("автоматически не переключался"), "selection recovery omitted")
+                UserDefaults.standard.setVolatileDomain([L10n.preferenceKey: "en"], forName: UserDefaults.argumentDomain)
+                try check(L10n.text(message).contains("select eSIM"), "selection recovery is not translated")
+                UserDefaults.standard.removeVolatileDomain(forName: UserDefaults.argumentDomain)
+            }
         }
         try test("EID change invalidates mutation result") {
             var after=snapshot([profile()]);after.eid=String(repeating:"2",count:32)

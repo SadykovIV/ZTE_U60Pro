@@ -5,7 +5,7 @@ use std::io::{Read, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
-pub const BRIDGE_HASH: &str = "420049450020763a2c969710b50e2b3b9f792ef190d60f680912af62f9df1530";
+pub const BRIDGE_HASH: &str = "37bc21f6384a8ef3becd83a31cac4f7d2fbd0c0ebdaf5b944197e63932408e89";
 pub const LPAC_HASH: &str = "32e7ff567cc38ff3522a02f71c0b9d4df2d5c745dbe664ee94655d737fdef478";
 const BRIDGE: &[u8] = include_bytes!("../../resources/esim/bridge");
 const LPAC: &[u8] = include_bytes!("../../resources/esim/lpac");
@@ -84,8 +84,9 @@ pub fn check_device() -> Result<()> {
 /// requires a fresh operating-mode and physical-slot read before changing the
 /// profile, then setter acknowledgements and readbacks. The B27 capture confirms
 /// DMS mode/UIM slot-status reads; radio writes still require device validation.
-/// This does not enable a built-in-card route or a private diag-router ABI.
-/// APDU inventory and card operations use actual card/route checks.
+/// Firmware identity does not prove replacement-card compatibility. The internal
+/// slot2 route and user-selected subscription are checked independently. No
+/// private diag-router ABI or stock-ZTE-card provisioning is enabled.
 pub fn check_radio_device() -> Result<()> {
     check_device()?;
     let image_path = Path::new("/firmware/image/modem.b16");

@@ -1,18 +1,29 @@
-# ZTE U60Pro Manager — desktop apps and modem agent
+# ZTE U60Pro Manager Internal eUICC — desktop apps and modem agent
 
 **English** · [Русский](README.ru.md)
 
-Manage the **ZTE U60 Pro / MU5250**: access preparation, backups, IMEI, TTL,
-Russian screen localization, VPN over a separate Wi-Fi network, removable
-physical eUICC cards, and diagnostics.
+Manage the **ZTE U60 Pro / MU5250** with a real eUICC fitted in place of the
+original soldered ZTE eSIM. **1.28 Internal eUICC** is a separate variant based
+on the 1.27.2 project; the existing eSIM menu manages the replacement card.
+The physical SIM slot remains available through the modem's stock SIM selection.
 
-Version **1.27.2** (macOS build **69**, Windows FileVersion **1.27.2.0**),
-agent **2.9.0-esim.17**, VPN controller **1.5.1**.
-[Download macOS ARM64](https://github.com/SadykovIV/ZTE_U60Pro/releases/download/v1.27.2/ZTE-U60Pro-Manager-1.27.2-macOS-arm64.zip) ·
-[Download Windows x64](https://github.com/SadykovIV/ZTE_U60Pro/releases/download/v1.27.2/ZTE-U60Pro-Manager-1.27.2-Windows-x64-portable.zip) ·
-[Release and checksums](https://github.com/SadykovIV/ZTE_U60Pro/releases/tag/v1.27.2).
+Version **1.28** (macOS build **70**, Windows FileVersion **1.28.0.0**),
+agent **2.10.0-internal.1**, VPN controller **1.5.1**.
+This is a local alternative; the links for older public releases do not deliver it.
+[Internal eUICC guide](docs/INTERNAL-EUICC.md) ·
+[Project refresh and verification boundaries](docs/PROJECT-REFRESH-20261101.md).
 
-## Changes in 1.27.2
+The target is QMI physical slot **2**, logical slot **2**. Reading and managing
+profiles uses that card even when the stock network selection is the physical
+SIM. Enabling a profile requires selecting **eSIM** in the stock modem settings
+first; the agent checks the selection again before changing the card and radio.
+It never changes that selection automatically or falls back to slot 1.
+
+This variant does not unlock the original ZTE eSIM and does not claim two
+simultaneously active mobile connections. The replacement hardware has not yet
+been tested; historical removable-card results below remain separate.
+
+## Inherited changes in 1.27.2
 
 - Separate adapters for the captured FLY B27/B11 components: VPN/IPA, TTL,
   ADB, screen localization, Launcher and physical-eUICC radio operations.
@@ -76,7 +87,8 @@ not general firmware incompatibility.
   Independent actions are not blocked by unrelated preparation or IMEI journals.
 - Ordinary SIM and physical eUICC classification uses a verified card read;
   an error alone does not identify an ordinary SIM. Card checks stay on the
-  dedicated eSIM page. The built-in ZTE eSIM is not supported.
+  dedicated eSIM page. The original ZTE eSIM is not supported; this variant
+  targets the replacement eUICC described above.
 - Diagnostics is grouped under Preparation; firmware requirements are detected
   automatically for each operation.
 
@@ -90,7 +102,7 @@ The project includes two desktop applications and a standalone modem agent:
 | **ZTE U60Pro Manager Windows** | Windows x64 | Self-contained portable package: prepare SSH through ADB, manage the modem over SSH, Launcher, VPN, applications, Terminal, IMEI, eSIM, and backups |
 | **ZTE Agent** | Linux ARM64 on the modem | RU/EN web dashboard, modem and network status, VPN profile selection and import, and physical eUICC management; downloading a profile requires the modem's internet connection |
 
-### Tested system
+### Historical tested system before the internal-eUICC modification
 
 | Item | Verified value |
 | --- | --- |
@@ -98,7 +110,7 @@ The project includes two desktop applications and a standalone modem agent:
 | Firmware | **CN_ZTE_MU5250V1.0.0B31** |
 | Inner firmware | **BD_CNMU5250V1.0.0B31** |
 | Modem platform | Linux ARM64 |
-| Physical eUICC | Removable **9eSIM V0** in the SIM slot was tested previously; the built-in ZTE eSIM is not supported |
+| Physical eUICC | Removable **9eSIM V0** in physical slot 1 was tested previously; replacement eUICC in slot 2 is not hardware-verified |
 
 On this B31 device, the **1.25** audit verified component updates, dashboard
 access, applying/restoring TTL settings, VPN enable/disable, Launcher page order
@@ -123,7 +135,8 @@ Diagnostic archives prioritize main journals; large historical exports can be
 partial, with the omissions listed in the archive.
 [Full verification scope](docs/RELEASE-1.25.md#what-was-checked).
 
-**[Download the applications and agent](https://github.com/SadykovIV/ZTE_U60Pro/releases/latest)** ·
+**[Internal eUICC variant and verification](docs/INTERNAL-EUICC.md)** ·
+[Historical standard releases](https://github.com/SadykovIV/ZTE_U60Pro/releases) ·
 [Application guide](docs/APPLICATION.md) · [Agent guide](docs/AGENT.md) ·
 [Build from source](docs/BUILD.md)
 
@@ -160,8 +173,9 @@ The eSIM, Launcher, and connection images below are retained from 1.23.2.
 
 Install a profile from a QR code or LPA string, or use separate **SM-DP+ Address**
 and **Activation code** fields. View profiles and select the active one. This
-requires a **removable physical eUICC in the SIM slot**; 9eSIM V0 has been tested.
-The built-in ZTE eSIM is not supported by this release.
+uses the replacement **eUICC in the internal eSIM position** in this variant.
+The images show the historical removable-card interface; they are not proof of
+testing the modified hardware. The original ZTE eSIM remains unsupported.
 
 | macOS | Windows UI |
 | --- | --- |
@@ -292,11 +306,11 @@ adaptation before switching is allowed.
 
 ## Quick start
 
-1. Download the ZIP for your OS from Releases. On Mac, open the `.app`. On Windows, extract the entire archive and run `ZTE U60Pro Manager.exe`, keeping the `Resources` folder alongside it. No separate .NET installation is needed; USB ADB may require a modem driver.
+1. Use the **1.28 Internal eUICC** ZIP for your OS. On Mac, open the included `.app`. On Windows, extract the entire archive and run its Manager EXE, keeping the `Resources` folder alongside it. No separate .NET installation is needed; USB ADB may require a modem driver. Older standard release links are not this variant.
 2. Open **Modem preparation → Connection** and connect over SSH. If SSH is not configured, use the separate preparation action: working root USB ADB first; otherwise, stock USB debug through the web interface, followed by the verified backup method. Web methods require the stock web password; the manual backup key is optional. The SSH key is created on the computer, and device binding is checked over USB. Working SSH does not require preparation again. All ordinary application operations use SSH; Web and Agent buttons open a browser. For firmware adaptation, use **Diagnostics → Firmware adaptation data** after connecting. [Methods, commands, and recovery after interruption](docs/ADB-PREPARATION.md).
 3. Save a backup before making changes. IMEI operations create their mandatory backup automatically.
 4. Install the components you need. Use **VPN** to install its components and manage profiles directly in the application or the agent web dashboard. Install and configure screen pages in **Launcher**. The verified catalog includes htop and experimental opkg; its list is updated separately from GitHub. Terminal opens an SSH session automatically. Installed applications outside the catalog can also be removed.
-5. For eSIM, insert a physical eUICC, select the physical SIM slot, and request profiles on the **eSIM** page. Profile downloads through the desktop app use the computer's internet connection; downloads through the web dashboard use the modem's connection. [Details and limitations](docs/ESIM-DESKTOP.md).
+5. With the replacement eUICC fitted at the internal eSIM position, request profiles on the existing **eSIM** page. Reading, downloading, renaming and deleting a disabled profile target slot 2 without changing the selected network SIM. Select **eSIM** in the stock modem settings before enabling a profile. Desktop downloads use the computer's internet; web downloads use the modem's connection. [Details and limitations](docs/INTERNAL-EUICC.md).
 6. Open the agent with the application's button or at `http://192.168.0.1:8080`. The API uses port **9090**. Set the agent password during preparation; the build has no shared agent password.
 
 After a failed setup or factory reset, use the ordinary preparation button and

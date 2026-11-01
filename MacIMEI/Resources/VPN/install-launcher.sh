@@ -25,12 +25,12 @@ case "$(sha256sum /etc/init.d/zte_topsw_devui | cut -d' ' -f1)" in
  *) exit 69;;
 esac
 # PAYLOAD_PINS_BEGIN
-[ "$(sha256sum "$stage/launcher.so" | cut -d' ' -f1)" = 543e15fd4bb2d07bcabbe6b51a5516b01384376b53d5c48453e0196c53b4ce99 ] || exit 70
-[ "$(sha256sum "$stage/launcher-run.sh" | cut -d' ' -f1)" = 56fb2c9cb6ba3048376fe5e677669c053ffef6fa8cc6f39c6b0f1211112d219d ] || exit 70
+[ "$(sha256sum "$stage/launcher.so" | cut -d' ' -f1)" = d805fbcf509709456deb6134b1dc9e072f235078ee22c32d968d4f80940243b6 ] || exit 70
+[ "$(sha256sum "$stage/launcher-run.sh" | cut -d' ' -f1)" = f550b0920d9b94f3c3d02d0918a62056c3b20c74726d1644c5c670ce94d4d3fe ] || exit 70
 [ "$(sha256sum "$stage/launcher-watch.sh" | cut -d' ' -f1)" = 13dbaa1520f0a503270109bbd07eea331317396824566d389bba37bdc91a16e2 ] || exit 70
 [ "$(sha256sum "$stage/launcher-service.sh" | cut -d' ' -f1)" = e0d5c80f061af69a8a7329476e33e6b4766a80b37a9a38e3d3217712551b4e90 ] || exit 70
 [ "$(sha256sum "$stage/launcher-start.sh" | cut -d' ' -f1)" = 8aed90c6fe28ad488b78caeadbc61117dfcfda795793894325e39baf0ac03633 ] || exit 70
-[ "$(sha256sum "$stage/launcher.sha256" | cut -d' ' -f1)" = 6551190fc125d08e8333e23d368bdbc958ebe4cd0abf0c57f26a602ca5b3c977 ] || exit 70
+[ "$(sha256sum "$stage/launcher.sha256" | cut -d' ' -f1)" = 8494f14d36600d9f3517eec90944517e124c90d3d824c3e3f2e71006784842f0 ] || exit 70
 # PAYLOAD_PINS_END
 for file in launcher.so launcher-run.sh launcher-watch.sh launcher-service.sh launcher-start.sh launcher.sha256; do
  [ -f "$stage/$file" ] && [ ! -L "$stage/$file" ] || exit 70

@@ -110,7 +110,7 @@ test('every type banner is translated and cleanup unconfirmed alone never gives 
 
 // Execute the production page's hooks and event handlers without browser/network.
 // State persists across render calls; the explicit operation uses a controlled promise.
-function pageFixture(advertised = ['list', 'enable', 'download', 'delete', 'rename']) {
+function pageFixture(advertised = ['list', 'enable', 'download', 'delete', 'rename'], target = 'internal-euicc-slot2') {
   let cursor = 0, effects = [], cleanups = [], mounted = false, operationCalls = 0, capabilityCalls = 0, confirmationCalls = 0, resolve, reject
   const state = [], refs = new Set(), listeners = new Map(), requests = []
   function useState(initial) { const i = cursor++; if (!(i in state)) state[i] = initial; return [state[i], value => { state[i] = typeof value === 'function' ? value(state[i]) : value }] }
@@ -120,7 +120,7 @@ function pageFixture(advertised = ['list', 'enable', 'download', 'delete', 'rena
   const module = load('EsimPage', { react: { useState, useRef, useEffect: effect => { if (!mounted) effects.push(effect) } },
     'react/jsx-runtime': { jsx: node, jsxs: node }, '../../i18n': { useI18n: () => ({ t: x => x }) }, '../../ui/controls': ui,
     '../../ui/primitives': { Card: 'card', Chip: 'chip' }, '../../ui/feedback': { confirm: async () => { confirmationCalls++; return true } },
-    './api': { capabilities: async () => { capabilityCalls++; return { protocol: 1, operations: advertised } },
+    './api': { capabilities: async () => { capabilityCalls++; return { protocol: 1, target, operations: advertised } },
       runOperation: request => { operationCalls++; requests.push(request); return new Promise((yes, no) => { resolve = yes; reject = no }) } },
     './model': model, './qr': { decodeImage: async () => { throw Error('not used') } }, './journal': journal, './errors': errors
   }, { window: { addEventListener: (name, fn) => listeners.set(name, fn), removeEventListener: name => listeners.delete(name) } }, 'tsx')
@@ -267,4 +267,18 @@ test('a profile with unknown activation state may be renamed without enabling or
   assert.equal(page.requests[1].operation, 'rename'); assert.equal(page.requests[1].expected_snapshot.profiles[0].state, 'unknown')
   page.resolve({ snapshot: snapshot([{ ...entry, nickname: 'New' }]), card: confirmed(), pending: false }); await settle()
   page.unmount()
+})
+
+test('internal dashboard refuses old or wrong-target agents before touching either SIM', async () => {
+  for (const target of [null, '', 'physical-euicc-slot1', 'internal-euicc-slot1']) {
+    const page = pageFixture(['list', 'enable', 'download', 'delete', 'rename'], target)
+    page.mount(); await settle()
+    const tree = page.render()
+    const button = page.elements(tree).find(e => e.type === 'button' && e.props.children === 'Check card and profiles')
+    assert.equal(button.props.disabled, true)
+    button.props.onClick(); await settle()
+    assert.equal(page.calls, 0)
+    assert.match(JSON.stringify(tree), /Install the Internal eUICC agent/)
+    page.unmount()
+  }
 })

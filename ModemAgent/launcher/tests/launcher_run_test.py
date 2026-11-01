@@ -22,7 +22,9 @@ class WrapperTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='launcher-wrapper-') as temp:
             base = Path(temp); root = base / 'root'; root.mkdir(mode=0o700)
             bindir = base / 'bin'; bindir.mkdir()
-            stock = base / 'stock'; stock.write_text('#!/bin/sh\nprintf "%s\\n" "${ZTE_LAUNCHER:-plain}"\n'); stock.chmod(0o700)
+            stock = base / 'stock'; stock.write_text('#!/bin/sh\nprintf "%s\\n" "${ZTE_LAUNCHER:-plain}:${ZTE_LAUNCHER_NETWORK_NAME_B31:-off}"\n'); stock.chmod(0o700)
+            sdk = base / 'sdk'; sdk.write_text('SDK fixture')
+            sdk_hash = '2433d902270b787373acc9d56d776fbd002e349a023d6fd999b19230c4e2c4d7'
             cid = base / 'cid'; cid.write_text('fixture-cid\n')
             (root / 'owner').write_text('zte-native-launcher-v1\n')
             (root / 'cid').write_bytes(cid.read_bytes()); (root / 'enabled').touch()
@@ -34,22 +36,32 @@ class WrapperTests(unittest.TestCase):
             tool('stat', 'echo 0:700\n')
             tool('id', 'echo 0\n')
             tool('uname', 'case "$1" in -s) echo Linux;; -m) echo "${TEST_ARCH:-aarch64}";; *) exit 1;; esac\n')
-            tool('sha256sum', f'if [ "$1" = "{stock}" ]; then printf "%s  %s\\n" "$TEST_UI_HASH" "$1";else exec /usr/bin/shasum -a 256 "$@";fi\n')
+            tool('sha256sum', f'if [ "$1" = "{stock}" ]; then printf "%s  %s\\n" "$TEST_UI_HASH" "$1";elif [ "$1" = "{sdk}" ]; then printf "%s  %s\\n" "$TEST_SDK_HASH" "$1";else exec /usr/bin/shasum -a 256 "$@";fi\n')
             source = SOURCE.read_text()
-            for old, new in [('/data/zte-launcher', str(root)), ('/usr/bin/zte_topsw_devui', str(stock)),
+            for old, new in [('/data/zte-launcher', str(root)), ('/usr/bin/zte_topsw_devui', str(stock)), ('/usr/lib/libzte_SDKowrt.so', str(sdk)),
                              ('/sys/block/mmcblk0/device/cid', str(cid)), ('/tmp/zte-launcher', str(base / 'state')),
                              ('/tmp/zte-vpn-screen', str(base / 'screen')), ('/sys/kernel/debug/dri/0/clients', str(base / 'clients'))]:
                 source = source.replace(old, new)
             # Do not load any extension into the host fixture's shell.
             source = source.replace('export LD_PRELOAD="$root/launcher.so" ZTE_LAUNCHER=1', 'export ZTE_LAUNCHER=1')
             script = base / 'run.sh'; script.write_text(source)
-            env = dict(os.environ, PATH=str(bindir) + ':/usr/bin:/bin')
+            env = dict(os.environ, PATH=str(bindir) + ':/usr/bin:/bin', TEST_SDK_HASH=sdk_hash,
+                       ZTE_LAUNCHER_NETWORK_NAME_B31='1')
             for digest in HASHES:
                 result = subprocess.run(['/bin/sh', str(script)], env=dict(env, TEST_UI_HASH=digest), capture_output=True, timeout=5)
-                self.assertEqual((result.returncode, result.stdout), (0, b'1\n'))
+                self.assertEqual((result.returncode, result.stdout), (0, b'1:1\n' if digest in HASHES[:2] else b'1:off\n'))
             for digest, arch in [('0' * 64, 'aarch64'), (HASHES[2], 'armv7l')]:
                 result = subprocess.run(['/bin/sh', str(script)], env=dict(env, TEST_UI_HASH=digest, TEST_ARCH=arch), capture_output=True, timeout=5)
-                self.assertEqual((result.returncode, result.stdout), (0, b'plain\n'))
+                self.assertEqual((result.returncode, result.stdout), (0, b'plain:off\n'))
+            for digest in HASHES[:2]:
+                result = subprocess.run(['/bin/sh', str(script)], env=dict(env, TEST_UI_HASH=digest, TEST_SDK_HASH='0'*64), capture_output=True, timeout=5)
+                self.assertEqual((result.returncode, result.stdout), (0, b'1:off\n'))
+            sdk.unlink()
+            result = subprocess.run(['/bin/sh', str(script)], env=dict(env, TEST_UI_HASH=HASHES[0]), capture_output=True, timeout=5)
+            self.assertEqual((result.returncode, result.stdout), (0, b'1:off\n'))
+            sdk.symlink_to(stock)
+            result = subprocess.run(['/bin/sh', str(script)], env=dict(env, TEST_UI_HASH=HASHES[0]), capture_output=True, timeout=5)
+            self.assertEqual((result.returncode, result.stdout), (0, b'1:off\n'))
 
 
 if __name__ == '__main__':

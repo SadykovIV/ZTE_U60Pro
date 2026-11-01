@@ -45,7 +45,7 @@ enum StudioPage: String, CaseIterable, Identifiable {
         case .preparation: return "Подключение, диагностика, агент и русский интерфейс"
         case .display: return "Показатели модема, VPN и профили eSIM на экране"
         case .imei: return "Чтение, смена и резервные копии IMEI"
-        case .esim: return "Профили физической eUICC: QR, активация и удаление"
+        case .esim: return "eUICC вместо eSIM: QR, активация и удаление"
         case .ttl: return "Фиксация исходящего TTL и прибавка к входящему"
         case .applications: return "Установленные приложения и каталог"
         case .vpn: return "Профили, подписки и Wi-Fi с VPN"
@@ -157,7 +157,7 @@ struct ContentView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 11))
                 VStack(alignment: .leading, spacing: 3) {
                     Text(L10n.text("ZTE U60Pro")).font(.system(size: 17, weight: .semibold, design: .rounded))
-                    Text(L10n.text("MANAGER"))
+                    Text("INTERNAL eUICC")
                         .font(.system(size: 10, weight: .semibold))
                         .tracking(2.0)
                         .foregroundStyle(StudioStyle.secondary)
@@ -257,7 +257,7 @@ struct ContentView: View {
             HStack(spacing: 16) {
                 managerBrandIcon.frame(width: 68, height: 68).clipShape(RoundedRectangle(cornerRadius: 16))
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(L10n.text("ZTE U60Pro Manager")).font(.system(size: 24, weight: .semibold))
+                    Text(L10n.text("ZTE U60Pro Internal eUICC")).font(.system(size: 24, weight: .semibold))
                     Text(L10n.text("v\(model.appVersion) · macOS ARM64")).foregroundStyle(StudioStyle.secondary)
                 }
             }

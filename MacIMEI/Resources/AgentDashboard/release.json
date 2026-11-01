@@ -1,6 +1,7 @@
 {
-  "version": "2.9.0-esim.17",
-  "agent_sha256": "fd5babee29e63366fb743c76c72f2a29eec47377ccda32659a85ce6e5effd959",
+  "version": "2.10.0-internal.1",
+  "agent_sha256": "2ec45ff1e10ceed0029de9b77740c95185b19b4d068a9153555ade0686babd3e",
   "esim": true,
+  "esim_target": "internal-euicc-slot2",
   "web_download_requires_modem_internet": true
 }

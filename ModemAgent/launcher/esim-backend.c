@@ -45,7 +45,7 @@ static void diagnostic(int action,int ok,const char *error,const char *component
 static int call(const char *input,struct response *response,struct esim_process_result *result){
  const char *path="/data/zte-agent";struct stat st;memset(result,0,sizeof *result);
  if(lstat(path,&st)||!S_ISREG(st.st_mode)||st.st_uid||st.st_mode&022){snprintf(response->error,sizeof response->error,"agent_unavailable");return 0;}
- char *args[]={(char*)path,"--esim-launcher",NULL};
+ char *args[]={(char*)path,"--esim-launcher-internal",NULL};
  int transport=esim_process_run(args,input,receive_line,response,result);
  int ok=transport&&response->seen&&!response->error[0];
  if(!ok&&!response->error[0])snprintf(response->error,sizeof response->error,"%s",!result->status_valid?"agent_exit_unknown":result->protocol_error?"agent_protocol_error":"agent_process_failed");

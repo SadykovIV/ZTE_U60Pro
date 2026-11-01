@@ -114,7 +114,7 @@ public static class DiagnosticsExporter
         byte[] Lines(IEnumerable<DiagnosticActivity> entries) => Encoding.UTF8.GetBytes(string.Concat(entries.Select(x => JsonSerializer.Serialize(x, Json) + "\n")));
         var report = new
         {
-            schema = 1, createdAt = exportedAt, application = "ZTE IMEI Studio Windows x64",
+            schema = 1, createdAt = exportedAt, application = "ZTE U60Pro Internal eUICC Windows x64",
             applicationVersion = privacy.CleanApplicationVersion(system.ApplicationVersion),
             connectionMode = privacy.Clean(system.ConnectionMode ?? ""), model = privacy.Clean(system.Model ?? ""), firmware = privacy.Clean(system.Firmware ?? ""),
             operations = current.Select(x => new { x.Timestamp, x.Level, operation = x.Message.StartsWith("eSIM[", StringComparison.Ordinal) ? x.Message : x.Message.Split(':', 2)[0] }).ToArray(),

@@ -52,6 +52,14 @@ foreach (var request in new[] { list, download, enable, delete })
     File.WriteAllText(Path.Combine(resultDir, "synthetic-request-" + request.Operation + ".json"), JsonSerializer.Serialize(request));
 }
 Pass("four request envelopes match strict backend fields");
+Check(EsimDiagnostics.SafeError("esim_slot_not_selected") == "esim_slot_not_selected", "internal slot refusal remains typed");
+var slotMessage = EsimDiagnostics.FailureMessage("esim_slot_not_selected");
+Check(slotMessage.Contains("выберите eSIM") && slotMessage.Contains("автоматически не переключался"), "internal slot recovery explains explicit SIM selection");
+Localization.SetLanguage("en", persist:false);
+Check(Localization.Translate(slotMessage).Contains("select eSIM"), "internal slot recovery translated");
+Localization.SetLanguage("ru", persist:false);
+Pass("internal slot refusal has actionable bilingual recovery");
+
 
 foreach (var code in new[] { "LPA:1$localhost$x", "LPA:1$example.123$x", "LPA:1$127.0.0.1$x", "LPA:1$example.com:443$x", "LPA:1$example.com?$x", "LPA:1$example.com$секрет", "LPA:1$example.com$" }) Check(!EsimValidation.ActivationCodeValid(code), "activation rejects malformed host/input");
 Reject(() => EsimValidation.Request(new() { Operation = "download", ExpectedSnapshot = before, ActivationCode = download.ActivationCode, ConfirmationCode = "-option" }), "confirmation option");
@@ -155,13 +163,16 @@ await session.Dispatch(() =>
         Check(fake.Requests.Count == 0, "header refresh outside eSIM never checks the card");
         Click(window,"Navigation8"); Check(!Find<Button>(window,"EsimDelete").IsEnabled, "writes require fresh read");
         Check(fake.Requests.Count == 0, "opening the page never issues a background card request");
+        Check(window.Title == "ZTE U60Pro Internal eUICC" && Label(window, "INTERNAL eUICC"), "alternative app identity");
+        Check(Label(window, Localization.Translate("Для мобильной связи через eUICC и переключения её профилей выберите eSIM в штатном меню выбора SIM. Эта программа не переключает слоты автоматически.")), "internal eUICC route guidance");
+
         Check(Find<TextBlock>(window,"EsimCardType").Text == Localization.Translate("Карта ещё не проверена."), "card starts unassessed");
         Check(Find<Button>(window,"EsimRead").Content?.ToString() == Localization.Translate("Проверить карту и профили"), "explicit card-check action");
         Click(window,"RefreshPage");
         Check(fake.Requests.Count == 0 && !Find<Button>(window,"EsimDelete").IsEnabled, "general header on eSIM does not check card or authorize writes");
         Click(window,"EsimRead");
         Check(fake.Requests.Count == 1 && fake.Requests[0].Operation == "list", "dedicated eSIM button checks card and profiles once");
-        Check(Find<TextBlock>(window,"EsimCardType").Text == Localization.Translate("Карта: eUICC подтверждена"), "accepted legacy snapshot confirms type");
+        Check(Find<TextBlock>(window,"EsimCardType").Text == Localization.Translate("eUICC на месте eSIM подтверждена: EID и профили прочитаны."), "accepted legacy snapshot confirms type");
         Check(Label(window, Localization.Translate("SIM-карта")), "localized eSIM heading");
         if(language=="en") Check(Label(window,"SIM card"),"English neutral page title");
         var profiles = Find<ListBox>(window,"EsimProfiles");
@@ -222,18 +233,18 @@ await session.Dispatch(() =>
         Check(Find<TextBlock>(window,"EsimCardType").Text == Localization.Translate("Карта: тип не определён. Повторите проверку."),"general refresh cannot replace unknown card state");
         Click(window,"EsimRead");
         Check(fake.Requests.Count == requestsBeforeInformation + 1 && fake.Requests.Last().Operation == "list", "dedicated eSIM read remains available after general refresh");
-        Check(Find<TextBlock>(window,"EsimCardType").Text == Localization.Translate("Карта: eUICC подтверждена"),"dedicated eSIM refresh restores confirmed status");
+        Check(Find<TextBlock>(window,"EsimCardType").Text == Localization.Translate("eUICC на месте eSIM подтверждена: EID и профили прочитаны."),"dedicated eSIM refresh restores confirmed status");
         using(var ordinaryDoc=JsonDocument.Parse("{\"kind\":\"ordinary_sim\",\"management\":\"unavailable\",\"reason\":\"isdr_not_found\",\"cleanup_confirmed\":true}"))
             fake.Override=new(true,null,false,false,Card:EsimCardStatus.Parse(ordinaryDoc.RootElement,true));
         Click(window,"EsimRead");
-        Check(Find<TextBlock>(window,"EsimCardType").Text==Localization.Translate("Карта: обычная SIM. Управление eSIM недоступно."),"ordinary SIM shown as successful checked result");
+        Check(Find<TextBlock>(window,"EsimCardType").Text==Localization.Translate("Карта на месте eSIM не предоставляет eUICC. Управление профилями недоступно."),"ordinary SIM shown as successful checked result");
         Check(Find<ListBox>(window,"EsimProfiles").ItemCount==0,"ordinary card clears old profile list");
         Capture(window,language+"-ordinary-sim.png");
         foreach(var name in new[]{"EsimEnable","EsimDelete","EsimDownload"}) Check(!Find<Button>(window,name).IsEnabled,"ordinary denies mutation "+name);
         fake.Override=new(false,null,false,false,"card_open_rejected"); Click(window,"EsimRead");
         Check(Find<TextBlock>(window,"EsimCardType").Text==Localization.Translate("Карта: тип не определён. Повторите проверку."),"error after ordinary returns unknown");
         fake.Override=null; Click(window,"EsimRead");
-        Check(Find<TextBlock>(window,"EsimCardType").Text==Localization.Translate("Карта: eUICC подтверждена"),"fresh eUICC replaces ordinary/error status");
+        Check(Find<TextBlock>(window,"EsimCardType").Text==Localization.Translate("eUICC на месте eSIM подтверждена: EID и профили прочитаны."),"fresh eUICC replaces ordinary/error status");
         var closingAddress=Find<TextBox>(window,"EsimSmdpAddress"); var closingMatching=Find<TextBox>(window,"EsimMatchingId"); var closingConfirmation=Find<TextBox>(window,"EsimConfirmationCode");
         closingAddress.Text="example.com"; closingMatching.Text="unsubmitted-test"; closingConfirmation.Text="confirmation-test";
         window.Close(); Pump();

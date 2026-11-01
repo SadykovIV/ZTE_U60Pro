@@ -1,7 +1,7 @@
 # Native launcher pages (exact MU5250 UI profiles)
 
 This optional extension runs **inside `/usr/bin/zte_topsw_devui`**. It adds a selectable ordered set of up to three pages to `TUFormMain`: modem
-information, VPN controls and physical removable-eUICC profiles. The original LVGL
+information, VPN controls and internal replacement-eUICC profiles. The original LVGL
 widgets, palette, fonts, touch pipeline, lock screen and panel orientation are
 retained. The VPN row uses the native SwitchButton from Wi-Fi settings, including
 its on/off styling. It is disabled during an operation and reconciles its state
@@ -182,8 +182,8 @@ repeat them. Installing the launcher does not rename an existing network.
 
 ## Physical eUICC page
 
-The fifth stock-launcher page lists profiles from the physical eUICC in SIM
-slot 1. It requires the matching eSIM agent at `/data/zte-agent`. Ordinary SIMs
+The fifth stock-launcher page lists profiles from the replacement eUICC in internal SIM
+slot 2. It requires the matching eSIM agent at `/data/zte-agent`. Ordinary SIMs
 and ZTE's built-in card are outside this feature. Installation and deletion
 remain in the desktop application and authenticated web panel.
 
@@ -212,7 +212,7 @@ and Settings remain first; an empty set has only those two pages. Changes are
 read while the screen is awake. Name-based navigation resolves the current order
 when consumed, so a simultaneous reorder cannot open a different extra page.
 
-The eSIM page supports only a physical removable eUICC in the SIM slot. It lists
+The eSIM page targets the replacement eUICC in the internal eSIM position (physical2/logical2). It lists
 profiles, asks for confirmation, then enables once and cycles offline/online to
 verify the modem's fresh ICCID. Download and deletion are in the desktop/web UI.
 The last valid list stays visible after read failure as a saved list; activation

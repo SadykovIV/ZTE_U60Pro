@@ -97,17 +97,19 @@ def main():
     if sha(CERT.read_bytes()) != CERT_SHA:
         raise SystemExit('GSMA certificate identity mismatch')
     sources, count = source_archive()
-    readme = '''# eSIM для физической eUICC
+    readme = '''# Internal eUICC — карта на месте штатной eSIM
 
-Версия агента: 2.9.0-esim.14. Приложения: ZTE U60Pro Manager 1.27.
+Версия агента: 2.10.0-internal.1. Приложения: ZTE U60Pro Internal eUICC 1.28.
 
-Нужна съёмная физическая eUICC в SIM-слоте модема. Проверено: 9eSIM V0,
-ZTE MU5250, CN_ZTE_MU5250V1.0.0B31. Обычная SIM распознаётся отдельно:
-управление профилями для неё недоступно. Встроенная eSIM ZTE этим
-компонентом не поддерживается. Чтение, установка и удаление профилей
-проверяют доступ к eUICC через QMI. Переключение с перезапуском радио
-проверяет точные компоненты B31, FLY B28 или XCBZ B04 и текущий маршрут SIM.
-На B28/B04 переключение требует дополнительной проверки на устройстве.
+Сборка предназначена для настоящей eUICC, установленной вместо штатной eSIM.
+Маршрут фиксирован: physical2 / logical2. Физический SIM-слот 1 остаётся
+доступен для другой SIM через штатный переключатель. Агент не меняет
+маршрутизацию слотов и не выбирает SIM автоматически. Заводская карта ZTE
+не получает поддержку consumer eSIM от установки этой версии.
+Новая аппаратная конфигурация ещё не проверена: успешное чтение требует
+реальных EID и полного списка профилей. Перед включением профиля или
+перечитыванием SIM выберите eSIM в штатном разделе SIM. Агент проверяет
+оба штатных getter и точные компоненты радио до изменения карты.
 
 Откройте eSIM в левом меню, подключитесь по SSH и запросите профили.
 Для установки вставьте LPA-код, выберите изображение QR или переключитесь
@@ -134,7 +136,7 @@ zte-agent-esim вместе с веб-панелью eSIM. --esim-check пока
 При потере связи запросите профили заново перед повторной попыткой.
 Переключение подтверждается только после автономного режима, возврата радио
 и совпадения свежего ICCID модема с выбранным профилем. В автономном режиме
-агент выключает и включает питание SIM-слота 1, затем ждёт готовность USIM. Нажатие на уже активный
+агент выключает и включает питание SIM-слота 2, затем ждёт готовность USIM. Нажатие на уже активный
 профиль повторно читает SIM без повторной команды включения профиля.
 Регистрацию в сети и доступ к интернету проверяйте отдельно.
 
@@ -167,7 +169,7 @@ PROVENANCE.json и LICENSE-SCOPE.md уточняют состав и сферу 
         'LICENSE-SCOPE.md': (ROOT / 'LICENSE-SCOPE.md').read_bytes(),
     }
     provenance = {
-        'agent_version': '2.9.0-esim.14', 'agent_sha256': sha(agent),
+        'agent_version': '2.10.0-internal.1', 'agent_sha256': sha(agent),
         'lpac_version': '2.3.0 + pinned stdio backports',
         'lpac_commit': 'c2fcf5e4b21c712d54e35a11da2ad9ad134fb821',
         'lpac_linux_sha256': sha((ROOT/'ModemAgent/agent/resources/esim/lpac').read_bytes()),
@@ -179,7 +181,9 @@ PROVENANCE.json и LICENSE-SCOPE.md уточняют состав и сферу 
         'source_archive_files': count, 'source_archive_sha256': sha(sources),
         'gsma_pem_sha256': CERT_SHA,
         'gsma_roots': json.loads((CERT.parent / 'gsma-rsp-roots.json').read_text()),
-        'scope': 'physical removable eUICC; 9eSIM V0; MU5250 B31; SSH',
+        'scope': 'replacement internal eUICC; physical2/logical2; MU5250; SSH; hardware unverified',
+        'target': 'internal-euicc-slot2',
+        'hardware_tested': False,
         'profile_mutations_hardware_tested_in_desktop_release': False,
     }
     payloads['PROVENANCE.json'] = (json.dumps(provenance, indent=2, ensure_ascii=False) + '\n').encode()

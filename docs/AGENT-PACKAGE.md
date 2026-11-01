@@ -1,19 +1,68 @@
-# ZTE Agent 2.9.0-esim.14
+# ZTE Agent 2.10.0-internal.1
 
-This agent runs on the **ZTE U60 Pro / MU5250 modem**, on Linux ARM64. Install it with **ZTE U60Pro Manager 1.27**. Preparation and bundled-agent installation automatically replace the core components and matching dashboard while retaining user settings.
+This local alternative runs on the **ZTE U60 Pro / MU5250 modem**, Linux ARM64,
+and matches **ZTE U60Pro Internal eUICC 1.28**. It manages a real eUICC wired in
+place of the original soldered ZTE eSIM: QMI physical slot **2**, logical slot
+**2**. The stock ZTE eSIM is not unlocked. This modified hardware has not been
+tested; earlier removable-card checks on slot 1 do not validate this route.
 
-Earlier agent installation and dashboard access were checked on **Firmware `CN_ZTE_MU5250V1.0.0B31`**, **Inner `BD_CNMU5250V1.0.0B31`**. This release has no fresh hardware installation result. B28 and B04 adapters use supplied firmware captures and local tests; B02 lacks evidence for several features. See the [release notes](RELEASE-1.27.md) and [compatibility matrix](FIRMWARE-COMPATIBILITY.md). The separate agent archive is intended for developers and prepared devices; it is not a modem firmware image or a standalone factory-reset installer.
+Install the permanent agent and matching dashboard using the desktop app's
+existing installation action. This **replaces the same `/data/zte-agent`
+service installation**; it does not add a second permanent agent beside the
+standard version. Existing installation checks, previous-file preservation and
+user-setting retention remain in place. The separate archive is intended for
+prepared devices and developers; it is not a firmware image or a factory-reset
+installer.
 
 ## Contents
 
-- `zte-agent`: the agent binary, with the eSIM runtime embedded.
-- `dashboard/`: the matching Russian/English web dashboard.
-- `dashboard-install/` and `agent-install/`: installation resources used by the desktop application.
-- `esim/`: runtime, certificates, corresponding sources, provenance and license notices.
+- `zte-agent`: the Internal eUICC agent with its matching embedded runtime.
+- `dashboard/`: the corresponding Russian/English web dashboard.
+- `dashboard-install/` and `agent-install/`: desktop installation resources.
+- `esim/`: runtime, certificates, corresponding sources and component notices.
 - `LICENSE`, `LICENSE-SCOPE.md`, `THIRD_PARTY_NOTICES.md`, `licenses/` and `SHA256SUMS`.
 
-The local agent API uses port **9090** and the installed dashboard uses **8080**. The owner sets the password during installation. VPN/TTL and launcher components are installed separately by the desktop application. Desktop operations use SSH and their own components; they do not require the permanent agent. The desktop, agent and Launcher share the modem's VPN profile catalogue, including AmneziaWG and subscription profiles.
+The agent API uses port **9090**; the installed dashboard uses **8080**.
+The owner sets the password during installation. VPN/TTL and Launcher components
+remain separate desktop installation actions. Do not mix this dashboard with
+an older standard agent: the eSIM page requires target `internal-euicc-slot2`.
 
-eSIM management requires a **physical removable eUICC in the SIM slot**. Built-in ZTE eSIM is not supported. The web dashboard downloads profiles using the modem's internet connection; the desktop application can use the computer's internet connection.
+For the modem-screen eSIM menu, first install/update the bundled **Internal
+agent** on the **Agent** page of the alternative app. Then open **eSIM** and
+choose **Install/update the eSIM page**. This second action updates **Launcher**
+and checks the already installed agent; it does not update the agent itself.
+Updating the permanent agent alone does not update Launcher either. Launcher
+uses `--esim-launcher-internal`; new Launcher/old agent and old Launcher/new
+agent combinations are rejected so they cannot silently operate on another slot.
 
-[Download the desktop application](https://github.com/SadykovIV/ZTE_U60Pro/releases) · [Agent documentation](https://github.com/SadykovIV/ZTE_U60Pro/blob/main/docs/AGENT.md) · [eSIM documentation](https://github.com/SadykovIV/ZTE_U60Pro/blob/main/docs/ESIM-DESKTOP.md) · [Repository](https://github.com/SadykovIV/ZTE_U60Pro)
+## Desktop and SIM selection
+
+The desktop app stages and runs its bundled agent over SSH for eSIM operations;
+it does **not** require the permanent agent to be installed. The alternative
+desktop app keeps separate local settings. For an already prepared modem,
+manually choose the existing SSH key in the app's connection settings; the key
+is not automatically copied from the standard app.
+
+Read, download, rename and disabled-profile deletion target the replacement
+eUICC without changing the selected network SIM. Before enabling or rereading
+an active profile, choose **eSIM** in the existing **SIM** selection menu.
+The agent verifies both stock selection getters before ES10c and again before
+the shared radio transition. A valid different selection yields
+`esim_slot_not_selected`; unreadable or malformed state yields
+`radio_read_failed`. No automatic selection, slot remap or slot-1 fallback is
+performed. The physical SIM remains available through stock selection; two
+simultaneously active mobile connections are not claimed.
+
+Web profile downloads use the modem's internet connection. Desktop downloads
+use the computer's internet connection. Card identity, complete profile reads,
+session cleanup and post-operation checks remain required.
+
+The local unpublished bundle is kept in `Releases/Local/1.28-internal-euicc`.
+Authenticated read-only B31 network/screen diagnostics were performed, but
+the new build and display fix were not deployed. There are no screenshots of
+the corrected physical screen. This candidate has no replacement-card APDU
+operation, corrected-screen runtime check or native Windows execution claim. See its `VERIFICATION.json` for recorded local
+build/test results; historical standard-release results are separate.
+
+[Included 1.28 release notes](RELEASE-1.28.md).
+In the source tree, see `docs/INTERNAL-EUICC.md` and `docs/ESIM-APP-CONTRACT.md`.

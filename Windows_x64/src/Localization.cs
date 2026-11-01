@@ -6,7 +6,7 @@ namespace ZteImeiStudio.Windows;
 /// <summary>Local UI translation only: commands, user input and stored protocol values remain unchanged.</summary>
 public static class Localization
 {
-    private static readonly string SettingsPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ZTE IMEI Studio", "interface-language.json");
+    private static readonly string SettingsPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ZTE U60Pro Internal eUICC", "interface-language.json");
     private static readonly IReadOnlyDictionary<string, string> English = ReadEnglish();
     private static readonly (Regex Pattern, string Translation)[] Templates = English
         .Where(pair => pair.Key.Contains('{'))

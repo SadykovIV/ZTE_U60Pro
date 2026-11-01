@@ -191,7 +191,7 @@ import AppKit
     }
     init() {
         let esimFixture = CommandLine.arguments.contains("--esim-ui-fixture")
-        storage = esimFixture ? FileManager.default.temporaryDirectory.appendingPathComponent("zte-esim-ui-preview-" + UUID().uuidString) : FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/ZTE IMEI Studio")
+        storage = esimFixture ? FileManager.default.temporaryDirectory.appendingPathComponent("zte-esim-ui-preview-" + UUID().uuidString) : FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/ZTE U60Pro Internal eUICC")
         resources = Bundle.main.resourceURL ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("MacIMEI/Resources")
         keyPath = storage.appendingPathComponent("SSH/id_ed25519").path
         knownHostsPath = storage.appendingPathComponent("SSH/known_hosts").path

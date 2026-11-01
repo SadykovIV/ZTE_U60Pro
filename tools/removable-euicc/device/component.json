@@ -21,8 +21,8 @@
     },
     {
       "path": "tools/removable-euicc/device/src/qmi/uim.rs",
-      "sha256": "b7635056a72a1f79494a97b148a75b482a09777394d5b432e2962da973a046c3",
-      "size": 19828
+      "sha256": "ff72bb5382afebba2f9c1c0140ba93bd41e142f8dd5c5fefe093094a6602698e",
+      "size": 21444
     },
     {
       "path": "tools/removable-euicc/device/src/euicc/bertlv.rs",

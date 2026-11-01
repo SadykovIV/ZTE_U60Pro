@@ -16,6 +16,7 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--output-dir', type=Path, default=ROOT / 'release')
 parser.add_argument('--previous-release', required=True)
 parser.add_argument('--build-source-commit', required=True)
+parser.add_argument('--local-only', action='store_true', help='Package an unpublished variant without a release download URL')
 args = parser.parse_args()
 if re.fullmatch(r'v\d+\.\d+(?:\.\d+)?', args.previous_release) is None or re.fullmatch(r'[0-9a-f]{40}', args.build_source_commit) is None:
     raise SystemExit('Invalid previous release or build source commit')
@@ -200,9 +201,9 @@ support_paths = support_dependency_paths(ROOT)
 
 artifacts = []
 artifacts.append(copy_artifact(ROOT / f'MacIMEI/dist/ZTE-U60Pro-Manager-{VERSION}-arm64.zip',
-                               f'ZTE-U60Pro-Manager-{VERSION}-macOS-arm64.zip'))
+                               f'ZTE-U60Pro-Internal-eUICC-{VERSION}-macOS-arm64.zip'))
 artifacts.append(copy_artifact(ROOT / f'Windows_x64/dist/ZTE-U60Pro-Manager-{VERSION}-Windows-x64-portable.zip',
-                               f'ZTE-U60Pro-Manager-{VERSION}-Windows-x64-portable.zip'))
+                               f'ZTE-U60Pro-Internal-eUICC-{VERSION}-Windows-x64-portable.zip'))
 agent = copy_artifact(RES / 'Onboarding/zte-agent', f'zte-agent-{AGENT_VERSION}-aarch64-linux-musl')
 agent.chmod(0o755)
 artifacts.append(agent)
@@ -247,7 +248,8 @@ for base in [RES, ROOT / 'Windows_x64/Resources', ROOT / 'licenses']:
             deps['notices/' + path.relative_to(ROOT).as_posix()] = path
 dependency_archive = OUT / f'Build-dependencies-{VERSION}.tar.gz'
 tar_gz(dependency_archive, deps)
-meta = {'archive': dependency_archive.name, 'url': RELEASE_URL + dependency_archive.name,
+meta = {'archive': dependency_archive.name, 'url': None if args.local_only else RELEASE_URL + dependency_archive.name,
+        'local_only': args.local_only,
         'sha256': sha(dependency_archive), 'files': {name: sha(ROOT / name) for name in sorted(set(paths))}}
 (ROOT / 'tools/dependencies.json').write_text(json.dumps(meta, indent=2) + '\n')
 artifacts.append(dependency_archive)
@@ -288,6 +290,7 @@ artifacts.append(copy_artifact(ROOT / 'MacIMEI/dist/build-manifest.json', 'macOS
 artifacts.append(copy_artifact(ROOT / f'Windows_x64/dist/windows-{VERSION}-build-manifest.json', 'Windows-build-manifest.json'))
 release_manifest = OUT / 'release-manifest.json'
 release_manifest.write_text(json.dumps({'version': VERSION, 'previousRelease': args.previous_release, 'agentVersion': AGENT_VERSION,
+                                      'distribution': 'local-unpublished' if args.local_only else 'release-candidate',
                                       'buildSourceCommit': args.build_source_commit,
                                       'buildSourceIdentity': build_source_identity,
                                       'testedDevice': {'model': 'ZTE U60 Pro / MU5250', 'firmware': 'CN_ZTE_MU5250V1.0.0B31',
@@ -295,8 +298,8 @@ release_manifest.write_text(json.dumps({'version': VERSION, 'previousRelease': a
                                       'hardwareTestedInThisRelease': False,
                                       'windowsNativeRuntimeVerified': False, 'b27HardwareVerified': False,
                                       'b28HardwareVerified': False, 'b04HardwareVerified': False,
-                                      'vpnctlVersion': controller_metadata['version'], 'vpnctl': controller_metadata, 'esim': {'card': 'physical removable eUICC',
-                                      'historicallyTestedCard': '9eSIM V0', 'testedFirmware': 'CN_ZTE_MU5250V1.0.0B31',
+                                      'vpnctlVersion': controller_metadata['version'], 'vpnctl': controller_metadata, 'esim': {'card': 'replacement eUICC in internal eSIM position', 'target': 'internal-euicc-slot2', 'physicalSlot': 2, 'logicalSlot': 2, 'automaticSlotSwitching': False,
+                                      'historicallyTestedCard': '9eSIM V0 in external slot1 only; replacement slot2 untested', 'testedFirmware': 'CN_ZTE_MU5250V1.0.0B31',
                                       'profileMutationsHardwareTestedInThisRelease': False,
                                       'builtInZteSupported': False, 'qmiEs10LicenseStatus': 'unspecified'},
                                       'artifacts': {path.name: {'bytes': path.stat().st_size, 'sha256': sha(path)}

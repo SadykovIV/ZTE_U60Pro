@@ -5,6 +5,7 @@
 #include "vpn-model.h"
 #include "vpn-view.h"
 #include "display-text.h"
+#include "network-name.h"
 #include "esim-backend.h"
 #include "page-layout.h"
 #include <stdint.h>
@@ -106,6 +107,7 @@ static void format_info(const struct snapshot *s,int ru,struct info_text *out){
 
 #ifndef LAUNCHER_FORMAT_TEST
 #include "abi.h"
+#include "network-name-abi.h"
 static const struct launcher_abi *abi;
 #define F(a,r,...) ((r(*)(__VA_ARGS__))(uintptr_t)launcher_abi_address(abi,(a)))
 #define P(o,n) (*(void **)((char *)(o)+(n)))
@@ -229,7 +231,7 @@ static const char *esim_stage(void){
 }
 static const char *sim_card_status(const struct esim_snapshot *s,int ru){
  if(s->busy)return ru?"Проверка SIM-карты...":"Checking SIM card...";
- if(s->valid)return ru?"Физическая eUICC подтверждена":"Physical eUICC confirmed";
+ if(s->valid)return ru?"Внутренняя eUICC подтверждена":"Internal eUICC confirmed";
  if(s->error)return ru?"Тип SIM-карты не определён":"SIM card type unknown";
  if(s->ordinary)return ru?"Обычная SIM · eSIM недоступно":"Ordinary SIM · eSIM unavailable";
  return ru?"Проверьте SIM-карту":"Check the SIM card";
@@ -248,7 +250,7 @@ static void render_esim(void){
  flag(esim_prev,HIDDEN,esim_shown.count<=3||!esim_shown.cached);flag(esim_next,HIDDEN,esim_shown.count<=3||!esim_shown.cached);
  text(esim_prev_label,tr("Назад","Previous"));text(esim_next_label,tr("Далее","Next"));
  text(esim_refresh_label,tr("Обновить","Refresh"));
- const char *error_text=!strcmp(esim_shown.error_code,"radio_restore_failed")?tr("Радио не включилось.\nПроверьте связь в приложении","Radio did not resume.\nCheck the modem in the app"):!strcmp(esim_shown.error_code,"card_power_restore_failed")?tr("Включение SIM не подтверждено.\nПерезагрузите модем","SIM power was not confirmed.\nRestart the modem"):!strcmp(esim_shown.error_code,"card_reset_failed")?tr("Перезапуск SIM не подтверждён.\nОбновите и проверьте профиль","SIM restart was not confirmed.\nRefresh and check the profile"):!strcmp(esim_shown.error_code,"card_cleanup_unknown")?tr("Состояние SIM неизвестно.\nПерезагрузите модем","SIM channel state unknown.\nRestart the modem"):!strcmp(esim_shown.error_code,"card_busy")?tr("Доступ к SIM заблокирован.\nНет операций — перезапустите","SIM access is locked.\nIf idle, restart the modem"):!strcmp(esim_shown.error_code,"card_not_ready")?tr("SIM ещё не готова.\nПодождите и обновите список","SIM is not ready yet.\nWait and refresh the list"):!strcmp(esim_shown.error_code,"card_open_rejected")?tr("SIM отклонила чтение.\nПодождите и обновите список","SIM rejected the read.\nWait and refresh the list"):esim_shown.mutation_failed?tr("Переключение не подтверждено.\nОбновите и проверьте профиль","Switch was not confirmed.\nRefresh and check the profile"):!strcmp(esim_shown.error_code,"esim_busy")?tr("Карта занята другим запросом.\nОбновите после его завершения","Card busy with another request.\nRefresh after it finishes"):!strcmp(esim_shown.error_code,"snapshot_cleanup_failed")?tr("Чтение карты не завершено.\nНажмите «Обновить»","Card read did not finish.\nTap Refresh"):tr("Не удалось обновить список.\nНажмите «Обновить»","Could not refresh the list.\nTap Refresh");
+ const char *error_text=!strcmp(esim_shown.error_code,"esim_slot_not_selected")?tr("Выберите eSIM в настройках SIM","Select eSIM in SIM settings"):!strcmp(esim_shown.error_code,"radio_restore_failed")?tr("Радио не включилось.\nПроверьте связь в приложении","Radio did not resume.\nCheck the modem in the app"):!strcmp(esim_shown.error_code,"card_power_restore_failed")?tr("Включение SIM не подтверждено.\nПерезагрузите модем","SIM power was not confirmed.\nRestart the modem"):!strcmp(esim_shown.error_code,"card_reset_failed")?tr("Перезапуск SIM не подтверждён.\nОбновите и проверьте профиль","SIM restart was not confirmed.\nRefresh and check the profile"):!strcmp(esim_shown.error_code,"card_cleanup_unknown")?tr("Состояние SIM неизвестно.\nПерезагрузите модем","SIM channel state unknown.\nRestart the modem"):!strcmp(esim_shown.error_code,"card_busy")?tr("Доступ к SIM заблокирован.\nНет операций — перезапустите","SIM access is locked.\nIf idle, restart the modem"):!strcmp(esim_shown.error_code,"card_not_ready")?tr("SIM ещё не готова.\nПодождите и обновите список","SIM is not ready yet.\nWait and refresh the list"):!strcmp(esim_shown.error_code,"card_open_rejected")?tr("SIM отклонила чтение.\nПодождите и обновите список","SIM rejected the read.\nWait and refresh the list"):esim_shown.mutation_failed?tr("Переключение не подтверждено.\nОбновите и проверьте профиль","Switch was not confirmed.\nRefresh and check the profile"):!strcmp(esim_shown.error_code,"esim_busy")?tr("Карта занята другим запросом.\nОбновите после его завершения","Card busy with another request.\nRefresh after it finishes"):!strcmp(esim_shown.error_code,"snapshot_cleanup_failed")?tr("Чтение карты не завершено.\nНажмите «Обновить»","Card read did not finish.\nTap Refresh"):tr("Не удалось обновить список.\nНажмите «Обновить»","Could not refresh the list.\nTap Refresh");
  text(esim_notice,esim_shown.busy?esim_stage():esim_shown.error?error_text:esim_shown.ordinary?tr("Профили eSIM недоступны","eSIM profiles unavailable"):!esim_shown.valid?tr("Ожидание агента eSIM","Waiting for eSIM agent"):!esim_shown.count?tr("На карте нет профилей","No profiles on card"):esim_shown.verified?tr("SIM перечитана модемом","Modem SIM verified"):tr("Нажмите профиль для выбора","Tap a profile to select"));
  int active=0;for(int i=0;i<esim_shown.count;i++)if(!strcmp(esim_shown.profiles[i].iccid,esim_selected_id))active=esim_shown.profiles[i].enabled;
  flag(esim_confirm,HIDDEN,!esim_shown.valid||!esim_selected_id[0]);text(esim_confirm_title,active?tr("Перечитать SIM?","Reread this SIM?"):tr("Выбрать профиль?","Select this profile?"));
@@ -380,14 +382,31 @@ static int hook(uintptr_t addr,uintptr_t before,void *after){
 }
 static uintptr_t read_pointer(uintptr_t address){return *(uintptr_t*)address;}
 static uint32_t read_word(uintptr_t address){return *(uint32_t*)address;}
+static network_name_getter network_full,network_short;
+static int registered_network_name(void *form,uint32_t *out){
+ (void)form;
+ network_name_read(out,NETWORK_NAME_WIDE_CAPACITY,network_full,network_short);
+ return 1;
+}
 __attribute__((constructor)) static void init(void){
  if(!getenv("ZTE_LAUNCHER"))return;unsetenv("LD_PRELOAD");unsetenv("ZTE_LAUNCHER");
+ const char *network_gate=getenv("ZTE_LAUNCHER_NETWORK_NAME_B31");
+ int registered_name=network_gate&&!strcmp(network_gate,"1");
+ unsetenv("ZTE_LAUNCHER_NETWORK_NAME_B31");
  abi=launcher_abi_select(getauxval(AT_PHDR),getauxval(AT_ENTRY),read_pointer,read_word);
  /* The wrapper checks the full UI hash. Every address below comes from that
   * profile; all five slots and instruction checks must pass before any write. */
  if(!launcher_abi_valid(abi,read_pointer,read_word)){abi=NULL;return;}
+ registered_name=registered_name&&!strcmp(abi->name,"b31")&&network_name_abi_valid(read_pointer,read_word);
  void *callbacks[5]={create,scroll_release,update_dots,destroy,destroy};
  for(size_t i=0;i<5;i++)if(hook(abi->hooks[i].slot,abi->hooks[i].target,callbacks[i]))_exit(71);
+ if(registered_name){
+  network_full=(network_name_getter)read_pointer(NETWORK_NAME_FULL_GETTER_SLOT);
+  network_short=(network_name_getter)read_pointer(NETWORK_NAME_SHORT_GETTER_SLOT);
+  for(size_t i=0;i<sizeof network_name_hooks/sizeof network_name_hooks[0];i++)
+   if(hook(network_name_hooks[i].slot,network_name_hooks[i].target,registered_network_name))_exit(71);
+  fprintf(stderr,"launcher: B31 registered network-name display installed\n");
+ }
  fprintf(stderr,"launcher: %s hooks installed\n",abi->name);
 }
 #endif /* LAUNCHER_FORMAT_TEST */

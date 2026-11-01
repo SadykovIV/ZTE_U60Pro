@@ -2,6 +2,7 @@
 mod qrtr;
 mod tlv;
 use super::{Error, Result};
+use super::target::{PHYSICAL_SLOT, LOGICAL_SLOT};
 use std::time::{Duration, Instant};
 
 fn field(values: &[tlv::Tlv], tag: u8) -> Result<&[u8]> {
@@ -57,9 +58,9 @@ pub fn set_mode(online: bool) -> Result<(u16, u16)> {
 }
 
 fn card_power_request(on: bool) -> (u16, [tlv::Tlv; 1]) {
-    // QMI UIM Power Down/Up: required slot enum, one byte, slot1 only.
+    // QMI UIM Power Down/Up: required slot enum, one byte, the fixed internal-eUICC logical slot only.
     // No optional ignore-hotswap or non-telecom-card mode is requested.
-    (if on { 0x31 } else { 0x30 }, [tlv::u8_tlv(1, 1)])
+    (if on { 0x31 } else { 0x30 }, [tlv::u8_tlv(1, LOGICAL_SLOT)])
 }
 fn card_power_result(response: &[tlv::Tlv], on: bool) -> Result<()> {
     let fail = || {
@@ -107,7 +108,7 @@ fn bcd_iccid(data: &[u8]) -> Result<String> {
     }
     Ok(digits)
 }
-fn slot1_iccid_bytes(data: &[u8]) -> Result<&[u8]> {
+fn target_iccid_bytes(data: &[u8]) -> Result<&[u8]> {
     let Some(&count) = data.first() else {
         return Err(Error::new("modem_readback_failed"));
     };
@@ -116,7 +117,8 @@ fn slot1_iccid_bytes(data: &[u8]) -> Result<&[u8]> {
     }
     let mut pos = 1;
     let mut selected = None;
-    let mut alternate_logical1 = false;
+    let mut alternate_target_route = false;
+    let mut invalid_enum = false;
     for physical in 1..=count {
         let header = data
             .get(pos..pos + 10)
@@ -125,32 +127,36 @@ fn slot1_iccid_bytes(data: &[u8]) -> Result<&[u8]> {
         let active = u32::from_le_bytes(header[4..8].try_into().unwrap());
         let logical = header[8];
         let len = header[9] as usize;
+        invalid_enum |= card > 2 || active > 1 || logical > 8;
         pos += 10;
         let iccid = data
             .get(pos..pos + len)
             .ok_or(Error::new("modem_readback_failed"))?;
         pos += len;
-        if physical == 1 {
+        if physical == PHYSICAL_SLOT {
             selected = Some((card, active, logical, iccid));
-        } else if active == 1 && logical == 1 {
-            alternate_logical1 = true;
+        } else if active == 1 && logical == LOGICAL_SLOT {
+            alternate_target_route = true;
         }
     }
     if pos != data.len() {
         return Err(Error::new("modem_readback_failed"));
     }
-    let (card, active, logical, iccid) = selected.ok_or(Error::new("modem_readback_failed"))?;
+    let (card, active, logical, iccid) = selected.ok_or(Error::new("modem_slot_mismatch"))?;
     // Inspect all rows first: target-card initialization must not hide an
-    // alternate physical card taking logical slot1.
-    if alternate_logical1 {
+    // alternate physical card taking the target logical slot.
+    if alternate_target_route {
         return Err(Error::new("modem_slot_mismatch"));
+    }
+    if invalid_enum {
+        return Err(Error::new("modem_readback_failed"));
     }
     // Power-up may temporarily clear the target's active/logical assignment.
     // This does not prove rerouting. A different assignment still fails hard.
-    if active == 0 && matches!(logical, 0 | 1) {
+    if active == 0 && (logical == 0 || logical == LOGICAL_SLOT) {
         return Err(Error::new("modem_readback_failed"));
     }
-    if active != 1 || logical != 1 {
+    if active != 1 || logical != LOGICAL_SLOT {
         return Err(Error::new("modem_slot_mismatch"));
     }
     if card != 2 {
@@ -158,23 +164,23 @@ fn slot1_iccid_bytes(data: &[u8]) -> Result<&[u8]> {
     }
     Ok(iccid)
 }
-fn slot1(data: &[u8]) -> Result<String> {
-    bcd_iccid(slot1_iccid_bytes(data)?)
+fn target_iccid(data: &[u8]) -> Result<String> {
+    bcd_iccid(target_iccid_bytes(data)?)
 }
-fn selected_slot1(data: &[u8]) -> Result<()> {
-    let iccid = slot1_iccid_bytes(data)?;
-    // A removable eUICC with no enabled profile can have no ICCID yet.
+fn selected_target_slot(data: &[u8]) -> Result<()> {
+    let iccid = target_iccid_bytes(data)?;
+    // The internal replacement eUICC with no enabled profile can have no ICCID yet.
     // The physical/logical route still has to be present and unambiguous.
     if !iccid.is_empty() { bcd_iccid(iccid)?; }
     Ok(())
 }
 pub fn selection() -> Result<()> {
     let values = read(qrtr::SERVICE_UIM, 0x47).map_err(|_| Error::new("modem_readback_failed"))?;
-    selected_slot1(field(&values, 0x10).map_err(|_| Error::new("modem_readback_failed"))?)
+    selected_target_slot(field(&values, 0x10).map_err(|_| Error::new("modem_readback_failed"))?)
 }
 pub fn iccid() -> Result<String> {
     let values = read(qrtr::SERVICE_UIM, 0x47).map_err(|_| Error::new("modem_readback_failed"))?;
-    slot1(field(&values, 0x10).map_err(|_| Error::new("modem_readback_failed"))?)
+    target_iccid(field(&values, 0x10).map_err(|_| Error::new("modem_readback_failed"))?)
 }
 
 // QMI UIM GetCardStatus (0x2f), TLV 0x10. Qualcomm IDL defines
@@ -235,7 +241,7 @@ fn selected_usim_ready(data: &[u8]) -> Result<bool> {
         let &(app_type, app_state) = apps.get(app_index).ok_or_else(fail)?;
         // Only GW primary/secondary provisioning selects a USIM. Optional ISIM
         // need not be READY; waiting for IMS would reject otherwise usable cards.
-        if matches!(kind, 0 | 2) && slot == 0 && *present && app_type == 2 && app_state == 7 {
+        if matches!(kind, 0 | 2) && slot == usize::from(LOGICAL_SLOT - 1) && *present && app_type == 2 && app_state == 7 {
             ready = true;
         }
     }
@@ -252,14 +258,14 @@ pub fn card_ready(expected_iccid: &str, deadline: Instant) -> Result<bool> {
         qrtr::QrtrClient::connect(qrtr::SERVICE_UIM, remaining.min(Duration::from_secs(2)))
             .map_err(|_| fail())?;
     // At most two empty, read-only requests in this sample, on the same UIM
-    // endpoint. Recheck physical1/logical1 and expected ICCID before readiness.
+    // endpoint. Recheck the fixed physical2/logical2 route and expected ICCID before readiness.
     let slots = client
         .request_until(0x47, &[], deadline)
         .map_err(|_| fail())?;
     if field(&slots, 2).map_err(|_| fail())? != [0, 0, 0, 0] {
         return Err(fail());
     }
-    if slot1(field(&slots, 0x10).map_err(|_| fail())?).map_err(|_| fail())? != expected_iccid {
+    if target_iccid(field(&slots, 0x10).map_err(|_| fail())?).map_err(|_| fail())? != expected_iccid {
         return Ok(false);
     }
     let cards = client
@@ -280,11 +286,11 @@ mod tests {
         assert_eq!(tlv::encode(&mode_request(false)), [1, 1, 0, 1]);
     }
     #[test]
-    fn card_power_has_only_exact_slot1_tlv_and_strict_result() {
+    fn card_power_has_only_exact_slot2_tlv_and_strict_result() {
         for on in [false, true] {
             let (message, request) = card_power_request(on);
             assert_eq!(message, if on { 0x31 } else { 0x30 });
-            assert_eq!(tlv::encode(&request), [1, 1, 0, 1]);
+            assert_eq!(tlv::encode(&request), [1, 1, 0, 2]);
             let result = tlv::Tlv {
                 tag: 2,
                 value: vec![0, 0, 0, 0],
@@ -319,14 +325,26 @@ mod tests {
         v.extend(bytes);
         v
     }
+    fn target_rows(card: u32, active: u32, logical: u8, bytes: &[u8], other_logical: u8) -> Vec<u8> {
+        let mut v = vec![2];
+        v.extend(row(other_logical, &[0x76; 10]));
+        v.extend(card.to_le_bytes());
+        v.extend(active.to_le_bytes());
+        v.extend([logical, bytes.len() as u8]);
+        v.extend(bytes);
+        v
+    }
     #[test]
     fn exact_slot_and_bcd_no_guessing() {
-        let mut v = vec![2];
-        v.extend(row(1, &[0x98; 10]));
-        v.extend(row(2, &[0x76; 10]));
-        assert_eq!(slot1(&v).unwrap(), "89898989898989898989");
-        v[9] = 2;
-        assert_eq!(slot1(&v).unwrap_err().code, "modem_slot_mismatch");
+        let v = target_rows(2, 1, 2, &[0x98; 10], 1);
+        assert_eq!(target_iccid(&v).unwrap(), "89898989898989898989");
+        assert_ne!(target_iccid(&v).unwrap(), "67676767676767676767");
+        for v in [target_rows(2, 1, 1, &[0x98; 10], 2), target_rows(2, 1, 2, &[0x98; 10], 2)] {
+            assert_eq!(target_iccid(&v).unwrap_err().code, "modem_slot_mismatch");
+        }
+        let mut only_external = vec![1];
+        only_external.extend(row(1, &[0x98; 10]));
+        assert_eq!(target_iccid(&only_external).unwrap_err().code, "modem_slot_mismatch");
         assert!(bcd_iccid(&[0x98; 9]).is_err());
         let mut x = [0x98; 10];
         x[9] = 0xf8;
@@ -336,80 +354,62 @@ mod tests {
     }
     #[test]
     fn empty_profile_route_is_valid_but_iccid_readback_still_requires_digits() {
-        let mut value = vec![1];
-        value.extend(row(1, &[]));
-        assert!(selected_slot1(&value).is_ok());
-        assert!(slot1(&value).is_err());
-        value[9] = 2;
-        assert_eq!(selected_slot1(&value).unwrap_err().code, "modem_slot_mismatch");
-        let mut value = vec![2];
-        value.extend(row(1, &[]));
-        value.extend(row(1, &[0x98; 10]));
-        assert_eq!(selected_slot1(&value).unwrap_err().code, "modem_slot_mismatch");
-        let mut value = vec![1];
-        value.extend(row(1, &[0x98; 9]));
-        assert!(selected_slot1(&value).is_err());
+        let value = target_rows(2, 1, 2, &[], 1);
+        assert!(selected_target_slot(&value).is_ok());
+        assert!(target_iccid(&value).is_err());
+        for value in [target_rows(2, 1, 1, &[], 1), target_rows(2, 1, 2, &[], 2)] {
+            assert_eq!(selected_target_slot(&value).unwrap_err().code, "modem_slot_mismatch");
+        }
+        assert!(selected_target_slot(&target_rows(2, 1, 2, &[0x98; 9], 1)).is_err());
+    }
+    #[test]
+    fn external_slot_can_be_present_or_absent_without_redirecting_target() {
+        for (card, active, logical) in [(2u32, 1u32, 1u8), (0, 0, 0), (1, 0, 0)] {
+            let mut v = vec![2];
+            v.extend(card.to_le_bytes());
+            v.extend(active.to_le_bytes());
+            v.extend([logical, 0]);
+            v.extend(row(2, &[0x98; 10]));
+            assert_eq!(target_iccid(&v).unwrap(), "89898989898989898989");
+        }
+        for (card, active, logical) in [(9u32, 1u32, 1u8), (2, 9, 1), (2, 1, 9)] {
+            let mut v = vec![2];
+            v.extend(card.to_le_bytes());
+            v.extend(active.to_le_bytes());
+            v.extend([logical, 0]);
+            v.extend(row(2, &[0x98; 10]));
+            assert!(target_iccid(&v).is_err());
+        }
     }
     #[test]
     fn refuses_truncation_duplicates_and_trailing_data() {
-        let mut v = vec![1];
-        v.extend(row(1, &[0x98; 10]));
+        let mut v = target_rows(2, 1, 2, &[0x98; 10], 1);
         for size in 0..v.len() {
-            assert!(slot1(&v[..size]).is_err());
+            assert!(target_iccid(&v[..size]).is_err());
         }
         v.push(0);
-        assert!(slot1(&v).is_err());
-        let mut v = vec![2];
-        v.extend(row(1, &[0x98; 10]));
-        v.extend(row(1, &[0x98; 10]));
-        assert_eq!(slot1(&v).unwrap_err().code, "modem_slot_mismatch");
+        assert!(target_iccid(&v).is_err());
+        assert_eq!(target_iccid(&target_rows(2, 1, 2, &[0x98; 10], 2)).unwrap_err().code, "modem_slot_mismatch");
         assert!(field(&[tlv::u8_tlv(1, 0), tlv::u8_tlv(1, 0)], 1).is_err());
     }
     #[test]
     fn powerup_transient_card_state_is_retryable_but_never_hides_wrong_route() {
-        let build = |card: u32, active: u32, logical: u8, bytes: &[u8], other_logical: u8| {
-            let mut v = vec![2];
-            v.extend(card.to_le_bytes());
-            v.extend(active.to_le_bytes());
-            v.extend([logical, bytes.len() as u8]);
-            v.extend(bytes);
-            v.extend(row(other_logical, &[0x76; 10]));
-            v
-        };
         for (card, active, logical, bytes) in [
-            (0, 1, 1, vec![]),
-            (1, 1, 1, vec![]),
-            (3, 1, 1, vec![]),
-            (2, 1, 1, vec![]),
+            (0, 1, 2, vec![]),
+            (1, 1, 2, vec![]),
+            (3, 1, 2, vec![]),
+            (2, 1, 2, vec![]),
             (2, 0, 0, vec![]),
-            (2, 0, 1, vec![0x98; 10]),
+            (2, 0, 2, vec![0x98; 10]),
         ] {
-            assert_eq!(
-                slot1(&build(card, active, logical, &bytes, 2))
-                    .unwrap_err()
-                    .code,
-                "modem_readback_failed"
-            );
+            assert_eq!(target_iccid(&target_rows(card, active, logical, &bytes, 1)).unwrap_err().code, "modem_readback_failed");
             // Even an absent/initializing target cannot conceal this conflict.
-            assert_eq!(
-                slot1(&build(card, active, logical, &bytes, 1))
-                    .unwrap_err()
-                    .code,
-                "modem_slot_mismatch"
-            );
+            assert_eq!(target_iccid(&target_rows(card, active, logical, &bytes, 2)).unwrap_err().code, "modem_slot_mismatch");
         }
-        for (active, logical) in [(1, 0), (1, 2), (0, 2)] {
-            assert_eq!(
-                slot1(&build(2, active, logical, &[0x98; 10], 2))
-                    .unwrap_err()
-                    .code,
-                "modem_slot_mismatch"
-            );
+        for (active, logical) in [(1, 0), (1, 1), (0, 1)] {
+            assert_eq!(target_iccid(&target_rows(2, active, logical, &[0x98; 10], 1)).unwrap_err().code, "modem_slot_mismatch");
         }
-        assert_eq!(
-            slot1(&build(2, 1, 1, &[0x98; 10], 2)).unwrap(),
-            "89898989898989898989"
-        );
+        assert_eq!(target_iccid(&target_rows(2, 1, 2, &[0x98; 10], 1)).unwrap(), "89898989898989898989");
     }
     fn application(kind: u8, state: u8) -> Vec<u8> {
         // Empty AID, followed by seven unrelated PIN fields.
@@ -433,60 +433,42 @@ mod tests {
         v
     }
     #[test]
-    fn readiness_requires_selected_usim_ready_seven_not_detected_one() {
+    fn readiness_requires_selected_internal_usim_ready_seven_not_detected_one() {
         for state in 0..=8 {
             let v = card_status(
-                [0, 0xffff, 0xffff, 0xffff],
-                &[card(1, &[application(2, state), application(5, 1)])],
+                [0x100, 0xffff, 0xffff, 0xffff],
+                &[card(1, &[application(2, 7)]), card(1, &[application(2, state), application(5, 1)])],
             );
             assert_eq!(selected_usim_ready(&v).unwrap(), state == 7);
         }
-        // An optional, not-ready ISIM does not block the selected ready USIM.
+        // A not-ready optional ISIM does not block the provisioned internal USIM.
         let v = card_status(
-            [0xffff, 0xffff, 1, 0xffff],
-            &[card(1, &[application(5, 1), application(2, 7)])],
+            [0xffff, 0xffff, 0x101, 0xffff],
+            &[card(0, &[]), card(1, &[application(5, 1), application(2, 7)])],
         );
         assert!(selected_usim_ready(&v).unwrap());
     }
     #[test]
     fn readiness_does_not_infer_selection_from_any_ready_application() {
         let target = card(1, &[application(2, 1), application(2, 7)]);
-        assert!(
-            !selected_usim_ready(&card_status([0, 0xffff, 0xffff, 0xffff], &[target])).unwrap()
-        );
-        for indices in [[0xffff; 4], [0xffff, 0, 0xffff, 0xffff]] {
-            assert!(
-                !selected_usim_ready(&card_status(indices, &[card(1, &[application(2, 7)])]))
-                    .unwrap()
-            );
+        assert!(!selected_usim_ready(&card_status([0x100, 0xffff, 0xffff, 0xffff], &[card(0, &[]), target])).unwrap());
+        for indices in [[0xffff; 4], [0xffff, 0x100, 0xffff, 0xffff]] {
+            assert!(!selected_usim_ready(&card_status(indices, &[card(0, &[]), card(1, &[application(2, 7)])])).unwrap());
         }
         for kind in [0, 1, 3, 4, 5, 255] {
-            assert!(!selected_usim_ready(&card_status(
-                [0, 0xffff, 0xffff, 0xffff],
-                &[card(1, &[application(kind, 7)])]
-            ))
-            .unwrap());
+            assert!(!selected_usim_ready(&card_status([0x100, 0xffff, 0xffff, 0xffff], &[card(0, &[]), card(1, &[application(kind, 7)])])).unwrap());
         }
-        // Slot two is ready and provisioned, but this operation targets slot one.
-        let v = card_status(
-            [0x100, 0xffff, 0xffff, 0xffff],
-            &[card(1, &[application(2, 7)]), card(1, &[application(2, 7)])],
-        );
+        // External SIM readiness/provisioning never verifies the internal card.
+        let v = card_status([0, 0xffff, 0xffff, 0xffff], &[card(1, &[application(2, 7)]), card(1, &[application(2, 7)])]);
         assert!(!selected_usim_ready(&v).unwrap());
         for state in [0, 2, 255] {
-            assert!(!selected_usim_ready(&card_status(
-                [0, 0xffff, 0xffff, 0xffff],
-                &[card(state, &[application(2, 7)])]
-            ))
-            .unwrap());
+            assert!(!selected_usim_ready(&card_status([0x100, 0xffff, 0xffff, 0xffff], &[card(0, &[]), card(state, &[application(2, 7)])])).unwrap());
         }
     }
     #[test]
     fn readiness_rejects_duplicate_indices_bad_lengths_and_out_of_range_refs() {
-        let v = card_status(
-            [0, 0xffff, 0xffff, 0xffff],
-            &[card(1, &[application(2, 7)])],
-        );
+        let v = card_status([0x100, 0xffff, 0xffff, 0xffff], &[card(0, &[]), card(1, &[application(2, 7)])]);
+        assert!(selected_usim_ready(&v).unwrap());
         for length in 0..v.len() {
             assert!(selected_usim_ready(&v[..length]).is_err());
         }
@@ -494,16 +476,13 @@ mod tests {
         trailing.push(0);
         assert!(selected_usim_ready(&trailing).is_err());
         for indices in [
-            [0, 0xffff, 0, 0xffff],
-            [1, 0xffff, 0xffff, 0xffff],
-            [0x100, 0xffff, 0xffff, 0xffff],
+            [0x100, 0xffff, 0x100, 0xffff],
+            [0x101, 0xffff, 0xffff, 0xffff],
+            [0x200, 0xffff, 0xffff, 0xffff],
         ] {
-            assert!(
-                selected_usim_ready(&card_status(indices, &[card(1, &[application(2, 7)])]))
-                    .is_err()
-            );
+            assert!(selected_usim_ready(&card_status(indices, &[card(0, &[]), card(1, &[application(2, 7)])])).is_err());
         }
-        for (offset, value) in [(8, 9), (14, 33), (21, 33)] {
+        for (offset, value) in [(8, 9), (20, 33), (27, 33)] {
             let mut bad = v.clone();
             bad[offset] = value;
             assert!(selected_usim_ready(&bad).is_err());

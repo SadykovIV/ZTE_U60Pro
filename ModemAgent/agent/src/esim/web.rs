@@ -17,6 +17,7 @@ const MAX_JOBS: usize = 16;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Start {
+    target: String,
     request_id: String,
     request: Request,
 }
@@ -177,7 +178,7 @@ pub fn route(
         return (
             200,
             json!({"ok":true,"data":{"protocol":1,"version":crate::AGENT_VERSION,
-            "operations":super::OPERATIONS,"https_transport":"agent_curl",
+            "target":super::target::NAME,"operations":super::OPERATIONS,"https_transport":"agent_curl",
             "nickname_max_characters":64,"nickname_max_utf8_bytes":256,
             "web_download_requires_modem_internet":true,"https_transport_available":web_http::available(),
             "private_rpc_protocol":1,"job_budget_seconds":JOB_BUDGET.as_secs(),
@@ -205,6 +206,9 @@ pub fn route(
         Ok(v) => v,
         Err(_) => return fail(400, "invalid_request"),
     };
+    if start.target != super::target::NAME {
+        return fail(400, "invalid_request");
+    }
     if !token(&start.request_id) {
         return fail(400, "invalid_request_id");
     }
@@ -359,7 +363,7 @@ pub fn read_check() -> Value {
         Err(_) => return json!({"ok":false,"error":"job_start_failed"}),
     };
     let (_, capabilities) = route(&jobs, &Method::Get, "/api/esim/capabilities", &owner, &[]);
-    let body = json!({"request_id":owner,"request":{"protocol":1,"operation":"list"}});
+    let body = json!({"target":crate::esim::target::NAME,"request_id":owner,"request":{"protocol":1,"operation":"list"}});
     let (status, start) = route(
         &jobs,
         &Method::Post,
@@ -479,12 +483,29 @@ mod tests {
     }
 
     #[test]
+    fn missing_or_wrong_variant_is_rejected_before_job_or_card_access() {
+        let jobs = Arc::new(Jobs::default());
+        let base = json!({"request_id":"a".repeat(32),"request":{"protocol":1,"operation":"list"}});
+        let mut requests = vec![base.clone()];
+        for target in [json!("physical-euicc-slot1"), json!("internal-euicc-slot2 "), json!(""), json!(null), json!(2)] {
+            let mut body = base.clone();
+            body["target"] = target;
+            requests.push(body);
+        }
+        crate::process::with_commands(|_| panic!("variant rejection must not invoke device commands"), || {
+            for body in requests {
+                assert_eq!(route(&jobs, &Method::Post, "/api/esim/jobs", "owner", &serde_json::to_vec(&body).unwrap()), fail(400, "invalid_request"));
+                assert!(jobs.entries.lock().unwrap().is_empty());
+            }
+        });
+    }
+    #[test]
     fn rejects_unknown_fields_without_worker() {
         let jobs = Arc::new(Jobs::default());
         for body in [
-            json!({"request_id":"a".repeat(32),"request":{"protocol":1,"operation":"list"},"unknown":1}),
-            json!({"request_id":"a".repeat(32),"request":{"protocol":1,"operation":"list","secret":"never-log"}}),
-            json!({"request_id":"bad","request":{"protocol":1,"operation":"list"}}),
+            json!({"target":crate::esim::target::NAME,"request_id":"a".repeat(32),"request":{"protocol":1,"operation":"list"},"unknown":1}),
+            json!({"target":crate::esim::target::NAME,"request_id":"a".repeat(32),"request":{"protocol":1,"operation":"list","secret":"never-log"}}),
+            json!({"target":crate::esim::target::NAME,"request_id":"bad","request":{"protocol":1,"operation":"list"}}),
         ] {
             let response = route(
                 &jobs,
@@ -506,6 +527,7 @@ mod tests {
     fn rename_capabilities_and_invalid_names_are_private_and_worker_free() {
         let jobs = Arc::new(Jobs::default());
         let capabilities = route(&jobs, &Method::Get, "/api/esim/capabilities", "owner", &[]).1;
+        assert_eq!(capabilities["data"]["target"], "internal-euicc-slot2");
         assert_eq!(capabilities["data"]["operations"], json!(super::super::OPERATIONS));
         assert!(capabilities["data"]["operations"]
             .as_array()
@@ -514,7 +536,7 @@ mod tests {
         assert_eq!(capabilities["data"]["nickname_max_characters"], 64);
         assert_eq!(capabilities["data"]["nickname_max_utf8_bytes"], 256);
         let before = json!({"ok":true,"eid":"89000000000000000000000000000000","profiles":[]});
-        let body = json!({"request_id":"a".repeat(32),"request":{
+        let body = json!({"target":crate::esim::target::NAME,"request_id":"a".repeat(32),"request":{
             "protocol":1,"operation":"rename","expected_snapshot":before,
             "iccid":"890000000000000001","nickname":"PRIVATE_NAME\n"}});
         let response = route(

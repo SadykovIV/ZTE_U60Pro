@@ -138,7 +138,7 @@ struct DiagnosticArchive {
             } catch { issue(relative + ": " + error.localizedDescription) }
         }
         let readme = """
-        Диагностика ZTE IMEI Studio \(DiagnosticsContext.version)
+        Диагностика ZTE U60Pro Internal eUICC \(DiagnosticsContext.version)
 
         application.json: состояние приложения, версия macOS, адрес и состояние подключения.
         Activity: журнал всех доступных сеансов. sessionID связывает сеанс, operationID — операцию,

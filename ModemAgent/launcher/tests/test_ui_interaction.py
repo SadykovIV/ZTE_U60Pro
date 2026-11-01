@@ -20,6 +20,6 @@ def main():
         binary=temporary/'ui-test';vendor=temporary/'cJSON.o'
         flags=[os.environ.get('CC','clang'),'-std=c11','-Wall','-Wextra','-Werror','-O1','-g','-fsanitize=address,undefined','-fno-omit-frame-pointer']
         subprocess.run([*flags,'-Wno-deprecated-declarations','-c',str(ROOT/'third_party/lpac/cjson/cJSON.c'),'-o',str(vendor)],check=True)
-        subprocess.run([*flags,'-I'+str(HERE.parent),'-DLAUNCHER_TEST_SOURCE="'+str(generated)+'"',str(HERE/'ui_interaction_test.c'),str(HERE.parent/'info-layout.c'),str(HERE.parent/'vpn-model.c'),str(HERE.parent/'display-text.c'),str(vendor),'-o',str(binary)],check=True)
+        subprocess.run([*flags,'-I'+str(HERE.parent),'-DLAUNCHER_TEST_SOURCE="'+str(generated)+'"',str(HERE/'ui_interaction_test.c'),str(HERE.parent/'info-layout.c'),str(HERE.parent/'vpn-model.c'),str(HERE.parent/'display-text.c'),str(HERE.parent/'network-name.c'),str(vendor),'-o',str(binary)],check=True)
         subprocess.run([str(binary)],check=True,env={**os.environ,'ASAN_OPTIONS':'detect_leaks=0:halt_on_error=1','UBSAN_OPTIONS':'halt_on_error=1'},timeout=60)
 if __name__=='__main__':main()

@@ -9,8 +9,8 @@ import Foundation
     var hasOrdinarySIM: Bool { esimCard?.kind == "ordinary_sim" && esimAuthorization == esimTargetKey }
     var esimCardStatus: String {
         if esimOperationActive { return "Тип SIM-карты: проверка…" }
-        if hasOrdinarySIM { return "Вставлена обычная SIM-карта оператора. Установка профилей eSIM недоступна." }
-        if esimSnapshot != nil && esimAuthorization == esimTargetKey { return "Тип SIM-карты: физическая eUICC подтверждена." }
+        if hasOrdinarySIM { return "Карта на месте eSIM не предоставляет eUICC. Управление профилями недоступно." }
+        if esimSnapshot != nil && esimAuthorization == esimTargetKey { return "eUICC на месте eSIM подтверждена: EID и профили прочитаны." }
         if !esimError.isEmpty { return "Тип SIM-карты определить не удалось. Ошибка чтения не означает, что карта обычная." }
         return "Тип SIM-карты ещё не проверен. Нажмите «Проверить карту и профили»."
     }
@@ -49,7 +49,7 @@ import Foundation
                 guard self.esimTargetKey == key else { throw EsimFailure.targetChanged }
                 self.esimSnapshot = result.snapshot; self.esimCard = result.card; self.esimAuthorization = key
                 if !((result.snapshot?.profiles.contains { $0.iccid == self.esimSelectedICCID }) ?? false) { self.esimSelectedICCID = nil }
-                self.esimMessage = self.hasOrdinarySIM ? "Вставлена обычная SIM-карта оператора. Установка профилей eSIM недоступна." : operation.name == "enable" ? "Профиль активен, SIM перечитана, радио включено. Регистрация в мобильной сети проверяется отдельно." : operation.name == "download" ? "Профиль установлен и выключен. Выберите его для активации." : operation.name == "delete" ? "Профиль удалён. Список перечитан с карты." : "Все профили прочитаны с карты."
+                self.esimMessage = self.hasOrdinarySIM ? "Карта на месте eSIM не предоставляет eUICC. Управление профилями недоступно." : operation.name == "enable" ? "Профиль активен, SIM перечитана, радио включено. Регистрация в мобильной сети проверяется отдельно." : operation.name == "download" ? "Профиль установлен и выключен. Выберите его для активации." : operation.name == "delete" ? "Профиль удалён. Список перечитан с карты." : "Все профили прочитаны с карты."
                 if result.notificationsPending == true { self.esimMessage += " Уведомления оператору ещё не доставлены." }
                 self.progress = 1
                 // Only allowlisted metadata and fixed error codes are journaled.

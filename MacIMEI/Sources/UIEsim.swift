@@ -21,7 +21,8 @@ import UniformTypeIdentifiers
     private var preparedCode: String? { manualInput ? EsimValidation.manualCode(address: smdpAddress, matchingID: matchingID) : EsimValidation.activationCode(activationCode) }
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
-            StudioNote(symbol: "simcard", text: "Управление профилями доступно на съёмной SIM-карте с eUICC. Тип карты определяется по её ответу. Встроенная eSIM ZTE не поддерживается.")
+            StudioNote(symbol: "simcard", text: "Эта версия управляет eUICC, установленной вместо штатной eSIM ZTE. Карта в физическом SIM-слоте остаётся отдельной.")
+            StudioNote(symbol: "simcard.2", text: "Для мобильной связи через eUICC и переключения её профилей выберите eSIM в штатном меню выбора SIM. Эта программа не переключает слоты автоматически.")
             StudioNote(symbol: "simcard", text: model.esimCardStatus)
             if model.activeChannel != .ssh && !model.esimPreview {
                 StudioNote(symbol: "network", text: "Для eSIM требуется SSH. В «Подготовке модема» выберите SSH и проверьте подключение. Web и ADB для этого раздела не используются.")
@@ -159,7 +160,7 @@ import UniformTypeIdentifiers
             Text(L10n.text("Все профили карты и выбор активного профиля прямо на дисплее модема. После переключения модем перечитает SIM через авиарежим и вернёт радио в обычный режим."))
                 .font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            Text(L10n.text("Обновляются агент и пакет Launcher. eSIM добавляется в конец, если её нет среди выбранных страниц. Прежний порядок, раскладка и настройки VPN сохраняются. Экран может перезапуститься."))
+            Text(L10n.text("Сначала установите или обновите комплектный агент в разделе «Агент». Эта кнопка обновляет Launcher и добавляет страницу eSIM. Порядок страниц, раскладка и настройки VPN сохраняются. Экран может перезапуститься."))
                 .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             HStack {

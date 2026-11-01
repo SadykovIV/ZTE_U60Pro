@@ -547,6 +547,8 @@ struct FakeRuntime {
     radio_calls: usize,
     fail_radio: bool,
     fail_radio_ready: bool,
+    external_sim_selected: bool,
+    shared_network_selection: Option<std::rc::Rc<std::cell::Cell<u8>>>,
     ordinary: bool,
     strict_begins: Vec<bool>,
     attempt_http: bool,
@@ -565,6 +567,8 @@ impl FakeRuntime {
             radio_calls: 0,
             fail_radio: false,
             fail_radio_ready: false,
+            external_sim_selected: false,
+            shared_network_selection: None,
             ordinary: false,
             strict_begins: vec![],
             attempt_http: false,
@@ -612,7 +616,14 @@ impl Runtime for FakeRuntime {
             Ok(())
         }
     }
+    fn confirm_enable_selection(&mut self) -> Result<()> {
+        if self.external_sim_selected || self.shared_network_selection.as_ref().is_some_and(|slot| slot.get() != 2) {
+            return Err(Error::new("esim_slot_not_selected"));
+        }
+        Ok(())
+    }
     fn radio_ready(&mut self) -> Result<()> {
+        self.confirm_enable_selection()?;
         if self.fail_radio_ready {
             Err(Error::new("radio_not_online"))
         } else {
@@ -634,6 +645,17 @@ impl Runtime for FakeRuntime {
 }
 fn ok() -> Result<Value> {
     Ok(json!({"code":0}))
+}
+
+#[test]
+fn internal_launcher_flag_is_exact_and_uses_the_restricted_launcher_contract() {
+    assert!(launcher_mode(&["--esim-launcher-internal".into()]));
+    assert!(!launcher_mode(&["--esim-launcher".into()]));
+    for arguments in [vec![], vec!["--esim-launcher-internal".into(), "extra".into()], vec!["--esim-rpc".into()], vec!["--esim-launcher-internal=1".into()]] {
+        assert!(!launcher_mode(&arguments));
+    }
+    assert!(launcher_request(json!({"protocol":1,"operation":"list"})).is_ok());
+    assert!(launcher_request(json!({"protocol":1,"operation":"download","activation_code":"LPA:1$operator.example$synthetic"})).is_err());
 }
 fn queue(ids: &[u32]) -> Result<Value> {
     Ok(json!({"code":0,"data":ids.iter().map(|n|json!({"seqNumber":n})).collect::<Vec<_>>()}))
@@ -730,6 +752,57 @@ fn already_enabled_refreshes_modem_without_profile_command() {
     assert_eq!(result.modem_verified, Some(true));
     assert_eq!(rt.radio_calls, 1);
     assert_eq!(rt.begins, 0);
+    assert!(rt.commands.is_empty());
+}
+
+#[test]
+fn selector_change_during_enable_progress_closes_bridge_without_mutation() {
+    struct SwitchingRelay(std::rc::Rc<std::cell::Cell<u8>>);
+    impl Relay for SwitchingRelay {
+        fn http(&mut self, _: &Value) -> Result<Value> { unreachable!() }
+        fn progress(&mut self, stage: &'static str) -> Result<()> {
+            if stage == "enabling" { self.0.set(1); }
+            Ok(())
+        }
+    }
+    let before = snapshot(&[(ONE, "disabled")]);
+    let r = request("enable", &before);
+    let selector = std::rc::Rc::new(std::cell::Cell::new(2));
+    let mut rt = FakeRuntime::new(before.clone(), before.clone(), vec![queue(&[])]);
+    rt.shared_network_selection = Some(selector.clone());
+    let error = perform(&r, &mut rt, &mut SwitchingRelay(selector)).err().unwrap();
+    assert_eq!(error.code, "esim_slot_not_selected");
+    assert!(error.snapshot.unwrap().matches(&before));
+    assert_eq!(rt.begins, 1);
+    assert_eq!(rt.ends, 1);
+    assert_eq!(rt.radio_calls, 0);
+    assert_eq!(rt.commands, [args(&["notification", "list"])]);
+}
+
+#[test]
+fn external_sim_selection_blocks_enable_before_any_profile_mutation() {
+    for state in ["disabled", "enabled"] {
+        let before = snapshot(&[(ONE, state)]);
+        let r = request("enable", &before);
+        let mut rt = FakeRuntime::new(before.clone(), before, vec![]);
+        rt.external_sim_selected = true;
+        assert_eq!(perform(&r, &mut rt, &mut FakeRelay::default()).err().unwrap().code, "esim_slot_not_selected");
+        assert_eq!(rt.begins, 0);
+        assert_eq!(rt.ends, 0);
+        assert_eq!(rt.radio_calls, 0);
+        assert!(rt.commands.is_empty());
+    }
+}
+
+#[test]
+fn external_sim_selection_does_not_block_reading_the_internal_card() {
+    let before = snapshot(&[(ONE, "disabled")]);
+    let mut rt = FakeRuntime::new(before.clone(), before.clone(), vec![]);
+    rt.external_sim_selected = true;
+    let r: Request = serde_json::from_value(json!({"protocol":1,"operation":"list"})).unwrap();
+    let outcome = perform(&r, &mut rt, &mut FakeRelay::default()).unwrap();
+    assert!(outcome.snapshot.unwrap().matches(&before));
+    assert_eq!(rt.radio_calls, 0);
     assert!(rt.commands.is_empty());
 }
 

@@ -14,8 +14,8 @@ $portableRoot = Join-Path $distRoot "portable$version"
 $sourceRoot = Split-Path -Parent $projectRoot
 $stageId = [Guid]::NewGuid().ToString("N")
 $stageRoot = Join-Path $distRoot "portable-$version-$stageId.stage"
-$exePath = Join-Path $portableRoot 'ZTE U60Pro Manager.exe'
-$stageExePath = Join-Path $stageRoot 'ZTE U60Pro Manager.exe'
+$exePath = Join-Path $portableRoot 'ZTE U60Pro Internal eUICC.exe'
+$stageExePath = Join-Path $stageRoot 'ZTE U60Pro Internal eUICC.exe'
 $zipPath = Join-Path $distRoot "ZTE-U60Pro-Manager-$version-Windows-x64-portable.zip"
 $stageZipPath = Join-Path $distRoot "ZTE-U60Pro-Manager-$version-$stageId-staging.zip"
 $manifestPath = Join-Path $distRoot "windows-$version-build-manifest.json"
@@ -179,7 +179,7 @@ $manifest = [ordered] @{
     selfContained = $true
     distribution = 'public'
     windowsOsRuntimeVerified = $false
-    exe = [ordered] @{ name = 'ZTE U60Pro Manager.exe'; bytes = $exeBytes; sha256 = $exeHash }
+    exe = [ordered] @{ name = 'ZTE U60Pro Internal eUICC.exe'; bytes = $exeBytes; sha256 = $exeHash }
     sourcePathMap = "/src/ZTE_U60Pro"
     sources = $sourceHashes
     resources = $resourceHashes

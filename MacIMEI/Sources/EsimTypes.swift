@@ -32,6 +32,7 @@ enum EsimFailure: Error, LocalizedError {
         case .invalidSnapshot: return "Карта вернула некорректный список профилей. Обновите список."
         case .targetChanged: return "Карта или выбранное подключение изменились. Обновите список профилей."
         case .backend(let code):
+            if code == "esim_slot_not_selected" { return "Для переключения профиля выберите eSIM в штатном меню выбора SIM модема, затем перечитайте профили. Физический SIM-слот автоматически не переключался." }
             if code == "card_not_euicc" { return "Карта не поддерживает управление eSIM. Проверьте карту заново." }
             if code == "radio_restore_failed" { return "Включение радио после авиарежима не подтверждено. Проверьте авиарежим на модеме и обновите список профилей. Автоматического повтора не было." }
             if let message = EsimLog.cardMessage(code) { return message }
@@ -342,7 +343,7 @@ enum EsimLog {
     static let backendErrors: Set<String> = [
         "card_busy", "card_open_rejected", "card_cleanup_unknown", "card_not_ready", "card_not_euicc",
         "card_reset_failed", "card_power_restore_failed",
-        "operation_lock_failed", "launcher_operation_refused", "radio_read_failed", "radio_not_online", "radio_set_failed", "radio_offline_failed", "radio_restore_failed", "modem_readback_failed", "modem_slot_mismatch", "modem_iccid_mismatch", "esim_busy",
+        "operation_lock_failed", "launcher_operation_refused", "radio_read_failed", "radio_not_online", "radio_set_failed", "radio_offline_failed", "radio_restore_failed", "modem_readback_failed", "modem_slot_mismatch", "esim_slot_not_selected", "modem_iccid_mismatch", "esim_busy",
         "bridge_already_open",
         "bridge_cleanup_failed",
         "bridge_missing",

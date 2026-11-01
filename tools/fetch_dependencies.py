@@ -11,6 +11,8 @@ if not missing:
 cache=ROOT/'.cache';cache.mkdir(exist_ok=True)
 archive=cache/meta['archive']
 if not archive.exists() or sha(archive)!=meta['sha256']:
+ if not meta.get('url'):
+  raise SystemExit('Local unpublished build: copy '+meta['archive']+' from its release bundle to '+str(cache)+'; no remote download is configured')
  req=urllib.request.Request(meta['url'],headers={'User-Agent':'ZTE-U60Pro-build'})
  tmp=archive.with_suffix('.download')
  with urllib.request.urlopen(req,timeout=120) as response,tmp.open('wb') as out:

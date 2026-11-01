@@ -1,3 +1,10 @@
+# Сборка альтернативы 1.28 Internal eUICC
+
+База зависимостей — проверенный комплект 1.27.2. Альтернатива локальная и не опубликована.
+После упаковки скопируйте её `Build-dependencies-1.28.tar.gz` в `.cache/`,
+затем выполните `python3 tools/fetch_dependencies.py`; скачивание несуществующего релиза отключено.
+Исходники находятся в отдельной ветке; аппаратная проверка перепаянной карты не выполнялась.
+
 # Сборка публичной версии
 
 Сборка не использует приватный рабочий проект, бэкапы или подключённый модем.
@@ -35,7 +42,7 @@ SSClash в нём нет. Лицензии входят в комплект, с�
 `build.py` последовательно собирает runtime eSIM (lpac/bridge), расширение экрана, VPN-контроллер, агент eSIM,
 веб-панель, C-помощники и `zte-timeout`, обновляет зависимые SHA-256 и собирает `.app`/ZIP.
 Пути домашнего каталога в Rust и Swift переназначаются перед компиляцией.
-Результат: `MacIMEI/dist/ZTE-U60Pro-Manager-1.27.2-arm64.zip` и `build-manifest.json`.
+Результат: `MacIMEI/dist/ZTE-U60Pro-Manager-1.28-arm64.zip` и `build-manifest.json`.
 Rust-рецепт использует offline-сборку после `cargo fetch --locked`; для первой сборки нужен доступ к закреплённым crates. Сборка подписывается ad-hoc; сертификат разработчика и нотарификация не требуются.
 
 Проверка ABI расширения на исходном UI необязательна для повторной сборки:
@@ -53,7 +60,7 @@ python tools/fetch_dependencies.py
 .\Windows_x64\build.cmd
 ```
 
-Результат — `Windows_x64/dist/ZTE-U60Pro-Manager-1.27.2-Windows-x64-portable.zip`.
+Результат — `Windows_x64/dist/ZTE-U60Pro-Manager-1.28-Windows-x64-portable.zip`.
 Готовому приложению SDK, Python и отдельно установленная .NET не нужны.
 Не удаляйте `Resources` рядом с EXE. Для USB ADB может понадобиться драйвер ZTE.
 EXE не подписан сертификатом. Версии NuGet закреплены lock-файлами.
@@ -127,7 +134,7 @@ Third-party-sources, манифесты и `SHA256SUMS`. Версии прило
 Для готовых сборок 1.27.2:
 
 ```sh
-python3 tools/package_release.py --output-dir release/1.27.2 --previous-release v1.27.1 --build-source-commit "$(git rev-parse HEAD)"
+python3 tools/package_release.py --local-only --output-dir release/1.28-internal --previous-release v1.27.2 --build-source-commit "$(git rev-parse HEAD)"
 ```
 
 `build-source-commit` — справочная точка Git, а не подтверждение совпадения

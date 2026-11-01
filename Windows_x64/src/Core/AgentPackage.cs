@@ -6,8 +6,8 @@ namespace ZteImeiStudio.Windows.Core;
 /// <summary>The same pinned build is installed permanently and used by private desktop RPC.</summary>
 public static class AgentPackage
 {
-    public const string Version = "2.9.0-esim.17";
-    public const string Sha256 = "fd5babee29e63366fb743c76c72f2a29eec47377ccda32659a85ce6e5effd959";
+    public const string Version = "2.10.0-internal.1";
+    public const string Sha256 = "2ec45ff1e10ceed0029de9b77740c95185b19b4d068a9153555ade0686babd3e";
     // Verified app 1.24.3 build 38 and its preserved source/artifact receipt.
     public const string LegacyCardCheckSha256 = "413ba4b0a07540d6901e87e74c9730196eb3373cf35b8914e31a8194bfe5a839";
     public const string LegacyPublicSha256 = "c50ba6b7ac6f77c581c2b657ba769f976d8d20aca0c6b7d08c9254ef2de9d346";
@@ -94,6 +94,7 @@ public static class AgentPackage
         "f2e0404c2c1be4c058c27b0a19c99c1d380e1c91d61503661424d53e799e235b",
         "f85bd358b6d2b8d418375d45b52472f13e5a25942ed670d6671c275c33204d68",
         "fce918180873c2c96e573bc395059316f3bf2a4733fe798ed93d9fad96c615a1",
+        "fd5babee29e63366fb743c76c72f2a29eec47377ccda32659a85ce6e5effd959",
     }.ToFrozenSet(StringComparer.Ordinal);
     public static bool SupportsVpn(string hash) => VersionForHash(hash) is not null;
     public static void VerifyPayload(byte[] bytes)

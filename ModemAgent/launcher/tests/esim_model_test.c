@@ -18,6 +18,7 @@ int main(void){
  for(unsigned i=0;i<sizeof stages/sizeof stages[0];i++){snprintf(b,sizeof b,"{\"type\":\"progress\",\"stage\":\"%s\",\"detail\":{\"event\":\"waiting\"}}",stages[i]);assert(esim_parse_progress(b,stage));assert(!strcmp(stage,stages[i]));}
  assert(!esim_parse_progress("{\"type\":\"http\",\"stage\":\"checking_card\"}",stage));assert(!esim_parse_progress("{\"type\":\"progress\",\"stage\":\"unknown\"}",stage));
  char error[64],component[64];
+ assert(esim_parse_error("{\"type\":\"result\",\"ok\":false,\"error\":\"esim_slot_not_selected\"}",error,component)&&!strcmp(error,"esim_slot_not_selected"));
  assert(esim_parse_error("{\"type\":\"result\",\"ok\":false,\"error\":\"esim_busy\"}",error,component)&&!strcmp(error,"esim_busy"));
  assert(esim_parse_error("{\"type\":\"result\",\"ok\":false,\"error\":\"secret-from-card-123\"}",error,component)&&!strcmp(error,"agent_error"));
  assert(esim_parse_error("{\"type\":\"result\",\"ok\":false,\"error\":\"card_cleanup_unknown\",\"component_error\":\"qmi_open_unknown\"}",error,component)&&!strcmp(error,"card_cleanup_unknown")&&!strcmp(component,"qmi_open_unknown"));

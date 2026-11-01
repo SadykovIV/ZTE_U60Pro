@@ -10,7 +10,7 @@ export async function runOperation(request: EsimRequest, progress: (stage: strin
   const bytes = new Uint8Array(16)
   window.crypto.getRandomValues(bytes)
   const request_id = Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('')
-  let job = await req('POST', '/api/esim/jobs', { request_id, request }) as unknown as Job
+  let job = await req('POST', '/api/esim/jobs', { target: 'internal-euicc-slot2', request_id, request }) as unknown as Job
   if (!/^[a-f0-9]{32}$/.test(job.job_id)) throw new Error('invalid_job')
   const jobID = job.job_id, deadline = Date.now() + 20 * 60_000
   let sequence = -1

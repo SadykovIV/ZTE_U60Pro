@@ -311,14 +311,15 @@ enum VPNRequestFailure: LocalizedError, Equatable {
 /// Both the desktop and agent send private JSON on stdin to the same modem helper.
 final class VPNSettingsManager {
     static let root = "/data/zte-vpn"
-    static let launcherHash = "543e15fd4bb2d07bcabbe6b51a5516b01384376b53d5c48453e0196c53b4ce99"
+    static let launcherHash = "d805fbcf509709456deb6134b1dc9e072f235078ee22c32d968d4f80940243b6"
     static let agentHash = BundledAgent.sha256
-    static let dashboardIndexHash = "7cf016704c40a75ca35bddc3979703fbaa08f6362c3ef7024f2f9d026d4cc82f"
-    static let helperHash = "dbf07f7551415816a66ac18148d45c582649c76529282902533d154f5299c58e"
+    static let dashboardIndexHash = "83ededf247c1c913d671a8068907e04f351f248613627d13aec28e0de6fd3faf"
+    static let helperHash = "cbcdb1ce6b5a94f7a5868c81f1dd920831e68074fcf3c1588148b5d33b954ba8"
     // Exact previously shipped controllers may serve read-only status before upgrade.
     // Mutations continue to require the current controller hash.
     static let supportedStatusHashes: Set<String> = [
         helperHash,
+        "dbf07f7551415816a66ac18148d45c582649c76529282902533d154f5299c58e",
         "46257e8e24397f097b3ce3e53067ad59b265803f66aeb2da6d216b05dd2e5db7",
         "61ccaf5fa0361178dd6fe4a0104d964168f4f79a8453a8617a80a7403240d393",
         "4e8b92cc5089200f3fced24130e47e0918bf8931989af034f709344a42cd5b0d",

@@ -45,7 +45,7 @@ public sealed partial class MainWindow : Window
         new("Приложения", "Установленные пакеты и каталог", "▦", ["Установлено", "Каталог", "Terminal"]),
         new("Администрирование", "Доступы, бэкапы и журнал", "⚙", ["Доступы", "Бэкапы", "Журнал действий"]),
         new("О модеме", "Устройство и память", "ⓘ", ["Об устройстве", "Память"]),
-        new("eSIM", "Профили физической eUICC", "▣", ["Профили"]),
+        new("eSIM", "eUICC вместо eSIM", "▣", ["Профили"]),
     ];
 
     private static readonly IBrush Canvas = Brush("#081528");
@@ -99,7 +99,7 @@ public sealed partial class MainWindow : Window
     public MainWindow(IModemService service, bool persistPreferences = true)
     {
         _service = service;
-        Title = "ZTE U60Pro Manager";
+        Title = "ZTE U60Pro Internal eUICC";
         Width = 1220;
         Height = 860;
         MinWidth = 980;
@@ -118,7 +118,7 @@ public sealed partial class MainWindow : Window
         else brandRow.Children.Add(new TextBlock { Text = "▂▄▆█", Foreground = Accent, FontSize = 23, VerticalAlignment = VerticalAlignment.Center });
         var brandText = new StackPanel { Spacing = 3, VerticalAlignment = VerticalAlignment.Center };
         brandText.Children.Add(new TextBlock { Text = "ZTE U60Pro", Foreground = Foreground, FontSize = 19, FontWeight = FontWeight.Bold });
-        brandText.Children.Add(new TextBlock { Text = "MANAGER", Foreground = Secondary, FontSize = 11, LetterSpacing = 2 });
+        brandText.Children.Add(new TextBlock { Text = "INTERNAL eUICC", Foreground = Secondary, FontSize = 10, LetterSpacing = 1 });
         brandRow.Children.Add(brandText);
         brand.Children.Add(brandRow);
         sideLayout.Children.Add(brand);
@@ -1504,7 +1504,7 @@ public sealed partial class MainWindow : Window
         var dialog = new Window { Title = Localization.Translate("О программе"), Width = 580, Height = 395,
             CanResize = false, Background = Surface, WindowStartupLocation = WindowStartupLocation.CenterOwner };
         var panel = new StackPanel { Margin = new Thickness(28), Spacing = 15 };
-        panel.Children.Add(new TextBlock { Text = "ZTE U60Pro Manager", Foreground = Foreground, FontSize = 25, FontWeight = FontWeight.Bold });
+        panel.Children.Add(new TextBlock { Text = "ZTE U60Pro Internal eUICC", Foreground = Foreground, FontSize = 25, FontWeight = FontWeight.Bold });
         panel.Children.Add(Muted("Windows x64 · " + PublicVersion(System.Reflection.CustomAttributeExtensions.GetCustomAttribute<System.Reflection.AssemblyInformationalVersionAttribute>(typeof(MainWindow).Assembly)?.InformationalVersion, typeof(MainWindow).Assembly.GetName().Version)));
         var attribution = new WrapPanel { Orientation = Orientation.Horizontal };
         Button LinkButton(string title, string url)
@@ -1536,7 +1536,7 @@ public sealed partial class MainWindow : Window
         var github = LinkButton("GitHub ↗", "https://github.com/SadykovIV/ZTE_U60Pro");
         github.HorizontalAlignment = HorizontalAlignment.Left;
         panel.Children.Add(github);
-        panel.Children.Add(Muted("Настройки подключения и резервные копии сохраняются в существующем профиле ZTE IMEI Studio."));
+        panel.Children.Add(Muted("Настройки подключения и резервные копии сохраняются в отдельном профиле ZTE U60Pro Internal eUICC."));
         var close = new Button { Content = Localization.Translate("Закрыть"), HorizontalAlignment = HorizontalAlignment.Right, Background = Accent, Foreground = Brushes.White, CornerRadius = new CornerRadius(8), Padding = new Thickness(15, 8) };
         close.Click += (_, _) => dialog.Close();
         panel.Children.Add(close);

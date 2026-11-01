@@ -262,7 +262,7 @@ public sealed partial class DeviceFeatureService
             var hash = match.Groups[1].Value;
             var bytes = await _shell.DownloadAsync(remoteArchive, TimeSpan.FromSeconds(180), ct);
             Check(bytes.LongLength == size && Sha(bytes) == hash, "Резервная копия SSClash повреждена при передаче; удаление остановлено.");
-            recoveryDirectory ??= Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ZteImeiStudio", "SsclashBackups");
+            recoveryDirectory ??= Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ZTE U60Pro Internal eUICC", "SsclashBackups");
             Directory.CreateDirectory(recoveryDirectory);
             var localArchive = Path.Combine(recoveryDirectory, "ssclash-" + id + ".tar.gz");
             await using (var file = new FileStream(localArchive, FileMode.CreateNew, FileAccess.Write, FileShare.None, 65536, FileOptions.WriteThrough))

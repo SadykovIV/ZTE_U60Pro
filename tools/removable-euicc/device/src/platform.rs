@@ -14,14 +14,14 @@ impl Device for RealDevice {
 }
 impl CardIo for UimClient {
     fn guard(&mut self) -> Result<()> {
-        self.selected_physical_slot1()
+        self.selected_physical_target()
             .map_err(|_| "selection_mismatch")
     }
     fn open(&mut self) -> std::result::Result<u8, OpenChannelError> {
         self.open_logical_channel()
     }
     fn ordinary_ready(&mut self) -> Result<bool> {
-        self.slot1_ready().map_err(|_| "card_not_ready")
+        self.target_ready().map_err(|_| "card_not_ready")
     }
     fn close(&mut self, channel: u8) -> Result<()> {
         self.close_logical_channel(channel)

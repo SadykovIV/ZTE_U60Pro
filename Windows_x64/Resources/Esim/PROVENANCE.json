@@ -1,10 +1,10 @@
 {
-  "agent_version": "2.9.0-esim.14",
-  "agent_sha256": "fd5babee29e63366fb743c76c72f2a29eec47377ccda32659a85ce6e5effd959",
+  "agent_version": "2.10.0-internal.1",
+  "agent_sha256": "2ec45ff1e10ceed0029de9b77740c95185b19b4d068a9153555ade0686babd3e",
   "lpac_version": "2.3.0 + pinned stdio backports",
   "lpac_commit": "c2fcf5e4b21c712d54e35a11da2ad9ad134fb821",
   "lpac_linux_sha256": "32e7ff567cc38ff3522a02f71c0b9d4df2d5c745dbe664ee94655d737fdef478",
-  "qmi_bridge_sha256": "420049450020763a2c969710b50e2b3b9f792ef190d60f680912af62f9df1530",
+  "qmi_bridge_sha256": "37bc21f6384a8ef3becd83a31cac4f7d2fbd0c0ebdaf5b944197e63932408e89",
   "qmi_component": {
     "component": "QMI/ES10 transport",
     "license_status": "license_unspecified",
@@ -28,8 +28,8 @@
       },
       {
         "path": "tools/removable-euicc/device/src/qmi/uim.rs",
-        "sha256": "b7635056a72a1f79494a97b148a75b482a09777394d5b432e2962da973a046c3",
-        "size": 19828
+        "sha256": "ff72bb5382afebba2f9c1c0140ba93bd41e142f8dd5c5fefe093094a6602698e",
+        "size": 21444
       },
       {
         "path": "tools/removable-euicc/device/src/euicc/bertlv.rs",
@@ -53,7 +53,7 @@
       }
     ]
   },
-  "qmi_component_manifest_sha256": "0e7691fdbede6f9dd37183c5358bb1aca914d2e4365148fef532ee4b79830faa",
+  "qmi_component_manifest_sha256": "e9d2567f7b1f9904344a451b9ec8eae0885a4cb18936054825ae80fb3d2156d5",
   "license_status": {
     "qmi_es10": "license_unspecified"
   },
@@ -62,8 +62,8 @@
     "source_ref": "da091fb7e6af804b81d51b913c20eb848303982e",
     "sha256": "29c00a9cc4bd76f5190141be668230acf00ad008871fad72a200e17f40d4883b"
   },
-  "source_archive_files": 514,
-  "source_archive_sha256": "c236aedbf3333cd3f8b161f7f695893b248e07edfcf6a94ffa608e3b3b284563",
+  "source_archive_files": 520,
+  "source_archive_sha256": "8689d9bdaf4c6109fdc531e9ca17ed060afba71b3f421adb0d16881dceaeac8e",
   "gsma_pem_sha256": "7364a2ac4d2b5f77c1b83ee7e1c535e8fc806c67ee42e73ad97c35464d203477",
   "gsma_roots": [
     {
@@ -83,6 +83,8 @@
       "production": true
     }
   ],
-  "scope": "physical removable eUICC; 9eSIM V0; MU5250 B31; SSH",
+  "scope": "replacement internal eUICC; physical2/logical2; MU5250; SSH; hardware unverified",
+  "target": "internal-euicc-slot2",
+  "hardware_tested": false,
   "profile_mutations_hardware_tested_in_desktop_release": false
 }

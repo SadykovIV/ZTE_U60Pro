@@ -14,7 +14,7 @@ public static class EsimDiagnostics
         "http_tls_failed", "http_dns_failed", "http_timeout", "http_connection_failed", "http_response_too_large", "http_cancelled",
         "card_not_euicc", "card_busy", "card_open_rejected", "card_cleanup_unknown", "card_not_ready", "snapshot_failed",
         "card_reset_failed", "card_power_restore_failed",
-        "esim_busy", "operation_lock_failed", "launcher_operation_refused", "radio_read_failed", "radio_not_online", "radio_set_failed", "radio_offline_failed", "radio_restore_failed", "modem_readback_failed", "modem_slot_mismatch", "modem_iccid_mismatch",
+        "esim_busy", "operation_lock_failed", "launcher_operation_refused", "radio_read_failed", "radio_not_online", "radio_set_failed", "radio_offline_failed", "radio_restore_failed", "modem_readback_failed", "modem_slot_mismatch", "esim_slot_not_selected", "modem_iccid_mismatch",
         "bridge_already_open", "bridge_cleanup_failed", "bridge_missing", "card_changed", "component_already_closed", "component_closed", "component_eof", "component_exit_failed", "component_start_failed",
         "delete_confirmation_required", "firmware_check_failed", "http_destination_refused", "http_failed", "http_id_exhausted", "http_reply_missing", "http_unavailable", "invalid_activation_code", "invalid_apdu_reply", "invalid_arguments", "invalid_confirmation_code", "invalid_http_reply", "invalid_http_request", "invalid_json", "invalid_lpac_message", "invalid_lpac_result", "invalid_notifications", "invalid_output", "invalid_request", "invalid_snapshot", "job_deadline_exceeded", "job_message_limit", "job_start_failed", "lpac_failed", "lpac_result_missing", "message_too_large", "multiple_lpac_results", "notification_cleanup_failed", "postcondition_failed", "profile_not_disabled", "profile_not_found", "request_missing", "resource_cleanup_failed", "resource_integrity_failed", "resource_ownership_changed", "snapshot_changed", "snapshot_cleanup_failed", "snapshot_missing", "snapshot_required", "stream_read_failed", "stream_write_failed", "temporary_resource_failed", "unexpected_component_output", "unsupported_device", "unsupported_firmware", "unsupported_protocol", "unterminated_message"
     ];
@@ -75,6 +75,7 @@ public static class EsimDiagnostics
     public static string? SafeComponentError(string? code) => code is not null && ComponentErrors.Contains(code) ? code : null;
     public static string FailureMessage(string? code) => SafeError(code) switch
     {
+        "esim_slot_not_selected" => "Для переключения профиля выберите eSIM в штатном меню выбора SIM модема, затем перечитайте профили. Физический SIM-слот автоматически не переключался.",
         "card_busy" => "Карта занята другой операцией. Дождитесь её завершения и перечитайте профили.",
         "card_open_rejected" => "Модем отказал в открытии канала карты. Немного подождите и перечитайте профили. Операция с профилем не повторялась.",
         "card_cleanup_unknown" => "Закрытие канала карты не подтверждено. Перед повторной попыткой перезагрузите модем и перечитайте профили. Не удаляйте блокировку карты вручную.",
