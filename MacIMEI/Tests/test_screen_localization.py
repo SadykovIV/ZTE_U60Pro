@@ -19,6 +19,7 @@ import unittest
 
 REPO = Path(__file__).resolve().parents[2]
 RES = REPO / "MacIMEI/Resources/ScreenLocalization"
+CURRENT_REVISION = json.loads((RES / "provenance.json").read_text())["revision"]
 EVIDENCE = Path(os.environ.get("ZTE_SCREEN_EVIDENCE", str(REPO.parents[1] / "evidence")))
 CID = "0123456789abcdef0123456789abcdef"
 TOKEN = "11111111-2222-3333-4444-555555555555"
@@ -506,7 +507,7 @@ class ScreenLocalizationTests(unittest.TestCase):
             (self.stage / name).write_bytes((RES / name).read_bytes())
         result = self.install()
         self.assert_success(result)
-        self.assertIn("revision=20261030", result.stdout)
+        self.assertIn(f"revision={CURRENT_REVISION}", result.stdout.split())
         self.assertEqual(before, {p.name:p.read_bytes() for p in (self.installed / "backup").iterdir()})
         self.assertIn("WiFi с VPN", (self.installed / "Chinese.ini").read_text())
         self.assertEqual(self.language(), "cn")
@@ -527,7 +528,7 @@ class ScreenLocalizationTests(unittest.TestCase):
             (self.stage / name).write_bytes((RES / name).read_bytes())
         result = self.install()
         self.assert_success(result)
-        self.assertIn("revision=20261030", result.stdout)
+        self.assertIn(f"revision={CURRENT_REVISION}", result.stdout.split())
         self.assertIn("WiFi с VPN", (self.installed / "Chinese.ini").read_text())
         self.assertEqual(before, {p.name:p.read_bytes() for p in (self.installed / "backup").iterdir()})
         self.assert_success(self.manager("disable"))
