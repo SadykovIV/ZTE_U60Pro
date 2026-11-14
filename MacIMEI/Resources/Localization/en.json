@@ -1192,5 +1192,13 @@
   "Отметить все показанные": "Select all shown",
   "Снять отметки с показанных": "Deselect all shown",
   "Удалить отмеченные профили? Если среди них есть активный, Wi-Fi с VPN отключится.": "Delete the selected profiles? If this includes the active profile, VPN Wi-Fi will turn off.",
-  "Удалить подписку и все её профили? Если среди них есть активный, Wi-Fi с VPN отключится.": "Delete this subscription and all its profiles? If this includes the active profile, VPN Wi-Fi will turn off."
+  "Удалить подписку и все её профили? Если среди них есть активный, Wi-Fi с VPN отключится.": "Delete this subscription and all its profiles? If this includes the active profile, VPN Wi-Fi will turn off.",
+  "Штатный экран отличается от сохранённой копии. Нажмите «Включить русский»: программа проверит текущие файлы и сохранит предыдущий комплект отдельно.": "The stock screen differs from the saved copy. Click Enable Russian to verify the current files and archive the previous package separately.",
+  "Системные компоненты не совпали с проверенными профилями VPN. Соберите полный дамп для адаптации.": "System components do not match a verified VPN profile. Collect a full dump for adaptation.",
+  "Компоненты роутера не прошли проверку совместимости VPN. Соберите полный дамп.": "Router components failed VPN compatibility checks. Collect a full dump.",
+  "Не распознаны компоненты ускорения трафика IPA. Установка VPN остановлена; соберите полный дамп.": "IPA traffic acceleration components were not recognized. VPN installation stopped; collect a full dump.",
+  "Сетевой скрипт не совпадает с проверенным штатным вариантом. Установка VPN остановлена.": "The network script does not match the verified stock version. VPN installation stopped.",
+  "Схема Wi-Fi или настройки IPA не соответствуют адаптеру VPN. Соберите полный дамп.": "The Wi-Fi layout or IPA settings do not match the VPN adapter. Collect a full dump.",
+  "Интерфейс управления сетью не поддерживает необходимые операции VPN. Соберите полный дамп.": "The network management interface lacks the operations required by VPN. Collect a full dump.",
+  "VPN требует Linux ARM64 и права root.": "VPN requires Linux ARM64 and root privileges."
 }
