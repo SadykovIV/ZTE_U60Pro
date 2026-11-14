@@ -20,6 +20,7 @@ import tempfile
 import unittest
 
 REPO = Path(__file__).resolve().parents[2]
+RUN_ROOT = None  # unittest discovery uses the system temporary directory.
 SOURCE = REPO / "MacIMEI/Resources/FirmwareSupport/collect.sh"
 REQUIRED = {
     "ui": "/usr/bin/zte_topsw_devui", "english": "/usr/ui/language/English.ini",

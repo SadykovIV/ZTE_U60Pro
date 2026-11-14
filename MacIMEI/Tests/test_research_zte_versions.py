@@ -74,11 +74,11 @@ class ZteVersionProbeTests(unittest.TestCase):
             self.assertEqual(calls.read_text().splitlines() if calls.exists() else [], [] if missing else ["device_info"])
             return dict(line[len("FR_FACT "):].split("=", 1) for line in stdout.splitlines() if line.startswith("FR_FACT "))
 
-    def test_mirrors_revision_and_count(self):
+    def test_release_probe_is_present_once_in_both_mirrors(self):
         self.assertEqual(SPEC.read_bytes(), (MAC.parent / "Windows_x64/Resources/FirmwareResearch/probes.json").read_bytes())
         spec = json.loads(SPEC.read_text())
-        self.assertEqual(spec["revision"], 12)
-        self.assertEqual(len(spec["probes"]), 57)
+        self.assertGreaterEqual(spec["revision"], 12)
+        self.assertEqual(sum(p["id"] == "release" for p in spec["probes"]), 1)
 
     def test_versions_only_secrets_and_stderr_never_exported(self):
         result = self.run_probe({"integrate_version": "CN_ZTE_MU5250V1.0.0B99", "wa_inner_version": "BD_CNMU5250V1.0.0B99", "imei": SECRET, "password": SECRET, "model": SECRET})

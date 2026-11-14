@@ -525,7 +525,11 @@ class ComponentProbes(unittest.TestCase):
                 self.assertEqual([(r['probe'],r['fact'],r['equals']) for r in b27],[('ipa-runtime','ipacm_sha256','a843789933a0b5747927583021c1480957ea942626cab17cb13ad415d1dfd3ae')])
                 feature['requirements']=[r for r in feature['requirements'] if r.get('profiles')!=['b27']]
             if feature['id']=='physical-euicc':
-                feature['limitations']={k:v.replace('B27/','') for k,v in feature['limitations'].items()}
+                # Release 1.29 added slot-2 eUICC instructions to the display
+                # text. Compare those separately from the older access rules.
+                unified=json.loads(subprocess.check_output(['git','show','v1.29:MacIMEI/Resources/FirmwareResearch/probes.json'],cwd=REPO))
+                self.assertEqual(feature['limitations'],next(f['limitations'] for f in unified['features'] if f['id']=='physical-euicc'))
+                feature['limitations']=next(f['limitations'] for f in released['features'] if f['id']=='physical-euicc')
         self.assertEqual(previous_features,released['features'])
         self.assertEqual(s['revision'],15);self.assertEqual(len(s['probes']),58)
         self.assertLessEqual(len(s['probes']),64);self.assertEqual(len({p['id'] for p in s['probes']}),58)
