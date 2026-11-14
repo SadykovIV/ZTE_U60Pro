@@ -17,6 +17,7 @@ parser.add_argument('--output-dir', type=Path, default=ROOT / 'release')
 parser.add_argument('--previous-release', required=True)
 parser.add_argument('--build-source-commit', required=True)
 parser.add_argument('--local-only', action='store_true', help='Package an unpublished variant without a release download URL')
+parser.add_argument('--apps-and-agent', action='store_true', help='Package just the two desktop ZIPs and the complete agent. Sources are provided by the Git tag.')
 args = parser.parse_args()
 if re.fullmatch(r'v\d+\.\d+(?:\.\d+)?', args.previous_release) is None or re.fullmatch(r'[0-9a-f]{40}', args.build_source_commit) is None:
     raise SystemExit('Invalid previous release or build source commit')
@@ -195,16 +196,17 @@ def copy_artifact(source, name):
 # Refuse inconsistent or private inputs before creating any release output.
 if any(OUT.iterdir()):
     raise SystemExit('Release output must be empty; preserve previous artifacts in a separate directory')
-source_root = ROOT / '.cache/public-sources'
-for path in [source_root / 'SOURCES.json', source_root / 'SHA256SUMS',
-             ROOT / '.cache/mihomo-v1.19.31-source.tar.gz', ROOT / '.cache/opendoas-6.8.2.tar.xz']:
-    if not path.is_file():
-        raise SystemExit('Missing corresponding-source input: ' + path.name)
-for line in (source_root / 'SHA256SUMS').read_text().splitlines():
-    expected, name = line.split('  ', 1)
-    relative = Path(name)
-    if relative.is_absolute() or '..' in relative.parts or sha(source_root / relative) != expected:
-        raise SystemExit('Invalid corresponding-source input: ' + name)
+if not args.apps_and_agent:
+    source_root = ROOT / '.cache/public-sources'
+    for path in [source_root / 'SOURCES.json', source_root / 'SHA256SUMS',
+                 ROOT / '.cache/mihomo-v1.19.31-source.tar.gz', ROOT / '.cache/opendoas-6.8.2.tar.xz']:
+        if not path.is_file():
+            raise SystemExit('Missing corresponding-source input: ' + path.name)
+    for line in (source_root / 'SHA256SUMS').read_text().splitlines():
+        expected, name = line.split('  ', 1)
+        relative = Path(name)
+        if relative.is_absolute() or '..' in relative.parts or sha(source_root / relative) != expected:
+            raise SystemExit('Invalid corresponding-source input: ' + name)
 agent_hash = sha(RES / 'Onboarding/zte-agent')
 for app in ['MacIMEI', 'Windows_x64']:
     resources = ROOT / app / 'Resources'
@@ -235,9 +237,11 @@ artifacts.append(copy_artifact(ROOT / f'MacIMEI/dist/ZTE-U60Pro-Manager-{VERSION
                                desktop_names['macOS']))
 artifacts.append(copy_artifact(ROOT / f'Windows_x64/dist/ZTE-U60Pro-Manager-{VERSION}-Windows-x64-portable.zip',
                                desktop_names['Windows']))
-agent = copy_artifact(RES / 'Onboarding/zte-agent', f'zte-agent-{AGENT_VERSION}-aarch64-linux-musl')
-agent.chmod(0o755)
-artifacts.append(agent)
+agent = RES / 'Onboarding/zte-agent'
+if not args.apps_and_agent:
+    agent = copy_artifact(agent, f'zte-agent-{AGENT_VERSION}-aarch64-linux-musl')
+    agent.chmod(0o755)
+    artifacts.append(agent)
 entries = {'zte-agent': agent, 'README.md': ROOT / 'docs/AGENT-PACKAGE.md',
            f'RELEASE-{VERSION}.md': ROOT / f'docs/RELEASE-{VERSION}.md',
            'LICENSE': ROOT / 'ModemAgent/LICENSE', 'THIRD_PARTY_NOTICES.md': ROOT / 'THIRD_PARTY_NOTICES.md', 'LICENSE-SCOPE.md': ROOT / 'LICENSE-SCOPE.md'}
@@ -252,6 +256,10 @@ agent_archive = OUT / f'ZTE-Agent-{AGENT_VERSION}-aarch64-linux-musl.tar.gz'
 tar_gz(agent_archive, entries)
 manifest.unlink()
 artifacts.append(agent_archive)
+if args.apps_and_agent:
+    for artifact in artifacts:
+        print(sha(artifact), artifact.name)
+    raise SystemExit(0)
 
 # Explicit allowlist: runtime dependencies and generated modem payloads allow a
 # Windows-only checkout to build without macOS or an ARM64 cross compiler.

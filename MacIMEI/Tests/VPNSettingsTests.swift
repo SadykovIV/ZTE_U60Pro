@@ -80,7 +80,7 @@ private final class Remote: RemoteTransport {
                     payload["ssid"] = request["ssid"]; payload["ssid_2g"] = bad2GReceipt ? "Old 2G name" : request["ssid"]; payload["ssid_5g"] = request["ssid"]
                 }
                 if enabledReceipt { payload["enabled"] = true }
-            } else if let action, ["save_ikev2", "import", "import_config", "subscription_import", "subscription_update", "subscription_delete", "activate", "rename", "delete", "set_enabled"].contains(action) {
+            } else if let action, ["save_ikev2", "import", "import_config", "subscription_import", "subscription_update", "subscription_delete", "activate", "rename", "delete", "delete_profiles", "set_enabled"].contains(action) {
                 try check(!locked, "Desktop took the lock owned by vpnctl")
                 try check(command.contains(cid) && command.contains(boot), "Profile request omitted target guard")
                 try check(request["lock_token"] == nil, "Unexpected borrowed lock token")
@@ -101,9 +101,17 @@ private final class Remote: RemoteTransport {
                     case "subscription_update":
                         for i in profiles.indices { profiles[i]["update_available"] = true }
                         payload["last_import"] = ["added": 0, "updated": 1, "removed": 0, "duplicates": 0, "retained_active": 1, "skipped": []]
-                    case "subscription_delete":
-                        payload["subscriptions"] = []
-                        for i in profiles.indices { profiles[i].removeValue(forKey: "subscription_id") }
+                    case "subscription_delete", "delete_profiles":
+                        var ids = Set(request["ids"] as? [String] ?? [])
+                        if action == "subscription_delete" {
+                            try check(request["cascade"] as? Bool == true, "Missing cascade confirmation")
+                            payload["subscriptions"] = (payload["subscriptions"] as? [[String:Any]] ?? []).filter { $0["id"] as? String != id }
+                            ids = Set(profiles.filter { $0["subscription_id"] as? String == id }.compactMap { $0["id"] as? String })
+                        }
+                        profiles.removeAll { ids.contains($0["id"] as? String ?? "") }
+                        if ids.contains(payload["active_profile"] as? String ?? "") {
+                            payload["active_profile"] = ""; payload["enabled"] = false
+                        }
                     case "rename": for i in profiles.indices where profiles[i]["id"] as? String == id { profiles[i]["name"] = request["name"] }
                     case "activate":
                         for i in profiles.indices { profiles[i]["active"] = profiles[i]["id"] as? String == id }
@@ -239,7 +247,7 @@ private final class Fixture {
         }
         try test("Fresh installer failures report exact phases without private output") {
             func result(_ stderr: String, _ exit: Int32 = 1) -> CommandResult { .init(status: exit, stdout: Data(), stderr: Data(stderr.utf8)) }
-            for code in ["INVALID_STAGE", "PLATFORM", "UNSAFE_STAGE", "ALREADY_PRESENT", "UNSUPPORTED_FIRMWARE", "RUNTIME_TOOLS", "TUN_UNAVAILABLE", "LUA_MODULES", "NO_SPACE", "PAYLOAD", "WRITE", "INTEGRITY", "SERVICE"] {
+            for code in ["INVALID_STAGE", "PLATFORM", "UNSAFE_STAGE", "ALREADY_PRESENT", "UNSUPPORTED_FIRMWARE", "COMPATIBILITY", "IPA_UNSUPPORTED", "NETWORK_CHANGED", "WIFI_LAYOUT", "RPC_UNSUPPORTED", "RUNTIME_TOOLS", "TUN_UNAVAILABLE", "LUA_MODULES", "NO_SPACE", "PAYLOAD", "WRITE", "INTEGRITY", "SERVICE"] {
                 let message = VPNSettingsManager.installFailure(result("private-canary\nVPN_INSTALL_ERROR " + code + "\n"))
                 try check(message?.contains("VPN_INSTALL_" + code) == true && message?.contains("private-canary") == false, "Installer error or privacy lost")
             }
@@ -254,6 +262,12 @@ private final class Fixture {
             let result = try f.configure(VPNWiFiConfiguration(ssid: "Synthetic", passwordMode: .main))
             try check(result.status.desiredSsid == "Synthetic" && f.remote.requests.contains { $0["action"] as? String == "configure_wifi" }, "B28 configuration blocked before controller")
         }
+        try test("CN B29 reaches the pinned VPN controller without granting global firmware capabilities") {
+            let f = try Fixture()
+            f.remote.firmware = "33c09756e2b27511d0d36ffef6aeeb72732de756935e067d4571dfb8de8c3636"
+            let result = try f.configure(VPNWiFiConfiguration(ssid: "Synthetic B29", passwordMode: .main))
+            try check(result.status.desiredSsid == "Synthetic B29" && f.remote.identityCalls > 0, "B29 bypassed identity or could not reach component policy")
+        }
         try test("B04 without modem.b16 reaches the component controller with measured access identity") {
             let f = try Fixture()
             f.remote.firmware = "absent"
@@ -263,7 +277,7 @@ private final class Fixture {
         }
         try test("Upgrade errors expose only fixed causes and keep uncertain transport distinct") {
             func result(_ stderr: String, _ exit: Int32 = 1) -> CommandResult { .init(status: exit, stdout: Data(), stderr: Data(stderr.utf8)) }
-            let codes = ["INVALID_STAGE", "UNSAFE_LAYOUT", "PAYLOAD", "VPN_PENDING", "SCREEN_BUSY", "CONTROLLER_UNKNOWN", "OLD_INTEGRITY", "DEVICE_CHANGED", "NETWORK_CHANGED", "SERVICE_CHANGED", "STARTUP_CHANGED", "STATE_UNSAFE", "SNAPSHOT", "WRITE", "NEW_INTEGRITY", "VERIFY", "RECOVERY_REQUIRED", "ROLLBACK_UNKNOWN"]
+            let codes = ["INVALID_STAGE", "UNSAFE_LAYOUT", "PAYLOAD", "VPN_PENDING", "SCREEN_BUSY", "CONTROLLER_UNKNOWN", "COMPATIBILITY", "OLD_INTEGRITY", "DEVICE_CHANGED", "NETWORK_CHANGED", "SERVICE_CHANGED", "STARTUP_CHANGED", "STATE_UNSAFE", "SNAPSHOT", "WRITE", "NEW_INTEGRITY", "VERIFY", "RECOVERY_REQUIRED", "ROLLBACK_UNKNOWN"]
             for code in codes {
                 let message = VPNSettingsManager.upgradeFailure(result("private-canary\nVPN_UPGRADE_ERROR " + code + "\n"))
                 try check(message?.contains("VPN_UPGRADE_" + code) == true && message?.contains("private-canary") == false, "Known upgrade error or privacy lost")
@@ -592,10 +606,12 @@ private final class Fixture {
             _ = try run(.activate(imported.profiles[1].id))
             let updated = try run(.updateSubscription(sid, documents: ["UPDATED_CANARY"]))
             try check(updated.enabled && updated.activeProfile == imported.profiles[1].id && updated.profiles[1].updateAvailable == true, "Refresh changed active connection or lost update badge")
-            let detached = try run(.deleteSubscription(sid))
-            try check(detached.profiles.count == 2 && detached.profiles.allSatisfy { $0.subscriptionId == nil }, "Detach removed profiles")
             let url = try f.engine.locked { try f.manager.subscriptionURL(sid) }
             try check(url.hasSuffix("private-subscription-token"), "Private URL response not decoded")
+            let deleted = try run(.deleteSubscription(sid))
+            try check(deleted.profiles.map(\.id) == configured.profiles.map(\.id) && deleted.activeProfile.isEmpty && !deleted.enabled, "Cascade dropped an unrelated profile or left the VPN running")
+            let empty = try run(.deleteProfiles(deleted.profiles.map(\.id)))
+            try check(empty.profiles.isEmpty && f.remote.requests.filter { $0["action"] as? String == "delete_profiles" }.count == 1, "Expected one bulk request")
             for secret in ["CONFIG_CANARY", "TOKEN_CANARY", "DOCUMENT_CANARY", "UPDATED_CANARY", "private-subscription-token"] {
                 try check(!f.remote.commands.joined().contains(secret), "Private import content leaked into command")
             }

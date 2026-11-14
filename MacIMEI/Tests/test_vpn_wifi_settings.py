@@ -11,6 +11,11 @@ local function equal(a,b) if type(a)~=type(b) then return false end if type(a)~=
 local db,backup,prefs,bytes,status,commits,errors,writes,pending
 local function fresh(configured)
  db={wireless={main_5g={kind='wifi-iface',ssid='Primary Five',key='main-five-secret',encryption='sae-mixed',ieee80211w='1',sae='1'},main_2g={kind='wifi-iface',ssid='Primary Two',key='main-two-secret',encryption='psk2'},guest_2g={kind='wifi-iface',ssid='Existing24',key='old-two-password',encryption='psk2',disabled='1',network=configured and 'vpn' or 'guest',bridge=configured and 'br-vpn' or 'br-guest'},guest_5g={kind='wifi-iface',ssid='Existing5',key='old-five-password',encryption='sae-mixed',disabled='1',network=configured and 'vpn' or 'guest',bridge=configured and 'br-vpn' or 'br-guest'},zte_mbb={mesh_onoff='0'}},network={},firewall={}}
+ db.wireless.wifi0={kind='wifi-device'};db.wireless.wifi1={kind='wifi-device'}
+ for _,spec in ipairs({{'main_2g','wlan0','wifi0'},{'guest_2g','wlan1','wifi0'},{'main_5g','wlan2','wifi1'},{'guest_5g','wlan3','wifi1'}})do
+  local item=db.wireless[spec[1]];item.ifname=spec[2];item.device=spec[3];item.mode='ap';item.disabled=item.disabled or '0'
+ end
+ db.zwrt_router={other={kind='zudata_other'},tmp_router={kind='ztmp_router',close_ipa_acce='0'}}
  backup=copy(db);prefs=nil;bytes=nil;status=nil;commits={};errors='';writes=0;pending=false
 end
 package.preload['uci']=function() return {cursor=function(path)
@@ -33,6 +38,19 @@ os.execute=function()error('Shell execution is forbidden in fixture')end
 local function run(mode) arg={mode};return pcall(dofile,source)end
 local count=0
 local function check(name,fn)fresh(true);fn();count=count+1;print('PASS '..name)end
+check('captured CN B29 UCI shape passes read-only adapter preflight',function()
+ fresh(false);db.wireless.guest_2g.network='lan';db.wireless.guest_2g.bridge=nil;db.wireless.guest_5g.network='lan';db.wireless.guest_5g.bridge=nil
+ local before=copy(db);assert(run('preflight'));assert(equal(db,before) and writes==0 and #commits==0)
+end)
+check('changed device port mode and IPA schema refuse without mutation',function()
+ for _,spec in ipairs({{'wireless','guest_5g','ifname','wlan2'},{'wireless','main_2g','mode','sta'},
+  {'wireless','guest_2g','device','missing'},{'wireless','guest_2g','disabled','bad'},
+  {'wireless','zte_mbb','mesh_onoff','1'},{'zwrt_router','other','kind','unknown'},
+  {'zwrt_router','tmp_router','close_ipa_acce','bad'}})do
+  fresh(false);db[spec[1]][spec[2]][spec[3]]=spec[4];local before=copy(db)
+  assert(not run('preflight'));assert(equal(db,before) and writes==0 and #commits==0)
+ end
+end)
 check('status reports both actual guest SSIDs without mutation or secrets',function()
  local before=copy(db);prefs={ssid='Pending Name',password_mode='custom',password='never-in-status'}
  assert(run('status'));assert(status.ssid=='Existing5' and status.ssid_2g=='Existing24' and status.ssid_5g=='Existing5');assert(status.main_ssid=='Primary Five');assert(not status.key and not status.password);assert(equal(db,before) and writes==0 and #commits==0)
@@ -152,5 +170,5 @@ class WifiLuaTests(unittest.TestCase):
    script=Path(temporary)/'test.lua';script.write_text(HARNESS)
    result=subprocess.run([LUA,str(script),str(ROOT/'Resources/VPN/configure.lua')],capture_output=True,text=True,timeout=20)
    print(result.stdout,end='');self.assertEqual(result.returncode,0,result.stdout+result.stderr)
-   self.assertIn('VPN_WIFI_LUA_RESULT checks=21 failures=0',result.stdout)
+   self.assertIn('VPN_WIFI_LUA_RESULT checks=23 failures=0',result.stdout)
 if __name__=='__main__':unittest.main()

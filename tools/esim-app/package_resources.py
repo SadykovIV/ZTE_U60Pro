@@ -15,8 +15,8 @@ ROOT = Path(__file__).resolve().parents[2]
 LPAC = ROOT / 'third_party/lpac'
 CERT = ROOT / 'tools/removable-euicc/certs/gsma-rsp-roots.pem'
 CERT_SHA = '7364a2ac4d2b5f77c1b83ee7e1c535e8fc806c67ee42e73ad97c35464d203477'
-BASELINE_REF = 'da091fb7e6af804b81d51b913c20eb848303982e'
-BASELINE_DEPENDENCIES_SHA = '29c00a9cc4bd76f5190141be668230acf00ad008871fad72a200e17f40d4883b'
+BASELINE_REF = '8ce1a853b7ddaafbc84e4227a37dab077e7989f4'
+BASELINE_DEPENDENCIES_SHA = '0337b3e6e9f2b4715554e3574f5e1a758ebeedc069a84606ee61b681892e8b4c'
 
 
 def sha(data):

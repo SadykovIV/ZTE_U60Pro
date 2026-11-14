@@ -3,12 +3,17 @@ import Foundation
 /// Exact agent shipped by automatic setup, the agent installer and VPN updates.
 /// Resource refresh must update these pins before packaging.
 enum BundledAgent {
-    static let version = "2.11.0"
-    static let sha256 = "10919284afa5c72fd1401fa7514d50e17e246cd3b29b54b899d6453493658c23"
-    static let dashboardInstallerSHA256 = "da4b3f27f0cafaeacb733a769c431a5be50be11489bf3bd19e80b6101b8d9dff"
+    static let version = "2.12.0"
+    static let sha256 = "cde0597c9595d6e5d97875976e6cce4ead450fd7771dafe1e4bb2e15441552cf"
+    static let dashboardInstallerSHA256 = "3950353079050fef378fe6ab0dfb2d2c8423063766c8f5b7f5f3745f23041984"
     // Exact released hashes verified against release records and the update path.
     // Keep this host check independent of shell source formatting.
     static let supportedUpgradeHashes: Set<String> = [sha256,
+        "d86af6dcfaffd7248056130157a084fcdc8c5dd080e2a8afe9b9179bb795a5b9",
+        "f216938ee8c0134c65d7b93b596a0cc98ba4b515b2f8ac83c8fc5e5633650dfb",
+        "14a13967eb95d8ec211a4d3f5bb67684592b86fdb4ff36f7e77d0a91337b374c",
+        "b7b7281a71dff7fb242b6e03e12f454bef5e2e60231e7fe90ad3d51426ef24d4",
+        "10919284afa5c72fd1401fa7514d50e17e246cd3b29b54b899d6453493658c23",
         "b8179aae6ede2c72808f351577aa3fd1cc457f04b18af56c82c30dae4b53d897",
         "2ec45ff1e10ceed0029de9b77740c95185b19b4d068a9153555ade0686babd3e",
         "fd5babee29e63366fb743c76c72f2a29eec47377ccda32659a85ce6e5effd959",
@@ -74,6 +79,7 @@ enum BundledAgent {
         case "be945c0a7181070aa69be3bb579a1e967a1cf147b2af2987f31ae5d242b10a66": return "2.7.0-esim.6 · eSIM, VPN, дисплей, RU/EN и TTL"
         case "e9f3e2170a7a2fa80a4836fd7d0db92c4aa119b4b8cceaa0907450123de29d19", "8ee8073b684613f358a5b857f7ed85ac165fc96f0d74980b04be006659ebea67": return "2.7.0-esim.8 · предыдущий агент"
         case sha256: return version + " · режим зависит от проверенных возможностей устройства"
+        case "10919284afa5c72fd1401fa7514d50e17e246cd3b29b54b899d6453493658c23": return "2.11.0 · предыдущий публичный агент"
         case "66c3fb83f3db5b194a39db563a453d421f6a4f3ccb9228cf360883ce2fed1629": return "2.7.0-esim.4 · eSIM, VPN, дисплей, RU/EN и TTL"
         case "52324f0c99f13a3445c08431f8b4ed15b468352f5b20709e3304cf4d32577b48": return "2.7.0-esim.3 · eSIM, VPN, дисплей, RU/EN и TTL"
         case "7cdddfbf529a0de70726cafbfacbd56d77286b001feb1efcf123ef323b07d433": return "2.7.0-esim.2 · eSIM, VPN, дисплей, RU/EN и TTL"

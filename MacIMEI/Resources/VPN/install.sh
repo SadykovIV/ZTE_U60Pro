@@ -4,6 +4,7 @@ umask 077
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 stage=${1:-}
 ROOT=/data/zte-vpn
+controller_sha=bfce3f936a7fa9303cdcc7b7f2312f009a7d99cc2d4d99ed12adad1326743244
 # Report the exact failed phase; never include device data or helper output.
 phase=INVALID_STAGE
 finish() {
@@ -21,34 +22,6 @@ phase=UNSAFE_STAGE
 phase=ALREADY_PRESENT
 [ ! -e "$ROOT" ] && [ ! -L "$ROOT" ] || exit 1
 [ ! -e /etc/init.d/zte_vpn ] && [ ! -L /etc/init.d/zte_vpn ] || exit 1
-phase=UNSUPPORTED_FIRMWARE
-# FLY public B11 / modem B27: measured native components, not the display version.
-b27_profile() {
-    for component in /firmware/image/modem.b16 /usr/bin/zte_topsw_mdm /usr/bin/diag-router; do
-        [ -f "$component" ] && [ ! -L "$component" ] && [ "$(stat -c %u "$component")" = 0 ] || return 1
-    done
-    [ "$(sha256sum /firmware/image/modem.b16 | awk '{print $1}')" = 4b1c67e73b94b889adc831168040d40ec368083dfbcec7ae747a2f4f86c66f3e ] &&
-    [ "$(sha256sum /usr/bin/zte_topsw_mdm | awk '{print $1}')" = 00a647cb46fa82a78969b3708c1429d91b37ef99c2c00835ac57ca53c126f25d ] &&
-    [ "$(sha256sum /usr/bin/diag-router | awk '{print $1}')" = 786ba99f5d506d01bbe72d9effa90d1a46f5929370f24ccabf6bab291e5a317f ]
-}
-# B04 captures include both an unavailable image and this measured modem.b16.
-# Native MDM/router identity remains required; startup needs no vendor RPC.
-b04_profile() {
-    if [ -e /firmware/image/modem.b16 ] || [ -L /firmware/image/modem.b16 ]; then
-        [ -f /firmware/image/modem.b16 ] && [ ! -L /firmware/image/modem.b16 ] || return 1
-        [ "$(sha256sum /firmware/image/modem.b16 2>/dev/null | awk '{print $1}')" = c57e063d390983229dfc53aa87380b3d4655ee8daa1c748e1a032ac90cd0df81 ] || return 1
-    fi
-    [ -f /usr/bin/zte_topsw_mdm ] && [ ! -L /usr/bin/zte_topsw_mdm ] || return 1
-    [ "$(sha256sum /usr/bin/zte_topsw_mdm 2>/dev/null | awk '{print $1}')" = 93a346e7d69024503caf9ad42f14c97e1514dd7d04c7b5ebef4e30473b5d5c64 ] &&
-    [ "$(sha256sum /usr/bin/diag-router 2>/dev/null | awk '{print $1}')" = 55c54f74aaa427940254a2f16c36771e675a80a002363e4f10b0dfcb604d9c6f ]
-}
-# Captured B31/B28 modem images, or the B04 userspace profile.
-case "$(sha256sum /firmware/image/modem.b16 2>/dev/null | awk '{print $1}')" in
-    604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263|5a4489882538b5ab1d3e0049371f1b620d28d262a429923299b4f2626d40d478) ;;
-    *) b04_profile || b27_profile || exit 1
-       # Verify the collected stock network hook before creating any files.
-       [ "$(sha256sum /etc/init.d/network | awk '{print $1}')" = 093e5461be5ea5d23d24522374a27b9a134c4932df3c89b3b756274f123ac508 ] || exit 1;;
-esac
 phase=RUNTIME_TOOLS
 for command in lua nft iptables ip6tables ebtables dnsmasq ip ubus sha256sum flock; do command -v "$command" >/dev/null; done
 phase=TUN_UNAVAILABLE
@@ -63,6 +36,29 @@ for name in vpnctl mihomo manager.sh firewall.sh configure.lua nft-guard.nft dns
     [ -f "$stage/$name" ] && [ ! -L "$stage/$name" ] && [ "$(stat -c %u "$stage/$name")" = 0 ] || exit 1
 done
 [ "$(sha256sum "$stage/mihomo" | awk '{print $1}')" = 1b315bc038d05f84ee86d232f3c3d2b020b5044e9b971bb8fe215b6e6a2148f3 ]
+# Authenticate the candidate before invoking its shared compatibility policy.
+[ "$(sha256sum "$stage/vpnctl" | awk '{print $1}')" = "$controller_sha" ]
+phase=CONTROLLER_EXECUTION
+chmod 700 "$stage/vpnctl"
+phase=COMPATIBILITY
+if reply=$("$stage/vpnctl" install-preflight); then :; else
+    case $? in 126|127) phase=CONTROLLER_EXECUTION; exit 1;; esac
+    case "$reply" in
+      *'"code":"VPN_UNSUPPORTED_FIRMWARE"'*) phase=UNSUPPORTED_FIRMWARE;;
+      *'"code":"VPN_IPA_UNSUPPORTED"'*) phase=IPA_UNSUPPORTED;;
+      *'"code":"VPN_NETWORK_INIT_CHANGED"'*) phase=NETWORK_CHANGED;;
+      *'"code":"VPN_UNSUPPORTED_PLATFORM"'*) phase=PLATFORM;;
+      *'"code":"VPN_INTEGRITY"'*) phase=PAYLOAD;;
+    esac
+    exit 1
+fi
+phase=WIFI_LAYOUT
+lua "$stage/configure.lua" preflight
+phase=RPC_UNSUPPORTED
+for object in zwrt_wlan network; do
+    rpc=$(ubus -t 5 -v list "$object")
+    printf '%s\n' "$rpc" | grep -Eq '^[[:space:]]*"reload":\{\}[[:space:]]*$'
+done
 phase=WRITE
 pending="$ROOT.install-${stage##*-install-}"
 [ ! -e "$pending" ] && [ ! -L "$pending" ] || exit 1

@@ -18,7 +18,7 @@ static class TtlProfileTests
     {
         var resources = Path.GetFullPath("Windows_x64/Resources");
         DeviceFeatureService Service(Fake f, string name) => new(f, resources, Path.Combine(root, name));
-        foreach (var firmware in new[] { "b28", "b31", "b04", "b04-image" })
+        foreach (var firmware in new[] { "b28", "b31", "b04", "b04-image", "b29" })
         {
             var f = new Fake { Firmware = firmware }; var service = Service(f, firmware);
             var before = await service.GetTtlStatusAsync();
@@ -48,7 +48,7 @@ static class TtlProfileTests
         Check(old.Upgrades == 1 && old.Outbound == 65 && old.Uploads == 4, "explicit Apply upgrades a70af before settings change");
         _ = await oldService.SetTtlAsync(66, 2);
         Check(old.Upgrades == 1 && old.Uploads == 4 && old.Outbound == 66, "current helper not replaced again");
-        foreach (var hash in new[] { "e4684cb0fa040de0525d0248897da01a5af2c4ee8509a851719afe9c970e9194", "a70afc13c3645f64b5fd937162e7d403e133bcfa0a2da0e565d39a693f9ab488", "79d5a2e696613f966fe2dff3fe59a0366455fe16681284c65d8ddb36c5e35b5a", Fake.PreviousManagerHash })
+        foreach (var hash in new[] { "4d17d08f6ded676cd0f696c4a839c398306bd6cfd916891a43218d56ca48e796", "e4684cb0fa040de0525d0248897da01a5af2c4ee8509a851719afe9c970e9194", "a70afc13c3645f64b5fd937162e7d403e133bcfa0a2da0e565d39a693f9ab488", "79d5a2e696613f966fe2dff3fe59a0366455fe16681284c65d8ddb36c5e35b5a", Fake.PreviousManagerHash })
         {
             var legacy = new Fake { Installed = true, ManagerHash = hash };
             var legacyService = Service(legacy, "legacy-" + hash[..8]);
@@ -87,7 +87,7 @@ static class TtlProfileTests
         const string Cid = "11111111111111111111111111111111", Boot = "11111111-1111-1111-1111-111111111111";
         static string Hash(byte[] b) => Convert.ToHexStringLower(SHA256.HashData(b));
         static RemoteResult Result(string s, int code = 0) => new(code, code == 0 ? Encoding.UTF8.GetBytes(s) : [], code == 0 ? [] : Encoding.UTF8.GetBytes(s));
-        string Identity() => (Firmware == "b31" ? DeviceFeatureService.FirmwareHash : Firmware == "b04" ? "absent" : Firmware == "b04-image" ? "c57e063d390983229dfc53aa87380b3d4655ee8daa1c748e1a032ac90cd0df81" : "5a4489882538b5ab1d3e0049371f1b620d28d262a429923299b4f2626d40d478") + "  /firmware/image/modem.b16\n" + DeviceFeatureService.RouterHash + "  /usr/bin/diag-router\n" + Cid + "\n" + (Drift && MeasuredReads > 1 ? "22222222-2222-2222-2222-222222222222" : Boot) + "\n";
+        string Identity() => (Firmware == "b29" ? "33c09756e2b27511d0d36ffef6aeeb72732de756935e067d4571dfb8de8c3636" : Firmware == "b31" ? DeviceFeatureService.FirmwareHash : Firmware == "b04" ? "absent" : Firmware == "b04-image" ? "c57e063d390983229dfc53aa87380b3d4655ee8daa1c748e1a032ac90cd0df81" : "5a4489882538b5ab1d3e0049371f1b620d28d262a429923299b4f2626d40d478") + "  /firmware/image/modem.b16\n" + DeviceFeatureService.RouterHash + "  /usr/bin/diag-router\n" + Cid + "\n" + (Drift && MeasuredReads > 1 ? "22222222-2222-2222-2222-222222222222" : Boot) + "\n";
         string Status() => "TTL_STATUS state=" + (Outbound == null && Inbound == null ? "disabled" : "configured") + " outbound=" + (Outbound?.ToString() ?? "off") + " inbound_inc=" + (Inbound?.ToString() ?? "off") + " capability=supported verification=" + (Outbound == null && Inbound == null ? "not-applicable" : "unverified") + " persistence=" + (Installed ? "boot" : "none") + "\n";
         public Task<RemoteResult> RunAsync(string command, byte[]? input = null, TimeSpan? timeout = null, CancellationToken ct = default)
         {

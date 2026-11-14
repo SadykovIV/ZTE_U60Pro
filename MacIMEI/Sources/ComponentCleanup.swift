@@ -155,6 +155,21 @@ final class ComponentCleanup {
         guard let text = String(data: bytes, encoding: .utf8), !text.contains("\0") else { throw IMEIError.message("Повреждён встроенный инструмент чистой установки") }
         return text
     }
+
+    private func body(_ template: String, for action: String) throws -> String {
+        guard action == "prepare" || action == "clean" else { return template }
+        let marker = "# ZTE_CLEANUP_VPN_PAYLOAD"
+        let folder = resources.appendingPathComponent("VPN")
+        let hashes = try readJSON([String: String].self, folder.appendingPathComponent("SHA256.json"))
+        var lines = [String]()
+        for name in ["vpnctl", "manager.sh", "configure.lua"] {
+            let bytes = try DeviceBackups.smallFile(folder.appendingPathComponent(name), maximum: 4 * 1024 * 1024, publicResource: true)
+            try require(!bytes.isEmpty && digest(bytes) == hashes[name], "Повреждены встроенные компоненты очистки VPN")
+            lines.append("base64 -d > \"$tools/" + name + ".new\" <<'ZTE_B64' || return 1\n" + bytes.base64EncodedString(options: [.lineLength76Characters, .endLineWithLineFeed]) + "\nZTE_B64")
+        }
+        try require(template.components(separatedBy: marker).count == 2, "Повреждён шаблон очистки VPN")
+        return template.replacingOccurrences(of: marker, with: lines.joined(separator: "\n"))
+    }
     static let errorCodes: Set<String> = [
         "ARCHIVE", "BACKUP_NOT_VERIFIED", "BUSY", "CHANGED", "IDENTITY", "LAYOUT", "MOUNT", "OWNER", "PATH", "PENDING",
         "PLATFORM", "PROCESS", "RECOVERY_REQUIRED", "SERVICE", "SNAPSHOT", "STARTUP", "STOP", "SYMLINK", "TRANSACTION",
@@ -221,10 +236,10 @@ final class ComponentCleanup {
         catch { }
         return message("PROTOCOL", action: "stream")
     }
-    private static func invoke(_ ssh: RemoteTransport, command: String, body: String, action: String) throws -> String {
+    private func invoke(_ ssh: RemoteTransport, command: String, body: String, action: String) throws -> String {
         do {
-            let reply = try ssh.run(command, input: Data(body.utf8), timeout: ["prepare", "status", "rebind"].contains(action) ? 300 : 180)
-            return try parseReply(reply, action: action)
+            let reply = try ssh.run(command, input: Data(try self.body(body, for: action).utf8), timeout: ["prepare", "status", "rebind"].contains(action) ? 300 : 180)
+            return try Self.parseReply(reply, action: action)
         } catch let failure as CommandFailure {
             throw ReplyFailure(action: action, code: failure.partial.status == -1 ? "TIMEOUT" : "TRANSPORT", outcomeUnknown: true)
         }
@@ -270,7 +285,7 @@ final class ComponentCleanup {
         let body = try source()
         let args = ["status", plan.transaction, plan.id, plan.cid, plan.bootID, plan.firmwareHash, plan.routerHash, UUID().uuidString.lowercased()]
         try bound()
-        let status = try Self.invoke(ssh, command: "sh -s -- " + args.map(shellQuote).joined(separator: " "), body: body, action: "status")
+        let status = try self.invoke(ssh, command: "sh -s -- " + args.map(shellQuote).joined(separator: " "), body: body, action: "status")
         if status == "CLEAN_ABSENT" || status == "CLEAN_INCOMPLETE" {
             try require(plan.phase == "prepared" && plan.archiveSha == nil, "Удалённая копия изменилась; журнал сохранён")
         } else {
@@ -338,7 +353,7 @@ final class ComponentCleanup {
                 try require(archive.sha256 == sha && archive.bytes == plan.archiveBytes, "Не подтверждена локальная копия завершённой очистки")
             }
             progress("Подтверждаю продолжение чистой установки после перезагрузки…", 0.89)
-            let receipt = try Self.invoke(ssh, command: command("rebind", plan.archiveSha ?? "none") + " " + shellQuote(observed.bootID), body: body, action: "rebind")
+            let receipt = try self.invoke(ssh, command: command("rebind", plan.archiveSha ?? "none") + " " + shellQuote(observed.bootID), body: body, action: "rebind")
             let fields = receipt.split(separator: " ")
             try require(fields[1] == observed.bootID && (plan.archiveSha == nil || (String(fields[2]) == plan.archiveSha && Int64(fields[3]) == plan.archiveBytes)), "Удалённый журнал очистки изменился; автоматическое продолжение остановлено")
             try DeviceBackups.checkCancelled(cancelled)
@@ -353,7 +368,7 @@ final class ComponentCleanup {
         }
         func invoke(_ action: String, hash: String? = nil) throws -> String {
             try bound()
-            let receipt = try Self.invoke(ssh, command: command(action, hash), body: body, action: action)
+            let receipt = try self.invoke(ssh, command: command(action, hash), body: body, action: action)
             try bound()
             return receipt
         }

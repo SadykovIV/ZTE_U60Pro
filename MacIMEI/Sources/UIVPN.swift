@@ -16,6 +16,7 @@ extension ContentView {
     @StudioState private var subscriptionName = ""
     @StudioState private var profileSearch = ""
     @StudioState private var selectedID = ""
+    @StudioState private var marked = Set<String>()
     @StudioState private var renameName = ""
     @StudioState private var inputError = ""
     @StudioState private var pending: VPNOperation?
@@ -46,12 +47,13 @@ extension ContentView {
             Button(L10n.text("Подтвердить")) { if let operation = pending { pending = nil; model.performVPNProfile(operation) } }
         } message: { Text(confirmationText) }
         .onChange(of: selectedID) { _ in renameName = selected?.name ?? "" }
+        .onChange(of: status?.profiles.map(\.id)) { ids in marked.formIntersection(ids ?? []) }
         .onChange(of: model.busy) { busy in
             if !busy { wifi.refresh(status); if selected == nil { selectedID = "" }; renameName = selected?.name ?? "" }
         }
         .onAppear { wifi.refresh(status) }
-        .onChange(of: model.host) { _ in ikev2 = VPNIKEv2Configuration(); ikev2ID = nil; ikev2Name = "UserGate" }
-        .onChange(of: model.connected) { connected in if !connected { ikev2 = VPNIKEv2Configuration(); ikev2ID = nil; ikev2Name = "UserGate" } }
+        .onChange(of: model.host) { _ in resetDeviceSelection() }
+        .onChange(of: model.connected) { connected in if !connected { resetDeviceSelection() } }
         .onDisappear { uri = ""; configuration = ""; subscriptionURL = ""; wifi.password = ""; wifi.confirmation = ""; ikev2.password = ""; pending = nil }
     }
 
@@ -87,8 +89,25 @@ extension ContentView {
                 }
                 if status.profiles.isEmpty { Text(L10n.text("Профили не добавлены")).foregroundStyle(StudioStyle.secondary) }
                 TextField(L10n.text("Поиск профилей"), text: $profileSearch).textFieldStyle(.roundedBorder)
-                ForEach(status.profiles.filter { profileSearch.isEmpty || $0.name.localizedCaseInsensitiveContains(profileSearch) || ($0.protocolName ?? "vless").localizedCaseInsensitiveContains(profileSearch) }) { profile in
+                let visible = status.profiles.filter { profileSearch.isEmpty || $0.name.localizedCaseInsensitiveContains(profileSearch) || ($0.protocolName ?? "vless").localizedCaseInsensitiveContains(profileSearch) }
+                if !status.profiles.isEmpty {
+                    HStack {
+                        let visibleIDs = Set(visible.map(\.id))
+                        let allMarked = !visibleIDs.isEmpty && visibleIDs.isSubset(of: marked)
+                        Button(L10n.text(allMarked ? "Снять отметки с показанных" : "Отметить все показанные")) {
+                            if allMarked { marked.subtract(visibleIDs) } else { marked.formUnion(visibleIDs) }
+                        }.disabled(!ready || visible.isEmpty)
+                        Button(L10n.text("Удалить отмеченные") + " (\(marked.count))", role: .destructive) {
+                            confirm(.deleteProfiles(marked.sorted()), "Удалить отмеченные профили? Если среди них есть активный, Wi-Fi с VPN отключится.", count: marked.count)
+                        }.disabled(!ready || marked.isEmpty)
+                    }
+                }
+                ForEach(visible) { profile in
                     let warnings = profile.warnings.compactMap(VPNSettingsManager.warning)
+                    HStack {
+                    Toggle(isOn: Binding(get: { marked.contains(profile.id) }, set: { on in
+                        if on { marked.insert(profile.id) } else { marked.remove(profile.id) }
+                    })) { Text(profile.name) }.toggleStyle(.checkbox).labelsHidden().disabled(!ready)
                     Button { selectedID = profile.id } label: {
                         HStack {
                             Image(systemName: selectedID == profile.id ? "largecircle.fill.circle" : "circle")
@@ -106,6 +125,7 @@ extension ContentView {
                             if profile.active { Text(L10n.text("Активен")).foregroundStyle(StudioStyle.accent) }
                         }.padding(12).background(StudioStyle.canvas.opacity(0.65), in: RoundedRectangle(cornerRadius: 9))
                     }.buttonStyle(.plain).disabled(model.busy)
+                    }
                 }
                 HStack {
                     Button(L10n.text(selected?.protocolName == "ikev2" && selected?.active == true ? "Переподключить IKEv2" : "Сделать активным")) {
@@ -230,7 +250,7 @@ extension ContentView {
                     Button(L10n.text("Обновить подписку")) { model.performVPNProfile(.updateSubscription(subscription.id)) }
                         .buttonStyle(StudioButtonStyle()).disabled(!ready)
                     Button(L10n.text("Удалить подписку"), role: .destructive) {
-                        confirm(.deleteSubscription(subscription.id), "Удалить подписку? Уже импортированные профили останутся на модеме.")
+                        confirm(.deleteSubscription(subscription.id), "Удалить подписку и все её профили? Если среди них есть активный, Wi-Fi с VPN отключится.", count: subscription.profileCount)
                     }.buttonStyle(StudioButtonStyle()).disabled(!ready)
                 }
             }
@@ -280,8 +300,12 @@ extension ContentView {
         }.disabled(model.busy)
     }
 
-    private func confirm(_ operation: VPNOperation, _ text: String) {
-        do { try operation.validate(); inputError = ""; pending = operation; confirmationText = L10n.text(text); confirmationPresented = true }
+    private func resetDeviceSelection() {
+        marked.removeAll(); selectedID = ""; pending = nil; confirmationPresented = false
+        ikev2 = VPNIKEv2Configuration(); ikev2ID = nil; ikev2Name = "UserGate"
+    }
+    private func confirm(_ operation: VPNOperation, _ text: String, count: Int? = nil) {
+        do { try operation.validate(); inputError = ""; pending = operation; confirmationText = L10n.text(text) + (count.map { "\n" + L10n.text("Профили") + " · \($0)" } ?? ""); confirmationPresented = true }
         catch { inputError = error.localizedDescription }
     }
     private func chooseProfile() {

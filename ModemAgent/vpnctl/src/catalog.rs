@@ -42,15 +42,28 @@ impl Catalog {
         if !profile::valid_id(id) { return Err("VPN_SUBSCRIPTION_NOT_FOUND"); }
         self.subscriptions.iter().find(|s| s["id"] == id).ok_or("VPN_SUBSCRIPTION_NOT_FOUND")
     }
-    pub fn detach(&mut self, id: &str) -> Result<()> {
-        self.subscription(id)?;
+    pub fn delete_profiles(&mut self, ids: &[String]) -> Result<BTreeSet<String>> {
+        if ids.is_empty() || ids.len() > subscription::PROFILE_LIMIT { return Err("VPN_INVALID_REQUEST"); }
+        if ids.iter().any(|id| !profile::valid_id(id)) { return Err("VPN_INVALID_PROFILE_ID"); }
+        let targets: BTreeSet<_> = ids.iter().cloned().collect();
+        let present: BTreeSet<_> = self.profiles.iter().filter_map(|p| p["id"].as_str())
+            .filter(|id| targets.contains(*id)).map(str::to_owned).collect();
+        // Repeating a completed deletion succeeds. A stale, mixed selection
+        // must be refreshed before it can delete any remaining profiles.
+        if !present.is_empty() && present != targets { return Err("VPN_PROFILE_NOT_FOUND"); }
+        self.remove_profiles(&present);
+        Ok(present)
+    }
+    pub fn delete_subscription(&mut self, id: &str) -> Result<BTreeSet<String>> {
+        if !profile::valid_id(id) { return Err("VPN_SUBSCRIPTION_NOT_FOUND"); }
+        let targets = self.profiles.iter().filter(|p| p["subscription_id"] == id)
+            .filter_map(|p| p["id"].as_str().map(str::to_owned)).collect();
+        self.remove_profiles(&targets);
         self.subscriptions.retain(|s| s["id"] != id);
-        for p in &mut self.profiles {
-            if p["subscription_id"] == id {
-                for field in ["subscription_id", "source_key", "removed_from_subscription"] { p.as_object_mut().unwrap().remove(field); }
-            }
-        }
-        Ok(())
+        Ok(targets)
+    }
+    fn remove_profiles(&mut self, ids: &BTreeSet<String>) {
+        self.profiles.retain(|p| !p["id"].as_str().is_some_and(|id| ids.contains(id)));
     }
     pub fn update(&mut self, subscription: Value, parsed: subscription::Parsed, active: &str,
         mut new_id: impl FnMut() -> Result<String>) -> Result<Value> {
@@ -114,10 +127,9 @@ mod tests {
         let summary = catalog.update(sub(), next, id, || Ok("30000000-0000-0000-0000-000000000000".into())).unwrap();
         assert_eq!(summary["retained_active"], 1);
         assert_eq!(catalog.profiles.len(), 2);
-        catalog.detach(SID).unwrap();
+        catalog.delete_subscription(SID).unwrap();
         assert!(catalog.subscriptions.is_empty());
-        assert_eq!(catalog.profiles.len(), 2);
-        assert!(catalog.profiles.iter().all(|p| p.get("subscription_id").is_none()));
+        assert!(catalog.profiles.is_empty());
         catalog.check().unwrap();
     }
     #[test] fn malformed_feed_cannot_partially_erase_existing_nodes() {
@@ -127,5 +139,29 @@ mod tests {
         next.skipped.push(json!({"index":2,"code":"VPN_UNSUPPORTED_PROTOCOL"}));
         let summary = catalog.update(sub(), next, "", || Ok("30000000-0000-0000-0000-000000000000".into())).unwrap();
         assert_eq!(summary["removed"], 0); assert_eq!(catalog.profiles.len(), 2);
+    }
+    #[test] fn deleting_by_owner_or_id_preserves_unrelated_nodes_and_handles_retries() {
+        let ids: Vec<String> = (1..=6).map(|n| format!("20000000-0000-0000-0000-{n:012}")).collect();
+        let mut c = Catalog::legacy(ids[..4].iter().map(|id| json!({"id":id,"name":"Same","proxy":{"type":"vless"}})).collect());
+        let second = &ids[4];
+        c.subscriptions = vec![sub(), json!({"id":second,"url":"https://example.org/other"})];
+        c.profiles[0]["subscription_id"] = json!(SID);
+        c.profiles[0]["removed_from_subscription"] = json!(true);
+        c.profiles[1]["subscription_id"] = json!(SID);
+        c.profiles[2]["subscription_id"] = json!(second);
+        assert!(c.delete_profiles(&[]).is_err());
+        assert!(c.delete_profiles(&[ids[0].clone(), "bad".into()]).is_err());
+        assert!(c.delete_profiles(&[ids[0].clone(), ids[5].clone()]).is_err());
+        assert_eq!(c.profiles.len(), 4);
+        assert_eq!(c.delete_subscription(SID).unwrap().len(), 2);
+        assert!(c.delete_subscription(SID).unwrap().is_empty());
+        assert_eq!(c.profiles.len(), 2);
+        assert_eq!(c.profiles[0]["id"], ids[2]); assert_eq!(c.profiles[1]["id"], ids[3]);
+        assert_eq!(c.subscriptions.len(), 1);
+        let batch = vec![ids[2].clone(), ids[3].clone(), ids[2].clone()];
+        assert_eq!(c.delete_profiles(&batch).unwrap().len(), 2);
+        assert!(c.delete_profiles(&batch).unwrap().is_empty());
+        assert!(c.profiles.is_empty()); assert_eq!(c.subscriptions.len(), 1);
+        assert!(c.delete_subscription(second).unwrap().is_empty()); assert!(c.subscriptions.is_empty());
     }
 }

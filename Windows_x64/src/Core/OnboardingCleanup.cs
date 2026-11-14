@@ -502,8 +502,27 @@ public sealed partial class OnboardingEngine
         return text;
     }
 
-    private static async Task<RemoteResult> RunCleanupCommandAsync(IRemoteShell ssh, string command, string body, string action, int seconds, CancellationToken ct)
+    private async Task<RemoteResult> RunCleanupCommandAsync(IRemoteShell ssh, string command, string body, string action, int seconds, CancellationToken ct)
     {
+        if (action is "prepare" or "clean")
+        {
+            const string marker = "# ZTE_CLEANUP_VPN_PAYLOAD";
+            if (body.Split(marker).Length != 2) throw new InvalidDataException("Повреждён шаблон очистки VPN.");
+            var folder = Path.Combine(_resources,"VPN");
+            var hashes = JsonSerializer.Deserialize<Dictionary<string,string>>(await File.ReadAllBytesAsync(Path.Combine(folder,"SHA256.json"),ct));
+            var payload = new StringBuilder();
+            foreach (var name in new[]{"vpnctl","manager.sh","configure.lua"})
+            {
+                var path = Path.Combine(folder,name);
+                RejectReparsePoint(path);
+                if (new FileInfo(path).Length is <1 or >4*1024*1024) throw new InvalidDataException("Недопустимый размер компонента очистки VPN.");
+                var bytes = await File.ReadAllBytesAsync(path,ct).ConfigureAwait(false);
+                if (hashes?.GetValueOrDefault(name)!=Sha(bytes)) throw new InvalidDataException("Повреждены встроенные компоненты очистки VPN.");
+                payload.Append("base64 -d > \"$tools/").Append(name).Append(".new\" <<'ZTE_B64' || return 1\n")
+                    .Append(Convert.ToBase64String(bytes,Base64FormattingOptions.InsertLineBreaks).Replace("\r\n","\n")).Append("\nZTE_B64\n");
+            }
+            body=body.Replace(marker,payload.ToString(),StringComparison.Ordinal);
+        }
         try { return await ssh.RunAsync(command, Encoding.UTF8.GetBytes(body), TimeSpan.FromSeconds(seconds), ct).ConfigureAwait(false); }
         catch (TimeoutException) { throw new CleanupReplyException(action, "TIMEOUT", true); }
         catch (Exception e) when (e is not SshTrustException && (e is IOException or System.Net.Sockets.SocketException or Renci.SshNet.Common.SshException))

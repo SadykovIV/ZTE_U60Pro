@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Final release audit; source bundle keeps the exact public v1.20 dependency snapshot."""
+"""Verify the source bundle and its pinned public build dependencies."""
 from pathlib import Path
 import hashlib, json, re, subprocess, tarfile
+from package_resources import BASELINE_DEPENDENCIES_SHA, BASELINE_REF
 ROOT = Path(__file__).resolve().parents[2]
-BASELINE_DEPENDENCIES_SHA = '29c00a9cc4bd76f5190141be668230acf00ad008871fad72a200e17f40d4883b'
-BASELINE_ARCHIVE_SHA = '90ec14b09f383da82ebab95b7abb2f51fd90de5a39097f99be423a0683d4cd77'
 MAC = ROOT / 'MacIMEI/Resources'
 WIN = ROOT / 'Windows_x64/Resources'
 def digest(p): return hashlib.sha256(p.read_bytes()).hexdigest()
@@ -51,8 +50,8 @@ def main(receipt_name='public-release-verification.json'):
             if member.name == 'tools/dependencies.json':
                 need(hashlib.sha256(data).hexdigest()==BASELINE_DEPENDENCIES_SHA,'Baseline manifest snapshot mismatch')
                 baseline=json.loads(data)
-                need(baseline['archive']=='Build-dependencies-1.20.0.tar.gz' and baseline['sha256']==BASELINE_ARCHIVE_SHA and baseline['url']=='https://github.com/SadykovIV/ZTE_U60Pro/releases/download/v1.20.0/Build-dependencies-1.20.0.tar.gz','Baseline archive identity mismatch')
-                dependency_snapshot={'path':member.name,'sha256':BASELINE_DEPENDENCIES_SHA,'source_ref':'origin/main at da091fb7e6af804b81d51b913c20eb848303982e','archive_sha256':BASELINE_ARCHIVE_SHA,'current_metadata_may_change':True}
+                # The pinned manifest digest above authenticates the archive name, URL and checksum together.
+                dependency_snapshot={'path':member.name,'sha256':BASELINE_DEPENDENCIES_SHA,'source_ref':BASELINE_REF,'archive_sha256':baseline['sha256'],'current_metadata_may_change':True}
             else:
                 need((ROOT/member.name).is_file() and (ROOT/member.name).read_bytes()==data,'Source correspondence mismatch '+member.name)
                 current_matches+=1

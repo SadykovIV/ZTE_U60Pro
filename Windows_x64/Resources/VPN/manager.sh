@@ -9,7 +9,7 @@ MODE=${1:-}
 backend() { "$ROOT/vpnctl" backend; }
 runtime_wanted() {
     [ -f "$ROOT/configured" ] && [ -s "$ROOT/config.json" ] || return 1
-    [ ! -f "$ROOT/runtime-disabled" ] || return 1
+    [ ! -f "$ROOT/runtime-disabled" ] && [ ! -e "$ROOT/catalog.delete-pending" ] || return 1
     # Use the persisted guest selection, not AP link state: the guard may hold
     # selected APs DOWN while their backend is starting or being repaired.
     for section in guest_2g guest_5g; do
@@ -77,54 +77,39 @@ recover() {
     rm -rf "$ROOT/transaction.done"
     log PROFILE_ROLLED_BACK
 }
-# FLY public B11 / modem B27: measured native components, not the display version.
-b27_profile() {
-    for component in /firmware/image/modem.b16 /usr/bin/zte_topsw_mdm /usr/bin/diag-router; do
-        [ -f "$component" ] && [ ! -L "$component" ] && [ "$(stat -c %u "$component")" = 0 ] || return 1
-    done
-    [ "$(sha256sum /firmware/image/modem.b16 | awk '{print $1}')" = 4b1c67e73b94b889adc831168040d40ec368083dfbcec7ae747a2f4f86c66f3e ] &&
-    [ "$(sha256sum /usr/bin/zte_topsw_mdm | awk '{print $1}')" = 00a647cb46fa82a78969b3708c1429d91b37ef99c2c00835ac57ca53c126f25d ] &&
-    [ "$(sha256sum /usr/bin/diag-router | awk '{print $1}')" = 786ba99f5d506d01bbe72d9effa90d1a46f5929370f24ccabf6bab291e5a317f ]
-}
-# B04 captures include both an unavailable image and this measured modem.b16.
-# Native MDM/router identity remains required; startup needs no vendor RPC.
-b04_profile() {
-    if [ -e /firmware/image/modem.b16 ] || [ -L /firmware/image/modem.b16 ]; then
-        [ -f /firmware/image/modem.b16 ] && [ ! -L /firmware/image/modem.b16 ] || return 1
-        [ "$(sha256sum /firmware/image/modem.b16 2>/dev/null | awk '{print $1}')" = c57e063d390983229dfc53aa87380b3d4655ee8daa1c748e1a032ac90cd0df81 ] || return 1
-    fi
-    [ -f /usr/bin/zte_topsw_mdm ] && [ ! -L /usr/bin/zte_topsw_mdm ] || return 1
-    [ "$(sha256sum /usr/bin/zte_topsw_mdm 2>/dev/null | awk '{print $1}')" = 93a346e7d69024503caf9ad42f14c97e1514dd7d04c7b5ebef4e30473b5d5c64 ] &&
-    [ "$(sha256sum /usr/bin/diag-router 2>/dev/null | awk '{print $1}')" = 55c54f74aaa427940254a2f16c36771e675a80a002363e4f10b0dfcb604d9c6f ]
+# The compiled controller owns the shared firmware/component policy.
+# Never infer IPA signal semantics from a firmware label or a new image hash.
+platform_compatible() { "$ROOT/vpnctl" compatibility >/dev/null; }
+require_platform() {
+    if platform_reply=$("$ROOT/vpnctl" compatibility); then return 0; fi
+    case "$platform_reply" in
+      *'"code":"VPN_IPA_UNSUPPORTED"'*) fail VPN_IPA_UNSUPPORTED;;
+      *'"code":"VPN_UNSAFE_FILE"'*|*'"code":"VPN_FILE_UNAVAILABLE"'*) fail VPN_INTEGRITY;;
+      *) fail VPN_UNSUPPORTED_FIRMWARE;;
+    esac
 }
 ipa_hash() { sha256sum "$1" 2>/dev/null | awk '{print $1}'; }
 ipa_plain() { [ -f "$1" ] && [ ! -L "$1" ] && [ "$(stat -c %u "$1")" = 0 ]; }
 ipa_private() { [ -d "$1" ] && [ ! -L "$1" ] && [ "$(stat -c %u:%a "$1")" = 0:700 ]; }
-ipa_tools() {
-    ipa_plain /sbin/ipacm_switch.sh && ipa_plain /usr/bin/ipacm || return 1
-    [ "$(ipa_hash /sbin/ipacm_switch.sh)" = 8947eee9c554453dc8eeb77df933cd12899f447c8c03df3505c57c7b526d22b9 ] || return 1
-    case "$(ipa_hash /firmware/image/modem.b16):$(ipa_hash /usr/bin/ipacm)" in
-        604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263:95385816da7b2edb9a977cee328c091753463fcd4a70a67fa1676e8b335c11c0|5a4489882538b5ab1d3e0049371f1b620d28d262a429923299b4f2626d40d478:a8a90ee631a3e8de3266d1d4231e455c34fd0b0d1ad570e7c4d0dcd09eea1c54) return 0;;
-        4b1c67e73b94b889adc831168040d40ec368083dfbcec7ae747a2f4f86c66f3e:a843789933a0b5747927583021c1480957ea942626cab17cb13ad415d1dfd3ae) b27_profile;;
-        *) b04_profile && [ "$(ipa_hash /usr/bin/ipacm)" = 95385816da7b2edb9a977cee328c091753463fcd4a70a67fa1676e8b335c11c0 ];;
-    esac
-}
+# A clean installation restores old receipts with the tools shipped with the
+# cleaner. Normal runtime always uses the installed and verified controller.
+ipa_tools_dir=$ROOT
+case "$MODE" in cleanup-ipa-check|cleanup-ipa-restore) ipa_tools_dir=${0%/*};; esac
+ipa_tools() { "$ipa_tools_dir/vpnctl" compatibility >/dev/null; }
 ipa_flags() {
     ipa_close=$(uci -q get zwrt_router.tmp_router.close_ipa_acce 2>/dev/null || printf absent)
     ipa_disabled=$(uci -q get zwrt_router.other.ipa_disable 2>/dev/null || printf absent)
     case "$ipa_close:$ipa_disabled" in 0:0|0:1|0:absent|1:0|1:1|1:absent|absent:0|absent:1|absent:absent) ;; *) return 1;; esac
 }
 ipa_pid() {
-    ipa_candidates=$(pidof ipacm 2>/dev/null) || return 1
     ipacm_pid=
-    for candidate in $ipa_candidates; do
-        case "$candidate" in ''|*[!0-9]*) return 1;; esac
-        if [ "$(readlink "/proc/$candidate/exe" 2>/dev/null || true)" = /usr/bin/ipacm ]; then
-            [ -z "$ipacm_pid" ] || return 1
-            ipacm_pid=$candidate
-        fi
+    for entry in /proc/[0-9]*/exe; do
+        # Match the executable itself. ujail may also use ipacm as its process name.
+        [ "$(readlink "$entry" 2>/dev/null)" = /usr/bin/ipacm ] || continue
+        [ -z "$ipacm_pid" ] || return 1
+        candidate=${entry%/exe}; ipacm_pid=${candidate##*/}
     done
-    [ -n "$ipacm_pid" ]
+    [ -n "$ipacm_pid" ] && [ "$(readlink "/proc/$ipacm_pid/exe" 2>/dev/null)" = /usr/bin/ipacm ]
 }
 ipa_snapshot_valid() {
     ipa_private "$ROOT/ipa-backup" && ipa_private "$ROOT/ipa-backup/deltas" || return 1
@@ -165,7 +150,7 @@ ipa_restore() {
     ipa_plain /etc/config/zwrt_router || return 1
     mkdir -p "$ROOT/ipa-uci" && ipa_private "$ROOT/ipa-uci" || return 1
     rm -f "$ROOT/ipa-uci/zwrt_router" || return 1
-    lua "$ROOT/configure.lua" ipa-restore >> "$ROOT/actions.log" || return 1
+    lua "$ipa_tools_dir/configure.lua" ipa-restore >> "$ROOT/actions.log" || return 1
     if [ "$ipa_disabled" = 1 ]; then
         ipa_pending_restore zwrt_router.other.ipa_disable "$ipa_original_disabled" "$ipa_disabled_pending" || return 1
     fi
@@ -270,10 +255,12 @@ ipa_failure_restore() {
     exit "$result"
 }
 prepare() {
-    case "$(sha256sum /firmware/image/modem.b16 2>/dev/null | awk '{print $1}')" in
-        604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263|5a4489882538b5ab1d3e0049371f1b620d28d262a429923299b4f2626d40d478) ;;
-        *) b04_profile || b27_profile || fail VPN_UNSUPPORTED_FIRMWARE;;
-    esac
+    require_platform
+    lua "$ROOT/configure.lua" preflight || fail VPN_WIFI_CONFIGURATION_CHANGED
+    for object in zwrt_wlan network; do
+        rpc=$(ubus -t 5 -v list "$object") || fail VPN_RPC_UNSUPPORTED
+        printf '%s\n' "$rpc" | grep -Eq '^[[:space:]]*"reload":\{\}[[:space:]]*$' || fail VPN_RPC_UNSUPPORTED
+    done
     [ "$(cat "$ROOT/cid")" = "$(cat /sys/block/mmcblk0/device/cid)" ] || fail VPN_DEVICE_CHANGED
     [ "$(uci -q get wireless.zte_mbb.mesh_onoff)" = 0 ] || fail VPN_MESH_CONFLICT
     if [ ! -f "$ROOT/configured" ]; then configuration_restore || fail VPN_CONFIGURATION_PENDING; fi
@@ -418,6 +405,8 @@ case "${1:-}" in prepare|activate|enable)
 esac
 case "${1:-}" in
  runtime-wanted) runtime_wanted;;
+ cleanup-ipa-check) ipa_snapshot_valid && ipa_tools && ipa_flags && ipa_pid;;
+ cleanup-ipa-restore) ipa_restore;;
  ipa-check) ipa_snapshot_valid && ipa_tools && ipa_flags || fail VPN_IPA_STATE_INVALID;;
  ipa-restore) ipa_restore || fail VPN_IPA_RESTORE_FAILED;;
  prepare) prepare;;

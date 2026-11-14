@@ -23,7 +23,7 @@ class UpgradeTests(unittest.TestCase):
   self.old_helper=helper(self.old_files);self.new_helper=helper(self.new_files)
   self.old_sha=sha(self.old_helper);self.new_sha=sha(self.new_helper)
   for root,helper,files in [(self.root,self.old_helper,self.old_files),(self.stage,self.new_helper,self.new_files)]:
-   (root/'vpnctl').write_bytes(helper);(root/'vpnctl').chmod(0o700)
+   (root/'vpnctl').write_bytes(helper);(root/'vpnctl').chmod(0o600 if root == self.stage else 0o700)
    for name,contents in files.items():(root/name).write_bytes(contents)
   self.initial=f'#!/bin/sh\n# BEGIN zte-vpn-v1: test\n# {self.old_sha} {sha(b"old"+bytes([10]))}\n'.encode()
   self.network.write_bytes(self.initial);(self.root/'network-init.sha256').write_text(sha(self.initial))
@@ -50,6 +50,8 @@ class UpgradeTests(unittest.TestCase):
  *) exit 89;; esac
 ''')
   self.command('sync',':\n')
+  self.command('uci','[ "$1" = changes ]')
+  self.command('lua','case "$2" in layout|original-layout) echo stock;; *) exit 1;; esac')
  def tearDown(self):
   import shutil
   shutil.rmtree(self.stage);self.temp.cleanup()
@@ -130,7 +132,7 @@ class UpgradeTests(unittest.TestCase):
  def test_new_integrity_failure_restores_all_files_and_profiles(self):
   for name in ['active','config.json','wifi-settings.json','catalog.json']:(self.root/name).write_bytes(('private-fixture-'+name).encode())
   (self.root/'profiles').mkdir();(self.root/'profiles/profile.json').write_bytes(b'private-profile-fixture')
-  helper=self.new_helper+b'exit 1\n';(self.stage/'vpnctl').write_bytes(helper)
+  helper=self.new_helper+b'[ "$1" != integrity ]\n';(self.stage/'vpnctl').write_bytes(helper)
   self.script.write_text(self.script.read_text().replace('helper_sha='+self.new_sha,'helper_sha='+sha(helper)))
   result=self.run_upgrade();self.assertNotEqual(result.returncode,0)
   self.assertIn(b'VPN_UPGRADE_ERROR NEW_INTEGRITY',result.stderr);self.assertIn(b'VPN_UPGRADE_ROLLBACK restored',result.stderr)
@@ -220,6 +222,33 @@ class UpgradeTests(unittest.TestCase):
   self.assertEqual(self.service.read_bytes(),self.new_service_bytes)
   for name in ['S99zte_vpn','K01zte_vpn']:self.assertEqual(os.readlink(self.rc/name),'../init.d/zte_vpn')
   self.assert_preserved_profiles()
+ def test_detached_hook_preserves_complete_owned_layout_and_original_backup(self):
+  self.reset_state()
+  backup=self.root/'backup'
+  for name in ['network','wireless','firewall','dhcp','network.init']:
+   (backup/name).write_bytes(self.stock if name=='network.init' else b'original')
+  receipt=''.join(sha((backup/n).read_bytes())+'  '+n+'\n' for n in ['network','wireless','firewall','dhcp','network.init'])
+  (backup/'SHA256SUMS').write_text(receipt)
+  expected=b'#!/bin/sh\n# BEGIN zte-vpn-v1: reconstructed guard\n'
+  candidate=self.new_helper+b'if [ "$1" = plan-network-hook ]; then printf "'+expected+b'"; fi\n'
+  (self.stage/'vpnctl').write_bytes(candidate)
+  self.script.write_text(self.script.read_text().replace('helper_sha='+self.new_sha,'helper_sha='+sha(candidate)))
+  self.command('lua','case "$2" in layout) echo configured;; original-layout) echo stock;; *) exit 1;; esac')
+  (backup/'wireless').write_bytes(b'changed')
+  self.assertIn(b'STATE_UNSAFE',self.run_upgrade().stderr);self.assertFalse(self.service.exists())
+  (backup/'wireless').write_bytes(b'original')
+  result=self.run_upgrade();self.assertEqual(result.returncode,0,result.stderr)
+  self.assertEqual(self.network.read_bytes(),expected);self.assertTrue((self.root/'configured').exists())
+  self.assertEqual((backup/'SHA256SUMS').read_text(),receipt);self.assertTrue((self.root/'ipa-backup/kept').is_file())
+  self.assertTrue((self.root/'runtime-disabled').exists());self.assert_preserved_profiles()
+  self.assertEqual(list(self.root.glob('controller-reset-*')),[])
+ def test_unknown_uci_layout_or_uncommitted_changes_refuse_before_snapshot(self):
+  self.reset_state()
+  self.command('uci','echo pending')
+  self.assertIn(b'CONFIGURATION_CHANGED',self.run_upgrade().stderr)
+  self.command('uci','exit 0');self.command('lua','exit 1')
+  self.assertIn(b'CONFIGURATION_CHANGED',self.run_upgrade().stderr)
+  self.assertFalse((self.root/'controller-upgrade').exists());self.assertTrue((self.root/'configured').is_file())
  def test_current_controller_still_reconciles_reset_and_idempotent_second_run(self):
   self.reset_state(current=True);self.assertEqual(self.run_upgrade().returncode,0)
   self.assertFalse((self.root/'configured').exists());self.assertTrue(self.service.exists());self.assert_preserved_profiles()
@@ -265,4 +294,28 @@ class UpgradeTests(unittest.TestCase):
   result=self.run_upgrade();self.assertNotEqual(result.returncode,0)
   self.assertIn(b'VPN_UPGRADE_ERROR OLD_INTEGRITY',result.stderr);self.assertIn(b'VPN_UPGRADE_CAUSE VPN_CORE_INTEGRITY',result.stderr)
   self.assertFalse((self.root/'controller-upgrade').exists())
+ def test_new_platform_refusal_preserves_old_install_before_snapshot(self):
+  helper=self.new_helper+b'[ "$1" != compatibility ]\n'
+  (self.stage/'vpnctl').write_bytes(helper)
+  self.script.write_text(self.script.read_text().replace('helper_sha='+self.new_sha,'helper_sha='+sha(helper)))
+  result=self.run_upgrade();self.assertNotEqual(result.returncode,0)
+  self.assertIn(b'VPN_UPGRADE_ERROR COMPATIBILITY',result.stderr)
+  self.assertEqual((self.root/'vpnctl').read_bytes(),self.old_helper)
+  self.assertEqual(self.network.read_bytes(),self.initial);self.assertFalse((self.root/'controller-upgrade').exists())
+ def test_old_unknown_firmware_requires_independent_exact_payload_verification(self):
+  old=b'#!/bin/sh\nprintf \'{"code":"VPN_UNSUPPORTED_FIRMWARE","ok":false}\\n\'; exit 1\n'
+  old_sha=sha(old);(self.root/'vpnctl').write_bytes(old)
+  self.initial=self.initial.replace(self.old_sha.encode(),old_sha.encode());self.network.write_bytes(self.initial)
+  (self.root/'network-init.sha256').write_text(sha(self.initial))
+  # The fake pinned candidate exposes the same independent verification boundary
+  # as the Rust controller. Rust tests verify every actual manifest file/hash.
+  candidate=self.new_helper+b'if [ "$1" = previous-payload-integrity ]; then test -f "'+str(self.base/'allow-previous').encode()+b'"; fi\n'
+  candidate_sha=sha(candidate);(self.stage/'vpnctl').write_bytes(candidate)
+  self.script.write_text(self.script.read_text().replace(self.old_sha,old_sha).replace('helper_sha='+self.new_sha,'helper_sha='+candidate_sha))
+  refused=self.run_upgrade();self.assertNotEqual(refused.returncode,0)
+  self.assertIn(b'VPN_UPGRADE_ERROR OLD_INTEGRITY',refused.stderr)
+  self.assertFalse((self.root/'controller-upgrade').exists());self.assertEqual((self.root/'vpnctl').read_bytes(),old)
+  (self.base/'allow-previous').touch()
+  accepted=self.run_upgrade();self.assertEqual(accepted.returncode,0,accepted.stderr)
+  self.assertEqual((self.root/'vpnctl').read_bytes(),candidate)
 if __name__=='__main__':unittest.main()

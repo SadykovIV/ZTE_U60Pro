@@ -5,10 +5,11 @@ enum ScreenLocalizationState: String, Sendable {
 }
 
 struct ScreenLocalizationStatus: Sendable {
-    var revision: String = "20261030"
+    var revision: String = "20261111"
     var state: ScreenLocalizationState
     var language: String
     var detail: String = ""
+    var reason: String? = nil
     var mounted: Int = 0
     var bootEnabled: Bool = false
     var pid: Int = 0
@@ -53,10 +54,10 @@ struct ScreenFontPatch: Decodable {
 /// Runs inside ModemEngine.locked. Only screen resources, its service and language are changed.
 final class ScreenLocalization {
     static let remoteRoot = "/data/zte-imei-screen-ru"
-    static let revision = "20261030"
-    static let legacyManagerHashes = ["20261013": "089b66525207d9dc9fec54112fbb5786196c4a663fb1609b9aa53d8f07bb15ba", "20261006": "0ce40f0d3e4375165f5e4424db023b786f70f9cacf88bfe07c1c893cff12db7d", "20260924": "810aae3c07c8019f2d0657f2bad6f1ee38f1dea5f1081210ab144478dd87c7b8", "20260922": "6aed6654afb7a4fde7792a5f6034aa41e15b0fd77d794ed04d3a12c111c95fd2", "20260923": "586a7727fb24a5701990c7cd82889887220c1c5566261c53ca21f3bb12549bfa"]
+    static let revision = "20261111"
+    static let legacyManagerHashes = ["20261030": "45907dd3237cae7ce0c9e1f2fdb3b74cec388d2d08a7394cb36bf096f0c3eda2", "20261013": "089b66525207d9dc9fec54112fbb5786196c4a663fb1609b9aa53d8f07bb15ba", "20261006": "0ce40f0d3e4375165f5e4424db023b786f70f9cacf88bfe07c1c893cff12db7d", "20260924": "810aae3c07c8019f2d0657f2bad6f1ee38f1dea5f1081210ab144478dd87c7b8", "20260922": "6aed6654afb7a4fde7792a5f6034aa41e15b0fd77d794ed04d3a12c111c95fd2", "20260923": "586a7727fb24a5701990c7cd82889887220c1c5566261c53ca21f3bb12549bfa"]
     static let resourceHashes: [String: String] = [
-        "install.sh": "45907dd3237cae7ce0c9e1f2fdb3b74cec388d2d08a7394cb36bf096f0c3eda2",
+        "install.sh": "c8f8c00cddd4ebcfa03655f52221c74b6c30524cb68ddc388d7b192939973ecc",
         "service.sh": "8b25166707a21bb3b55f77d9af34822a39aa5e8058b5c521431f0379386051e9",
         "English.ini": "d97925e40f9c119e05dd692e8fbce36593b55aa3faf718af373b2cb57075981a",
         "Chinese.ini": "5c4b6e3896593172608f2d8890da56c7ff521667129375d0a52383243bb760df",
@@ -93,13 +94,14 @@ final class ScreenLocalization {
         try require(state == .error || (state == .enabled ? mounted == 3 && boot : mounted == 0 && !boot), "Несогласованное состояние русификации")
         return ScreenLocalizationStatus(revision: values["revision"]!, state: state, language: values["language"]!,
             detail: state == .error ? Self.statusReasons[values["reason"] ?? "STATUS_UNVERIFIED"]! : "",
-            mounted: mounted, bootEnabled: boot, pid: pid)
+            reason: values["reason"], mounted: mounted, bootEnabled: boot, pid: pid)
     }
 
     static let statusReasons = [
         "STOCK_INIT_MISSING": "Отсутствует штатный скрипт запуска экрана /etc/init.d/zte_topsw_devui.",
         "STOCK_INIT_CHANGED": "Скрипт запуска экрана отличается от совместимого штатного или русифицированного варианта.",
         "LEFTOVER_HOOK_OR_MOUNT": "Каталог русификации отсутствует, но остались её служба или подключённые файлы. Нужно восстановить установку.",
+        "STOCK_GENERATION_CHANGED": "Штатный экран отличается от сохранённой копии. Нажмите «Включить русский»: программа проверит текущие файлы и сохранит предыдущий комплект отдельно.",
         "BOOT_HOOK_MISSING": "После сброса отсутствует запуск русификации. Повторное включение восстановит его из установленного комплекта.",
         "TRANSACTION_PENDING": "Предыдущее изменение русификации не завершено; журнал сохранён на модеме.",
         "UI_NOT_RUNNING": "Процесс экранного интерфейса не запущен.",
@@ -111,6 +113,7 @@ final class ScreenLocalization {
     reason=STATUS_UNVERIFIED
     if test ! -f /etc/init.d/zte_topsw_devui || test -L /etc/init.d/zte_topsw_devui; then reason=STOCK_INIT_MISSING
     elif test -e /data/zte-imei-screen-ru/.transaction; then reason=TRANSACTION_PENDING
+    elif test -f /usr/bin/zte_topsw_devui && test ! -L /usr/bin/zte_topsw_devui && test -f /data/zte-imei-screen-ru/backup/zte_topsw_devui && test ! -L /data/zte-imei-screen-ru/backup/zte_topsw_devui && awk '$5=="/usr/bin/zte_topsw_devui" || $5=="/usr/ui/language/Chinese.ini" || $5=="/usr/ui/language/English.ini" {bad=1} END {exit bad}' /proc/self/mountinfo && { cmp -s /usr/bin/zte_topsw_devui /data/zte-imei-screen-ru/backup/zte_topsw_devui && rc=0 || rc=$?; test "$rc" = 1; }; then reason=STOCK_GENERATION_CHANGED
     elif test -d /data/zte-imei-screen-ru && test -f /data/zte-imei-screen-ru/.enabled && { test ! -f /etc/init.d/zte_imei_screen_ru || test ! -L /etc/rc.d/S47zte_imei_screen_ru; }; then reason=BOOT_HOOK_MISSING
     elif ! pidof zte_topsw_devui >/dev/null 2>&1; then reason=UI_NOT_RUNNING
     fi
@@ -178,7 +181,7 @@ final class ScreenLocalization {
         elif test "$(sha256sum /etc/init.d/zte_topsw_devui 2>/dev/null | awk '{print $1}')" != a30da6481637f1fd94e037373d406e574be7e722937a4965325086740be67e35; then state=error; reason=STOCK_INIT_CHANGED; fi
         pid=$(pidof zte_topsw_devui 2>/dev/null | awk '{print $1}' || true)
         case "$pid" in ''|*[!0-9]*) pid=0;; esac
-        printf 'SCREEN_RU_STATUS state=%s language=%s mounted=%s boot=0 pid=%s revision=20261030' "$state" "$language" "$mounted" "$pid"
+        printf 'SCREEN_RU_STATUS state=%s language=%s mounted=%s boot=0 pid=%s revision=20261111' "$state" "$language" "$mounted" "$pid"
         if test -n "$reason"; then printf ' reason=%s' "$reason"; fi
         printf '\n'
     fi
@@ -218,6 +221,7 @@ final class ScreenLocalization {
             var result = try invoke(Self.managerCommand(.status, cid: cid, hash: installedHash), timeout: 30)
             if result.state == .error {
                 let reason = try engine.text(Self.reasonCommand)
+                result.reason = reason
                 result.detail = Self.statusReasons[reason] ?? Self.statusReasons["STATUS_UNVERIFIED"]!
             }
             return result
@@ -240,7 +244,8 @@ final class ScreenLocalization {
         let current = try inspect(cid: identity.identity.cid, managerHash: managerHash)
         if action == .status { return current }
         if action == .disable && current.state == .absent { return current }
-        if current.state != .absent && (current.revision == Self.revision || action == .disable) {
+        if action == .disable && current.reason == "STOCK_GENERATION_CHANGED" { throw IMEIError.message(current.detail) }
+        if current.state != .absent && ((current.revision == Self.revision && current.state != .error) || action == .disable) {
             try require(try engine.measuredIdentity() == identity, "Перед изменением подключён другой модем")
             engine.update(action == .enable ? "Включаю русский интерфейс модема" : "Возвращаю штатный интерфейс модема", 0.5)
             let result = try invoke(Self.managerCommand(action, cid: identity.identity.cid, hash: current.revision == Self.revision ? managerHash : Self.legacyManagerHashes[current.revision]!))
@@ -249,7 +254,7 @@ final class ScreenLocalization {
             return result
         }
         engine.update("Читаю исходный экранный интерфейс и проверяю патч шрифта", 0.15)
-        let original = try engine.remote(current.state == .absent ? "cat /usr/bin/zte_topsw_devui" : "cat /data/zte-imei-screen-ru/backup/zte_topsw_devui", timeout: 120)
+        let original = try engine.remote((current.state == .absent || (current.state == .error && current.mounted == 0)) ? "cat /usr/bin/zte_topsw_devui" : "cat /data/zte-imei-screen-ru/backup/zte_topsw_devui", timeout: 120)
         let (patchData, manifest) = try Self.selectFontPatch(original, files: bundle)
         let patched = try Self.applyFontPatch(original, manifest: manifest)
         try require(try engine.measuredIdentity() == identity, "Перед установкой подключён другой модем")

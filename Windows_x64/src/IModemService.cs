@@ -39,6 +39,7 @@ public enum ModemOperation
     ActivateVpnProfile,
     RenameVpnProfile,
     DeleteVpnProfile,
+    DeleteVpnProfiles,
     SetVpnEnabled,
     InstallVpn,
     RefreshVpnWifi,

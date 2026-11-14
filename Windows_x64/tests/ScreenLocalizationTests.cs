@@ -48,7 +48,7 @@ static class ScreenLocalizationTests
             Check(Hash(original)=="d7aab64cafb5d0ec5c9479c3247a2e504c6ab76dd192cf8de997fc12f5d213fe"&&Hash(patched)=="83c2623f4a7a87816466ba9e1eeae1da24384b7ff6e8c972e9df836495103c55","actual captured B27 font patch matches exact reviewed output without execution");
             Check(original.Length==patched.Length&&original.Length==10880811,"B27 patch preserves file size");
         }
-        async Task<(Fake,ScreenLocalizationStatus)> Install(string name,byte[] original,string firmware="b28",string state="absent",string revision="20261030",string fault="")
+        async Task<(Fake,ScreenLocalizationStatus)> Install(string name,byte[] original,string firmware="b28",string state="absent",string revision="20261111",string fault="")
         {
             var path=Path.Combine(root,name);var resources=Resources(path,fault);var fake=new Fake(original){Firmware=firmware,State=state,Revision=revision};
             var status=await new DeviceFeatureService(fake,resources,Path.Combine(path,"state")).InstallLocalizationAsync();return(fake,status);
@@ -64,6 +64,8 @@ static class ScreenLocalizationTests
         Check(b04.Item1.Uploads["font.patch.json"].SequenceEqual(Patch(B04))&&b04.Item1.Installs==1,"B04 selects its independent manifest through the actual installation path");
         var b31=await Install("b31-fresh",B31,"b31");
         Check(b31.Item1.Uploads["font.patch.json"].SequenceEqual(Patch(B31))&&b31.Item1.Installs==1,"B31 fresh installation still selects its unchanged font map");
+        var detached=await Install("detached-b27",B31,"b29","error","20261030");
+        Check(detached.Item1.BackupReads==0&&detached.Item1.Installs==1&&detached.Item1.Uploads["zte_topsw_devui"].SequenceEqual(Patched(B31)),"detached B27 backup does not select the patch for B29's visible B31 UI");
         var absent=await Install("files-absent",B28,"absent");
         Check(absent.Item2.State=="enabled","unrelated firmware/router files may be proven absent for the exact screen profile");
         foreach(var firmware in new[]{"b31","b28","b04","b27"})
@@ -73,12 +75,12 @@ static class ScreenLocalizationTests
             var disabled=await Install(firmware+"-reenable",firmware=="b31"?B31:firmware=="b04"?B04:firmware=="b27"?B27:B28,firmware,"disabled");
             Check(disabled.Item1.Enables==1&&disabled.Item1.Uploads.Count==0,"current "+firmware+" re-enable uses the owned manager");
         }
-        foreach(var revision in new[]{"20260922","20260923","20260924","20261006","20261013"})
+        foreach(var revision in new[]{"20260922","20260923","20260924","20261006","20261013","20261030"})
         {
             var legacy=await Install("upgrade-"+revision,B31,"b31","disabled",revision);
             Check(legacy.Item1.BackupReads==1&&legacy.Item1.Installs==1,"B31 "+revision+" upgrade patches the owned original backup");
         }
-        foreach(var revision in new[]{"20260922","20260923","20260924","20261006","20261013","20261030"})
+        foreach(var revision in new[]{"20260922","20260923","20260924","20261006","20261013","20261030","20261111"})
         {
             var path=Path.Combine(root,"restore-"+revision);var fake=new Fake(B31){Firmware=revision=="20261006"?"b28":"b31",State="enabled",Revision=revision};
             var result=await new DeviceFeatureService(fake,Resources(path),Path.Combine(path,"state")).RestoreLocalizationAsync();
@@ -129,14 +131,14 @@ static class ScreenLocalizationTests
     }
     sealed class Fake(byte[] original):IRemoteShell
     {
-        public string Firmware="b28",State="absent",Revision="20261030";
+        public string Firmware="b28",State="absent",Revision="20261111";
         public bool PlatformFailure,Drift,ReadFailure;
         public string? HelperError;
         public int StrictReads,MeasuredReads,Installs,Enables,Disables,BackupReads;
         public readonly List<string> Commands=[];
         public readonly Dictionary<string,byte[]> Uploads=new(StringComparer.Ordinal);
         const string Cid="11111111111111111111111111111111",Boot="11111111-1111-1111-1111-111111111111";
-        string InstalledHash=>Revision switch {"20261013"=>"089b66525207d9dc9fec54112fbb5786196c4a663fb1609b9aa53d8f07bb15ba","20261006"=>"0ce40f0d3e4375165f5e4424db023b786f70f9cacf88bfe07c1c893cff12db7d","20260922"=>"6aed6654afb7a4fde7792a5f6034aa41e15b0fd77d794ed04d3a12c111c95fd2","20260923"=>"586a7727fb24a5701990c7cd82889887220c1c5566261c53ca21f3bb12549bfa","20260924"=>"810aae3c07c8019f2d0657f2bad6f1ee38f1dea5f1081210ab144478dd87c7b8",_ => (string)typeof(DeviceFeatureService).GetField("ScreenManagerHash",BindingFlags.NonPublic|BindingFlags.Static)!.GetRawConstantValue()!};
+        string InstalledHash=>Revision switch {"20261030"=>"45907dd3237cae7ce0c9e1f2fdb3b74cec388d2d08a7394cb36bf096f0c3eda2","20261013"=>"089b66525207d9dc9fec54112fbb5786196c4a663fb1609b9aa53d8f07bb15ba","20261006"=>"0ce40f0d3e4375165f5e4424db023b786f70f9cacf88bfe07c1c893cff12db7d","20260922"=>"6aed6654afb7a4fde7792a5f6034aa41e15b0fd77d794ed04d3a12c111c95fd2","20260923"=>"586a7727fb24a5701990c7cd82889887220c1c5566261c53ca21f3bb12549bfa","20260924"=>"810aae3c07c8019f2d0657f2bad6f1ee38f1dea5f1081210ab144478dd87c7b8",_ => (string)typeof(DeviceFeatureService).GetField("ScreenManagerHash",BindingFlags.NonPublic|BindingFlags.Static)!.GetRawConstantValue()!};
         string Identity()=> (Firmware=="b31"?DeviceFeatureService.FirmwareHash:Firmware=="absent"?"absent":new string('a',64))+"  /firmware/image/modem.b16\n"+(Firmware=="b31"?DeviceFeatureService.RouterHash:Firmware=="absent"?"absent":new string('b',64))+"  /usr/bin/diag-router\n"+Cid+"\n"+(Drift&&MeasuredReads>1?"22222222-2222-2222-2222-222222222222":Boot)+"\n";
         static RemoteResult Reply(string s,int exit=0)=>new(exit,Encoding.UTF8.GetBytes(s),[]);
         string Status()=>"SCREEN_RU_STATUS state="+State+" language="+(State=="enabled"?"cn":"en")+" mounted="+(State=="enabled"?"3":"0")+" boot="+(State=="enabled"?"1":"0")+" pid=3 revision="+Revision+"\n";
@@ -154,13 +156,14 @@ static class ScreenLocalizationTests
                 if(command.Contains("'enable'")){Enables++;State="enabled";}if(command.Contains("'disable'")){Disables++;State="disabled";}
                 return Task.FromResult(Reply(Status()));
             }
+            if(command.Contains("reason=STATUS_UNVERIFIED"))return Task.FromResult(Reply("STOCK_GENERATION_CHANGED"));
             if(command.Contains("SCREEN_RU_STATUS"))return Task.FromResult(Reply(Status()));
             if(command.StartsWith("cat /usr/bin/zte_topsw_devui")||command.StartsWith("cat /data/zte-imei-screen-ru/backup/zte_topsw_devui")){if(command.Contains("/backup/"))BackupReads++;return Task.FromResult(new RemoteResult(ReadFailure?1:0,ReadFailure?[]:original,[]));}
             if(input is not null)
             {
                 var match=Regex.Match(command,@"cat > '([^']+)'");if(!match.Success)throw new Exception("unexpected input");var name=Path.GetFileName(match.Groups[1].Value);Uploads.Add(name,input);return Task.FromResult(Reply(Hash(input)+"  "+match.Groups[1].Value));
             }
-            if(command.Contains("/install.sh'")&&command.Contains(" install ")){Installs++;if(HelperError is not null)return Task.FromResult(new RemoteResult(1,[],Encoding.UTF8.GetBytes("SCREEN_RU_ERROR "+HelperError+"\n")));State="enabled";Revision="20261030";return Task.FromResult(Reply(Status()));}
+            if(command.Contains("/install.sh'")&&command.Contains(" install ")){Installs++;if(HelperError is not null)return Task.FromResult(new RemoteResult(1,[],Encoding.UTF8.GetBytes("SCREEN_RU_ERROR "+HelperError+"\n")));State="enabled";Revision="20261111";return Task.FromResult(Reply(Status()));}
             if(command.Contains("/tmp/zte-imei-app.lock")||command.Contains("mkdir -m 700 '/tmp/zte-screen-ru-install-")||command.Contains("rmdir '/tmp/zte-screen-ru-install-"))return Task.FromResult(Reply(""));
             throw new Exception("Unexpected synthetic shell command");
         }

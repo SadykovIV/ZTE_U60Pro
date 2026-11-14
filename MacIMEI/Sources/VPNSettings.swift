@@ -81,6 +81,7 @@ enum VPNOperation: Sendable {
     case activate(String)
     case rename(String, String)
     case delete(String)
+    case deleteProfiles([String])
     case setEnabled(Bool)
 
     static func isProfileLink(_ value: String) -> Bool {
@@ -111,10 +112,11 @@ enum VPNOperation: Sendable {
             var value: [String: Any] = ["action": "subscription_update", "id": id]
             if let documents { value["documents"] = documents }
             return value
-        case .deleteSubscription(let id): return ["action": "subscription_delete", "id": id]
+        case .deleteSubscription(let id): return ["action": "subscription_delete", "id": id, "cascade": true]
         case .activate(let id): return ["action": "activate", "id": id]
         case .rename(let id, let name): return ["action": "rename", "id": id, "name": name.trimmingCharacters(in: .whitespacesAndNewlines)]
         case .delete(let id): return ["action": "delete", "id": id]
+        case .deleteProfiles(let ids): return ["action": "delete_profiles", "ids": ids]
         case .setEnabled(let enabled): return ["action": "set_enabled", "enabled": enabled]
         }
     }
@@ -124,16 +126,20 @@ enum VPNOperation: Sendable {
         case .importProfile, .importConfiguration: return "Профиль VPN импортирован"
         case .importSubscription: return "Подписка VPN импортирована"
         case .updateSubscription: return "Подписка VPN обновлена; действующее подключение сохранено"
-        case .deleteSubscription: return "Подписка VPN удалена; её профили сохранены"
+        case .deleteSubscription: return "Подписка VPN и её профили удалены"
         case .activate: return "Активный профиль VPN изменён"
         case .rename: return "Название профиля VPN сохранено"
         case .delete: return "Профиль VPN удалён"
+        case .deleteProfiles: return "Выбранные профили VPN удалены"
         case .setEnabled(let enabled): return enabled ? "Wi-Fi с VPN включён" : "Wi-Fi с VPN выключен"
         }
     }
     func validate() throws {
         if case .saveIKEv2(let id, _, let configuration) = self { try configuration.validate(editing: id != nil) }
         let value = request
+        if case .deleteProfiles(let ids) = self {
+            try require((1...1024).contains(ids.count) && ids.allSatisfy { $0.utf8.count == 36 && UUID(uuidString: $0) != nil }, "Недопустимый идентификатор VPN-профиля.")
+        }
         if let id = value["id"] as? String { try require(id.utf8.count == 36 && UUID(uuidString: id) != nil, "Недопустимый идентификатор VPN-профиля.") }
         if let name = value["name"] as? String {
             try require(!name.isEmpty && name.unicodeScalars.count <= 64 && !name.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }), VPNSettingsManager.message("VPN_INVALID_NAME"))
@@ -150,6 +156,13 @@ enum VPNOperation: Sendable {
         }
     }
     func verify(before: VPNStatus, after: VPNStatus) throws {
+        func deletionConfirmed(_ ids: Set<String>) -> Bool {
+            let remaining = Set(before.profiles.map(\.id)).subtracting(ids)
+            let removedActive = ids.contains(before.activeProfile)
+            return Set(after.profiles.map(\.id)) == remaining &&
+                after.activeProfile == (removedActive ? "" : before.activeProfile) &&
+                after.enabled == (removedActive ? false : before.enabled)
+        }
         let confirmed: Bool
         switch self {
         case .saveIKEv2(let id, let name, _):
@@ -165,7 +178,9 @@ enum VPNOperation: Sendable {
         case .updateSubscription(let id, _):
             confirmed = after.subscriptions?.contains { $0.id == id } == true && after.lastImport != nil && after.activeProfile == before.activeProfile && after.enabled == before.enabled
         case .deleteSubscription(let id):
-            confirmed = after.subscriptions?.contains { $0.id == id } != true && Set(after.profiles.map(\.id)) == Set(before.profiles.map(\.id)) && after.activeProfile == before.activeProfile && after.enabled == before.enabled
+            confirmed = after.subscriptions?.contains { $0.id == id } != true &&
+                deletionConfirmed(Set(before.profiles.filter { $0.subscriptionId == id }.map(\.id)))
+        case .deleteProfiles(let ids): confirmed = deletionConfirmed(Set(ids))
         case .activate(let id): confirmed = after.activeProfile == id && after.profiles.contains { $0.id == id && $0.active && $0.updateAvailable != true }
         case .rename(let id, let name): confirmed = after.profiles.contains { $0.id == id && $0.name == name.trimmingCharacters(in: .whitespacesAndNewlines) }
         case .delete(let id): confirmed = !after.profiles.contains { $0.id == id }
@@ -311,14 +326,19 @@ enum VPNRequestFailure: LocalizedError, Equatable {
 /// Both the desktop and agent send private JSON on stdin to the same modem helper.
 final class VPNSettingsManager {
     static let root = "/data/zte-vpn"
-    static let launcherHash = "5223cdd084757408685cbd343d900a2b08723e6e6161ec80da66dcb4dd2e99e8"
+    static let launcherHash = "bf5dc15f51eb4fc6a2da8e8ab1b3f4de2aa3aa64087d50e69419df4d895194cf"
     static let agentHash = BundledAgent.sha256
-    static let dashboardIndexHash = "b9573c52192bea600d91b7db9fd974c1be63b92a641876394f57fb676a330b1b"
-    static let helperHash = "f855efcae795ede354bfccf33b155792dc92c84cf86cdfce170edb0949e4bcac"
+    static let dashboardIndexHash = "50bf2f244f038ba7fb0cd7b0d9146d3a1c971c7791725c474bfd07c78f42c205"
+    static let helperHash = "bfce3f936a7fa9303cdcc7b7f2312f009a7d99cc2d4d99ed12adad1326743244"
     // Exact previously shipped controllers may serve read-only status before upgrade.
     // Mutations continue to require the current controller hash.
     static let supportedStatusHashes: Set<String> = [
         helperHash,
+        "fb6a965a016953e6b0be10983045f9c1df1dc80a3cc19a69db8e0311728919e7",
+        "b29d2c2b91fa9d4e5c659473728c13577e8b1a8cae4447231be31ba382511776",
+        "dbe5027504366f24bf9da3e3fc7605027aae375018a365d17645c239d096ab31",
+        "4ac4526e643afa63bb4a9d59405c35e7496c5dba825df82fb6be7990f067be85",
+        "f855efcae795ede354bfccf33b155792dc92c84cf86cdfce170edb0949e4bcac",
         "6b0012fa060b4c64707d537ec1f0fd0a1b68c11a82a1c59c843d50e8e7e5c476",
         "cbcdb1ce6b5a94f7a5868c81f1dd920831e68074fcf3c1588148b5d33b954ba8",
         "dbf07f7551415816a66ac18148d45c582649c76529282902533d154f5299c58e",
@@ -399,6 +419,9 @@ final class VPNSettingsManager {
             "VPN_SUBNET_CONFLICT": "Подсеть 192.168.50.0/24 уже занята.",
             "VPN_OPERATION_TIMEOUT": "Операция ещё не подтверждена. Обновите состояние перед повтором.",
             "VPN_INTEGRITY": "Компоненты VPN изменены или относятся к другой версии.",
+            "VPN_RPC_UNSUPPORTED": "Интерфейс управления сетью не поддерживает необходимые операции VPN. Соберите полный дамп.",
+            "VPN_UNSUPPORTED_PLATFORM": "VPN требует Linux ARM64 и права root.",
+            "VPN_UNSUPPORTED_FIRMWARE": "Системные компоненты не совпали с проверенными профилями VPN. Соберите полный дамп для адаптации.",
             "VPN_CORE_INTEGRITY": "Ядро VPN не прошло проверку контрольной суммы.",
             "VPN_INVALID_WIFI_SSID": "Название Wi-Fi должно содержать от 1 до 32 байт UTF-8 без управляющих символов.",
             "VPN_INVALID_WIFI_PASSWORD": "Пароль Wi-Fi должен содержать 8–63 печатных символа ASCII или 64 шестнадцатеричных символа.",
@@ -623,9 +646,9 @@ final class VPNSettingsManager {
         let result = try engine.transport.run(command, input: nil, timeout: 60)
         let reply = try? JSONSerialization.jsonObject(with: result.stdout) as? [String: Any]
         if result.status != 0 {
-            let known = ["VPN_NOT_INSTALLED", "VPN_FILE_UNAVAILABLE", "VPN_UNSAFE_FILE", "VPN_INTEGRITY", "VPN_DEVICE_CHANGED", "VPN_CORE_INTEGRITY", "VPN_UNSUPPORTED_FIRMWARE"]
+            let known = ["VPN_NOT_INSTALLED", "VPN_FILE_UNAVAILABLE", "VPN_UNSAFE_FILE", "VPN_INTEGRITY", "VPN_DEVICE_CHANGED", "VPN_CORE_INTEGRITY", "VPN_UNSUPPORTED_FIRMWARE", "VPN_IPA_UNSUPPORTED", "VPN_UNSUPPORTED_PLATFORM"]
             if reply?["ok"] as? Bool == false, let code = reply?["code"] as? String, known.contains(code) {
-                throw IMEIError.message(Self.message(code == "VPN_CORE_INTEGRITY" ? code : "VPN_INTEGRITY") + " (" + code + ")")
+                throw IMEIError.message(Self.message(["VPN_CORE_INTEGRITY", "VPN_UNSUPPORTED_FIRMWARE", "VPN_IPA_UNSUPPORTED", "VPN_UNSUPPORTED_PLATFORM"].contains(code) ? code : "VPN_INTEGRITY") + " (" + code + ")")
             }
             throw VPNRequestFailure.commandFailed(result.status)
         }
@@ -685,7 +708,13 @@ final class VPNSettingsManager {
             "PLATFORM": "Для установки VPN нужны root и ARM64.",
             "UNSAFE_STAGE": "Временные файлы VPN не прошли проверку владельца и прав.",
             "ALREADY_PRESENT": "Компоненты или служба VPN уже существуют. Обновите состояние и выполните обновление компонентов.",
-            "UNSUPPORTED_FIRMWARE": "Для VPN не распознан набор системных компонентов. Поддерживаются профили CN B31, FLY B27 (B11), FLY B28 (B13) и HK B04. Соберите данные для адаптации.",
+            "CONTROLLER_EXECUTION": "Модем не смог запустить проверенный контроллер VPN. Проверьте права и возможность запуска файлов во временном каталоге.",
+            "UNSUPPORTED_FIRMWARE": "Системные компоненты не совпали с проверенными профилями VPN. Соберите полный дамп для адаптации.",
+            "COMPATIBILITY": "Компоненты роутера не прошли проверку совместимости VPN. Соберите полный дамп.",
+            "IPA_UNSUPPORTED": "Не распознаны компоненты ускорения трафика IPA. Установка VPN остановлена; соберите полный дамп.",
+            "NETWORK_CHANGED": "Сетевой скрипт не совпадает с проверенным штатным вариантом. Установка VPN остановлена.",
+            "WIFI_LAYOUT": "Схема Wi-Fi или настройки IPA не соответствуют адаптеру VPN. Соберите полный дамп.",
+            "RPC_UNSUPPORTED": "Интерфейс управления сетью не поддерживает необходимые операции VPN. Соберите полный дамп.",
             "RUNTIME_TOOLS": "В прошивке отсутствует одна из необходимых команд VPN: lua, nft, iptables, ip6tables, ebtables, dnsmasq, ip, ubus, sha256sum или flock.",
             "TUN_UNAVAILABLE": "Для VPN недоступно устройство /dev/net/tun.",
             "LUA_MODULES": "Не удалось загрузить модули Lua uci и luci.jsonc, необходимые для настройки VPN.",
@@ -715,7 +744,13 @@ final class VPNSettingsManager {
             "PAYLOAD": "Компоненты обновления VPN не прошли проверку контрольных сумм.",
             "VPN_PENDING": "Сначала завершите предыдущую настройку VPN.",
             "SCREEN_BUSY": "Закройте временную страницу VPN на модеме и повторите обновление.",
+            "CONTROLLER_EXECUTION": "Модем не смог запустить проверенный контроллер VPN. Проверьте права и возможность запуска файлов во временном каталоге.",
+            "CONFIGURATION_CHANGED": "Настройки гостевой сети или межсетевого экрана изменены. Не удалось подтвердить, что они принадлежат установленному VPN.",
+            "SYSTEM_FILES": "Не удалось безопасно прочитать системные компоненты для проверки VPN.",
+            "IPA_UNSUPPORTED": "Компоненты ускорения трафика IPA отличаются от поддерживаемой версии.",
+            "UNSUPPORTED_FIRMWARE": "Системные компоненты отличаются от проверенных профилей VPN.",
             "CONTROLLER_UNKNOWN": "Установлен неизвестный контроллер VPN. Автоматическая замена остановлена.",
+            "COMPATIBILITY": "Компоненты роутера не прошли проверку совместимости VPN. Соберите полный дамп.",
             "OLD_INTEGRITY": "Установленные компоненты VPN не прошли проверку целостности.",
             "DEVICE_CHANGED": "Модем изменился во время обновления VPN. Проверьте подключение.",
             "NETWORK_CHANGED": "Сценарий запуска сети изменён и не совпадает со штатным или сохранённым. Обновление VPN остановлено.",

@@ -11,7 +11,7 @@ use std::{
 };
 const HELPER: &str = "/data/zte-vpn/vpnctl";
 pub const REQUEST_LIMIT: usize = 32 * 1024 * 1024;
-const HELPER_SHA: &str = "f855efcae795ede354bfccf33b155792dc92c84cf86cdfce170edb0949e4bcac";
+const HELPER_SHA: &str = "bfce3f936a7fa9303cdcc7b7f2312f009a7d99cc2d4d99ed12adad1326743244";
 
 // Keep reviewed controllers usable when only the agent is updated. The build
 // retains the previous source pin here; no device-provided hash is accepted.
@@ -33,6 +33,11 @@ const PREVIOUS_HELPER_SHAS: &[&str] = &[
     "dbf07f7551415816a66ac18148d45c582649c76529282902533d154f5299c58e",
     "cbcdb1ce6b5a94f7a5868c81f1dd920831e68074fcf3c1588148b5d33b954ba8",
     "6b0012fa060b4c64707d537ec1f0fd0a1b68c11a82a1c59c843d50e8e7e5c476",
+    "f855efcae795ede354bfccf33b155792dc92c84cf86cdfce170edb0949e4bcac",
+    "4ac4526e643afa63bb4a9d59405c35e7496c5dba825df82fb6be7990f067be85",
+    "dbe5027504366f24bf9da3e3fc7605027aae375018a365d17645c239d096ab31",
+    "b29d2c2b91fa9d4e5c659473728c13577e8b1a8cae4447231be31ba382511776",
+    "fb6a965a016953e6b0be10983045f9c1df1dc80a3cc19a69db8e0311728919e7",
 ];
 fn supported_helper(hash: &str) -> bool {
     hash == HELPER_SHA || PREVIOUS_HELPER_SHAS.contains(&hash)
@@ -135,6 +140,9 @@ pub fn request(bytes: &[u8]) -> (u16, Value) {
     if !public_action(action) {
         return error(400, "VPN_INVALID_REQUEST");
     }
+    if action == "subscription_delete" && body["cascade"] != true {
+        return error(409, "VPN_DELETE_CONFIRMATION_REQUIRED");
+    }
     execute(&body)
 }
 fn public_action(action: &str) -> bool {
@@ -148,6 +156,7 @@ fn public_action(action: &str) -> bool {
         "subscription_details",
         "activate",
         "delete",
+        "delete_profiles",
         "rename",
         "details",
         "screen_open",
@@ -164,6 +173,9 @@ mod tests {
     use super::*;
     #[test]
     fn structured_ikev2_save_is_a_public_action() {
+        assert!(public_action("delete_profiles"));
+        assert_eq!(request(br#"{"action":"subscription_delete","id":"old-client"}"#).1["code"],
+            "VPN_DELETE_CONFIRMATION_REQUIRED");
         assert!(public_action("save_ikev2"));
         assert!(!public_action("ipsec"));
         assert!(!public_action("shell"));

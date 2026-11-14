@@ -260,6 +260,8 @@ static const struct error_text errors[] = {
     {"VPN_GUEST_IN_USE", "Гостевая сеть уже используется.", "The guest network is already in use."},
     {"VPN_MESH_CONFLICT", "Сначала выключите Mesh.", "Turn off Mesh first."},
     {"VPN_IPA_ENABLED", "Обновите компоненты VPN: требуется подготовка IPA.", "Update VPN components to prepare IPA automatically."},
+    {"VPN_RPC_UNSUPPORTED", "Интерфейс сети не поддерживается.", "The network management interface is unsupported."},
+    {"VPN_UNSUPPORTED_PLATFORM", "Нужны Linux ARM64 и root.", "Linux ARM64 and root are required."},
     {"VPN_IPA_UNSUPPORTED", "Компоненты ускорения IPA не распознаны.", "IPA acceleration components are not recognized."},
     {"VPN_IPA_NOT_RUNNING", "Служба ускорения IPA не запущена.", "The IPA acceleration service is not running."},
     {"VPN_IPA_PREPARE_FAILED", "Не удалось отключить ускорение IPA для VPN.", "Could not disable IPA acceleration for VPN."},

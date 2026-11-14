@@ -23,6 +23,7 @@ private final class MockScreen: RemoteTransport {
     var stalePID = false, corruptOriginal = false, staged = false, cleaned = false
     var remoteLocked = false, remoteLockRefused = false
     var quickReads = 0, quickDrift = "", errorReason: String?
+    var legacyRevision = "20260924"
     var legacy = false, accessFails = false, bootDriftAt = 0
     var installError = "installer rejected unknown mount"
     var stage = "", mutationActions = [String]()
@@ -53,17 +54,17 @@ private final class MockScreen: RemoteTransport {
         if command.contains("&& rm /tmp/zte-imei-app.lock/owner") { remoteLocked = false; return output("") }
         if command == ScreenLocalization.probeCommand { return output(installed ? "SCREEN_RU_INSTALLED\n" : status("absent", language: "en", pid: 0)) }
         if command == "sha256sum /data/zte-imei-screen-ru/manager.sh" {
-            return output((legacy ? ScreenLocalization.legacyManagerHashes["20260924"]! : ScreenLocalization.resourceHashes["install.sh"]!) + "  /data/zte-imei-screen-ru/manager.sh\n")
+            return output((legacy ? ScreenLocalization.legacyManagerHashes[legacyRevision]! : ScreenLocalization.resourceHashes["install.sh"]!) + "  /data/zte-imei-screen-ru/manager.sh\n")
         }
         if command == ScreenLocalization.reasonCommand { return output(errorReason ?? "STATUS_UNVERIFIED") }
         if command.contains("sh /data/zte-imei-screen-ru/manager.sh ") {
-            try check(command.contains("test ! -L") && command.contains("0$mode & 022") && command.contains(legacy ? ScreenLocalization.legacyManagerHashes["20260924"]! : ScreenLocalization.resourceHashes["install.sh"]!), "Unverified manager execution")
+            try check(command.contains("test ! -L") && command.contains("0$mode & 022") && command.contains(legacy ? ScreenLocalization.legacyManagerHashes[legacyRevision]! : ScreenLocalization.resourceHashes["install.sh"]!), "Unverified manager execution")
             if managerMismatch { return output("manager hash mismatch", code: 1) }
             let action = command.components(separatedBy: "sh /data/zte-imei-screen-ru/manager.sh ")[1].split(separator: " ")[0]
             try check(action == "status" || remoteLocked, "Mutation without shared remote lock")
             if action == "enable" { enabled = true; mutationActions.append("enable") }
             if action == "disable" { enabled = false; mutationActions.append("disable") }
-            return output(status(errorReason != nil ? "error" : enabled ? "enabled" : "disabled", language: enabled ? "cn" : "en", pid: stalePID ? 0 : 42).replacingOccurrences(of: ScreenLocalization.revision, with: legacy ? "20260924" : ScreenLocalization.revision))
+            return output(status(errorReason != nil ? "error" : enabled ? "enabled" : "disabled", language: enabled ? "cn" : "en", pid: stalePID ? 0 : 42).replacingOccurrences(of: ScreenLocalization.revision, with: legacy ? legacyRevision : ScreenLocalization.revision))
         }
         if command == "cat /usr/bin/zte_topsw_devui" || command == "cat /data/zte-imei-screen-ru/backup/zte_topsw_devui" {
             var bytes = original
@@ -141,11 +142,11 @@ private final class MockScreen: RemoteTransport {
             try rejects("Неизвестная") { _ = try ScreenLocalization.parseStatus(status("enabled", language: "ru")) }
             try rejects("Неизвестная") { _ = try ScreenLocalization.parseStatus(status("enabled").replacingOccurrences(of: ScreenLocalization.revision, with: "20990101")) }
         }
-        test("all seven fixed optional failure reasons retain error state and unknown reason is rejected") {
-            try check(ScreenLocalization.statusReasons.count == 7, "Unexpected reason catalog")
+        test("all fixed optional failure reasons retain error state and unknown reason is rejected") {
+            try check(ScreenLocalization.statusReasons.keys.contains("STOCK_GENERATION_CHANGED"), "Unexpected reason catalog")
             for (reason, text) in ScreenLocalization.statusReasons {
                 let result = try ScreenLocalization.parseStatus(status("error").trimmingCharacters(in: .newlines) + " reason=" + reason)
-                try check(result.state == .error && result.detail == text, "Fixed reason lost")
+                try check(result.state == .error && result.detail == text && result.reason == reason, "Fixed reason lost")
             }
             try rejects("Неизвестная причина") { _ = try ScreenLocalization.parseStatus(status("error").trimmingCharacters(in: .newlines) + " reason=PRIVATE_CANARY") }
         }
@@ -207,6 +208,15 @@ private final class MockScreen: RemoteTransport {
             let mock = MockScreen(original: original); mock.accessFails = true
             try rejects("platform refused") { _ = try perform(manager(mock), .enable) }
             try check(mock.commands.count == 1 && !mock.staged && !mock.remoteLocked, "Invalid access proof reached writes")
+        }
+        test("detached older screen generation uses current stock and cannot restore stale originals") {
+            let mock = MockScreen(original: original); mock.installed = true; mock.legacy = true
+            mock.legacyRevision = "20261030"; mock.errorReason = "STOCK_GENERATION_CHANGED"
+            let value = try manager(mock)
+            try rejects("сохранённой копии") { _ = try perform(value, .disable) }
+            try check(mock.mutationActions.isEmpty, "An old generation was restored")
+            try check(perform(value, .enable).state == .enabled && mock.mutationActions == ["install"], "Detached generation did not use staged installer")
+            try check(mock.commands.contains("cat /usr/bin/zte_topsw_devui") && !mock.commands.contains("cat /data/zte-imei-screen-ru/backup/zte_topsw_devui"), "Patch input was taken from the old backup")
         }
         test("previous 20260924 manager upgrades using preserved original and remains restorable") {
             let mock = MockScreen(original: original); mock.installed = true; mock.enabled = true; mock.legacy = true

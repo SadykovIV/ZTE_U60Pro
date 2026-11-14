@@ -1805,7 +1805,6 @@
   "Добавить подписку": "Add subscription",
   "Обновить подписку": "Update subscription",
   "Удалить подписку": "Remove subscription",
-  "Удаление подписки сохраняет её профили. Обновление не прерывает текущее VPN-подключение.": "Removing a subscription keeps its profiles. Updating does not interrupt the active VPN connection.",
   "Нужен файл UTF-8 со ссылкой VLESS/Hysteria2 или конфигурацией WireGuard/AmneziaWG, не больше 32 КиБ.": "Use a UTF-8 file with a VLESS/Hysteria2 link or WireGuard/AmneziaWG configuration, no larger than 32 KiB.",
   "Нужна ссылка VLESS или Hysteria2 длиной не больше 32 КиБ.": "Use a VLESS or Hysteria2 link no larger than 32 KiB.",
   "Нужен конфигурационный файл WireGuard или AmneziaWG не больше 32 КиБ.": "Use a WireGuard or AmneziaWG configuration file no larger than 32 KiB.",
@@ -1817,7 +1816,6 @@
   "Некорректный результат импорта VPN.": "Invalid VPN import result.",
   "Запрос VPN превышает допустимый размер.": "The VPN request exceeds the size limit.",
   "Подписка VPN обновлена": "VPN subscription updated",
-  "Подписка VPN удалена; профили сохранены": "VPN subscription removed; profiles kept",
   "Обновите компоненты VPN для автоматического переключения IPA.": "Update the VPN components to switch IPA automatically.",
   "Реализация IPA в этой прошивке ещё не поддерживается.": "This firmware’s IPA implementation is not yet supported.",
   "Служба IPA не найдена. Проверьте журнал модема.": "The IPA service was not found. Check the modem log.",
@@ -2016,5 +2014,12 @@
   "Карты проверены. Управление профилями eSIM недоступно.": "Cards checked. eSIM profile management is unavailable.",
   "Не все карты удалось проверить. Повторите проверку или выберите подтверждённую eUICC.": "Some cards could not be checked. Retry or select a confirmed eUICC.",
   "Профили eSIM: QR, активация и удаление": "eSIM profiles: QR, activation and removal",
-  "Профили SIM-карт": "SIM card profiles"
+  "Профили SIM-карт": "SIM card profiles",
+  "Удалить отмеченные": "Delete selected",
+  "Выбранные профили VPN удалены": "Selected VPN profiles deleted",
+  "Подписка VPN и её профили удалены": "VPN subscription and its profiles deleted",
+  "Отметить все показанные": "Select all shown",
+  "Снять отметки с показанных": "Deselect all shown",
+  "Удалить отмеченные профили? Если среди них есть активный, Wi-Fi с VPN отключится.": "Delete the selected profiles? If this includes the active profile, VPN Wi-Fi will turn off.",
+  "Удалить подписку и все её профили? Если среди них есть активный, Wi-Fi с VPN отключится.": "Delete this subscription and all its profiles? If this includes the active profile, VPN Wi-Fi will turn off."
 }

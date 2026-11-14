@@ -32,6 +32,35 @@ identity() {
  [ "$(cat /sys/block/mmcblk0/device/cid)" = "$cid" ] && [ "$(cat /proc/sys/kernel/random/boot_id)" = "$effective_boot" ] || fail IDENTITY
  observed_file_matches /firmware/image/modem.b16 "$fw" && observed_file_matches /usr/bin/diag-router "$router" || fail IDENTITY
 }
+# Filled from the verified desktop resources on prepare/clean. Earlier receipts
+# may refer to an installed VPN version with a different firmware policy.
+cleanup_controller_sha=bfce3f936a7fa9303cdcc7b7f2312f009a7d99cc2d4d99ed12adad1326743244
+cleanup_manager_sha=1892b2a0be1cdb87f3d907b952756d1025fec6c95bd23e4ce762fb9c957afb2a
+cleanup_configure_sha=4286f6c4b3d1ed516c394431fde602a03145b81f6c9ae3c10db977993a6b3102
+write_vpn_tools() {
+# ZTE_CLEANUP_VPN_PAYLOAD
+ :
+}
+vpn_tools() {
+ tools="$tx/vpn-tools-$cleanup_controller_sha"
+ if ! exists "$tools"; then mkdir "$tools" || fail VPN_INTEGRITY; fi
+ private_dir "$tools" || fail VPN_INTEGRITY
+ for f in vpnctl manager.sh configure.lua; do
+  if exists "$tools/$f"; then plain "$tools/$f" || fail VPN_INTEGRITY; fi
+  if exists "$tools/$f.new"; then plain "$tools/$f.new" && rm "$tools/$f.new" || fail VPN_INTEGRITY; fi
+ done
+ verify_tools() {
+  plain "$tools/vpnctl$1" && [ "$(hash "$tools/vpnctl$1")" = "$cleanup_controller_sha" ] &&
+  plain "$tools/manager.sh$1" && [ "$(hash "$tools/manager.sh$1")" = "$cleanup_manager_sha" ] &&
+  plain "$tools/configure.lua$1" && [ "$(hash "$tools/configure.lua$1")" = "$cleanup_configure_sha" ]
+ }
+ if ! verify_tools ''; then
+  write_vpn_tools && verify_tools .new || fail VPN_INTEGRITY
+  chmod 700 "$tools/vpnctl.new"
+  for f in vpnctl manager.sh configure.lua; do mv "$tools/$f.new" "$tools/$f"; done
+ fi
+ verify_tools '' && [ -x "$tools/vpnctl" ] || fail VPN_INTEGRITY
+}
 case "$action" in prepare|status|stream|clean|rebind) ;; *) exit 64;; esac
 uuid_valid "$uuid" && uuid_valid "$boot" && uuid_valid "$token" && hex "$cid" 32 && { [ "$fw" = absent ] || hex "$fw" 64; } && { [ "$router" = absent ] || hex "$router" 64; } || exit 64
 [ "$tx" = "/data/zte-imei-studio/cleanup-$uuid" ] || exit 64
@@ -200,9 +229,9 @@ check_root() {
 known_payload() {
  case "$1:$2" in
   vpn-service:3411d076729a717024d50ae8feb0777acf7ab792bb3878cb16ab7b282cbde63a|vpn-service:a171e7764a2355b2ff86c0c0f87385f9029cddf92c5d1a2f8dd417f6f58b2af9) return 0;;
-  manager:3f3345393c55dbac8f2b3de680364b3d3e6d0f9a3c0bcc3d11d7fed309d99d4b|manager:f2cdcb76dca87cfe873374d5a7be83a6440a46042a0ef26a4586f803dac99075|manager:f836b522c48a115c75233594207191214459f624180b7f98fabb754517d695b1|manager:ef5989252bbcdea112f793234827105e320cb9e8fdfd1fd699e63b33833fa94c|manager:f4c6145fb08b13ff6e9b68caa399beee373e7c6daba2a4648b4ee70eeb1958a0) return 0;;
+  manager:1892b2a0be1cdb87f3d907b952756d1025fec6c95bd23e4ce762fb9c957afb2a|manager:3f223da4b64a29c7ee817d86b22514a94dd8f98876b34db8a7875ee85d343544|manager:37a8d7599c06deb6bdddfcc07381f6126f20c956fe92ac94daa5fd470643f360|manager:5191e23cd78dd15b36ec8f179c5b6ef4b0be1bce13a7696ea9d5468e7654a5ac|manager:3f3345393c55dbac8f2b3de680364b3d3e6d0f9a3c0bcc3d11d7fed309d99d4b|manager:f2cdcb76dca87cfe873374d5a7be83a6440a46042a0ef26a4586f803dac99075|manager:f836b522c48a115c75233594207191214459f624180b7f98fabb754517d695b1|manager:ef5989252bbcdea112f793234827105e320cb9e8fdfd1fd699e63b33833fa94c|manager:f4c6145fb08b13ff6e9b68caa399beee373e7c6daba2a4648b4ee70eeb1958a0) return 0;;
   firewall:6fd50b7d16b93a6d0964dfd937c328eb93273fdab42204e2edf5bb72b7ea0da3|firewall:7d8ce304153612d4097c78738aa0f23c5cc420060b76a48c26dd668ac2657c99|firewall:91a8bc05543e34916e37dfa0b0ccc9394c102c2e0f13d590340bc5de3646848d) return 0;;
-  configure:a41e5de83268c6963a54760c8b5f5362ea2c5cdac81bede6ac281fea81e28543|configure:0c392c8302d83ef4a12ed5669092f95637b7d3c5153677a9525642d8601575e8) return 0;;
+  configure:4286f6c4b3d1ed516c394431fde602a03145b81f6c9ae3c10db977993a6b3102|configure:b0a8278c6e8e706c9f0b98a54d413ac1bc67be23291af512509f27d6471ab4c4|configure:a41e5de83268c6963a54760c8b5f5362ea2c5cdac81bede6ac281fea81e28543|configure:0c392c8302d83ef4a12ed5669092f95637b7d3c5153677a9525642d8601575e8) return 0;;
   ikev2:7ca9acbcac8cac4124769917d9c8a8528f27a675e48338437d4c9cd41cc3c5c0) return 0;;
   launcher-service:e0d5c80f061af69a8a7329476e33e6b4766a80b37a9a38e3d3217712551b4e90) return 0;;
   *) return 1;;
@@ -282,26 +311,33 @@ vpn_check() {
  if exists "$v/ikev2"; then checked_payload "$v/ikev2.sh" ikev2 || fail VPN_INTEGRITY; fi
  if exists "$v/ipa-backup"; then
   checked_payload "$v/manager.sh" manager || fail VPN_INTEGRITY
-  sh "$v/manager.sh" ipa-check >/dev/null 2>&1 || fail VPN_CONFIGURATION
+  vpn_tools
+  sh "$tools/manager.sh" cleanup-ipa-check >/dev/null 2>&1 || fail VPN_CONFIGURATION
  fi
  oem_plain /etc/init.d/network || fail VPN_NETWORK
+ detached=0
  if ! grep -qF zte-vpn /etc/init.d/network; then
-  # A reset may leave stale private markers but must not leave live owned UCI.
-  lua - "$lock/probe" <<'LUA' >/dev/null 2>&1 || fail VPN_CONFIGURATION
-local c=require('uci').cursor('/etc/config',arg[1])
-assert(c:load('network') and c:load('wireless') and c:load('firewall'))
-assert(not c:get_all('network','vpn') and not c:get_all('network','br_vpn'))
-assert(not c:get_all('firewall','zte_vpn_zone') and not c:get_all('firewall','zte_vpn_rules'))
-for _,n in ipairs({'guest_2g','guest_5g'}) do assert(c:get('wireless',n)=='wifi-iface' and c:get('wireless',n,'network')~='vpn' and c:get('wireless',n,'bridge')~='br-vpn') end
-LUA
-  vpn_mode=stock; return 0
+  vpn_tools
+  for pkg in network wireless firewall; do changes=$(uci changes "$pkg") && [ -z "$changes" ] || fail VPN_CONFIGURATION; done
+  layout=$(lua "$tools/configure.lua" layout "$lock/probe") || fail VPN_CONFIGURATION
+  case "$layout" in
+   stock) vpn_mode=stock; return 0;;
+   configured) [ "$(hash /etc/init.d/network)" = "$stock_sha" ] && plain "$v/configured" || fail VPN_NETWORK; detached=1;;
+   *) fail VPN_CONFIGURATION;;
+  esac
+ else
+  { plain "$v/configured" || plain "$v/configuring"; } && plain "$v/network-init.sha256" && [ "$(cat "$v/network-init.sha256")" = "$(hash /etc/init.d/network)" ] || fail VPN_NETWORK
  fi
- { plain "$v/configured" || plain "$v/configuring"; } && plain "$v/network-init.sha256" && [ "$(cat "$v/network-init.sha256")" = "$(hash /etc/init.d/network)" ] || fail VPN_NETWORK
  safe_dir "$v/backup" && plain "$v/backup/SHA256SUMS" && plain "$v/backup/network.init" || fail VPN_BACKUP
  sh -n "$v/backup/network.init" && ! grep -qF zte-vpn "$v/backup/network.init" || fail VPN_BACKUP
  # Exactly the five known backup entries; no arbitrary manifest paths.
  awk 'NF!=2 || $2!~/^(network|wireless|firewall|dhcp|network.init)$/ || length($1)!=64 || $1~/[^0-9a-f]/ || seen[$2]++ {bad=1} END{exit bad||NR!=5}' "$v/backup/SHA256SUMS" || fail VPN_BACKUP
+ for f in network wireless firewall dhcp; do plain "$v/backup/$f" || fail VPN_BACKUP; done
  (cd "$v/backup" && sha256sum -c SHA256SUMS >/dev/null 2>&1) || fail VPN_BACKUP
+ if [ "$detached" = 1 ]; then
+  cmp -s "$v/backup/network.init" /etc/init.d/network &&
+   [ "$(lua "$tools/configure.lua" original-layout "$lock/probe")" = stock ] || fail VPN_BACKUP
+ fi
  for pkg in network wireless firewall dhcp; do oem_plain "/etc/config/$pkg" || fail VPN_CONFIGURATION; [ -z "$(uci -q changes "$pkg")" ] || fail VPN_CONFIGURATION; done
  # Compare only owned sections against their exact original installer shapes.
  lua - "$lock/probe" <<'LUA' >/dev/null 2>&1 || fail VPN_CONFIGURATION
@@ -699,7 +735,8 @@ if [ "$vpn_mode" = configured ]; then
  done
 fi
 if exists /data/zte-vpn/ipa-backup; then
- sh /data/zte-vpn/manager.sh ipa-restore >/dev/null 2>&1 || fail VPN_RESTORE
+ vpn_tools
+ sh "$tools/manager.sh" cleanup-ipa-restore >/dev/null 2>&1 || fail VPN_RESTORE
 fi
 replace_planned /etc/rc.local rc.local after
 identity

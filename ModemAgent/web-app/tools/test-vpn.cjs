@@ -6,6 +6,17 @@ const ts = require('typescript')
 const React = require('react')
 const { renderToStaticMarkup } = require('react-dom/server')
 const exportsObject = {}
+test('cascade and bulk deletion check exact membership and active connection', () => {
+  const { deletionConfirmed } = loadModel()
+  const own = { id: 'a', subscription_id: 'one' }, other = { id: 'b', subscription_id: 'two' }, manual = { id: 'c' }
+  const before = { profiles: [own, other, manual], subscriptions: [{ id: 'one' }, { id: 'two' }], active_profile: 'a', enabled: true }
+  const after = { profiles: [manual, other], subscriptions: [{ id: 'two' }], active_profile: '', enabled: false }
+  assert.equal(deletionConfirmed(before, after, [], 'one'), true)
+  assert.equal(deletionConfirmed(before, { ...after, profiles: [{ id: 'a' }, manual, other] }, [], 'one'), false)
+  assert.equal(deletionConfirmed(before, { ...after, profiles: [manual] }, [], 'one'), false)
+  assert.equal(deletionConfirmed(before, { ...after, enabled: true }, [], 'one'), false)
+  assert.equal(deletionConfirmed(before, { ...before, profiles: [own] }, ['b', 'c']), true)
+})
 const source = fs.readFileSync(`${__dirname}/../src/features/network/VpnProfileDetails.tsx`, 'utf8')
 vm.runInNewContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText, {
   exports: exportsObject,
@@ -69,7 +80,7 @@ test('shared profile list enables applying pending active updates and shows subs
   vm.runInNewContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText, {
     exports,
     require: name => {
-      if (name === 'react') return { ...React, useEffect() {}, useRef: value => ({ current: value }), useState: value => [state++ === 0 ? status : state === 7 ? summary : value, () => {}] }
+      if (name === 'react') return { ...React, useEffect() {}, useRef: value => ({ current: value }), useState: value => [state++ === 0 ? status : state === 8 ? summary : value, () => {}] }
       if (name === '../../i18n') return { useI18n() {}, translate: value => value }
       if (name === '../../data/client') return { req() { throw new Error('No network in render') }, ApiError: Error }
       if (name === '../../ui/controls') return { Button: ({ loading, ...props }) => React.createElement('button', props), Field: ({ label, children }) => React.createElement('label', {}, label, children), Input: props => React.createElement('input', props) }
@@ -184,8 +195,8 @@ for (const finalStatusFails of [false, true]) test(`update-all button preserves 
   assert.equal(findButton(render()).props.disabled, true)
   assert.equal(requests.length, 1)
   releaseFirst()
-  for (let i = 0; i < 20 && states[1]; i++) await new Promise(resolve => setImmediate(resolve))
-  assert.equal(states[1], false)
+  for (let i = 0; i < 20 && findButton(render()).props.disabled; i++) await new Promise(resolve => setImmediate(resolve))
+  assert.equal(findButton(render()).props.disabled, false)
   assert.deepEqual(requests.map(item => item.body?.id ?? item.method), ['a', 'b', 'c', 'GET'])
   assert.equal(requests[3].path, '/api/vpn/status')
   assert.equal(states[0].active_profile, 'live'); assert.equal(states[0].enabled, true)

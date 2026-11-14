@@ -46,6 +46,16 @@ def main():
     if not (dist/'index.html').is_file():raise SystemExit('Build dashboard first')
     helper=ROOT/'ModemAgent/target/aarch64-unknown-linux-musl/release/zte-vpnctl'
     shutil.copy2(helper,mac/'VPN/vpnctl')
+    cleanup = mac/'Onboarding/clean-components.sh'
+    body = cleanup.read_text()
+    for kind,name in [('controller','vpnctl'),('manager','manager.sh'),('configure','configure.lua')]:
+        body,count = re.subn(r'(?m)^cleanup_'+kind+r'_sha=[a-f0-9]{64}$','cleanup_'+kind+'_sha='+sha(mac/'VPN'/name),body)
+        if count != 1: raise ValueError('Missing cleanup tool pin for '+name)
+    cleanup.write_text(body)
+    installer=mac/'VPN/install.sh'
+    installer_source,count=re.subn(r'(?m)^controller_sha=[a-f0-9]{64}$', 'controller_sha='+sha(helper), installer.read_text())
+    if count!=1:raise SystemExit('Missing or ambiguous VPN installer controller pin')
+    installer.write_text(installer_source)
     shutil.copy2(ROOT/'ModemAgent/vpnctl/THIRD-PARTY.txt',mac/'VPN/Subscription-LICENSES.txt')
     p=mac/'VPN/upgrade-controller.sh';s=p.read_text()
     old=re.search(r'(?m)^helper_sha=([a-f0-9]{64})$',s).group(1)
@@ -90,7 +100,7 @@ def main():
     manifest(mac/'VPN')
     for app in [mac,win]:
         shutil.copy2(args.agent,app/'Onboarding/zte-agent')
-        p=app/'Onboarding/provenance.json';d=json.loads(p.read_text());d.update(agent_sha256=args.sha256,local_agent_version=version,local_agent_release='ModemAgent/releases/'+version);d['files']['zte-agent']=args.sha256
+        p=app/'Onboarding/provenance.json';d=json.loads(p.read_text());d.update(agent_sha256=args.sha256,local_agent_version=version,local_agent_release='ModemAgent/releases/'+version);d['files']['zte-agent']=args.sha256;d['files']['clean-components.sh']=sha(cleanup)
         change='Unified SIM/eUICC protocol2: explicit physical1/logical1 or physical2/logical2; stock Chinese eSIM provisioning unsupported; no automatic slot or network switching.'
         if change not in d['local_changes']:d['local_changes'].append(change)
         p.write_text(json.dumps(d,indent=2,ensure_ascii=False)+'\n');manifest(app/'Onboarding')

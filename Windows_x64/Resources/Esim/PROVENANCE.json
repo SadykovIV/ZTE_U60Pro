@@ -1,6 +1,6 @@
 {
-  "agent_version": "2.11.0",
-  "agent_sha256": "10919284afa5c72fd1401fa7514d50e17e246cd3b29b54b899d6453493658c23",
+  "agent_version": "2.12.0",
+  "agent_sha256": "cde0597c9595d6e5d97875976e6cce4ead450fd7771dafe1e4bb2e15441552cf",
   "lpac_version": "2.3.0 + pinned stdio backports",
   "lpac_commit": "c2fcf5e4b21c712d54e35a11da2ad9ad134fb821",
   "lpac_linux_sha256": "32e7ff567cc38ff3522a02f71c0b9d4df2d5c745dbe664ee94655d737fdef478",
@@ -59,11 +59,11 @@
   },
   "archived_dependency_snapshot": {
     "path": "tools/dependencies.json",
-    "source_ref": "da091fb7e6af804b81d51b913c20eb848303982e",
-    "sha256": "29c00a9cc4bd76f5190141be668230acf00ad008871fad72a200e17f40d4883b"
+    "source_ref": "8ce1a853b7ddaafbc84e4227a37dab077e7989f4",
+    "sha256": "0337b3e6e9f2b4715554e3574f5e1a758ebeedc069a84606ee61b681892e8b4c"
   },
-  "source_archive_files": 524,
-  "source_archive_sha256": "6d957fb0998fe13bd88ac9e1b81ea9d4194810db4a25b852429f1effe4769782",
+  "source_archive_files": 527,
+  "source_archive_sha256": "9b550f75b5496cf0931e27dd667c042a97addb544aba8eecb769e6775311b41d",
   "gsma_pem_sha256": "7364a2ac4d2b5f77c1b83ee7e1c535e8fc806c67ee42e73ad97c35464d203477",
   "gsma_roots": [
     {

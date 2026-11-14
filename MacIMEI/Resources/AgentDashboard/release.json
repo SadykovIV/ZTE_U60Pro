@@ -1,6 +1,6 @@
 {
-  "version": "2.11.0",
-  "agent_sha256": "10919284afa5c72fd1401fa7514d50e17e246cd3b29b54b899d6453493658c23",
+  "version": "2.12.0",
+  "agent_sha256": "cde0597c9595d6e5d97875976e6cce4ead450fd7771dafe1e4bb2e15441552cf",
   "esim": true,
   "esim_protocol": 2,
   "esim_target_mode": "explicit",

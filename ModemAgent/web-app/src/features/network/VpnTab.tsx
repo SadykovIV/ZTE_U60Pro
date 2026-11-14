@@ -3,20 +3,21 @@ import { req, ApiError } from '../../data/client'
 import { useI18n, translate as t } from '../../i18n'
 import { Button, Field, Input } from '../../ui/controls'
 import { Card } from '../../ui/primitives'
-import { toast } from '../../ui/feedback'
+import { confirm, toast } from '../../ui/feedback'
 import { VpnProfileDetails, type ProfileDetails } from './VpnProfileDetails'
 import { Ikev2ProfileForm } from './Ikev2ProfileForm'
 import { vpnErrors } from '../../locales/ru-vpn'
-import { IKEV2_DNS_HINT, IKEV2_ROUTING, activationConfirmed, profileImport, protocolLabel, updateSubscriptionsSequentially, warningText, type ImportSummary, type SubscriptionUpdate } from './vpnModel'
+import { IKEV2_DNS_HINT, IKEV2_ROUTING, activationConfirmed, deletionConfirmed, profileImport, protocolLabel, updateSubscriptionsSequentially, warningText, type ImportSummary, type SubscriptionUpdate } from './vpnModel'
 
 type Profile = { id: string; name: string; transport: string; warnings: string[]; active: boolean; protocol?: string; subscription_id?: string; update_available?: boolean; removed_from_subscription?: boolean }
 type Subscription = { id: string; name: string; host: string; updated_at: string | number; profile_count: number }
-type Status = { schema_version: number; installed: boolean; enabled?: boolean; core_running?: boolean; ikev2_connected?: boolean; ikev2_state?: 'waiting' | 'connected' | 'disconnected';
+type Status = { schema_version: number; installed: boolean; profile_deletion_supported?: boolean; enabled?: boolean; core_running?: boolean; ikev2_connected?: boolean; ikev2_state?: 'waiting' | 'connected' | 'disconnected';
   configured?: boolean; network_ok?: boolean; ssid?: string; active_profile?: string; recovery_pending?: boolean; screen?: { installed?: boolean; integrated?: boolean; active: boolean; ready: boolean; last_error?: string }; profiles: Profile[]; subscriptions?: Subscription[]; last_import?: ImportSummary }
 
 export default function VpnTab() {
   useI18n()
   const [status, setStatus] = useState<Status | null>(null)
+  const [marked, setMarked] = useState<Set<string>>(new Set())
   const [busy, setBusy] = useState(false)
   const [name, setName] = useState('')
   const [uri, setUri] = useState('')
@@ -34,6 +35,13 @@ export default function VpnTab() {
   const generation = useRef(0)
   const changing = useRef(false)
   const ikev2State = status?.ikev2_state ?? (status?.ikev2_connected ? 'connected' : 'disconnected')
+  function acceptStatus(value: Status) {
+    const ids = new Set(value.profiles.map(p => p.id))
+    setMarked(current => new Set([...current].filter(id => ids.has(id))))
+    setDetails(current => current && ids.has(current.profile.id) ? current : null)
+    setIkev2Editing(current => current && ids.has(current.id) ? current : undefined)
+    setStatus(value)
+  }
   function showError(e: unknown) {
     const message = e instanceof ApiError && e.code ? vpnErrors[e.code] : undefined
     setError(message ?? 'VPN settings could not be updated. Refresh the status before retrying.')
@@ -44,7 +52,7 @@ export default function VpnTab() {
     try {
       const value = await req('GET', '/api/vpn/status') as unknown as Status
       if (value.schema_version !== 1 || !Array.isArray(value.profiles)) throw new Error('Invalid status')
-      if (ticket === generation.current) { setStatus(value) }
+      if (ticket === generation.current) { acceptStatus(value) }
     } catch (e) { if (ticket === generation.current) showError(e) }
   }
   useEffect(() => {
@@ -72,7 +80,14 @@ export default function VpnTab() {
       }
       if (body.action === 'screen_open' || body.action === 'screen_close') {
         setStatus(current => current ? { ...current, screen: value.screen } : current)
-      } else setStatus(value)
+      } else {
+        if (value.schema_version !== 1 || !Array.isArray(value.profiles)) throw new Error('Invalid VPN status')
+        acceptStatus(value)
+        if ((body.action === 'delete_profiles' || body.action === 'subscription_delete') && (!status ||
+          !deletionConfirmed(status, value, (body.ids ?? []) as string[], body.action === 'subscription_delete' ? String(body.id) : undefined))) {
+          setError('The modem did not confirm deletion. Refresh VPN status.'); return false
+        }
+      }
       if (body.action === 'rename') {
         setEditing('')
         setDetails(current => current && current.profile.id === body.id ? { ...current, profile: { ...current.profile, name: String(body.name).trim() } } : current)
@@ -88,6 +103,15 @@ export default function VpnTab() {
     } catch (e) { showError(e); return false }
     finally { changing.current = false; setBusy(false) }
   }
+  async function confirmDeletion(ids: string[], subscription?: Subscription) {
+    const title = subscription ? t('Remove subscription') + ' · ' + subscription.name : t('Delete selected')
+    const count = subscription?.profile_count ?? ids.length
+    if (await confirm({ title: title + ' (' + count + ')', body: t(subscription
+      ? 'Delete this subscription and all its profiles? If this includes the active profile, VPN Wi-Fi will turn off.'
+      : 'Delete the selected profiles? If this includes the active profile, VPN Wi-Fi will turn off.'), danger: true, confirmLabel: t('Delete') })) {
+      await change(subscription ? { action: 'subscription_delete', id: subscription.id, cascade: true } : { action: 'delete_profiles', ids })
+    }
+  }
   async function updateAllSubscriptions() {
     if (changing.current || !status?.subscriptions?.length) return
     const subscriptions = status.subscriptions
@@ -98,13 +122,13 @@ export default function VpnTab() {
       await updateSubscriptionsSequentially(subscriptions, async id => {
         const value = await req('POST', '/api/vpn/request', { action: 'subscription_update', id }, undefined, 240_000) as unknown as Status
         if (value.schema_version !== 1 || !Array.isArray(value.profiles) || !value.last_import) throw new Error('Invalid update result')
-        setStatus(value)
+        acceptStatus(value)
         return value.last_import
       }, error => error instanceof ApiError && error.code && vpnErrors[error.code] ? error.code : 'VPN_OPERATION_FAILED', setSubscriptionUpdates)
       try {
         const value = await req('GET', '/api/vpn/status') as unknown as Status
         if (value.schema_version !== 1 || !Array.isArray(value.profiles)) throw new Error('Invalid status')
-        setStatus(value)
+        acceptStatus(value)
       } catch { setError('Could not refresh the final VPN status. Individual subscription results are shown below.') }
     } finally { changing.current = false; setBusy(false); setUpdatingSubscriptions(0) }
   }
@@ -146,14 +170,27 @@ export default function VpnTab() {
           {status.configured && !status.network_ok && <p className="text-danger">{t('The VPN network configuration needs checking. Keep this network off until it is repaired.')}</p>}
           <div className="flex flex-wrap gap-2 pt-2">
             <Button loading={busy} disabled={!status.active_profile} onClick={() => void change({ action: 'set_enabled', enabled: !status.enabled })}>{status.enabled ? t('Turn off VPN Wi-Fi') : t('Turn on VPN Wi-Fi')}</Button>
-            {status.recovery_pending && <Button disabled={busy} onClick={() => void change({ action: 'recover' })}>{t('Restore previous VPN profile')}</Button>}
+            {status.recovery_pending && <Button disabled={busy} onClick={() => void change({ action: 'recover' })}>{t('Finish pending VPN operation')}</Button>}
           </div>
         </div>
       </Card>
       <Card title={t('Profiles on the modem')}>
         {!status.profiles.length && <p className="text-[13px] text-ink2">{t('Import your first VPN profile to begin.')}</p>}
+        {!status.profile_deletion_supported && <p className="text-xs text-ink2">{t('Update VPN components in the desktop app to delete groups of profiles or subscriptions.')}</p>}
+        {status.profile_deletion_supported && status.profiles.length > 0 && <div className="mb-3 flex flex-wrap gap-2">
+          <Button disabled={busy} onClick={() => setMarked(marked.size === status.profiles.length ? new Set() : new Set(status.profiles.map(p => p.id)))}>{t(marked.size === status.profiles.length ? 'Clear selection' : 'Select all')}</Button>
+          <Button disabled={busy || !marked.size} onClick={() => void confirmDeletion([...marked])}>{t('Delete selected')} ({marked.size})</Button>
+        </div>}
         <div className="divide-y divide-line/10">
           {status.profiles.map(profile => <div key={profile.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
+            {status.profile_deletion_supported && <input type="checkbox" aria-label={profile.name} checked={marked.has(profile.id)} disabled={busy} onChange={e => {
+              const checked = e.currentTarget.checked
+              setMarked(current => {
+                const next = new Set(current)
+                if (checked) next.add(profile.id); else next.delete(profile.id)
+                return next
+              })
+            }} />}
             <div className="min-w-0 flex-1">
               <p className="break-words text-sm font-semibold text-ink">{profile.name}</p>
               <p className="text-xs text-ink2">{profile.active ? t('Active profile') + ' · ' : ''}{protocolLabel(profile.protocol)} · {profile.transport.toUpperCase()}</p>
@@ -210,10 +247,9 @@ export default function VpnTab() {
           <div className="min-w-0"><p className="break-words text-sm font-semibold text-ink">{subscription.name}</p><p className="break-words text-xs text-ink2">{subscription.host} · {t('Profiles')}: {subscription.profile_count}</p></div>
           <div className="flex flex-wrap gap-2">
             <Button disabled={busy} onClick={() => void change({ action: 'subscription_update', id: subscription.id })}>{t('Update subscription')}</Button>
-            <Button disabled={busy} onClick={() => void change({ action: 'subscription_delete', id: subscription.id })}>{t('Remove subscription')}</Button>
+            <Button disabled={busy || !status.profile_deletion_supported} onClick={() => void confirmDeletion([], subscription)}>{t('Remove subscription')}</Button>
           </div>
         </div>)}</div>
-        <p className="mt-3 text-xs text-ink2">{t('Removing a subscription keeps its profiles. Updating does not interrupt the active VPN connection.')}</p>
         {subscriptionUpdates.length > 0 && <section className="mt-4 space-y-3" aria-label={t('Subscription update results')}>
           <h3 className="text-[13px] font-semibold text-ink">{t('Subscription update results')}</h3>
           {subscriptionUpdates.map(result => <div key={result.id} className="rounded-lg border border-line/10 p-3 text-xs">

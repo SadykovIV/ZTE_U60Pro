@@ -6,7 +6,7 @@
   "font.patch.b27.json": "fa7d5ca09707522ac7e6c0a6c98baff3cabc7f1587e850c11d2141fa9a9b5e98",
   "font.patch.b28.json": "0f9300f77ea577332256fd34dce3d501be86e1fa00c7ebea41b32d3193954b18",
   "font.patch.json": "f171291a83b269e605e70747a7799eae53f35e1e6488db30a41d37dd87146e18",
-  "install.sh": "45907dd3237cae7ce0c9e1f2fdb3b74cec388d2d08a7394cb36bf096f0c3eda2",
-  "provenance.json": "b261b583e1b7a729258aabef80eada71e945bf2debe198480cfb052bb893366e",
+  "install.sh": "c8f8c00cddd4ebcfa03655f52221c74b6c30524cb68ddc388d7b192939973ecc",
+  "provenance.json": "c5d932b0adb4a830b0b44e85df8a422a49a936f2c465c6703496f93b9b951ab2",
   "service.sh": "8b25166707a21bb3b55f77d9af34822a39aa5e8058b5c521431f0379386051e9"
 }

@@ -132,6 +132,9 @@ class AgentUpgradeRetentionTests(unittest.TestCase):
         self.put(self.root / 'ModemAgent/vpnctl/THIRD-PARTY.txt', 'synthetic license')
         self.put(self.root / 'ModemAgent/web-app/dist/index.html', 'synthetic dashboard')
         self.put(self.root / 'ModemAgent/web-app/node_modules/jsqr/LICENSE', 'synthetic license')
+        self.put(self.mac / 'Onboarding/clean-components.sh', ''.join(
+            'cleanup_' + kind + '_sha=' + self.first + '\n' for kind in ('controller', 'manager', 'configure')))
+        self.put(self.mac / 'VPN/install.sh', 'controller_sha=' + self.first + '\n')
         for name in ['manager.sh','configure.lua','firewall.sh','nft-guard.nft','dnsmasq.conf','service.sh','ikev2.sh','ikev2-updown.sh','nft-ikev2-guard.nft','launcher.so','launcher.sha256','dashboard-uhttpd','start-dashboard.sh','dashboard-html.sh','stop-owned-listener.sh','update-rc-local.sh','preserve-dashboard-assets.sh']:
             self.put(self.mac / 'VPN' / name, 'synthetic '+name)
         self.put(self.mac / 'VPN/README.md', 'обновление агента 2.7.0-vpn.1')

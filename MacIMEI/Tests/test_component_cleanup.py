@@ -42,13 +42,22 @@ else:
   self.command('sha256sum','exec '+shlex.quote(sys.executable)+' '+shlex.quote(str(sha_py))+' "$@"')
   self.command('mv','[ \"${1:-}\" != -T ] || shift; exec /bin/mv \"$@\"');self.command('sync',':');self.command('sleep',':');self.command('ubus',':');self.command('ip',':')
   self.command('uci','''case "$*" in *changes*) exit 0;; *get*) exit 1;; esac''')
-  self.command('lua','''cat >/dev/null; [ "${FAIL_LUA:-0}" = 0 ]''')
+  self.command('lua','''case "${2:-}" in layout|original-layout) echo stock; exit 0;; esac; cat >/dev/null; [ "${FAIL_LUA:-0}" = 0 ]''')
   self.command('sh','''case "$1" in */firewall.sh) echo firewall >> "$CALLS";exit 0;; *) exec /bin/sh "$@";; esac''')
   self.calls=self.root/'calls';self.env['CALLS']=str(self.calls)
   self.script=self.root/'cleanup.sh';s=SOURCE.read_text();s=s.replace('export PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C','export LC_ALL=C')
   s=re.sub(r'(?<![A-Za-z0-9_/])/(?:usr/bin/diag-router|usr/bin/zte_topsw_devui|firmware|sys|proc|data|etc|tmp/zte-imei-app.lock)',lambda m:str(self.root)+m[0],s)
   s=s.replace('${p#/}', '${p#'+str(self.root)+'/}').replace('p=/$rel','p='+str(self.root)+'/$rel').replace('tar -C / ', 'tar -C '+str(self.root)+' ').replace('p="/$rel"', 'p="'+str(self.root)+'/$rel"')
-  self.script.write_text(s)
+  # Model the signed desktop's fixed, hash-verified tool payload. No fixture
+  # binary from a captured device is ever executed here.
+  tools={'vpnctl':b'#!/bin/sh\nexit 0\n','manager.sh':(BASE/'Resources/VPN/manager.sh').read_bytes(),
+         'configure.lua':(BASE/'Resources/VPN/configure.lua').read_text().replace("'/data/zte-vpn'",repr(str(self.root/'data/zte-vpn'))).encode()}
+  import base64
+  payload=[]
+  for (name,data),key in zip(tools.items(),['controller','manager','configure']):
+   s=re.sub('(?m)^cleanup_'+key+'_sha=.*','cleanup_'+key+'_sha='+hashlib.sha256(data).hexdigest(),s)
+   payload.append('base64 -d > "$tools/'+name+'.new" <<\'ZTE_B64\' || return 1\n'+base64.encodebytes(data).decode()+'ZTE_B64')
+  self.script.write_text(s.replace('# ZTE_CLEANUP_VPN_PAYLOAD','\n'.join(payload)))
   self.tx=self.root/f'data/zte-imei-studio/cleanup-{self.id}'
  def write(self,rel,data,mode=0o600):
   p=self.root/rel;p.parent.mkdir(parents=True,exist_ok=True,mode=0o700);p.write_text(data);p.chmod(mode);return p
@@ -132,8 +141,8 @@ return {cursor=function(path)
  local backup=path:find('/backup')~=nil
  local c={}
  function c:load(pkg) return true end
- function c:get_all(pkg,s) return configs[pkg] and configs[pkg][s] end
- function c:get(pkg,s,k) if backup then if k=='disabled' then return '1' end;if not k then return 'wifi-iface' end;return nil end
+ function c:get_all(pkg,s) if backup then return nil end;return configs[pkg] and configs[pkg][s] end
+ function c:get(pkg,s,k) if backup then if k=='network' then return 'lan' end;if k=='disabled' then return '1' end;if not k then return 'wifi-iface' end;return nil end
  local section=self:get_all(pkg,s);return section and section[k or '.type'] end
  function c:set(pkg,s,k,v) assert(pkg=='wireless' and (s=='guest_2g' or s=='guest_5g'));configs[pkg][s][k]=v;return true end
  function c:delete(pkg,s,k) if k then configs[pkg][s][k]=nil else configs[pkg][s]=nil end;return true end
@@ -154,14 +163,20 @@ return {cursor=function(path)
   self.command('lua','exec '+shlex.quote(lua)+' "$@"')
  def test_configured_disabled_vpn_restores_stock_after_verified_archive(self):
   self.vpn();self.lua_fixture();digest=self.prepare();self.assertFalse((self.root/'restored').exists());self.ok(self.run_helper('clean',digest));self.assertTrue((self.root/'restored').exists());self.assertEqual(sha(self.root/'etc/init.d/network'),sha(BASE/'Resources/VPN/network.stock'));self.assertTrue((self.tx/'retained/data_zte-vpn/backup').is_dir())
+ def test_detached_hook_with_owned_configuration_still_restores_after_archive(self):
+  d=self.vpn();self.lua_fixture();shutil.copyfile(BASE/'Resources/VPN/network.stock',self.root/'etc/init.d/network')
+  bad=self.run_helper('prepare',BAD_SECTION='1')
+  self.assertIn(b'VPN_CONFIGURATION',bad.stderr);self.assertFalse((self.tx/'components.tar').exists())
+  digest=self.prepare();self.assertEqual((self.tx/'vpn-mode').read_text().strip(),'configured')
+  self.ok(self.run_helper('clean',digest));self.assertTrue((self.root/'restored').exists());self.assertFalse(d.exists())
  def ipa_fixture(self,configured=True):
   d=self.vpn(configured);self.write('etc/config/zwrt_router','ipa=1\nunrelated=keep\n')
   self.write('data/zte-vpn/ipa-backup/original','original policy')
   shutil.copyfile(BASE/'Resources/VPN/manager.sh',d/'manager.sh');(d/'manager.sh').chmod(0o600)
   self.command('sh',r'''case "$1" in
  */manager.sh) case "$2" in
-  ipa-check) exit 0;;
-  ipa-restore)
+  cleanup-ipa-check) exit 0;;
+  cleanup-ipa-restore)
    test -f "$ARCHIVE" || exit 88
    test "${FAIL_IPA_RESTORE:-0}" = 0 || exit 89
    echo ipa-restored >> "$CALLS"

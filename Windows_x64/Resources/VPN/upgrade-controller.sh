@@ -5,9 +5,9 @@ umask 077
 ROOT=/data/zte-vpn
 stage=${1:-}
 
-helper_sha=f855efcae795ede354bfccf33b155792dc92c84cf86cdfce170edb0949e4bcac
-manager_sha=3f3345393c55dbac8f2b3de680364b3d3e6d0f9a3c0bcc3d11d7fed309d99d4b
-configure_sha=0c392c8302d83ef4a12ed5669092f95637b7d3c5153677a9525642d8601575e8
+helper_sha=bfce3f936a7fa9303cdcc7b7f2312f009a7d99cc2d4d99ed12adad1326743244
+manager_sha=1892b2a0be1cdb87f3d907b952756d1025fec6c95bd23e4ce762fb9c957afb2a
+configure_sha=4286f6c4b3d1ed516c394431fde602a03145b81f6c9ae3c10db977993a6b3102
 firewall_sha=91a8bc05543e34916e37dfa0b0ccc9394c102c2e0f13d590340bc5de3646848d
 nft_guard_sha=4616ff9a72c5e5c6c34e7936600bb161af757dd357ab14de34670db90b34f23a
 dnsmasq_sha=a1c68c3e695b9f599bec5821871f6ba89a3543ac587627754573628ac9ca66b1
@@ -22,7 +22,7 @@ ikev2_updown_sha=4cf9e55f0730a34a8d5be0b5c3297b042ec367a7cf851c6e841cbebca89c3b3
 nft_ikev2_sha=28e1a636ff4f806eb17d79f14c95c11b740dc80826a123635896e664fedf64d1
 hash() { sha256sum "$1" | awk '{print $1}'; }
 known() {
-    case "$1" in 8f9e82ca45177fc19ffd4d7663764fa44750e05eed86ef83567ed2dec5ce7827|96a4717fe085a80479675486d23b260c3254084638d195d933d4d9d944b98e88|48b9af93098b4b1b31754a48707ac066a39977bcc0db0cc438ead64c62322bd4|572e2e1133cebb690584bda8b5ac047336451bc26c6a5e37522a756b6254fac5|80f16fafe203d661d6a90686c90a25c61eea38cf9e83e002c1cdffea85d02f23|3c8a139d9ba6f3372b009e9e0fb5ed9ff27faf1675dcb654f09eedec851661f3|e2ffd02708220d332bf31f7f1f4c3abe369fbc2af1665af885c1f4375a884ff0|c67f5fdc44ee1f90c38dca15fd452c18743def22f776018aaac270863eafb229|bdc6aa07f217ce38e34e113d279e0d983d307fefd0f58027a9c221861f953dbf|9c2e3c21eecace7031c4029c969efdec44241f000716447df805f3020dfce95e|29e98c9301609b4f20ea94c7e8b208c25786690be451bae05145721a35b91179|9e8b1a737888468a4be6a010a915524b84440037802c6cfc6a5e251abf0e81ce|cdb01d27775d61bcb3ae14a8d124ccbab683f940f1dcfd2adffa43a6b7b462f0|3142fb503e64ddba79d523be3c87f0344d6efa78673e30a4b740714d8e9389ca|f620dab27f951c7de2de77a89376975b51c79f57f8a8a24cec95392c9c61eea4|1cc33e3825a556a825e83392675c254ef22f738660d1016ae1413f7669f88231|a388d8fa771b3e4bb46d500202ff750df410b4e6608d0f4902288b6aad16d731|7a12d8b869d064229270a264e8de9adf64f620337995fb186854c35cadbee068|7a8b84c3502e711c6b66c943f883a984dd9ed82da41455fc083ed0cc7d44b6fb|1c0e3e6d308a6c4b161faf896a00437b8e011fe5b7eff7969b9870c85d8d0c5c|f5e1c9e627e3e978ff535de79b95ff920d7318e7ea3ce713e5b174efe313ca0c|cf15a6290316dd6832873e35972831a590d70cf0734eb93dbcd96aab87fab6f1|b2c3fcfafeccd50fa3000ad5f8f66f1e42ff157b295cdda11dddd31571612af7|fe1f6d535ccee6ec0f9333c01108b00f35006209850ed641023dbb937dd30b48|82a8b6655ff6cd43938ffe3735e8841599ef6116bf33079d8d203db9415ca3f2|82b2ef604c40bf523affa42f7ee85bd41155fac50a2e24af51a97a01b25dc7b9|0cccacc9fbaf10c16e6d6279e5d2972c5d2096dda8d6cf90c85e236d944f6ddf|b5f581427afd423be3931473db2ce4b496a387b685ab3c48adf26cc597000f9a|e00749ed2a6273c95a4b0563212313c81e54928f6564fdbd8f9616d12a4df6ba|8aaece533e2503c7a501497bb1bf191f37a0ffbba067e7a7ff3a4c6f9623673f|3b572cf943d16a66dae1d62515b216eceaf77d397035320eb3c08a5db0e21fc4|a35d788005d4150cd909f85afc667073a03febd24b50a708facf506b051c8a65|ff5859edb44d83fad9723ccdc142f28ce918b02fae3da929667726d32746986c|4e8b92cc5089200f3fced24130e47e0918bf8931989af034f709344a42cd5b0d|61ccaf5fa0361178dd6fe4a0104d964168f4f79a8453a8617a80a7403240d393|46257e8e24397f097b3ce3e53067ad59b265803f66aeb2da6d216b05dd2e5db7|dbf07f7551415816a66ac18148d45c582649c76529282902533d154f5299c58e|cbcdb1ce6b5a94f7a5868c81f1dd920831e68074fcf3c1588148b5d33b954ba8|6b0012fa060b4c64707d537ec1f0fd0a1b68c11a82a1c59c843d50e8e7e5c476|"$helper_sha") return 0;; *) return 1;; esac
+    case "$1" in 8f9e82ca45177fc19ffd4d7663764fa44750e05eed86ef83567ed2dec5ce7827|96a4717fe085a80479675486d23b260c3254084638d195d933d4d9d944b98e88|48b9af93098b4b1b31754a48707ac066a39977bcc0db0cc438ead64c62322bd4|572e2e1133cebb690584bda8b5ac047336451bc26c6a5e37522a756b6254fac5|80f16fafe203d661d6a90686c90a25c61eea38cf9e83e002c1cdffea85d02f23|3c8a139d9ba6f3372b009e9e0fb5ed9ff27faf1675dcb654f09eedec851661f3|e2ffd02708220d332bf31f7f1f4c3abe369fbc2af1665af885c1f4375a884ff0|c67f5fdc44ee1f90c38dca15fd452c18743def22f776018aaac270863eafb229|bdc6aa07f217ce38e34e113d279e0d983d307fefd0f58027a9c221861f953dbf|9c2e3c21eecace7031c4029c969efdec44241f000716447df805f3020dfce95e|29e98c9301609b4f20ea94c7e8b208c25786690be451bae05145721a35b91179|9e8b1a737888468a4be6a010a915524b84440037802c6cfc6a5e251abf0e81ce|cdb01d27775d61bcb3ae14a8d124ccbab683f940f1dcfd2adffa43a6b7b462f0|3142fb503e64ddba79d523be3c87f0344d6efa78673e30a4b740714d8e9389ca|f620dab27f951c7de2de77a89376975b51c79f57f8a8a24cec95392c9c61eea4|1cc33e3825a556a825e83392675c254ef22f738660d1016ae1413f7669f88231|a388d8fa771b3e4bb46d500202ff750df410b4e6608d0f4902288b6aad16d731|7a12d8b869d064229270a264e8de9adf64f620337995fb186854c35cadbee068|7a8b84c3502e711c6b66c943f883a984dd9ed82da41455fc083ed0cc7d44b6fb|1c0e3e6d308a6c4b161faf896a00437b8e011fe5b7eff7969b9870c85d8d0c5c|f5e1c9e627e3e978ff535de79b95ff920d7318e7ea3ce713e5b174efe313ca0c|cf15a6290316dd6832873e35972831a590d70cf0734eb93dbcd96aab87fab6f1|b2c3fcfafeccd50fa3000ad5f8f66f1e42ff157b295cdda11dddd31571612af7|fe1f6d535ccee6ec0f9333c01108b00f35006209850ed641023dbb937dd30b48|82a8b6655ff6cd43938ffe3735e8841599ef6116bf33079d8d203db9415ca3f2|82b2ef604c40bf523affa42f7ee85bd41155fac50a2e24af51a97a01b25dc7b9|0cccacc9fbaf10c16e6d6279e5d2972c5d2096dda8d6cf90c85e236d944f6ddf|b5f581427afd423be3931473db2ce4b496a387b685ab3c48adf26cc597000f9a|e00749ed2a6273c95a4b0563212313c81e54928f6564fdbd8f9616d12a4df6ba|8aaece533e2503c7a501497bb1bf191f37a0ffbba067e7a7ff3a4c6f9623673f|3b572cf943d16a66dae1d62515b216eceaf77d397035320eb3c08a5db0e21fc4|a35d788005d4150cd909f85afc667073a03febd24b50a708facf506b051c8a65|ff5859edb44d83fad9723ccdc142f28ce918b02fae3da929667726d32746986c|4e8b92cc5089200f3fced24130e47e0918bf8931989af034f709344a42cd5b0d|61ccaf5fa0361178dd6fe4a0104d964168f4f79a8453a8617a80a7403240d393|46257e8e24397f097b3ce3e53067ad59b265803f66aeb2da6d216b05dd2e5db7|dbf07f7551415816a66ac18148d45c582649c76529282902533d154f5299c58e|cbcdb1ce6b5a94f7a5868c81f1dd920831e68074fcf3c1588148b5d33b954ba8|6b0012fa060b4c64707d537ec1f0fd0a1b68c11a82a1c59c843d50e8e7e5c476|f855efcae795ede354bfccf33b155792dc92c84cf86cdfce170edb0949e4bcac|4ac4526e643afa63bb4a9d59405c35e7496c5dba825df82fb6be7990f067be85|dbe5027504366f24bf9da3e3fc7605027aae375018a365d17645c239d096ab31|b29d2c2b91fa9d4e5c659473728c13577e8b1a8cae4447231be31ba382511776|fb6a965a016953e6b0be10983045f9c1df1dc80a3cc19a69db8e0311728919e7|"$helper_sha") return 0;; *) return 1;; esac
 }
 
 # Only fixed codes leave this script. Never echo helper output, state or profiles.
@@ -43,7 +43,14 @@ integrity() {
       '{"code":"VPN_INTEGRITY","ok":false}') cause=VPN_INTEGRITY;;
       '{"code":"VPN_DEVICE_CHANGED","ok":false}') cause=VPN_DEVICE_CHANGED;;
       '{"code":"VPN_CORE_INTEGRITY","ok":false}') cause=VPN_CORE_INTEGRITY;;
-      '{"code":"VPN_UNSUPPORTED_FIRMWARE","ok":false}') cause=VPN_UNSUPPORTED_FIRMWARE;;
+      '{"code":"VPN_UNSUPPORTED_FIRMWARE","ok":false}')
+        # A known old controller can reject a newly measured platform even when
+        # every installed byte is intact. The new pinned controller must verify
+        # an exact embedded historical payload manifest, owner, CID and core.
+        # Any unknown or altered package still fails; no integrity check is skipped.
+        if "$stage/vpnctl" previous-payload-integrity >/dev/null; then return 0; fi
+        cause=VPN_UNSUPPORTED_FIRMWARE;;
+      '{"code":"VPN_IPA_UNSUPPORTED","ok":false}') cause=VPN_IPA_UNSUPPORTED;;
       *) cause=VPN_INTEGRITY;;
     esac
     printf 'VPN_UPGRADE_CAUSE %s\n' "$cause" >&2
@@ -172,6 +179,8 @@ for file in $runtime_files; do plain "$stage/$file" || fail PAYLOAD; done
 [ "$(hash "$stage/service.sh")" = "$service_sha" ] &&
 [ "$(hash "$stage/ikev2.sh")" = "$ikev2_sha" ] && [ "$(hash "$stage/ikev2-updown.sh")" = "$ikev2_updown_sha" ] &&
 [ "$(hash "$stage/nft-ikev2-guard.nft")" = "$nft_ikev2_sha" ] || fail PAYLOAD
+# Transport may upload every candidate as data (0600). Execute only verified bytes.
+chmod 700 "$stage/vpnctl" && [ -x "$stage/vpnctl" ] || fail CONTROLLER_EXECUTION
 [ ! -e /tmp/zte-vpn-screen ] && [ ! -L /tmp/zte-vpn-screen ] || fail SCREEN_BUSY
 plain "$ROOT/cid" || fail DEVICE_CHANGED
 cid=$(cat "$ROOT/cid"); same_device || fail DEVICE_CHANGED
@@ -181,13 +190,48 @@ if [ -e "$backup" ] || [ -L "$backup" ]; then
     [ ! -e "$backup" ] || fail RECOVERY_REQUIRED
 fi
 plain "$ROOT/vpnctl" && known "$(hash "$ROOT/vpnctl")" || fail CONTROLLER_UNKNOWN
+# Check the new policy before snapshots, stopping services or replacing files.
+if compatibility=$("$stage/vpnctl" compatibility); then :; else
+    case $? in 126|127) fail CONTROLLER_EXECUTION;; esac
+    case "$compatibility" in
+      *'"code":"VPN_IPA_UNSUPPORTED"'*) fail IPA_UNSUPPORTED;;
+      *'"code":"VPN_UNSUPPORTED_FIRMWARE"'*) fail UNSUPPORTED_FIRMWARE;;
+      *'"code":"VPN_UNSAFE_FILE"'*|*'"code":"VPN_FILE_UNAVAILABLE"'*) fail SYSTEM_FILES;;
+      *) fail COMPATIBILITY;;
+    esac
+fi
 integrity || fail OLD_INTEGRITY
 plain /etc/init.d/network || fail NETWORK_CHANGED
 network_before=$(hash /etc/init.d/network)
 reset=0
+repair_hook=0
+stock_layout() {
+    for pkg in network wireless firewall dhcp; do
+        changes=$(uci changes "$pkg") && [ -z "$changes" ] || return 1
+    done
+    lua "$stage/configure.lua" layout "$stage/layout-uci"
+}
+verified_original() {
+    private_dir "$ROOT/backup" && plain "$ROOT/backup/SHA256SUMS" || return 1
+    for name in network wireless firewall dhcp network.init; do
+        f="$ROOT/backup/$name"
+        [ -f "$f" ] && [ ! -L "$f" ] && [ "$(stat -c %u:%h "$f")" = 0:1 ] || return 1
+    done
+    awk 'NF!=2 || $2!~/^(network|wireless|firewall|dhcp|network.init)$/ || length($1)!=64 || $1~/[^0-9a-f]/ || seen[$2]++ {bad=1} END{exit bad||NR!=5}' "$ROOT/backup/SHA256SUMS" &&
+        (cd "$ROOT/backup" && sha256sum -c SHA256SUMS >/dev/null) &&
+        [ "$(hash "$ROOT/backup/network.init")" = "$network_stock_sha" ] &&
+        [ "$(lua "$stage/configure.lua" original-layout "$stage/layout-uci")" = stock ]
+}
 if [ -e "$ROOT/configured" ] || [ -L "$ROOT/configured" ]; then
     plain "$ROOT/configured" || fail STATE_UNSAFE
-    if [ "$network_before" = "$network_stock_sha" ]; then reset=1
+    if [ "$network_before" = "$network_stock_sha" ]; then
+        mkdir -p "$stage/layout-uci" && private_dir "$stage/layout-uci" && [ -z "$(ls -A "$stage/layout-uci")" ] || fail STATE_UNSAFE
+        layout=$(stock_layout) || fail CONFIGURATION_CHANGED
+        case "$layout" in
+          stock) reset=1;;
+          configured) verified_original || fail STATE_UNSAFE; repair_hook=1;;
+          *) fail CONFIGURATION_CHANGED;;
+        esac
     else
         plain "$ROOT/network-init.sha256" && [ "$network_before" = "$(cat "$ROOT/network-init.sha256")" ] &&
         grep -q 'BEGIN zte-vpn-v1:' /etc/init.d/network || fail NETWORK_CHANGED
@@ -245,7 +289,10 @@ if [ "$reset" = 1 ]; then mkdir "$backup/reset-state"; : > "$backup/reset-v1"; f
 mkdir "$backup/planned"
 for name in $runtime_files; do hash "$stage/$name" > "$backup/planned/$name"; done
 hash "$stage/service.sh" > "$backup/planned/service"
-if [ "$reset" = 0 ]; then
+if [ "$repair_hook" = 1 ]; then
+    "$stage/vpnctl" plan-network-hook > "$backup/network.planned" || fail NETWORK_CHANGED
+    grep -q 'BEGIN zte-vpn-v1:' "$backup/network.planned" || fail NETWORK_CHANGED
+elif [ "$reset" = 0 ]; then
     sed -e "s/$old_helper/$helper_sha/g" -e "s/$old_manager/$manager_sha/g" "$backup/network" > "$backup/network.planned"
 else cp -p "$backup/network" "$backup/network.planned"; fi
 sh -n "$backup/network.planned"
@@ -255,6 +302,10 @@ sync
 transaction_started=1
 same_device || fail DEVICE_CHANGED
 [ "$(hash /etc/init.d/network)" = "$network_before" ] || fail NETWORK_CHANGED
+if [ "$reset" = 1 ] || [ "$repair_hook" = 1 ]; then
+    [ "$(stock_layout)" = "$layout" ] || fail CONFIGURATION_CHANGED
+    [ "$repair_hook" = 0 ] || verified_original || fail STATE_UNSAFE
+fi
 phase=WRITE
 if [ "$reset" = 1 ]; then
     for name in $state_names; do [ ! -e "$ROOT/$name" ] || mv "$ROOT/$name" "$backup/reset-state/$name"; done

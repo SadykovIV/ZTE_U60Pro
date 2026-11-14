@@ -22,7 +22,7 @@ public enum VpnPasswordMode { Main, Custom, Preserve }
 public sealed partial class DeviceFeatureService
 {
     private const string VpnRoot = "/data/zte-vpn";
-    private const string VpnHelperHash = "f855efcae795ede354bfccf33b155792dc92c84cf86cdfce170edb0949e4bcac";
+    private const string VpnHelperHash = "bfce3f936a7fa9303cdcc7b7f2312f009a7d99cc2d4d99ed12adad1326743244";
     private const string Legacy12422VpnHelperHash = "b5f581427afd423be3931473db2ce4b496a387b685ab3c48adf26cc597000f9a";
     private const string Legacy12421VpnHelperHash = "82a8b6655ff6cd43938ffe3735e8841599ef6116bf33079d8d203db9415ca3f2";
     private const string Legacy12420VpnHelperHash = "fe1f6d535ccee6ec0f9333c01108b00f35006209850ed641023dbb937dd30b48";
@@ -38,8 +38,8 @@ public sealed partial class DeviceFeatureService
     // Public 1.24.4 build 42 controller. It may only serve a status request.
     private const string LegacyCardStatusVpnHelperHash = "7a8b84c3502e711c6b66c943f883a984dd9ed82da41455fc083ed0cc7d44b6fb";
     private const string VpnAgentHash = AgentPackage.Sha256;
-    private const string DashboardHash = "b9573c52192bea600d91b7db9fd974c1be63b92a641876394f57fb676a330b1b";
-    private const string LauncherHash = "5223cdd084757408685cbd343d900a2b08723e6e6161ec80da66dcb4dd2e99e8";
+    private const string DashboardHash = "50bf2f244f038ba7fb0cd7b0d9146d3a1c971c7791725c474bfd07c78f42c205";
+    private const string LauncherHash = "bf5dc15f51eb4fc6a2da8e8ab1b3f4de2aa3aa64087d50e69419df4d895194cf";
     private static readonly string[] VpnInstallNames = ["install.sh", "manager.sh", "firewall.sh", "configure.lua", "nft-guard.nft", "dnsmasq.conf", "service.sh", "ikev2.sh", "ikev2-updown.sh", "nft-ikev2-guard.nft", "vpnctl", "mihomo"];
     private static readonly string[] VpnUpgradeNames = ["upgrade-controller.sh", "vpnctl", "manager.sh", "firewall.sh", "configure.lua", "nft-guard.nft", "dnsmasq.conf", "service.sh", "ikev2.sh", "ikev2-updown.sh", "nft-ikev2-guard.nft"];
     private static readonly FrozenSet<string> SupportedVpnStatusHashes = new[]
@@ -51,6 +51,7 @@ public sealed partial class DeviceFeatureService
         "3c8a139d9ba6f3372b009e9e0fb5ed9ff27faf1675dcb654f09eedec851661f3",
         "46257e8e24397f097b3ce3e53067ad59b265803f66aeb2da6d216b05dd2e5db7",
         "48b9af93098b4b1b31754a48707ac066a39977bcc0db0cc438ead64c62322bd4",
+        "4ac4526e643afa63bb4a9d59405c35e7496c5dba825df82fb6be7990f067be85",
         "4e8b92cc5089200f3fced24130e47e0918bf8931989af034f709344a42cd5b0d",
         "572e2e1133cebb690584bda8b5ac047336451bc26c6a5e37522a756b6254fac5",
         "61ccaf5fa0361178dd6fe4a0104d964168f4f79a8453a8617a80a7403240d393",
@@ -64,15 +65,19 @@ public sealed partial class DeviceFeatureService
         "9c2e3c21eecace7031c4029c969efdec44241f000716447df805f3020dfce95e",
         "9e8b1a737888468a4be6a010a915524b84440037802c6cfc6a5e251abf0e81ce",
         "a35d788005d4150cd909f85afc667073a03febd24b50a708facf506b051c8a65",
+        "b29d2c2b91fa9d4e5c659473728c13577e8b1a8cae4447231be31ba382511776",
         "b2c3fcfafeccd50fa3000ad5f8f66f1e42ff157b295cdda11dddd31571612af7",
         "b5f581427afd423be3931473db2ce4b496a387b685ab3c48adf26cc597000f9a",
         "cbcdb1ce6b5a94f7a5868c81f1dd920831e68074fcf3c1588148b5d33b954ba8",
         "cdb01d27775d61bcb3ae14a8d124ccbab683f940f1dcfd2adffa43a6b7b462f0",
         "cf15a6290316dd6832873e35972831a590d70cf0734eb93dbcd96aab87fab6f1",
+        "dbe5027504366f24bf9da3e3fc7605027aae375018a365d17645c239d096ab31",
         "dbf07f7551415816a66ac18148d45c582649c76529282902533d154f5299c58e",
         "e00749ed2a6273c95a4b0563212313c81e54928f6564fdbd8f9616d12a4df6ba",
         "f5e1c9e627e3e978ff535de79b95ff920d7318e7ea3ce713e5b174efe313ca0c",
         "f620dab27f951c7de2de77a89376975b51c79f57f8a8a24cec95392c9c61eea4",
+        "f855efcae795ede354bfccf33b155792dc92c84cf86cdfce170edb0949e4bcac",
+        "fb6a965a016953e6b0be10983045f9c1df1dc80a3cc19a69db8e0311728919e7",
         "fe1f6d535ccee6ec0f9333c01108b00f35006209850ed641023dbb937dd30b48",
         "ff5859edb44d83fad9723ccdc142f28ce918b02fae3da929667726d32746986c",
     }.ToFrozenSet(StringComparer.Ordinal);
@@ -377,8 +382,25 @@ true
     public Task<VpnStatus> DeleteVpnSubscriptionAsync(string id, CancellationToken ct = default)
     {
         ValidateVpnProfileId(id);
-        return VpnProfileMutationAsync(new { action = "subscription_delete", id },
-            (before, after) => !(after.Subscriptions ?? []).Any(s => s.Id == id), ct);
+        return VpnProfileMutationAsync(new { action = "subscription_delete", id, cascade = true },
+            (before, after) => !(after.Subscriptions ?? []).Any(s => s.Id == id) &&
+                DeletionConfirmed(before, after, before.Profiles.Where(p => p.SubscriptionId == id).Select(p => p.Id)), ct);
+    }
+    public Task<VpnStatus> DeleteVpnProfilesAsync(IReadOnlyCollection<string> ids, CancellationToken ct = default)
+    {
+        Check(ids.Count is > 0 and <= 1024, "Недопустимый идентификатор VPN-профиля.");
+        foreach (var id in ids) ValidateVpnProfileId(id);
+        var targets = ids.Distinct(StringComparer.Ordinal).ToArray();
+        return VpnProfileMutationAsync(new { action = "delete_profiles", ids = targets },
+            (before, after) => DeletionConfirmed(before, after, targets), ct);
+    }
+    private static bool DeletionConfirmed(VpnStatus before, VpnStatus after, IEnumerable<string> ids)
+    {
+        var targets = ids.ToHashSet(StringComparer.Ordinal);
+        var remaining = before.Profiles.Select(p => p.Id).Where(id => !targets.Contains(id)).ToHashSet(StringComparer.Ordinal);
+        var removedActive = targets.Contains(before.ActiveProfile);
+        return remaining.SetEquals(after.Profiles.Select(p => p.Id)) &&
+            after.ActiveProfile == (removedActive ? "" : before.ActiveProfile) && after.Enabled == (!removedActive && before.Enabled);
     }
     public Task<VpnStatus> ActivateVpnProfileAsync(string id, CancellationToken ct = default)
     {

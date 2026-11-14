@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "controllers": {
+    "f855efcae795ede354bfccf33b155792dc92c84cf86cdfce170edb0949e4bcac": {
+      "manager.sh": "3f3345393c55dbac8f2b3de680364b3d3e6d0f9a3c0bcc3d11d7fed309d99d4b",
+      "firewall.sh": "91a8bc05543e34916e37dfa0b0ccc9394c102c2e0f13d590340bc5de3646848d",
+      "configure.lua": "0c392c8302d83ef4a12ed5669092f95637b7d3c5153677a9525642d8601575e8",
+      "nft-guard.nft": "4616ff9a72c5e5c6c34e7936600bb161af757dd357ab14de34670db90b34f23a",
+      "dnsmasq.conf": "a1c68c3e695b9f599bec5821871f6ba89a3543ac587627754573628ac9ca66b1",
+      "service.sh": "a171e7764a2355b2ff86c0c0f87385f9029cddf92c5d1a2f8dd417f6f58b2af9",
+      "ikev2.sh": "7ca9acbcac8cac4124769917d9c8a8528f27a675e48338437d4c9cd41cc3c5c0",
+      "ikev2-updown.sh": "4cf9e55f0730a34a8d5be0b5c3297b042ec367a7cf851c6e841cbebca89c3b32",
+      "nft-ikev2-guard.nft": "28e1a636ff4f806eb17d79f14c95c11b740dc80826a123635896e664fedf64d1"
+    },
+    "dbf07f7551415816a66ac18148d45c582649c76529282902533d154f5299c58e": {
+      "manager.sh": "3f3345393c55dbac8f2b3de680364b3d3e6d0f9a3c0bcc3d11d7fed309d99d4b",
+      "firewall.sh": "91a8bc05543e34916e37dfa0b0ccc9394c102c2e0f13d590340bc5de3646848d",
+      "configure.lua": "0c392c8302d83ef4a12ed5669092f95637b7d3c5153677a9525642d8601575e8",
+      "nft-guard.nft": "4616ff9a72c5e5c6c34e7936600bb161af757dd357ab14de34670db90b34f23a",
+      "dnsmasq.conf": "a1c68c3e695b9f599bec5821871f6ba89a3543ac587627754573628ac9ca66b1",
+      "service.sh": "a171e7764a2355b2ff86c0c0f87385f9029cddf92c5d1a2f8dd417f6f58b2af9",
+      "ikev2.sh": "7ca9acbcac8cac4124769917d9c8a8528f27a675e48338437d4c9cd41cc3c5c0",
+      "ikev2-updown.sh": "4cf9e55f0730a34a8d5be0b5c3297b042ec367a7cf851c6e841cbebca89c3b32",
+      "nft-ikev2-guard.nft": "28e1a636ff4f806eb17d79f14c95c11b740dc80826a123635896e664fedf64d1"
+    },
+    "cbcdb1ce6b5a94f7a5868c81f1dd920831e68074fcf3c1588148b5d33b954ba8": {
+      "manager.sh": "3f3345393c55dbac8f2b3de680364b3d3e6d0f9a3c0bcc3d11d7fed309d99d4b",
+      "firewall.sh": "91a8bc05543e34916e37dfa0b0ccc9394c102c2e0f13d590340bc5de3646848d",
+      "configure.lua": "0c392c8302d83ef4a12ed5669092f95637b7d3c5153677a9525642d8601575e8",
+      "nft-guard.nft": "4616ff9a72c5e5c6c34e7936600bb161af757dd357ab14de34670db90b34f23a",
+      "dnsmasq.conf": "a1c68c3e695b9f599bec5821871f6ba89a3543ac587627754573628ac9ca66b1",
+      "service.sh": "a171e7764a2355b2ff86c0c0f87385f9029cddf92c5d1a2f8dd417f6f58b2af9",
+      "ikev2.sh": "7ca9acbcac8cac4124769917d9c8a8528f27a675e48338437d4c9cd41cc3c5c0",
+      "ikev2-updown.sh": "4cf9e55f0730a34a8d5be0b5c3297b042ec367a7cf851c6e841cbebca89c3b32",
+      "nft-ikev2-guard.nft": "28e1a636ff4f806eb17d79f14c95c11b740dc80826a123635896e664fedf64d1"
+    }
+  }
+}

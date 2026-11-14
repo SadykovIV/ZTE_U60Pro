@@ -12,6 +12,72 @@ end
 local function fail(code)
     io.stderr:write(code .. '\n'); os.exit(1)
 end
+local owned_sections = {
+    {'network','device','br_vpn',{name='br-vpn',type='bridge',ports={'wlan1','wlan3'},bridge_empty='1',ipv6='0'}},
+    {'network','interface','vpn',{device='br-vpn',type='bridge',ifname='wlan1 wlan3',bridge_empty='1',force_link='1',proto='static',ipaddr='192.168.50.1',netmask='255.255.255.0',delegate='0'}},
+    {'firewall','zone','zte_vpn_zone',{name='vpn',network={'vpn'},input='REJECT',output='ACCEPT',forward='REJECT'}},
+    {'firewall','include','zte_vpn_rules',{type='script',path=root..'/firewall.sh',reload='1',enabled='1'}},
+}
+local function exact(a,b)
+    if type(a) ~= 'table' or type(b) ~= 'table' then return a == b end
+    for k,v in pairs(a) do
+        if type(k) ~= 'string' or k:sub(1,1) ~= '.' then
+            if not exact(v,b[k]) then return false end
+        end
+    end
+    for k in pairs(b) do if a[k] == nil then return false end end
+    return true
+end
+-- Inspect committed files with an empty, caller-owned UCI save directory.
+-- The same definitions create and recognize the four VPN sections.
+if arg[1] == 'layout' or arg[1] == 'original-layout' then
+    local original = arg[1] == 'original-layout'
+    local cursor = uci.cursor(original and root..'/backup' or '/etc/config', assert(arg[2]))
+    for _,pkg in ipairs({'network','wireless','firewall'}) do assert(cursor:load(pkg)) end
+    local owned = 0
+    for _,spec in ipairs(owned_sections) do
+        local row = cursor:get_all(spec[1],spec[3])
+        if row then
+            if row['.type'] ~= spec[2] or not exact(row,spec[4]) then fail('VPN_CONFIGURATION_CHANGED') end
+            owned = owned + 1
+        end
+    end
+    for _,n in ipairs({'guest_2g','guest_5g'}) do
+        if cursor:get('wireless',n) ~= 'wifi-iface' then fail('VPN_CONFIGURATION_CHANGED') end
+        local net,bridge,disabled = cursor:get('wireless',n,'network'),cursor:get('wireless',n,'bridge'),cursor:get('wireless',n,'disabled')
+        if disabled ~= '0' and disabled ~= '1' or original and disabled ~= '1' then fail('VPN_CONFIGURATION_CHANGED') end
+        if net == 'vpn' or bridge == 'br-vpn' then
+            if net ~= 'vpn' or bridge ~= 'br-vpn' then fail('VPN_CONFIGURATION_CHANGED') end
+            owned = owned + 1
+        elseif type(net) ~= 'string' or net == '' or type(bridge) == 'table' then fail('VPN_CONFIGURATION_CHANGED') end
+    end
+    if owned == 0 then print('stock')
+    elseif not original and owned == #owned_sections + 2 then print('configured')
+    else fail('VPN_CONFIGURATION_CHANGED') end
+    return
+end
+if arg[1] == 'preflight' then
+    -- Check the actual adapter contract without saving UCI or applying radio
+    -- settings. A matching firmware label cannot substitute for these fields.
+    for _,spec in ipairs({{'main_2g','wlan0','wifi0'}, {'guest_2g','wlan1','wifi0'},
+                         {'main_5g','wlan2','wifi1'}, {'guest_5g','wlan3','wifi1'}}) do
+        local name,iface,device=spec[1],spec[2],spec[3]
+        if c:get('wireless',name)~='wifi-iface' or c:get('wireless',name,'mode')~='ap'
+            or c:get('wireless',name,'ifname')~=iface or c:get('wireless',name,'device')~=device
+            or c:get('wireless',device)~='wifi-device' then fail('VPN_WIFI_CONFIGURATION_CHANGED') end
+        local disabled=c:get('wireless',name,'disabled')
+        if disabled~='0' and disabled~='1' then fail('VPN_WIFI_CONFIGURATION_CHANGED') end
+    end
+    if c:get('wireless','zte_mbb','mesh_onoff')~='0' then fail('VPN_MESH_CONFLICT') end
+    if c:get('zwrt_router','other')~='zudata_other' or c:get('zwrt_router','tmp_router')~='ztmp_router' then
+        fail('VPN_IPA_STATE_INVALID')
+    end
+    for _,spec in ipairs({{'other','ipa_disable'}, {'tmp_router','close_ipa_acce'}}) do
+        local flag=c:get('zwrt_router',spec[1],spec[2])
+        if flag~=nil and flag~='0' and flag~='1' then fail('VPN_IPA_STATE_INVALID') end
+    end
+    print('VPN_UCI_COMPATIBLE'); return
+end
 -- IPA policy uses its own savedir: never commit the stock UI's pending router
 -- edits. The complete original file is retained by manager.sh, but restoration
 -- changes only our one persistent option in the current router configuration.
@@ -113,10 +179,7 @@ elseif mode == 'apply' then
     assert(not c:get('firewall','zte_vpn_zone') and not c:get('firewall','zte_vpn_rules'), 'VPN firewall already exists')
     guest_sections(false)
     local desired,security=wifi_values(false)
-    section('network','device','br_vpn',{name='br-vpn',type='bridge',ports={'wlan1','wlan3'},bridge_empty='1',ipv6='0'})
-    section('network','interface','vpn',{device='br-vpn',type='bridge',ifname='wlan1 wlan3',bridge_empty='1',force_link='1',proto='static',ipaddr='192.168.50.1',netmask='255.255.255.0',delegate='0'})
-    section('firewall','zone','zte_vpn_zone',{name='vpn',network={'vpn'},input='REJECT',output='ACCEPT',forward='REJECT'})
-    section('firewall','include','zte_vpn_rules',{type='script',path=root..'/firewall.sh',reload='1',enabled='1'})
+    for _,spec in ipairs(owned_sections) do section(spec[1],spec[2],spec[3],spec[4]) end
     for _,section in ipairs({'guest_2g','guest_5g'}) do
         assert(c:get('wireless',section) == 'wifi-iface', 'Guest section missing')
         set('wireless',section,'network','vpn'); set('wireless',section,'bridge','br-vpn')

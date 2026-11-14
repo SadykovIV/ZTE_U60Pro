@@ -1,5 +1,20 @@
 export type ImportSummary = { added: number; updated: number; removed: number; duplicates: number; retained_active: number; skipped: { index: number; code: string }[] }
 
+type CatalogStatus = {
+  profiles: { id: string; subscription_id?: string }[]
+  subscriptions?: { id: string }[]
+  active_profile?: string
+  enabled?: boolean
+}
+export function deletionConfirmed(before: CatalogStatus, after: CatalogStatus, ids: string[], subscription?: string) {
+  const removed = new Set(subscription === undefined ? ids : before.profiles.filter(p => p.subscription_id === subscription).map(p => p.id))
+  const remaining = new Set(before.profiles.filter(p => !removed.has(p.id)).map(p => p.id))
+  const stopped = removed.has(before.active_profile ?? '')
+  return Array.isArray(after.profiles) && after.profiles.length === remaining.size && after.profiles.every(p => remaining.delete(p.id)) &&
+    (!subscription || (Array.isArray(after.subscriptions) && !after.subscriptions.some(s => s.id === subscription))) &&
+    after.active_profile === (stopped ? '' : before.active_profile) && after.enabled === (stopped ? false : before.enabled)
+}
+
 export function protocolLabel(protocol = 'vless'): string {
   return ({ vless: 'VLESS', hysteria2: 'HY2', wireguard: 'WireGuard', amneziawg2: 'AWG 2', amneziawg3: 'AWG 3', 'amneziawg3.1': 'AWG 3.1', ikev2: 'IKEv2 / IPsec' } as Record<string, string>)[protocol] ?? protocol
 }

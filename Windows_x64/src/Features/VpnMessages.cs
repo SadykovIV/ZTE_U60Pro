@@ -12,6 +12,9 @@ internal static class VpnMessages
 
     internal static readonly IReadOnlyDictionary<string, string> Errors = new Dictionary<string, string>
     {
+        ["VPN_RPC_UNSUPPORTED"] = "Интерфейс управления сетью не поддерживает необходимые операции VPN. Соберите полный дамп.",
+        ["VPN_UNSUPPORTED_PLATFORM"] = "VPN требует Linux ARM64 и права root.",
+        ["VPN_UNSUPPORTED_FIRMWARE"] = "Системные компоненты не совпали с проверенными профилями VPN. Соберите полный дамп для адаптации.",
         ["VPN_IKEV2_INVALID_SERVER"] = "Укажите имя или IPv4-адрес сервера IKEv2 без https:// и порта.",
         ["VPN_IKEV2_INVALID_ID"] = "Укажите имя сервера из сертификата. Шаблоны и %any не допускаются.",
         ["VPN_IKEV2_INVALID_USERNAME"] = "Введите логин IKEv2 до 256 байт без управляющих символов.",

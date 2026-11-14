@@ -9,7 +9,7 @@ namespace ZteImeiStudio.Windows;
 
 public sealed partial class MainWindow
 {
-    private readonly List<(Button Button, Func<bool> Available)> _vpnActions = [];
+    private readonly List<(Control Control, Func<bool> Available)> _vpnActions = [];
     private bool VpnConnected => !_busy && _snapshot?.IsConnected == true && _snapshot.ConnectionMode == "SSH" && _terminal?.IsConnected != true && !_terminalOpening && SelectedConnectionMatches();
     private bool VpnReady => VpnConnected && _snapshot?.VpnPage?.ComponentsReady == true;
     private Button VpnButton(string title, Func<Task> work, Func<bool> available, bool prominent = false)
@@ -21,7 +21,7 @@ public sealed partial class MainWindow
     private void UpdateVpnAvailability()
     {
         if (_page != 4) return;
-        foreach (var item in _vpnActions) item.Button.IsEnabled = item.Available();
+        foreach (var item in _vpnActions) item.Control.IsEnabled = item.Available();
     }
     private void BuildVpn()
     {
@@ -48,10 +48,43 @@ public sealed partial class MainWindow
                         await ExecuteAsync(ModemOperation.SetVpnEnabled, new Dictionary<string,string> { ["vpn_enabled"] = (!vpn.Enabled).ToString().ToLowerInvariant() });
                 }, () => VpnReady && (vpn.Enabled || vpn.ProfileDetails?.Any(p => p.Active) == true)));
                 if (vpn.ProfileDetails is not { Count: > 0 }) panel.Children.Add(Muted("Профили не добавлены"));
+                var checkboxes = new List<CheckBox>();
+                var marked = new HashSet<string>(StringComparer.Ordinal);
+                var markAll = VpnButton("Отметить все показанные", () =>
+                {
+                    var check = marked.Count != checkboxes.Count;
+                    foreach (var checkbox in checkboxes) checkbox.IsChecked = check;
+                    return Task.CompletedTask;
+                }, () => VpnReady);
+                var deleteMarked = VpnButton("Удалить отмеченные", async () =>
+                {
+                    var ids = marked.Order(StringComparer.Ordinal).ToArray();
+                    if (ids.Length > 0 && await ConfirmAsync(Localization.Translate("Удалить отмеченные") + $" ({ids.Length})",
+                        "Удалить отмеченные профили? Если среди них есть активный, Wi-Fi с VPN отключится."))
+                        await ExecuteAsync(ModemOperation.DeleteVpnProfiles, new Dictionary<string,string> { ["vpn_profile_ids"] = string.Join(",", ids) });
+                }, () => VpnReady && marked.Count > 0);
+                if (vpn.ProfileDetails is { Count: > 0 })
+                {
+                    var selection = new WrapPanel { Orientation = Orientation.Horizontal };
+                    selection.Children.Add(markAll);
+                    selection.Children.Add(deleteMarked);
+                    panel.Children.Add(selection);
+                }
                 foreach (var profile in vpn.ProfileDetails ?? [])
                 {
                     var row = new StackPanel { Spacing = 8, Margin = new Avalonia.Thickness(0, 8, 0, 8) };
-                    row.Children.Add(ValueLine(profile.Name, VpnProtocolLabel(profile.Protocol) + " · " + profile.Transport + (profile.Active ? " · " + Localization.Translate("Активен") : "")));
+                    var checkbox = new CheckBox { Content = profile.Name, IsEnabled = VpnReady };
+                    _vpnActions.Add((checkbox, () => VpnReady));
+                    checkboxes.Add(checkbox);
+                    checkbox.IsCheckedChanged += (_, _) =>
+                    {
+                        if (checkbox.IsChecked == true) marked.Add(profile.Id); else marked.Remove(profile.Id);
+                        deleteMarked.Content = Localization.Translate("Удалить отмеченные") + $" ({marked.Count})";
+                        deleteMarked.IsEnabled = VpnReady && marked.Count > 0;
+                        markAll.Content = Localization.Translate(marked.Count == checkboxes.Count ? "Снять отметки с показанных" : "Отметить все показанные");
+                    };
+                    row.Children.Add(checkbox);
+                    row.Children.Add(Muted(VpnProtocolLabel(profile.Protocol) + " · " + profile.Transport + (profile.Active ? " · " + Localization.Translate("Активен") : "")));
                     if (profile.UpdateAvailable) row.Children.Add(Muted("Обновление сохранено. Примените его, чтобы переподключиться с новыми настройками."));
                     if (profile.RemovedFromSubscription) row.Children.Add(Muted("Профиль удалён из подписки; активное подключение сохранено."));
                     foreach (var warning in profile.Warnings ?? [])
@@ -120,11 +153,14 @@ public sealed partial class MainWindow
                 var actions = new WrapPanel { Orientation = Orientation.Horizontal };
                 actions.Children.Add(VpnButton("Обновить подписку", () => ExecuteAsync(ModemOperation.UpdateVpnSubscription,
                     new Dictionary<string,string> { ["vpn_subscription_id"] = subscription.Id }), () => VpnReady));
-                actions.Children.Add(VpnButton("Удалить подписку", () => ExecuteAsync(ModemOperation.DeleteVpnSubscription,
-                    new Dictionary<string,string> { ["vpn_subscription_id"] = subscription.Id }), () => VpnReady));
+                actions.Children.Add(VpnButton("Удалить подписку", async () =>
+                {
+                    if (await ConfirmAsync(Localization.Translate("Удалить подписку") + $" · {subscription.Name} ({subscription.ProfileCount})",
+                        "Удалить подписку и все её профили? Если среди них есть активный, Wi-Fi с VPN отключится."))
+                        await ExecuteAsync(ModemOperation.DeleteVpnSubscription, new Dictionary<string,string> { ["vpn_subscription_id"] = subscription.Id });
+                }, () => VpnReady));
                 panel.Children.Add(actions);
             }
-            panel.Children.Add(Muted("Удаление подписки сохраняет её профили. Обновление не прерывает текущее VPN-подключение."));
         });
         AddCard("Настройки Wi-Fi с VPN", "Название и пароль можно менять, когда Wi-Fi с VPN выключен.", panel =>
         {

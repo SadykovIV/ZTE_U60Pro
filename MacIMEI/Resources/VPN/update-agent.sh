@@ -5,10 +5,10 @@ umask 077
 stage=${1:-}; action=${2:-install}
 case "$stage" in /tmp/zte-vpn-agent-????????-????-????-????-????????????) ;; *) exit 64;; esac
 case "$action" in preflight|install) ;; *) exit 64;; esac
-agent_sha=10919284afa5c72fd1401fa7514d50e17e246cd3b29b54b899d6453493658c23
-dashboard_sha=d850e21318c092d36fb837fe384299415bd9055688b5067872305c42c2ca32dc
+agent_sha=cde0597c9595d6e5d97875976e6cce4ead450fd7771dafe1e4bb2e15441552cf
+dashboard_sha=4dead6f6328490fbf7d488e90d51a3d452d9ee2e9af610a39b295b0d7e0d2d27
 web_sha=76f021c43a02eab5bb634b01461370fcb8bfb270b1f14e348e5b57acb43b1d12
-dashboard_installer_sha=da4b3f27f0cafaeacb733a769c431a5be50be11489bf3bd19e80b6101b8d9dff
+dashboard_installer_sha=3950353079050fef378fe6ab0dfb2d2c8423063766c8f5b7f5f3745f23041984
 hash() { sha256sum "$1" | awk '{print $1}'; }
 [ -d "$stage" ] && [ ! -L "$stage" ] && [ "$(stat -c '%u:%a' "$stage")" = 0:700 ] || exit 1
 [ -f "$stage/dashboard-install.sh" ] && [ ! -L "$stage/dashboard-install.sh" ] || exit 1

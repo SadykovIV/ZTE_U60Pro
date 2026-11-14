@@ -48,7 +48,15 @@ internal static class ComponentCleanupTests
             foreach(var scenario in new[]{"committed-before-intent","fresh","partial-prepare","verified","interrupted-clean","complete","remote-regressed","unrequested-complete","lost-clean-reply","lost-clean-pending","lost-clean-status-failed","clean-timeout","clean-protocol","clean-service","clean-changed-boot","clean-tampered-backup","reboot-verified","reboot-interrupted","reboot-complete","reboot-no-archive","reboot-lost","reboot-wrong-receipt","reboot-tampered-backup","reboot-changed-again","accepted-boot-prepared-error","accepted-boot-verified-error","wrong-device","wrong-host","wrong-stream","stream-changed","bad-local-file","tampered-backup","remote-hash-changed","cancelled-stream","invalid-status","missing-backup","bad-setup"})
             {
                 var storage=Path.Combine(root,scenario);var resources=Path.Combine(storage,"resources");Directory.CreateDirectory(Path.Combine(resources,"Onboarding"));
-                var helper=Encoding.UTF8.GetBytes("#!/bin/sh\n# synthetic pinned cleanup helper\n");
+                var vpnFolder=Path.Combine(resources,"VPN");Directory.CreateDirectory(vpnFolder);
+                var hashes=new Dictionary<string,string>();
+                foreach(var name in new[]{"vpnctl","manager.sh","configure.lua"})
+                {
+                    var bytes=Encoding.UTF8.GetBytes("synthetic "+name);
+                    await File.WriteAllBytesAsync(Path.Combine(vpnFolder,name),bytes);hashes[name]=Sha(bytes);
+                }
+                await File.WriteAllTextAsync(Path.Combine(vpnFolder,"SHA256.json"),JsonSerializer.Serialize(hashes));
+                var helper=Encoding.UTF8.GetBytes("#!/bin/sh\n# synthetic pinned cleanup helper\n# ZTE_CLEANUP_VPN_PAYLOAD\n");
                 await File.WriteAllBytesAsync(Path.Combine(resources,"Onboarding/clean-components.sh"),helper);
                 await File.WriteAllTextAsync(Path.Combine(resources,"Onboarding/SHA256.json"),JsonSerializer.Serialize(new Dictionary<string,string>{{"clean-components.sh",Sha(helper)}}));
                 var id=Guid.NewGuid().ToString();var backup=Path.Combine(storage,"SetupBackups",id);Directory.CreateDirectory(backup);Directory.CreateDirectory(Path.Combine(storage,"SSH"));
@@ -139,7 +147,7 @@ internal static class ComponentCleanupTests
             foreach(var scenario in new[]{"absent","incomplete","prepared","verified","verified-absent","interrupted-cancel","invalid-cancel-proof","pending","complete","requested","unknown","changed-boot","changed-hash"})
             {
                 var storage=Path.Combine(root,"cancel-"+scenario);var resources=Path.Combine(storage,"resources");Directory.CreateDirectory(Path.Combine(resources,"Onboarding"));
-                var helper=Encoding.UTF8.GetBytes("#!/bin/sh\n# synthetic pinned cleanup helper\n");
+                var helper=Encoding.UTF8.GetBytes("#!/bin/sh\n# synthetic pinned cleanup helper\n# ZTE_CLEANUP_VPN_PAYLOAD\n");
                 await File.WriteAllBytesAsync(Path.Combine(resources,"Onboarding/clean-components.sh"),helper);
                 await File.WriteAllTextAsync(Path.Combine(resources,"Onboarding/SHA256.json"),JsonSerializer.Serialize(new Dictionary<string,string>{{"clean-components.sh",Sha(helper)}}));
                 var id=Guid.NewGuid().ToString();var backup=Path.Combine(storage,"SetupBackups",id);Directory.CreateDirectory(backup);

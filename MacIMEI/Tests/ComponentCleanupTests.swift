@@ -72,6 +72,14 @@ private final class Fixture {
         remote.firmwareHash = firmwareHash
         root = URL(fileURLWithPath: "/private/tmp").appendingPathComponent("clean-host-" + UUID().uuidString.lowercased()); try secureDirectory(root)
         resources = root.appendingPathComponent("Resources"); try secureDirectory(resources); try secureDirectory(resources.appendingPathComponent("Onboarding"))
+        let vpn = resources.appendingPathComponent("VPN")
+        try secureDirectory(vpn)
+        var toolHashes = [String: String]()
+        for name in ["vpnctl", "manager.sh", "configure.lua"] {
+            let data = Data(("synthetic " + name).utf8)
+            try savePrivate(data, vpn.appendingPathComponent(name)); toolHashes[name] = digest(data)
+        }
+        try saveJSON(toolHashes, vpn.appendingPathComponent("SHA256.json"))
         let source = try Data(contentsOf: URL(fileURLWithPath: "Resources/Onboarding/clean-components.sh"))
         try savePrivate(source, resources.appendingPathComponent("Onboarding/clean-components.sh")); try saveJSON(["clean-components.sh": digest(source)], resources.appendingPathComponent("Onboarding/SHA256.json"))
         for name in ["key", "hosts"] { try savePrivate(Data("fixture".utf8), root.appendingPathComponent(name)) }

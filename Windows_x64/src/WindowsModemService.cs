@@ -271,6 +271,7 @@ public sealed partial class WindowsModemService : IModemService
                 case ModemOperation.ActivateVpnProfile:
                 case ModemOperation.RenameVpnProfile:
                 case ModemOperation.DeleteVpnProfile:
+                case ModemOperation.DeleteVpnProfiles:
                 case ModemOperation.SetVpnEnabled:
                     RequireSsh();
                     vpn = request.Operation switch
@@ -284,6 +285,7 @@ public sealed partial class WindowsModemService : IModemService
                         ModemOperation.ActivateVpnProfile => await _features!.ActivateVpnProfileAsync(Param(p,"vpn_profile_id"), cancellationToken),
                         ModemOperation.RenameVpnProfile => await _features!.RenameVpnProfileAsync(Param(p,"vpn_profile_id"), Param(p,"vpn_profile_name"), cancellationToken),
                         ModemOperation.DeleteVpnProfile => await _features!.DeleteVpnProfileAsync(Param(p,"vpn_profile_id"), cancellationToken),
+                        ModemOperation.DeleteVpnProfiles => await _features!.DeleteVpnProfilesAsync(Param(p,"vpn_profile_ids").Split(','), cancellationToken),
                         _ => await _features!.SetVpnEnabledAsync(Param(p,"vpn_enabled") == "true", cancellationToken),
                     };
                     _snapshot = _snapshot with { Vpn = VpnSummary(vpn), VpnPage = VpnPage(vpn),
@@ -293,10 +295,11 @@ public sealed partial class WindowsModemService : IModemService
                         ModemOperation.ImportVpnProfile or ModemOperation.ImportVpnConfig => "Профиль VPN импортирован",
                         ModemOperation.SaveVpnIkev2 => "Профиль IKEv2 сохранён. Выберите «Сделать активным», чтобы применить настройки.",
                         ModemOperation.ImportVpnSubscription or ModemOperation.UpdateVpnSubscription => "Подписка VPN обновлена",
-                        ModemOperation.DeleteVpnSubscription => "Подписка VPN удалена; профили сохранены",
+                        ModemOperation.DeleteVpnSubscription => "Подписка VPN и её профили удалены",
                         ModemOperation.ActivateVpnProfile => "Активный профиль VPN изменён",
                         ModemOperation.RenameVpnProfile => "Название профиля VPN сохранено",
                         ModemOperation.DeleteVpnProfile => "Профиль VPN удалён",
+                        ModemOperation.DeleteVpnProfiles => "Выбранные профили VPN удалены",
                         _ => vpn.Enabled ? "Wi-Fi с VPN включён" : "Wi-Fi с VPN выключен",
                     };
                     break;

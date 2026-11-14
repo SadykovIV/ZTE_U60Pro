@@ -17,7 +17,7 @@ english_target=/usr/ui/language/English.ini
 chinese_target=/usr/ui/language/Chinese.ini
 ui_target=/usr/bin/zte_topsw_devui
 cache_target=/cache/language.txt
-revision=20261030
+revision=20261111
 english_sha=d97925e40f9c119e05dd692e8fbce36593b55aa3faf718af373b2cb57075981a
 chinese_sha=5c4b6e3896593172608f2d8890da56c7ff521667129375d0a52383243bb760df
 patched_ui_sha=16eb92e27f54b5cf5c6b316a6e7a62b782053a2a609d0d4904a7f08a7bc0afa4
@@ -77,7 +77,12 @@ select_profile() {
         profile_english=$root/backup/English.ini; profile_chinese=$root/backup/Chinese.ini
         regular "$root/backup/zte_topsw_devui.init" && test "$(hash "$root/backup/zte_topsw_devui.init")" = "$original_init_sha" || return 1
     fi
+    select_files "$profile_ui" "$profile_english" "$profile_chinese"
+}
+select_files() {
+    profile_ui=$1; profile_english=$2; profile_chinese=$3
     regular "$profile_ui" && regular "$profile_english" && regular "$profile_chinese" || return 1
+    original_chinese_sha=b84c05af9046dd2458b2220633320fb0089e1000e03c45c3dc81dc72df0c44fc
     case "$(hash "$profile_ui")" in
       e3914e78a8488cb736770f0ac9fb8ce10e0e5222fa50285f08e9e8be90d7f1e9)
         screen_profile=b31
@@ -139,6 +144,33 @@ assets_valid() {
     regular "$root/zte_topsw_devui" && test "$(hash "$root/zte_topsw_devui")" = "$patched_ui_sha" && test "$(stat -c %a "$root/zte_topsw_devui")" = 755 &&
     regular "$root/service.sh" && test "$(hash "$root/service.sh")" = "$service_sha" &&
     regular "$root/manager.sh" && regular "$root/manager.sha256" && test "$(hash "$root/manager.sh")" = "$(cat "$root/manager.sha256")"
+}
+# An OS replacement may retain our private directory after removing all active
+# mounts and hooks. Prove both generations separately. Never unmount, stop a
+# running process, or execute an old manager to discover the stock generation.
+install_profile() {
+    archive_old=0
+    select_profile || fail SCREEN_PROFILE
+    exists "$root" || return 0
+    mounts_safe || fail FOREIGN_MOUNT
+    if is_mounted "$ui_target" || is_mounted "$english_target" || is_mounted "$chinese_target" || originals_visible; then return 0; fi
+    ! exists "$root/.transaction" && ! exists "$root/.enabled.new" || fail TRANSACTION_PENDING
+    ! exists "$root/.enabled" || enabled_marker || fail UNKNOWN_INSTALLATION
+    ! exists "$hook" && ! exists "$boot_link" && regular "$service" && test "$(hash "$service")" = "$original_init_sha" || fail FOREIGN_BOOT_HOOK
+    # The installed binary, dictionaries and service must be from the same
+    # reviewed package as the verified old originals; self-recorded hashes alone
+    # do not establish the provenance of a manager.
+    case "$(hash "$root/manager.sh")" in
+      "$(hash "$0")"|45907dd3237cae7ce0c9e1f2fdb3b74cec388d2d08a7394cb36bf096f0c3eda2|089b66525207d9dc9fec54112fbb5786196c4a663fb1609b9aa53d8f07bb15ba|0ce40f0d3e4375165f5e4424db023b786f70f9cacf88bfe07c1c893cff12db7d) ;;
+      *) fail UNKNOWN_INSTALLATION;;
+    esac
+    assets_valid && regular "$root/backup/cache" && regular "$root/backup/cache.sha256" &&
+    test "$(hash "$root/backup/cache")" = "$(cat "$root/backup/cache.sha256")" && regular "$root/backup/language" || fail UNKNOWN_INSTALLATION
+    case "$(cat "$root/backup/language"):$(cat "$root/backup/cache")" in en:english|cn:chinese) ;; *) fail UNKNOWN_INSTALLATION;; esac
+    archived_profile=$screen_profile
+    select_files "$ui_target" "$english_target" "$chinese_target" || fail ORIGINAL_CHANGED
+    test "$screen_profile" != "$archived_profile" || fail ORIGINAL_CHANGED
+    archive_old=1
 }
 hook_safe() {
     regular "$service" && test -x "$service" && test "$(stat -c %a "$service")" = 755 || return 1
@@ -337,11 +369,12 @@ if test "$mode" = install; then
     case "$token" in *[!a-f0-9-]*) fail STAGE_TOKEN;; esac
     private_dir "$stage" || fail STAGE_PERMISSIONS
     for file in English.ini Chinese.ini zte_topsw_devui install.sh service.sh; do regular "$stage/$file" || fail STAGE_FILE; done
+    install_profile
     test "$(hash "$stage/English.ini")" = "$english_sha" && test "$(hash "$stage/Chinese.ini")" = "$chinese_sha" && test "$(hash "$stage/zte_topsw_devui")" = "$patched_ui_sha" && test "$(hash "$stage/service.sh")" = "$service_sha" || fail STAGE_HASH
     test "$(hash "$stage/install.sh")" = "$(hash "$0")" || fail STAGE_MANAGER
     font_valid || fail FONT_CHANGED
     hook_safe || fail FOREIGN_BOOT_HOOK
-    if exists "$root"; then
+    if exists "$root" && test "$archive_old" = 0; then
         root_owned || fail UNKNOWN_INSTALLATION
         ! exists "$root/.transaction" || fail TRANSACTION_PENDING
         installed_manager=$(hash "$root/manager.sh")
@@ -355,7 +388,7 @@ if test "$mode" = install; then
             prior_chinese=92dd43aff9057ba801a4e41069168a658bd8ed5acd3a12fddee1e245b05c5d98;;
           810aae3c07c8019f2d0657f2bad6f1ee38f1dea5f1081210ab144478dd87c7b8)
             prior_english=$english_sha; prior_chinese=$chinese_sha;;
-          089b66525207d9dc9fec54112fbb5786196c4a663fb1609b9aa53d8f07bb15ba|0ce40f0d3e4375165f5e4424db023b786f70f9cacf88bfe07c1c893cff12db7d)
+          45907dd3237cae7ce0c9e1f2fdb3b74cec388d2d08a7394cb36bf096f0c3eda2|089b66525207d9dc9fec54112fbb5786196c4a663fb1609b9aa53d8f07bb15ba|0ce40f0d3e4375165f5e4424db023b786f70f9cacf88bfe07c1c893cff12db7d)
             legacy_b31_only=0
             prior_english=$english_sha; prior_chinese=$chinese_sha;;
           *) prior_english=; prior_chinese=;;
@@ -407,8 +440,33 @@ if test "$mode" = install; then
         hash "$pending_root/backup/cache" > "$pending_root/backup/cache.sha256"
         # Keep cache metadata for an exact EN restore; its parent is private.
         chmod 600 "$pending_root/backup/English.ini" "$pending_root/backup/Chinese.ini" "$pending_root/backup/zte_topsw_devui" "$pending_root/backup/language" "$pending_root/backup/cache.sha256"
-        printf '%s\n' install > "$pending_root/.transaction"
+        # Until the first hook is installed, this is a complete disabled package.
+        # A power loss after publication can be retried through ordinary Enable.
         sync
+        if test "$archive_old" = 1; then
+            prior=$archived_profile; current=$screen_profile
+            layout_safe && external_guards && hook_safe && font_valid || fail UNSAFE_LAYOUT
+            uci_safe && test -z "$pending" || fail UCI_PENDING_CHANGES
+            test "$(uci -q get zwrt_deviceui.Device.device_language)" = "$initial_language" &&
+            test "$(hash "$cache_target")" = "$(cat "$pending_root/backup/cache.sha256")" || fail LANGUAGE_CHANGED
+            for file in English.ini Chinese.ini zte_topsw_devui service.sh; do
+                test "$(hash "$pending_root/$file")" = "$(hash "$stage/$file")" || fail STAGE_HASH
+            done
+            test "$(hash "$pending_root/manager.sh")" = "$(hash "$0")" || fail STAGE_MANAGER
+            install_profile
+            test "$archive_old" = 1 && test "$prior" = "$archived_profile" && test "$current" = "$screen_profile" &&
+            test "$(hash "$pending_root/backup/zte_topsw_devui")" = "$original_ui_sha" &&
+            test "$(hash "$pending_root/backup/English.ini")" = "$original_english_sha" &&
+            test "$(hash "$pending_root/backup/Chinese.ini")" = "$original_chinese_sha" || fail ORIGINAL_CHANGED
+            archive="/data/zte-imei-screen-ru.previous-$token"
+            ! exists "$archive" || fail ARCHIVE_EXISTS
+            # Both renames are on /data, with the normal installation lock held.
+            # A crash between them leaves the verified stock UI running, the
+            # entire old package archived, and no boot service using its path.
+            mv "$root" "$archive" || fail ARCHIVE_OLD_INSTALLATION
+            sync
+        fi
+        ! exists "$root" || fail PUBLISH_INSTALLATION
         mv "$pending_root" "$root" || fail PUBLISH_INSTALLATION
         mutation=1
         root_owned && assets_valid || fail COPIED_INSTALLATION_INVALID
@@ -453,15 +511,17 @@ for item in English.ini Chinese.ini zte_topsw_devui; do
     if ! is_mounted "$target"; then test "$(hash "$target")" = "$digest" || fail ORIGINAL_CHANGED; fi
 done
 if test "$mode" = enable && exists "$root/.transaction" && test "$mutation" != 1; then fail TRANSACTION_PENDING; fi
+if test "$mode" != boot; then
+    printf '%s\n' enable > "$root/.transaction"
+    mutation=1
+    sync
+fi
 # Install/reinstall our own recovery hook before any cn setting can be committed.
 if ! exists "$hook"; then cp "$root/service.sh" "$hook" && chmod 755 "$hook" || fail INSTALL_HOOK; fi
 if ! exists "$boot_link"; then ln -s ../init.d/zte_imei_screen_ru "$boot_link" || fail INSTALL_BOOT_LINK; fi
 write_stock_hook patch || fail INSTALL_STOCK_HOOK
 hook_present || fail BOOT_HOOK_VERIFY
 if test "$mode" != boot; then
-    printf '%s\n' enable > "$root/.transaction"
-    mutation=1
-    sync
     rm -f "$root/.enabled" "$root/.enabled.new"
     sync
 else

@@ -16,9 +16,9 @@ public sealed partial class DeviceFeatureService
 {
     private const string AgentManagerHash = "ba9216b75d9b6a5a003e05137416335083609f4d840a0394e6f9016d27527844";
     private const string ScreenRoot = "/data/zte-imei-screen-ru";
-    private const string ScreenManagerHash = "45907dd3237cae7ce0c9e1f2fdb3b74cec388d2d08a7394cb36bf096f0c3eda2";
-    private const string ScreenRevision = "20261030";
-    private static readonly HashSet<string> ScreenLegacyManagerHashes = ["089b66525207d9dc9fec54112fbb5786196c4a663fb1609b9aa53d8f07bb15ba", "0ce40f0d3e4375165f5e4424db023b786f70f9cacf88bfe07c1c893cff12db7d", "6aed6654afb7a4fde7792a5f6034aa41e15b0fd77d794ed04d3a12c111c95fd2", "586a7727fb24a5701990c7cd82889887220c1c5566261c53ca21f3bb12549bfa", "810aae3c07c8019f2d0657f2bad6f1ee38f1dea5f1081210ab144478dd87c7b8"];
+    private const string ScreenManagerHash = "c8f8c00cddd4ebcfa03655f52221c74b6c30524cb68ddc388d7b192939973ecc";
+    private const string ScreenRevision = "20261111";
+    private static readonly HashSet<string> ScreenLegacyManagerHashes = ["45907dd3237cae7ce0c9e1f2fdb3b74cec388d2d08a7394cb36bf096f0c3eda2", "089b66525207d9dc9fec54112fbb5786196c4a663fb1609b9aa53d8f07bb15ba", "0ce40f0d3e4375165f5e4424db023b786f70f9cacf88bfe07c1c893cff12db7d", "6aed6654afb7a4fde7792a5f6034aa41e15b0fd77d794ed04d3a12c111c95fd2", "586a7727fb24a5701990c7cd82889887220c1c5566261c53ca21f3bb12549bfa", "810aae3c07c8019f2d0657f2bad6f1ee38f1dea5f1081210ab144478dd87c7b8"];
     private static readonly string[] ScreenFileNames = ["install.sh", "service.sh", "English.ini", "Chinese.ini", "font.patch.json", "font.patch.b28.json", "font.patch.b04.json", "font.patch.b27.json"];
 
     public Task<AgentInstallationStatus> GetAgentInstallationStatusAsync(CancellationToken ct = default)
@@ -193,12 +193,13 @@ public sealed partial class DeviceFeatureService
         return installed;
     }
 
-    private static readonly HashSet<string> ScreenStatusReasons = ["STOCK_INIT_MISSING", "STOCK_INIT_CHANGED", "LEFTOVER_HOOK_OR_MOUNT", "BOOT_HOOK_MISSING", "TRANSACTION_PENDING", "UI_NOT_RUNNING", "STATUS_UNVERIFIED"];
+    private static readonly HashSet<string> ScreenStatusReasons = ["STOCK_GENERATION_CHANGED", "STOCK_INIT_MISSING", "STOCK_INIT_CHANGED", "LEFTOVER_HOOK_OR_MOUNT", "BOOT_HOOK_MISSING", "TRANSACTION_PENDING", "UI_NOT_RUNNING", "STATUS_UNVERIFIED"];
 
     internal static string ScreenFailureDescription(string? reason) => reason switch {
                 "STOCK_INIT_MISSING" => "Отсутствует штатный сценарий запуска экрана (SCREEN_RU_STOCK_INIT_MISSING).",
                 "STOCK_INIT_CHANGED" => "Штатный сценарий запуска экрана отличается от проверенного (SCREEN_RU_STOCK_INIT_CHANGED).",
                 "LEFTOVER_HOOK_OR_MOUNT" => "Обнаружены оставшиеся подключения русификации без её каталога (SCREEN_RU_LEFTOVER_HOOK_OR_MOUNT).",
+                "STOCK_GENERATION_CHANGED" => "Штатный экран отличается от сохранённой копии. Нажмите «Установить»: программа проверит текущие файлы и сохранит предыдущий комплект отдельно.",
                 "BOOT_HOOK_MISSING" => "Отсутствует автозапуск установленной русификации (SCREEN_RU_BOOT_HOOK_MISSING).",
                 "TRANSACTION_PENDING" => "Осталась незавершённая операция русификации (SCREEN_RU_TRANSACTION_PENDING).",
                 "UI_NOT_RUNNING" => "Процесс штатного экрана не запущен (SCREEN_RU_UI_NOT_RUNNING).",
@@ -215,6 +216,7 @@ public sealed partial class DeviceFeatureService
           elif test -e /etc/init.d/zte_imei_screen_ru || test -L /etc/init.d/zte_imei_screen_ru || test -e /etc/rc.d/S47zte_imei_screen_ru || test -L /etc/rc.d/S47zte_imei_screen_ru || awk '$5=="/usr/ui/language/English.ini" || $5=="/usr/ui/language/Chinese.ini" || $5=="/usr/bin/zte_topsw_devui" {found=1} END {exit !found}' /proc/self/mountinfo; then reason=LEFTOVER_HOOK_OR_MOUNT; fi
         elif test -d /data/zte-imei-screen-ru && test ! -L /data/zte-imei-screen-ru; then
           if test -e /data/zte-imei-screen-ru/.transaction || test -L /data/zte-imei-screen-ru/.transaction; then reason=TRANSACTION_PENDING
+          elif test -f /usr/bin/zte_topsw_devui && test ! -L /usr/bin/zte_topsw_devui && test -f /data/zte-imei-screen-ru/backup/zte_topsw_devui && test ! -L /data/zte-imei-screen-ru/backup/zte_topsw_devui && awk '$5=="/usr/bin/zte_topsw_devui" || $5=="/usr/ui/language/Chinese.ini" || $5=="/usr/ui/language/English.ini" {bad=1} END {exit bad}' /proc/self/mountinfo && { cmp -s /usr/bin/zte_topsw_devui /data/zte-imei-screen-ru/backup/zte_topsw_devui && rc=0 || rc=$?; test "$rc" = 1; }; then reason=STOCK_GENERATION_CHANGED
           elif test -e /data/zte-imei-screen-ru/.enabled && { test ! -f /etc/init.d/zte_imei_screen_ru || test ! -L /etc/rc.d/S47zte_imei_screen_ru; }; then reason=BOOT_HOOK_MISSING
           elif ! pidof zte_topsw_devui >/dev/null 2>&1; then reason=UI_NOT_RUNNING; fi
         fi
@@ -236,14 +238,14 @@ public sealed partial class DeviceFeatureService
         => MutateAsync(async (identity, token) =>
         {
             var current = await GetScreenLocalizationStatusAsync(ct);
-            if (current.State != "absent" && current.Revision == ScreenRevision)
+            if ((current.State is "enabled" or "disabled") && current.Revision == ScreenRevision)
             {
                 if (current.State == "enabled") return current;
                 var result = ParseScreenStatus(await RunScreenCommandAsync(Guard(identity, token) + ScreenManagerCommand("enable", identity.Cid, ScreenManagerHash), 240, ct));
                 Check(result.State == "enabled" && result.Language == "cn" && result.Pid > 0, "Русификация не подтвердила запуск.");
                 return result;
             }
-            var originalCommand = current.State == "absent" ? "cat /usr/bin/zte_topsw_devui" : "cat " + ScreenRoot + "/backup/zte_topsw_devui";
+            var originalCommand = (current.State == "absent" || (current.State == "error" && current.Mounted == 0)) ? "cat /usr/bin/zte_topsw_devui" : "cat " + ScreenRoot + "/backup/zte_topsw_devui";
             var original = (await RunAsync(originalCommand, seconds: 120, ct: ct)).Stdout;
             var files = await LoadResourcesAsync("ScreenLocalization", ScreenFileNames, ct);
             var selectedPatch = SelectScreenFontPatch(original, files["font.patch.json"], files["font.patch.b28.json"], files["font.patch.b04.json"], files["font.patch.b27.json"]);
@@ -274,6 +276,7 @@ public sealed partial class DeviceFeatureService
             var hash = current.Revision switch
             {
                 ScreenRevision => ScreenManagerHash,
+                "20261030" => "45907dd3237cae7ce0c9e1f2fdb3b74cec388d2d08a7394cb36bf096f0c3eda2",
                 "20261013" => "089b66525207d9dc9fec54112fbb5786196c4a663fb1609b9aa53d8f07bb15ba",
                 "20261006" => "0ce40f0d3e4375165f5e4424db023b786f70f9cacf88bfe07c1c893cff12db7d",
                 "20260924" => "810aae3c07c8019f2d0657f2bad6f1ee38f1dea5f1081210ab144478dd87c7b8",
@@ -330,7 +333,7 @@ public sealed partial class DeviceFeatureService
               int.TryParse(fields["mounted"], out mounted) && mounted is >= 0 and <= 3 &&
               int.TryParse(fields["pid"], out pid) && pid >= 0 &&
               fields["boot"] is "0" or "1" &&
-              new[] { "20260922", "20260923", "20260924", "20261006", "20261013", ScreenRevision }.Contains(fields["revision"]), "Некорректный статус русификации.");
+              new[] { "20260922", "20260923", "20260924", "20261006", "20261013", "20261030", ScreenRevision }.Contains(fields["revision"]), "Некорректный статус русификации.");
         var boot = fields["boot"] == "1";
         Check(fields["state"] == "error" || (fields["state"] == "enabled" ? mounted == 3 && boot : mounted == 0 && !boot), "Состояние русификации не согласовано.");
         return new ScreenLocalizationStatus(fields["state"], fields["language"], mounted, boot, pid, fields["revision"], fields.GetValueOrDefault("reason"));

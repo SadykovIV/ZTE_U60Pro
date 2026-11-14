@@ -1,6 +1,6 @@
 {
   "component": "ZTE IMEI Studio IPv4 TTL manager",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "firmware": "CN_ZTE_MU5250V1.0.0B31",
   "origin": "Project source; uses device-provided legacy iptables TTL target and ZTE IPACM controls",
   "outbound": "POSTROUTING --ttl-set",
@@ -38,6 +38,14 @@
       "router_sha256": "786ba99f5d506d01bbe72d9effa90d1a46f5929370f24ccabf6bab291e5a317f",
       "ipacm_sha256": "a843789933a0b5747927583021c1480957ea942626cab17cb13ad415d1dfd3ae",
       "evidence": "Captured files, exact vendor switch and static USR1/USR2 handler analysis; no device traffic trial."
+    },
+    {
+      "firmware": "FLY_CN_MU5250V1.0.0B14",
+      "inner": "BD_FLYMODEMMU5250V1.0.0B29",
+      "mdm_sha256": "090c879c45172879490c06a533d441793ac50fb102045d63da14f6e07dcbddc6",
+      "router_sha256": "55c54f74aaa427940254a2f16c36771e675a80a002363e4f10b0dfcb604d9c6f",
+      "ipacm_sha256": "95385816da7b2edb9a977cee328c091753463fcd4a70a67fa1676e8b335c11c0",
+      "validation": "Captured bytes and matching stock IPA interface; live sustained-flow TTL not verified."
     }
   ],
   "b28_packet_verification": false,

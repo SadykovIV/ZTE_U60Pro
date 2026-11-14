@@ -113,6 +113,10 @@ if [ "${FAIL_SIGNAL:-0}" = 1 ] && [ ! -f "$FIXTURE/signal-failed" ];then touch "
         self.command('sync',':');self.command('sleep',':')
         self.write('data/zte-vpn/firewall.sh','#!/bin/sh\necho "$*" >> "$FIXTURE/firewall"\n',0o700)
         self.write('data/zte-vpn/vpnctl','''#!/bin/sh
+if [ "$1" = compatibility ]; then
+ if [ -n "${COMPATIBILITY_ERROR:-}" ]; then printf '{"ok":false,"code":"%s"}\\n' "$COMPATIBILITY_ERROR";exit 1;fi
+ exit 0
+fi
 if [ "$1" = backend ]; then echo mihomo; exit 0; fi
 [ "$1" = hook-network ] || exit 0
 echo hooked-network-init > "$FIXTURE/etc/init.d/network"
@@ -124,6 +128,9 @@ echo hooked-network-init > "$FIXTURE/etc/init.d/network"
     def write(self,rel,text,mode=0o600):
         p=self.base/rel;p.parent.mkdir(parents=True,exist_ok=True,mode=0o700);p.write_text(text);p.chmod(mode);return p
     def command(self,name,body,python=False):
+        if name=='lua':body='[ "$2" != preflight ] || exit 0\n'+body
+        if name=='ubus' and not python:body='''case "$*" in *" -v list "*) printf '  "reload":{}\\n'; exit 0;; esac
+'''+body
         self.write('bin/'+name,('#!'+shutil.which('python3')+'\n' if python else '#!/bin/sh\n')+body+'\n',0o700)
     def remap(self,s):
         s=s.replace('PATH=/usr/sbin:/usr/bin:/sbin:/bin','PATH=__TEST_PATH__')
@@ -135,6 +142,7 @@ echo hooked-network-init > "$FIXTURE/etc/init.d/network"
     def invoke(self,mode='prepare',**env):
         if env.get('TEST_FIRMWARE',self.env['TEST_FIRMWARE']) == B27:
             env = {'TEST_MDM': B27_MDM, 'TEST_ROUTER': B27_ROUTER, **env}
+        if env.pop('NO_PID','0')=='1':(self.base/'proc/10/exe').unlink(missing_ok=True)
         return subprocess.run(['/bin/sh',str(self.script),mode],env={**self.env,**env},capture_output=True,text=True,timeout=20)
     def ok(self,r):self.assertEqual(r.returncode,0,r.stdout+r.stderr)
     def signals(self):return (self.base/'signals').read_text().splitlines() if (self.base/'signals').exists() else []
@@ -151,19 +159,15 @@ echo hooked-network-init > "$FIXTURE/etc/init.d/network"
                 self.ok(self.invoke('ipa-restore',TEST_FIRMWARE=firmware,TEST_IPACM=daemon))
                 self.assertEqual((self.base/'etc/config/zwrt_router').read_bytes(),self.original)
                 self.assertEqual(self.state(True),{})
-    def test_b27_rejects_mixed_native_components_before_any_signal(self):
-        for key, value in [('TEST_MDM', MDM), ('TEST_ROUTER', ROUTER), ('TEST_IPACM', IPACM)]:
-            with self.subTest(component=key):
-                r = self.invoke(TEST_FIRMWARE=B27, **{'TEST_IPACM': B27_IPACM, key: value})
-                self.assertNotEqual(r.returncode, 0)
-                self.assertEqual((self.base/'etc/config/zwrt_router').read_bytes(), self.original)
-                self.assertFalse((self.root/'ipa-backup').exists())
-                self.assertEqual(self.signals(), [])
-
-    def test_unknown_daemon_switch_and_missing_pid_never_mutate(self):
-        for extra,code in [({'TEST_IPACM':'f'*64},'VPN_IPA_UNSUPPORTED'),({'TEST_SWITCH':'f'*64},'VPN_IPA_UNSUPPORTED'),({'NO_PID':'1'},'VPN_IPA_NOT_RUNNING')]:
+    def test_shared_policy_refusals_and_missing_pid_never_mutate(self):
+        # The actual firmware/component matrix is tested in compatibility.rs.
+        # This verifies that manager actions cannot bypass any refusal.
+        for extra,code in [({'COMPATIBILITY_ERROR':'VPN_UNSUPPORTED_FIRMWARE'},'VPN_UNSUPPORTED_FIRMWARE'),
+                           ({'COMPATIBILITY_ERROR':'VPN_IPA_UNSUPPORTED'},'VPN_IPA_UNSUPPORTED'),
+                           ({'NO_PID':'1'},'VPN_IPA_NOT_RUNNING')]:
             with self.subTest(code=code):
-                r=self.invoke(**extra);self.assertNotEqual(r.returncode,0);self.assertIn(code,r.stderr)
+                result=self.invoke(**extra)
+                self.assertNotEqual(result.returncode,0);self.assertIn(code,result.stderr)
                 self.assertEqual((self.base/'etc/config/zwrt_router').read_bytes(),self.original)
                 self.assertFalse((self.root/'ipa-backup').exists());self.assertEqual(self.signals(),[])
     def test_unrelated_live_and_pending_edits_survive_restore(self):
@@ -197,6 +201,11 @@ echo hooked-network-init > "$FIXTURE/etc/init.d/network"
         count=len(self.signals());self.ok(self.invoke('run-core'))
         self.assertEqual(len(self.signals()),count+1);self.assertTrue((self.base/'core-started').exists())
         self.assertEqual((self.root/'ipa-runtime').read_text(),'next-boot 10\n')
+    def test_ipa_resolves_unique_executable_when_pidof_only_sees_supervisor(self):
+        self.command('pidof','echo 20');self.ok(self.invoke())
+        self.assertIn('-USR1 10',self.signals())
+        (self.base/'proc/11').mkdir();(self.base/'proc/11/exe').symlink_to(self.base/'usr/bin/ipacm')
+        result=self.invoke();self.assertNotEqual(result.returncode,0);self.assertIn('VPN_IPA_NOT_RUNNING',result.stderr)
     def test_early_boot_registers_supervisor_before_ipacm_is_available(self):
         self.write('wireless-disabled','0')
         for firmware,daemon in [(B31,IPACM),(B28,B28_IPACM),(B27,B27_IPACM),(B04,IPACM)]:
@@ -372,7 +381,7 @@ else:(b/'data/zte-vpn/configured').unlink()
     def test_ipacm_restart_restarts_verified_core_through_one_ipa_worker(self):
         self.ok(self.invoke());self.ready_runtime();self.write('wireless-disabled','0')
         self.write('data/zte-vpn/mihomo','#!/bin/sh\necho started > "$FIXTURE/core-started"\n',0o700)
-        (self.base/'proc/11').mkdir();(self.base/'proc/11/exe').symlink_to(self.base/'usr/bin/ipacm')
+        (self.base/'proc/10/exe').unlink();(self.base/'proc/11').mkdir();(self.base/'proc/11/exe').symlink_to(self.base/'usr/bin/ipacm')
         self.command('pidof','echo "20 11"')
         self.command('sleep',r'''import os,subprocess
 from pathlib import Path

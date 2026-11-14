@@ -1,4 +1,4 @@
-# Сборка ZTE U60Pro Manager 1.29
+# Сборка ZTE U60Pro Manager 1.31
 
 
 Сборка не использует приватный рабочий проект, бэкапы или подключённый модем.
@@ -36,7 +36,7 @@ SSClash в нём нет. Лицензии входят в комплект, с�
 `build.py` последовательно собирает runtime eSIM (lpac/bridge), расширение экрана, VPN-контроллер, агент eSIM,
 веб-панель, C-помощники и `zte-timeout`, обновляет зависимые SHA-256 и собирает `.app`/ZIP.
 Пути домашнего каталога в Rust и Swift переназначаются перед компиляцией.
-Результат: `MacIMEI/dist/ZTE-U60Pro-Manager-1.29-arm64.zip` и `build-manifest.json`.
+Результат: `MacIMEI/dist/ZTE-U60Pro-Manager-1.31-arm64.zip` и `build-manifest.json`.
 Rust-рецепт использует offline-сборку после `cargo fetch --locked`; для первой сборки нужен доступ к закреплённым crates. Сборка подписывается ad-hoc; сертификат разработчика и нотарификация не требуются.
 
 Проверка ABI расширения на исходном UI необязательна для повторной сборки:
@@ -47,14 +47,13 @@ Rust-рецепт использует offline-сборку после `cargo fe
 ## Windows x64
 
 На Windows нужен .NET SDK 10, Python 3 для получения зависимостей и PowerShell.
-После клонирования публичного репозитория:
+После сборки модемных компонентов командой `python3 tools/build.py --modem-only` на macOS или Linux перенесите подготовленное дерево на Windows. Для сборки из тега на одном компьютере с Windows можно также извлечь каталог `Resources` из соответствующего portable ZIP 1.31 в `Windows_x64/Resources`. В обоих случаях сборочный скрипт сверяет файлы с манифестами.
 
 ```powershell
-python tools/fetch_dependencies.py
 .\Windows_x64\build.cmd
 ```
 
-Результат — `Windows_x64/dist/ZTE-U60Pro-Manager-1.29-Windows-x64-portable.zip`.
+Результат — `Windows_x64/dist/ZTE-U60Pro-Manager-1.31-Windows-x64-portable.zip`.
 Готовому приложению SDK, Python и отдельно установленная .NET не нужны.
 Не удаляйте `Resources` рядом с EXE. Для USB ADB может понадобиться драйвер ZTE.
 EXE не подписан сертификатом. Версии NuGet закреплены lock-файлами.
@@ -118,35 +117,11 @@ python3 tools/audit_public.py
 
 ## Упаковка релиза
 
-`tools/package_release.py` создаёт отдельный ELF, архив агента с панелью,
-ZIP приложения, архив сборочных зависимостей и SHA256SUMS в `release/`.
-Для упаковки нужны обе готовые сборки. Скрипт создаёт версионные файлы для
-macOS/Windows, агент текущей версии, архивы Build-dependencies и
-Third-party-sources, манифесты и `SHA256SUMS`. Версии приложения и агента
-берутся из текущих исходников.
-
-Для готовых сборок 1.29:
+После сборки обеих платформ:
 
 ```sh
-python3 tools/package_release.py --output-dir release/1.29 --previous-release v1.27.2 --build-source-commit "$(git rev-parse HEAD)"
+python3 tools/package_release.py --apps-and-agent --output-dir release/1.31 --previous-release v1.29 --build-source-commit "$(git rev-parse HEAD)"
+python3 tools/audit_public.py --artifacts --artifact-dir release/1.31
 ```
 
-`build-source-commit` — справочная точка Git, а не подтверждение совпадения
-сборки с коммитом. Упаковщик сверяет точные хэши исходников, ресурсов и ZIP
-по манифестам обеих сборок; отдельно записывает HEAD и наличие локальных
-изменений. Изменение исходников после сборки требует пересборки. Каталог вывода
-должен быть пустым; предыдущие артефакты не перезаписываются. При упаковке
-macOS ZIP получает имя `ZTE-U60Pro-Manager-1.29-macOS-arm64.zip`.
-
-Исходные архивы `mihomo-v1.19.31-source.tar.gz` и `opendoas-6.8.2.tar.xz`
-должны находиться в `.cache`, eSIM-sources.tar.gz и его сведения относятся к eSIM; остальные соответствующие исходники и рецепты —
-в `.cache/public-sources`. Для повторной упаковки извлеките опубликованный
-Third-party-sources: два указанных архива переместите в `.cache`, остальное —
-в `.cache/public-sources`. Файлы `SOURCES.json`, `RECIPES.json` и
-`PACKAGE-RECIPE-MATCH.json` содержат версии, хэши и соответствие рецептам.
-`tools/dependencies.json` обновляется при упаковке: не публикуйте манифест
-без соответствующего архива зависимостей.
-
-Ни один скрипт сборки не публикует файлы автоматически. Перед Git push/release
-проверьте `git diff --cached`, прогоните аудит исходников и содержимого архивов.
-История приватного проекта и секреты в неё не импортируются.
+В пустой каталог записываются два ZIP программы и архив агента. Упаковщик проверяет хэши исходников, ресурсов и обеих сборок. Исходники программы и агента доступны в теге v1.31. Закреплённые сборочные зависимости и исходники сторонних библиотек остаются доступны в [выпуске 1.29](https://github.com/SadykovIV/ZTE_U60Pro/releases/tag/v1.29).

@@ -2,13 +2,24 @@
 
 **English** · [Русский](README.ru.md)
 
-Manage the **ZTE U60 Pro / MU5250** with one app for a single physical SIM,
-the stock physical-SIM plus Chinese-eSIM configuration, or a replacement internal
-eUICC. **1.29** combines standard 1.27.2 and the local 1.28 variant.
+**[Download ZTE U60Pro Manager 1.31 and Agent 2.12.0](https://github.com/SadykovIV/ZTE_U60Pro/releases/tag/v1.31)** · [Release notes](docs/RELEASE-1.31.md)
 
-Version **1.29** (macOS build **71**, Windows FileVersion **1.29.0.0**),
-agent **2.11.0**, VPN controller **1.5.1**.
-[Release notes](docs/RELEASE-1.29.md) · [SIM/eUICC guide](docs/UNIFIED-SIM.md).
+Select multiple VPN profiles to delete them together. Removing a subscription also removes every profile it owns. Update the modem’s VPN components to controller 1.7.0 to use these actions.
+
+## Supported ZTE U60 Pro / MU5250 firmware
+
+| Family | Software version | Modem firmware | Support and verification |
+| --- | --- | --- | --- |
+| CN B31 | `CN_ZTE_MU5250V1.0.0B31` | `BD_CNMU5250V1.0.0B31` | VPN, Wi-Fi, TTL, display and agent tested on a modem in earlier releases. |
+| FLY B11 / B27 | `FLY_CN_MU5250V1.0.0B11` | `BD_FLYMODEMMU5250V1.0.0B27` | Preparation and agent confirmed on hardware. VPN adapter tested against measured components. |
+| FLY B13 / B28 | `FLY_CN_MU5250V1.0.0B13` | `BD_FLYMODEMMU5250V1.0.0B28` | VPN adapter tested against captured firmware components. |
+| FLY B14 / B29 | `FLY_CN_MU5250V1.0.0B14` | `BD_FLYMODEMMU5250V1.0.0B29` | VPN, IPv4 TTL and display translation for the measured component set. Verified against captures. |
+| XCBZ HK B04 | `XCBZ_HK_MU5250V1.0.0B04` | `BD_XCBZHKMU5250V1.0.0B04` | Reports confirm agent and launcher. VPN adapter tested against captured components. |
+| STD PL B02 | `STD_PL_MU5250V1.0.0B02` | `BD_STDPLMU5250V1.0.0B02` | Limited support for preparation and diagnostics. VPN unavailable. |
+
+Installation checks the components on each modem. Chinese and European units with the same B29 label can have different components. [Compatibility by operation](docs/FIRMWARE-COMPATIBILITY.md).
+
+## SIM and eUICC
 
 - The existing eSIM menu manages a confirmed removable eUICC in slot 1 or a real
   eUICC SIM card soldered in place of the original internal Chinese eSIM in slot 2.
@@ -309,7 +320,7 @@ adaptation before switching is allowed.
 
 ## Quick start
 
-1. Use the **1.29** Manager ZIP for your OS. On Mac, open the included `.app`. On Windows, extract the entire archive and run its Manager EXE, keeping the `Resources` folder alongside it. No separate .NET installation is needed; USB ADB may require a modem driver.
+1. Use the **1.31** Manager ZIP for your OS. On Mac, open the included `.app`. On Windows, extract the entire archive and run its Manager EXE, keeping the `Resources` folder alongside it. No separate .NET installation is needed; USB ADB may require a modem driver.
 2. Open **Modem preparation → Connection** and connect over SSH. If SSH is not configured, use the separate preparation action: working root USB ADB first; otherwise, stock USB debug through the web interface, followed by the verified backup method. Web methods require the stock web password; the manual backup key is optional. The SSH key is created on the computer, and device binding is checked over USB. Working SSH does not require preparation again. All ordinary application operations use SSH; Web and Agent buttons open a browser. For firmware adaptation, use **Diagnostics → Firmware adaptation data** after connecting. [Methods, commands, and recovery after interruption](docs/ADB-PREPARATION.md).
 3. Save a backup before making changes. IMEI operations create their mandatory backup automatically.
 4. Install the components you need. Use **VPN** to install its components and manage profiles directly in the application or the agent web dashboard. Install and configure screen pages in **Launcher**. The verified catalog includes htop and experimental opkg; its list is updated separately from GitHub. Terminal opens an SSH session automatically. Installed applications outside the catalog can also be removed.

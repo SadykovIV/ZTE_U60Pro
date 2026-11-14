@@ -1,5 +1,5 @@
 #!/bin/sh
-# B31 / FLY B27+B28 / XCBZ HK B04 IPv4 TTL manager. Only owned mangle chains and marked persistence entries
+# B31 / FLY B27/B28/B29 / XCBZ HK B04 IPv4 TTL manager. Only owned mangle chains and marked persistence entries
 # are changed. No firewall restart, global flush, conntrack or IPv6 changes.
 # install STAGE CID OUT IN | upgrade STAGE CID | status CID | apply CID OUT IN | disable CID | reapply
 set -eu
@@ -13,8 +13,9 @@ firewall=/etc/config/firewall
 rc_local=/etc/rc.local
 out_chain=ZTE_IMEI_TTL_OUT
 in_chain=ZTE_IMEI_TTL_IN
-revision=20261030
+revision=20261111
 firmware_sha=604e22f213e1bef241296e5aae161991989fd8df790057935c07d45101ae4263
+b29_firmware_sha=33c09756e2b27511d0d36ffef6aeeb72732de756935e067d4571dfb8de8c3636
 b28_firmware_sha=5a4489882538b5ab1d3e0049371f1b620d28d262a429923299b4f2626d40d478
 b27_firmware_sha=4b1c67e73b94b889adc831168040d40ec368083dfbcec7ae747a2f4f86c66f3e
 b27_router_sha=786ba99f5d506d01bbe72d9effa90d1a46f5929370f24ccabf6bab291e5a317f
@@ -66,14 +67,15 @@ b04_profile() {
     [ "$(sha256sum /usr/bin/zte_topsw_mdm 2>/dev/null | awk '{print $1}')" = 93a346e7d69024503caf9ad42f14c97e1514dd7d04c7b5ebef4e30473b5d5c64 ] &&
     [ "$(sha256sum /usr/bin/diag-router 2>/dev/null | awk '{print $1}')" = 55c54f74aaa427940254a2f16c36771e675a80a002363e4f10b0dfcb604d9c6f ]
 }
-b27_profile() {
+native_tuple() {
     plain /firmware/image/modem.b16 && plain /usr/bin/zte_topsw_mdm && plain /usr/bin/diag-router &&
-    test "$(hash /firmware/image/modem.b16)" = "$b27_firmware_sha" &&
-    test "$(hash /usr/bin/zte_topsw_mdm)" = 00a647cb46fa82a78969b3708c1429d91b37ef99c2c00835ac57ca53c126f25d &&
-    test "$(hash /usr/bin/diag-router)" = "$b27_router_sha"
+    test "$(hash /firmware/image/modem.b16)" = "$1" && test "$(hash /usr/bin/zte_topsw_mdm)" = "$2" &&
+    test "$(hash /usr/bin/diag-router)" = "$3"
 }
+b27_profile() { native_tuple "$b27_firmware_sha" 00a647cb46fa82a78969b3708c1429d91b37ef99c2c00835ac57ca53c126f25d "$b27_router_sha"; }
+b29_profile() { native_tuple "$b29_firmware_sha" 090c879c45172879490c06a533d441793ac50fb102045d63da14f6e07dcbddc6 "$router_sha"; }
 firmware_supported() {
-    case "$(hash /firmware/image/modem.b16)" in "$firmware_sha"|"$b28_firmware_sha") return 0;; "$b27_firmware_sha") b27_profile;; *) b04_profile;; esac
+    case "$(hash /firmware/image/modem.b16)" in "$firmware_sha"|"$b28_firmware_sha") return 0;; "$b27_firmware_sha") b27_profile;; "$b29_firmware_sha") b29_profile;; *) b04_profile;; esac
 }
 profile_supported() {
     test "$(id -u)" = 0 && test "$(uname -m)" = aarch64 &&
@@ -93,6 +95,7 @@ ipa_tools_valid() {
     # verification remains unverified in the status response.
     case "$(hash /firmware/image/modem.b16):$(hash /usr/bin/ipacm)" in
       "$firmware_sha:$ipacm_sha"|"$b28_firmware_sha:$b28_ipacm_sha") return 0;;
+      "$b29_firmware_sha:$ipacm_sha") b29_profile;;
       "$b27_firmware_sha:$b27_ipacm_sha") b27_profile;;
       *) b04_profile && test "$(hash /usr/bin/ipacm)" = "$ipacm_sha";;
     esac
@@ -240,7 +243,7 @@ upgrade_manager() {
     done
     current=$(hash "$root/manager.sh")
     case "$current" in
-      7e629d347d1dc1777cb6322430de0d4188b442d624108efbaba8ad110f012666|e4684cb0fa040de0525d0248897da01a5af2c4ee8509a851719afe9c970e9194|a70afc13c3645f64b5fd937162e7d403e133bcfa0a2da0e565d39a693f9ab488|79d5a2e696613f966fe2dff3fe59a0366455fe16681284c65d8ddb36c5e35b5a|b6588072c82ddd7678093a29b983ec4417c6807562819e3bda69cd6534637b7c) previous=$current;;
+      4d17d08f6ded676cd0f696c4a839c398306bd6cfd916891a43218d56ca48e796|7e629d347d1dc1777cb6322430de0d4188b442d624108efbaba8ad110f012666|e4684cb0fa040de0525d0248897da01a5af2c4ee8509a851719afe9c970e9194|a70afc13c3645f64b5fd937162e7d403e133bcfa0a2da0e565d39a693f9ab488|79d5a2e696613f966fe2dff3fe59a0366455fe16681284c65d8ddb36c5e35b5a|b6588072c82ddd7678093a29b983ec4417c6807562819e3bda69cd6534637b7c) previous=$current;;
       *) fail UPGRADE_VERSION;;
     esac
     backup="/data/zte-imei-ttl-upgrade-$previous"

@@ -29,7 +29,7 @@ void Check(bool value) { if (!value) throw new Exception("Assertion failed"); }
 async Task Test(string name, Func<Task> work)
 {
     try { await work(); Console.WriteLine("PASS " + name); passed++; }
-    catch (Exception e) { Console.WriteLine("FAIL " + name + " (" + e.GetType().Name + ")"); failed++; }
+    catch (Exception e) { Console.WriteLine("FAIL " + name + " (" + e.GetType().Name + ")\n" + e.StackTrace); failed++; }
 }
 DeviceFeatureService Service(Shell shell) => new(shell, Path.GetFullPath("Windows_x64/Resources"), storage);
 async Task<string> Rejected(Func<Task> work)
@@ -254,11 +254,18 @@ try
         Check(status.DesiredSsid == "Synthetic" && shell.Requests.Contains("configure_wifi"));
         Check(shell.Commands.Contains(AccessIdentity.Command));
     });
+    await Test("CN B29 reaches the pinned component policy with measured access identity", async () =>
+    {
+        var shell = new Shell { Firmware = "33c09756e2b27511d0d36ffef6aeeb72732de756935e067d4571dfb8de8c3636", WifiMode = true };
+        var status = await Service(shell).ConfigureVpnWifiAsync("Synthetic B29", VpnPasswordMode.Main);
+        Check(status.DesiredSsid == "Synthetic B29" && shell.Requests.Contains("configure_wifi"));
+        Check(AgentPackage.VersionForHash("10919284afa5c72fd1401fa7514d50e17e246cd3b29b54b899d6453493658c23") == "2.11.0");
+    });
     await Test("Fresh installer errors expose exact phases without private output", () =>
     {
         var method = typeof(DeviceFeatureService).GetMethod("InstallerFailure", BindingFlags.Static | BindingFlags.NonPublic)!;
         string Message(string error, int exit = 1) => (string)method.Invoke(null, ["vpn_components", new RemoteResult(exit, [], Encoding.UTF8.GetBytes(error))])!;
-        foreach (var code in new[] { "INVALID_STAGE", "PLATFORM", "UNSAFE_STAGE", "ALREADY_PRESENT", "UNSUPPORTED_FIRMWARE", "RUNTIME_TOOLS", "TUN_UNAVAILABLE", "LUA_MODULES", "NO_SPACE", "PAYLOAD", "WRITE", "INTEGRITY", "SERVICE" })
+        foreach (var code in new[] { "INVALID_STAGE", "PLATFORM", "UNSAFE_STAGE", "ALREADY_PRESENT", "UNSUPPORTED_FIRMWARE", "COMPATIBILITY", "IPA_UNSUPPORTED", "NETWORK_CHANGED", "WIFI_LAYOUT", "RPC_UNSUPPORTED", "RUNTIME_TOOLS", "TUN_UNAVAILABLE", "LUA_MODULES", "NO_SPACE", "PAYLOAD", "WRITE", "INTEGRITY", "SERVICE" })
         {
             var message = Message("PRIVATE credential\nVPN_INSTALL_ERROR " + code + "\n");
             Check(message.Contains("VPN_INSTALL_" + code) && !message.Contains("PRIVATE"));
@@ -415,7 +422,7 @@ try
         Check(shell.Commands.All(x => !x.Contains("PRIVATE", StringComparison.Ordinal)));
         await Rejected(() => Service(shell).ImportVpnConfigAsync("PostUp = command"));
     });
-    await Test("Subscription metadata and active update reach desktop status, detach retains profiles", async () =>
+    await Test("Subscription removal clears its active profile and bulk removal preserves unrelated entries", async () =>
     {
         var shell = new Shell { ProfileMode = true };
         const string id = "11111111-1111-1111-1111-111111111111";
@@ -429,8 +436,11 @@ try
 
         Check(status.Subscriptions!.Single().Host == "example.test" && status.Subscriptions.Single().ProfileCount == 1);
         Check(!(await service.ActivateVpnProfileAsync(id)).Profiles.Single().UpdateAvailable);
-        var detached = await service.DeleteVpnSubscriptionAsync(id);
-        Check(detached.Subscriptions!.Count == 0 && detached.Profiles.Count == 1);
+        const string other = "22222222-2222-2222-2222-222222222222";
+        shell.ProfileState["profiles"]!.AsArray().Add(new JsonObject { ["id"] = other, ["name"] = "AWG", ["transport"] = "udp", ["active"] = false });
+        var deleted = await service.DeleteVpnSubscriptionAsync(id);
+        Check(deleted.Subscriptions!.Count == 0 && deleted.Profiles.Single().Id == other && !deleted.Enabled && deleted.ActiveProfile == "");
+        Check((await service.DeleteVpnProfilesAsync([other, other])).Profiles.Count == 0);
     });
     await Test("Import summary from mutation survives a subsequent status without last_import", async () =>
     {
@@ -682,7 +692,22 @@ sealed class Shell : IRemoteShell
                             else foreach (var p in profiles.Where(p => p!["id"]!.GetValue<string>() == id)) p!["name"] = body.GetProperty("name").GetString();
                             break;
                         case "import_config": profiles.Add(new JsonObject { ["id"] = "11111111-1111-1111-1111-111111111111", ["name"] = body.GetProperty("name").GetString() ?? "Imported", ["transport"] = "udp", ["protocol"] = "amneziawg3.1", ["active"] = false }); break;
-                        case "subscription_delete": ProfileState["subscriptions"] = new JsonArray(); break;
+                        case "subscription_delete":
+                        case "delete_profiles":
+                            var ids = new HashSet<string>();
+                            if (action == "subscription_delete")
+                            {
+                                if (!body.GetProperty("cascade").GetBoolean()) throw new Exception("Missing cascade confirmation");
+                                var subscriptions = ProfileState["subscriptions"]!.AsArray();
+                                foreach (var sub in subscriptions.Where(s => s!["id"]!.GetValue<string>() == id).ToArray()) subscriptions.Remove(sub);
+                                foreach (var p in profiles.Where(p => p!["subscription_id"]?.GetValue<string>() == id)) ids.Add(p!["id"]!.GetValue<string>());
+                            }
+                            else foreach (var value in body.GetProperty("ids").EnumerateArray()) ids.Add(value.GetString()!);
+                            foreach (var p in profiles.Where(p => ids.Contains(p!["id"]!.GetValue<string>())).ToArray()) profiles.Remove(p);
+                            if (ids.Contains(ProfileState["active_profile"]?.GetValue<string>() ?? "")) {
+                                ProfileState["active_profile"] = ""; ProfileState["enabled"] = false;
+                            }
+                            break;
                         case "import": profiles.Add(new JsonObject { ["id"] = "11111111-1111-1111-1111-111111111111", ["name"] = body.GetProperty("name").GetString() ?? "Imported", ["transport"] = "tcp", ["active"] = false }); break;
                         case "rename": foreach (var p in profiles.Where(p => p!["id"]!.GetValue<string>() == id)) p!["name"] = body.GetProperty("name").GetString(); break;
                         case "activate": foreach (var p in profiles) { p!["active"] = p["id"]!.GetValue<string>() == id; if (p["id"]!.GetValue<string>() == id) p["update_available"] = false; } ProfileState["active_profile"] = id; ProfileState["enabled"] = true; ProfileState["configured"] = true; break;
